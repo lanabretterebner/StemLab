@@ -1,0 +1,70 @@
+# Third-party components
+
+StemLab's original source code is licensed under the MIT License.
+
+Third-party projects, libraries, runtimes, frameworks, and pretrained models
+retain their own copyrights, licenses, and terms. They are not relicensed under
+StemLab's MIT License.
+
+## JUCE
+
+StemLab's Standalone application and VST3 frontend are built with JUCE.
+
+This repository currently pins JUCE 9.0.0 through CMake FetchContent rather
+than committing JUCE source into the StemLab repository.
+
+JUCE has its own licensing model. Anyone building or distributing StemLab
+binaries is responsible for complying with the JUCE license applicable to
+their distribution.
+
+See `plugin/LICENSE-NOTE.md`.
+
+## BS-RoFormer
+
+StemLab can use `bs-roformer-infer` as a pretrained BS-RoFormer inference
+backend.
+
+Relevant upstream projects include:
+
+- OpenMIRLab / bs-roformer-infer
+- BS-RoFormer by Phil Wang / lucidrains
+- Music-Source-Separation-Training by ZFTurbo
+- Band-Split RoPE Transformer research
+
+StemLab does not commit pretrained checkpoint bytes to this repository.
+Checkpoints are downloaded separately and may have their own attribution,
+redistribution, or usage terms.
+
+Review the terms associated with any checkpoint before redistributing or
+mirroring its weights.
+
+## Demucs
+
+StemLab can use the upstream `demucs` Python package and the `htdemucs_6s`
+pretrained model.
+
+Demucs code and model artifacts remain third-party components and retain their
+upstream licensing/terms.
+
+## Python / ML runtime
+
+The portable Windows builder can assemble an embedded runtime containing
+third-party components including CPython, PyTorch, NumPy, SciPy, SoundFile,
+PyYAML, tqdm, Demucs, BS-RoFormer inference dependencies, and their transitive
+dependencies.
+
+Those packages retain their respective upstream licenses.
+
+The CPython embeddable distribution includes its upstream `LICENSE.txt` inside
+the generated `Engine` directory.
+
+## FFmpeg
+
+The portable build copies an `ffmpeg.exe` from the build machine.
+
+FFmpeg licensing obligations depend on the configuration of the specific FFmpeg
+binary being redistributed. Before publishing a binary release, verify the
+license/build configuration of the FFmpeg executable you ship and include any
+required notices or corresponding-source obligations.
+
+This file is informational and is not legal advice.

@@ -1,0 +1,37 @@
+STEMLAB FOR WINDOWS
+===================
+
+1. Extract this entire ZIP to a folder you want to keep.
+2. Double-click StemLab.exe.
+3. Choose Standalone or Ableton setup on first launch.
+
+That's it for standalone use. Do not install Python, run pip, or move files out
+of this folder individually. StemLab.exe uses the bundled Engine\ directory.
+
+ABLETON LIVE
+------------
+
+Choose "Set Up Ableton" on first launch, or later open:
+
+Settings > Ableton Live > Install / Repair Ableton Integration...
+
+StemLab installs the VST3 and StemLabRemote, but reuses the Engine\ directory
+from this portable folder instead of copying the large ML runtime again.
+
+Keep this extracted folder in place while using the Ableton plug-in.
+
+After setup, restart Ableton Live and set:
+
+Settings > Link, Tempo & MIDI
+Control Surface = StemLabRemote
+Input = None
+Output = None
+
+If setup cannot find your Ableton User Library, it will ask you to select it.
+It will not force-close Ableton or delete unsaved work.
+
+GITHUB SOURCE VS RELEASE
+------------------------
+Do not commit Engine\ffmpeg.exe or the assembled ML runtime to the repository.
+Run build_installer_windows.ps1 to create the Windows installer under dist\.
+The generated installer includes FFmpeg and the ML runtime for end users.

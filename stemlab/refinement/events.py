@@ -1,0 +1,78 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+import numpy as np
+from scipy.signal import butter, sosfiltfilt, find_peaks
+
+
+@dataclass(frozen=True)
+class Event:
+    sample: int
+    confidence: float
+
+
+def _mono(audio: np.ndarray) -> np.ndarray:
+    if audio.ndim == 1:
+        return audio.astype(np.float32, copy=False)
+    return audio.mean(axis=0).astype(np.float32, copy=False)
+
+
+def _lowpass(x: np.ndarray, sr: int, hz: float = 180.0) -> np.ndarray:
+    sos = butter(
+        4,
+        min(hz / (sr / 2.0), 0.99),
+        btype="low",
+        output="sos",
+    )
+    return sosfiltfilt(sos, x).astype(np.float32)
+
+
+def detect_kick_events(
+    drums: np.ndarray,
+    sr: int,
+    min_interval_ms: float = 90.0,
+    threshold_std: float = 1.15,
+) -> list[Event]:
+    """Detect low-frequency transient onsets in a drum stem.
+
+    This is intentionally signal-processing-first, not ML. It gives us event
+    locations for the adaptive cancellation experiment and is easy to inspect.
+    """
+    x = _mono(drums)
+    low = _lowpass(x, sr)
+
+    # Short RMS-ish low-frequency energy envelope.
+    win = max(8, int(sr * 0.008))
+    kernel = np.ones(win, dtype=np.float32) / win
+    energy = np.convolve(low * low, kernel, mode="same")
+    env = np.sqrt(np.maximum(energy, 0.0))
+
+    # Emphasize attack rather than sustained sub/bass.
+    derivative = np.maximum(np.diff(env, prepend=env[0]), 0.0)
+
+    med = float(np.median(derivative))
+    std = float(np.std(derivative)) + 1e-12
+    threshold = med + threshold_std * std
+
+    min_distance = max(1, int(sr * min_interval_ms / 1000.0))
+    peaks, props = find_peaks(
+        derivative,
+        height=threshold,
+        distance=min_distance,
+    )
+
+    heights = props.get("peak_heights", np.zeros_like(peaks, dtype=float))
+    if len(heights) == 0:
+        return []
+
+    # Robust confidence scaling. 1.0 means a very strong low-frequency onset.
+    scale = float(np.percentile(heights, 90)) + 1e-12
+    events = [
+        Event(
+            sample=int(p),
+            confidence=float(np.clip(h / scale, 0.0, 1.0)),
+        )
+        for p, h in zip(peaks, heights)
+    ]
+
+    return events

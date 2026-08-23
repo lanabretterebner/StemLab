@@ -1,0 +1,56 @@
+StemLab 0.9.9 - Portable Windows Release
+========================================
+
+NORMAL USERS
+------------
+
+Download StemLab-Windows.zip from GitHub Releases.
+Extract the whole ZIP, then double-click:
+
+StemLab.exe
+
+The first launch offers:
+
+- Use Standalone
+- Set Up Ableton
+
+No Python, virtual environment, pip, CMake, or terminal setup is required for
+standalone use.
+
+ABLETON LIVE
+------------
+
+Use the first-launch "Set Up Ableton" button or open:
+
+Settings > Ableton Live > Install / Repair Ableton Integration...
+
+The setup copies only:
+
+StemLab.vst3   -> C:\Program Files\Common Files\VST3\StemLab.vst3
+StemLabRemote  -> <Ableton User Library>\Remote Scripts\StemLabRemote
+
+The large Engine\ runtime stays in the extracted portable folder. StemLab
+stores a small pointer so the Ableton VST3 can use that same runtime.
+
+If Ableton is open, setup stops and asks you to save/quit it first. It never
+force-closes Ableton.
+
+After setup, restart Ableton Live and set:
+
+Settings > Link, Tempo & MIDI
+Control Surface = StemLabRemote
+Input = None
+Output = None
+
+DEVELOPERS
+----------
+
+If this folder contains plugin\, stemlab\, and tests\, you are looking at the
+source repository. Build the user package with:
+
+.\build_portable_windows.ps1
+
+Output:
+
+dist\StemLab-0.9.9-Windows\
+dist\StemLab-Windows.zip
