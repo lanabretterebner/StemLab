@@ -47,7 +47,8 @@ private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
 
     void chooseEngineExecutable();
-    void chooseStandaloneAudioFile();
+    void chooseSourceAudioFile();
+    bool loadSourceFile (const juce::File& file);
     void chooseSaveFolder();
     void chooseJobRootFolder();
     void showSettingsMenu();

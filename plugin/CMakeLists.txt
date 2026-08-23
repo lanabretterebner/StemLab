@@ -61,6 +61,8 @@ target_sources(StemLabPlugin
         Source/PluginProcessor.h
         Source/PluginEditor.cpp
         Source/PluginEditor.h
+        Source/StemLabPaths.cpp
+        Source/StemLabPaths.h
 )
 
 target_compile_definitions(StemLabPlugin
@@ -89,6 +91,25 @@ if (WIN32)
         PRIVATE
             ole32
             uuid
+    )
+elseif (UNIX AND NOT APPLE)
+    # JUCE already propagates X11/freetype/ALSA through its own targets. What
+    # it does not add is the dynamic loader, which juce_audio_devices needs to
+    # pick up JACK at runtime, or the thread library on some toolchains.
+    find_package(Threads REQUIRED)
+
+    target_link_libraries(StemLabPlugin
+        PRIVATE
+            Threads::Threads
+            ${CMAKE_DL_LIBS}
+    )
+
+    # JACK is loaded with dlopen, so enabling it costs nothing at link time and
+    # gives Standalone users on PipeWire/JACK a working device.
+    target_compile_definitions(StemLabPlugin
+        PUBLIC
+            JUCE_JACK=1
+            JUCE_ALSA=1
     )
 endif()
 

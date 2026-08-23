@@ -6,7 +6,10 @@
 #include <memory>
 
 class StemLabEngineThread;
+
+#if JUCE_WINDOWS
 class StemLabSystemLoopbackThread;
+#endif
 
 class StemLabAudioProcessor final : public juce::AudioProcessor,
                                     public juce::ChangeBroadcaster,
@@ -57,6 +60,27 @@ public:
     bool startCapture();
     void stopCapture();
 
+    /*  Today the only host bridge is the Ableton Live Remote Script, which
+        exists on Windows only. Where no bridge is available the plugin offers
+        the Standalone workflow instead - choose a file, save stems to disk -
+        rather than buttons that talk to a script that cannot be there.
+
+        This becomes a runtime check once ReaperBridge lands.
+    */
+    static constexpr bool isHostBridgeAvailable() noexcept
+    {
+       #if JUCE_WINDOWS
+        return true;
+       #else
+        return false;
+       #endif
+    }
+
+    bool usesLocalFileWorkflow() const noexcept
+    {
+        return isStandaloneApp() || ! isHostBridgeAvailable();
+    }
+
     // Generic source loading used by Standalone, Ableton clip retrieval, and
     // Windows system-audio recording.
     bool setInputAudioFile (
@@ -84,7 +108,17 @@ public:
     void stopStandaloneRecording();
 
     // System recording uses Windows WASAPI loopback on the current default
-    // Windows render/output endpoint.
+    // Windows render/output endpoint. There is no Linux backend yet, so the
+    // UI hides the control rather than offering a button that always fails.
+    static constexpr bool isSystemAudioCaptureSupported() noexcept
+    {
+       #if JUCE_WINDOWS
+        return true;
+       #else
+        return false;
+       #endif
+    }
+
     bool startSystemAudioRecording();
     void stopSystemAudioRecording();
 
@@ -215,7 +249,10 @@ public:
 
 private:
     friend class StemLabEngineThread;
+
+   #if JUCE_WINDOWS
     friend class StemLabSystemLoopbackThread;
+   #endif
 
     void handleAsyncUpdate() override;
     void setStatus (const juce::String&);
@@ -285,7 +322,10 @@ private:
     std::atomic<double> abletonBridgeWaitStartMs { 0.0 };
 
     std::unique_ptr<StemLabEngineThread> engineThread;
+
+   #if JUCE_WINDOWS
     std::unique_ptr<StemLabSystemLoopbackThread> systemLoopbackThread;
+   #endif
 
     juce::AudioFormatManager previewFormats;
     std::unique_ptr<juce::AudioFormatReaderSource> previewReaderSource;

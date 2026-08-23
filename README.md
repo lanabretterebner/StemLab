@@ -4,8 +4,9 @@
 
 # StemLab
 
-StemLab is an open-source six-stem music separator for Windows with a JUCE
-Standalone application and Ableton Live VST3 integration.
+StemLab is an open-source six-stem music separator with a JUCE Standalone
+application and a VST3 plugin. It runs on Windows, with Ableton Live
+integration, and on Linux.
 
 It separates audio into:
 
@@ -21,8 +22,9 @@ mode that combines both model outputs before optional StemLab refinement.
 
 ## Features
 
-- Windows Standalone application
-- Ableton Live VST3
+- Windows and Linux Standalone application
+- VST3 plugin
+- Ableton Live integration (Windows)
 - BS-RoFormer separation
 - Demucs six-stem separation
 - Hybrid RoFormer + Demucs fusion
@@ -179,9 +181,21 @@ Typical workflow:
 `StemLabRemote` creates the selected Arrangement tracks/clips underneath the
 source track.
 
+## Linux
+
+Linux builds the VST3 and Standalone targets natively:
+
+```bash
+./plugin/build_linux.sh
+./plugin/install_vst3.sh
+```
+
+See `LINUX_BUILD.md` for dependencies, engine discovery, where StemLab writes
+files, and the two Windows-only features that do not apply there.
+
 ## Building From Source
 
-Development currently targets **Python 3.11 on Windows**.
+Development targets **Python 3.10+**, on Windows and Linux.
 
 Install the Python backend:
 
@@ -266,6 +280,7 @@ StemLab/
 ├── build_portable_windows.ps1
 ├── PORTABLE_INSTALL.txt
 ├── ABLETON_QUICKSTART.md
+├── LINUX_BUILD.md
 ├── pyproject.toml
 ├── LICENSE
 ├── THIRD_PARTY.md

@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "StemLabPaths.h"
 
 #if defined(JucePlugin_Build_Standalone) && JucePlugin_Build_Standalone
 #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
@@ -23,6 +24,46 @@ namespace
     double nowMs()
     {
         return juce::Time::getMillisecondCounterHiRes();
+    }
+
+    /*  Matches python, pythonw, python3 and versioned names such as
+        python3.11, on either platform, without also matching neighbours like
+        python-config that share the prefix.
+    */
+    bool looksLikePythonInterpreter (const juce::File& file)
+    {
+        const auto name =
+            file.getFileNameWithoutExtension()
+                .toLowerCase();
+
+        return name == "python"
+            || name == "pythonw"
+            || name.startsWith ("python3");
+    }
+
+    /*  True for the relocatable interpreter shipped inside a portable
+        release, as opposed to a development venv or a system Python.
+
+            Windows   Engine\python.exe
+            Linux     Engine/bin/python3
+    */
+    bool isPortableEngineRuntime (const juce::File& file)
+    {
+        if (! looksLikePythonInterpreter (file))
+            return false;
+
+        const auto parent = file.getParentDirectory();
+
+       #if JUCE_WINDOWS
+        return parent.getFileName()
+            .equalsIgnoreCase ("Engine");
+       #else
+        return parent.getFileName()
+                   .equalsIgnoreCase ("bin")
+            && parent.getParentDirectory()
+                   .getFileName()
+                   .equalsIgnoreCase ("Engine");
+       #endif
     }
 
     juce::String utf8ToHex (const juce::String& text)
@@ -711,34 +752,21 @@ StemLabAudioProcessor::StemLabAudioProcessor()
     {
         // When the portable Standalone app is launched, remember the exact
         // sibling Engine path for the separately installed VST3. This keeps
-        // the multi-gigabyte ML runtime portable and avoids copying it into
-        // LocalAppData just to make Ableton integration work.
+        // the multi-gigabyte ML runtime portable instead of copying it into
+        // the config directory a second time just to make the plugin work.
         const juce::File discoveredFile (discoveredEngine);
-        const bool isPortableEngine =
-            discoveredFile.getFileName().equalsIgnoreCase ("python.exe")
-            && discoveredFile.getParentDirectory()
-                .getFileName().equalsIgnoreCase ("Engine");
 
-        if (isPortableEngine)
+        if (isPortableEngineRuntime (discoveredFile))
         {
-            const auto localAppData =
-                juce::SystemStats::getEnvironmentVariable (
-                    "LOCALAPPDATA",
-                    {});
+            auto settingsDirectory =
+                stemlab::paths::configDirectory();
 
-            if (localAppData.isNotEmpty())
+            if (settingsDirectory.createDirectory())
             {
-                auto settingsDirectory =
-                    juce::File (localAppData)
-                        .getChildFile ("StemLab");
-
-                if (settingsDirectory.createDirectory())
-                {
-                    settingsDirectory
-                        .getChildFile ("portable_engine_path.txt")
-                        .replaceWithText (
-                            discoveredFile.getFullPathName());
-                }
+                settingsDirectory
+                    .getChildFile ("portable_engine_path.txt")
+                    .replaceWithText (
+                        discoveredFile.getFullPathName());
             }
         }
 
@@ -780,7 +808,9 @@ StemLabAudioProcessor::~StemLabAudioProcessor()
         engineThread.reset();
     }
 
+   #if JUCE_WINDOWS
     systemLoopbackThread.reset();
+   #endif
 
     diskWriterThread.stopThread (2000);
 }
@@ -1155,7 +1185,7 @@ bool StemLabAudioProcessor::setInputAudioFile (
     {
         const juce::ScopedLock lock (stateLock);
         captureFile = file;
-        lastJobDirectory = {};
+        lastJobDirectory = juce::File();
         engineLog.clear();
 
         inputSourceLabel =
@@ -1475,7 +1505,7 @@ bool StemLabAudioProcessor::startStandaloneRecording()
     {
         const juce::ScopedLock lock (stateLock);
         captureFile = recordingFile;
-        lastJobDirectory = {};
+        lastJobDirectory = juce::File();
         engineLog.clear();
     }
 
@@ -1545,7 +1575,7 @@ bool StemLabAudioProcessor::startSystemAudioRecording()
     {
         const juce::ScopedLock lock (stateLock);
         captureFile = recordingFile;
-        lastJobDirectory = {};
+        lastJobDirectory = juce::File();
         engineLog.clear();
     }
 
@@ -1581,7 +1611,10 @@ bool StemLabAudioProcessor::startSystemAudioRecording()
     systemLoopbackThread->startThread();
     return true;
    #else
-    setStatus ("System audio recording is currently Windows-only");
+    setStatus (
+        "System audio recording is Windows-only for now - "
+        "record into the host instead");
+
     return false;
    #endif
 }
@@ -1631,10 +1664,7 @@ void StemLabAudioProcessor::stopSystemAudioRecording()
 
 juce::File StemLabAudioProcessor::createCaptureFile() const
 {
-    auto folder = juce::File::getSpecialLocation (
-                      juce::File::userDocumentsDirectory)
-                      .getChildFile ("StemLab")
-                      .getChildFile ("Captures");
+    auto folder = stemlab::paths::capturesDirectory();
 
     folder.createDirectory();
 
@@ -1646,10 +1676,7 @@ juce::File StemLabAudioProcessor::createCaptureFile() const
 
 juce::File StemLabAudioProcessor::createRecordingFile() const
 {
-    auto folder = juce::File::getSpecialLocation (
-                      juce::File::userDocumentsDirectory)
-                      .getChildFile ("StemLab")
-                      .getChildFile ("Recordings");
+    auto folder = stemlab::paths::recordingsDirectory();
 
     folder.createDirectory();
 
@@ -1661,10 +1688,7 @@ juce::File StemLabAudioProcessor::createRecordingFile() const
 
 juce::File StemLabAudioProcessor::createSystemRecordingFile() const
 {
-    auto folder = juce::File::getSpecialLocation (
-                      juce::File::userDocumentsDirectory)
-                      .getChildFile ("StemLab")
-                      .getChildFile ("Recordings");
+    auto folder = stemlab::paths::recordingsDirectory();
 
     folder.createDirectory();
 
@@ -1684,13 +1708,7 @@ juce::File StemLabAudioProcessor::createJobDirectory() const
     }
 
     if (! root.isDirectory())
-    {
-        root =
-            juce::File::getSpecialLocation (
-                juce::File::userDocumentsDirectory)
-                .getChildFile ("StemLab")
-                .getChildFile ("Jobs");
-    }
+        root = stemlab::paths::jobsDirectory();
 
     root.createDirectory();
 
@@ -1725,10 +1743,7 @@ juce::File StemLabAudioProcessor::getJobRootDirectory() const
     if (jobRootDirectory.isDirectory())
         return jobRootDirectory;
 
-    return juce::File::getSpecialLocation (
-               juce::File::userDocumentsDirectory)
-        .getChildFile ("StemLab")
-        .getChildFile ("Jobs");
+    return stemlab::paths::jobsDirectory();
 }
 
 bool StemLabAudioProcessor::startCapture()
@@ -1795,7 +1810,7 @@ bool StemLabAudioProcessor::startCapture()
     {
         const juce::ScopedLock lock (stateLock);
         captureFile = newCaptureFile;
-        lastJobDirectory = {};
+        lastJobDirectory = juce::File();
         engineLog.clear();
     }
 
@@ -1865,7 +1880,7 @@ void StemLabAudioProcessor::stopCapture()
 
         {
             const juce::ScopedLock lock (stateLock);
-            captureFile = {};
+            captureFile = juce::File();
         }
 
         setStatus ("Capture cancelled");
@@ -1950,10 +1965,7 @@ bool StemLabAudioProcessor::requestAbletonSourceClip()
         juce::Uuid().toString();
 
     auto replyFolder =
-        juce::File::getSpecialLocation (
-            juce::File::tempDirectory)
-            .getChildFile ("StemLab")
-            .getChildFile ("Ableton");
+        stemlab::paths::bridgeTempDirectory();
 
     replyFolder.createDirectory();
 
@@ -1962,10 +1974,7 @@ bool StemLabAudioProcessor::requestAbletonSourceClip()
             "clip_" + requestId + ".json");
 
     auto legacyFolder =
-        juce::File::getSpecialLocation (
-            juce::File::userDocumentsDirectory)
-            .getChildFile ("StemLab")
-            .getChildFile ("Ableton");
+        stemlab::paths::legacyBridgeDirectory();
 
     legacyFolder.createDirectory();
 
@@ -2219,12 +2228,8 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
     // auto-discovery resolves that interpreter, launch StemLab's worker as a
     // module. The old stemlab-plugin-job.exe development path still works.
     {
-        const juce::File commandFile (commandName);
-        const auto fileName = commandFile.getFileName();
-
-        if (fileName.equalsIgnoreCase ("python.exe")
-            || fileName.equalsIgnoreCase ("pythonw.exe")
-            || fileName.equalsIgnoreCase ("python"))
+        if (looksLikePythonInterpreter (
+                juce::File (commandName)))
         {
             command.add ("-m");
             command.add ("stemlab.plugin_job");
@@ -2509,7 +2514,7 @@ void StemLabAudioProcessor::appendEngineLog (const juce::String& text)
 int StemLabAudioProcessor::saveSelectedStemsTo (
     const juce::File& destination)
 {
-    if (! isStandaloneApp() || ! hasSuccessfulJob())
+    if (! usesLocalFileWorkflow() || ! hasSuccessfulJob())
         return 0;
 
     if (! destination.isDirectory())
@@ -3021,8 +3026,9 @@ juce::String StemLabAudioProcessor::discoverEngineCommand() const
     {
         const juce::StringArray relativeCandidates
         {
+           #if JUCE_WINDOWS
             // Portable release: keep the whole runtime beside StemLab.exe or
-            // beside a VST3 folder that Ableton scans directly.
+            // beside a VST3 folder that the host scans directly.
             "Engine/python.exe",
             "engine/python.exe",
 
@@ -3031,6 +3037,20 @@ juce::String StemLabAudioProcessor::discoverEngineCommand() const
             ".venv/Scripts/stemlab-plugin-job",
             "venv/Scripts/stemlab-plugin-job.exe",
             "venv/Scripts/stemlab-plugin-job"
+           #else
+            // Same portable layout, POSIX interpreter location. The "engine"
+            // spelling is kept because ext4 will not forgive the difference.
+            "Engine/bin/python3",
+            "engine/bin/python3",
+            "Engine/bin/python",
+            "engine/bin/python",
+
+            // Development fallbacks.
+            ".venv/bin/stemlab-plugin-job",
+            "venv/bin/stemlab-plugin-job",
+            ".venv/bin/python3",
+            "venv/bin/python3"
+           #endif
         };
 
         for (int depth = 0; depth < 10 && root.exists(); ++depth)
@@ -3066,18 +3086,12 @@ juce::String StemLabAudioProcessor::discoverEngineCommand() const
         return found;
     }
 
-    // The Standalone portable app writes this pointer on launch. Ableton's
-    // VST3 can then reuse the Engine directory from the extracted release
-    // instead of requiring a second multi-gigabyte copy.
-    const auto localAppData = juce::SystemStats::getEnvironmentVariable (
-        "LOCALAPPDATA",
-        {});
-
-    if (localAppData.isNotEmpty())
+    // The Standalone portable app writes this pointer on launch. The VST3 can
+    // then reuse the Engine directory from the extracted release instead of
+    // requiring a second multi-gigabyte copy.
     {
         const auto stemLabLocal =
-            juce::File (localAppData)
-                .getChildFile ("StemLab");
+            stemlab::paths::configDirectory();
 
         const auto portablePointer =
             stemLabLocal.getChildFile ("portable_engine_path.txt");
@@ -3093,11 +3107,15 @@ juce::String StemLabAudioProcessor::discoverEngineCommand() const
         }
 
         // Backward-compatible fallback for older installer builds that copied
-        // the runtime under LocalAppData\StemLab\Engine.
+        // the runtime under the config directory itself.
         const auto installedRuntime =
-            stemLabLocal
-                .getChildFile ("Engine")
+            stemLabLocal.getChildFile ("Engine")
+               #if JUCE_WINDOWS
                 .getChildFile ("python.exe");
+               #else
+                .getChildFile ("bin")
+                .getChildFile ("python3");
+               #endif
 
         if (installedRuntime.existsAsFile())
             return installedRuntime.getFullPathName();
@@ -3123,6 +3141,34 @@ juce::String StemLabAudioProcessor::discoverEngineCommand() const
     {
         return found;
     }
+
+   #if ! JUCE_WINDOWS
+    // A pip/pipx install is the normal way to get the backend on Linux, and it
+    // leaves the launcher on PATH rather than in a sibling directory. Resolve
+    // it to an absolute path here so the host's environment - which may not
+    // inherit the user's shell PATH at all - cannot lose it later.
+    {
+        juce::StringArray searchPath;
+
+        searchPath.addTokens (
+            juce::SystemStats::getEnvironmentVariable ("PATH", {}),
+            ":",
+            {});
+
+        for (const auto& directory : searchPath)
+        {
+            if (! juce::File::isAbsolutePath (directory))
+                continue;
+
+            const auto candidate =
+                juce::File (directory)
+                    .getChildFile ("stemlab-plugin-job");
+
+            if (candidate.existsAsFile())
+                return candidate.getFullPathName();
+        }
+    }
+   #endif
 
     return "stemlab-plugin-job";
 }
@@ -3290,9 +3336,7 @@ void StemLabAudioProcessor::setStateInformation (
 
         const juce::File discoveredFile (discoveredEngine);
         const bool discoveredIsPortableRuntime =
-            discoveredFile.getFileName().equalsIgnoreCase ("python.exe")
-            && discoveredFile.getParentDirectory()
-                .getFileName().equalsIgnoreCase ("Engine");
+            isPortableEngineRuntime (discoveredFile);
 
         // A self-contained release must not silently fall back to a saved
         // development venv merely because that venv still exists on the build
