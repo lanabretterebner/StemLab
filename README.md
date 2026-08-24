@@ -6,7 +6,7 @@
 
 StemLab is an open-source six-stem music separator with a JUCE Standalone
 application and a VST3 plugin. It runs on Windows, with Ableton Live
-integration, and on Linux.
+integration, and on Linux, with native REAPER integration.
 
 It separates audio into:
 
@@ -25,6 +25,7 @@ mode that combines both model outputs before optional StemLab refinement.
 - Windows and Linux Standalone application
 - VST3 plugin
 - Ableton Live integration (Windows)
+- REAPER integration (Linux; no scripts or extensions to install)
 - BS-RoFormer separation
 - Demucs six-stem separation
 - Hybrid RoFormer + Demucs fusion
@@ -33,7 +34,8 @@ mode that combines both model outputs before optional StemLab refinement.
 - MP3/WAV/FLAC/OGG/AIFF input through FFmpeg normalization
 - Resizable, volume-colored waveform previews
 - Stem Play/Pause and click-to-seek auditioning
-- Windows system-audio recording
+- System-audio recording (WASAPI loopback on Windows, PipeWire/PulseAudio
+  monitor on Linux)
 - Selective stem export
 - Selective Ableton stem import
 - Invisible `StemLabRemote` Ableton integration
@@ -183,15 +185,22 @@ source track.
 
 ## Linux
 
-Linux builds the VST3 and Standalone targets natively:
+Linux builds the VST3 and Standalone targets natively, and one more script
+installs the separation backend with no venv or system Python:
 
 ```bash
 ./plugin/build_linux.sh
 ./plugin/install_vst3.sh
+./install_backend_linux.sh
 ```
 
-See `LINUX_BUILD.md` for dependencies, engine discovery, where StemLab writes
-files, and the two Windows-only features that do not apply there.
+Inside REAPER, StemLab talks to the host directly: **Use Selected Item**
+reads the selected arrangement item, and **Insert Stems** creates
+colour-coded stem tracks under the source track, aligned with the original
+selection. No Remote Script, extension, or configuration is involved.
+
+See `LINUX_BUILD.md` for dependencies, the REAPER workflow, engine
+discovery, and where StemLab writes files.
 
 ## Building From Source
 
@@ -281,6 +290,7 @@ StemLab/
 ├── PORTABLE_INSTALL.txt
 ├── ABLETON_QUICKSTART.md
 ├── LINUX_BUILD.md
+├── install_backend_linux.sh
 ├── pyproject.toml
 ├── LICENSE
 ├── THIRD_PARTY.md

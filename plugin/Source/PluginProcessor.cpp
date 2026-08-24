@@ -1,9 +1,14 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include "StemLabPaths.h"
+#include "ReaperBridge.h"
 
 #if defined(JucePlugin_Build_Standalone) && JucePlugin_Build_Standalone
 #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
+#endif
+
+#if JUCE_LINUX
+#include "LinuxSystemCapture.h"
 #endif
 
 #if JUCE_WINDOWS
@@ -244,26 +249,36 @@ public:
             owner.engineCompletedSuccessfully.store (true);
             owner.setEngineProgress (1.0);
 
-            if (owner.isStandaloneApp())
+            switch (owner.getHostIntegration())
             {
-                owner.setStatus (
-                    "Done - audition stems, then choose what to save");
-            }
-            else
-            {
+                case StemLabAudioProcessor::hostIntegrationAbletonLive:
                 {
-                    const juce::ScopedLock lock (
-                        owner.abletonBridgeLock);
+                    {
+                        const juce::ScopedLock lock (
+                            owner.abletonBridgeLock);
 
-                    owner.abletonBridgeStatus =
-                        "Stems ready - audition them, choose what you want, then Send Selected";
+                        owner.abletonBridgeStatus =
+                            "Stems ready - audition them, choose what you want, then Send Selected";
+                    }
+
+                    owner.abletonImportedStemCount.store (0);
+                    owner.abletonBridgeWaitStartMs.store (0.0);
+
+                    owner.setStatus (
+                        "Done - audition stems, then Send Selected");
+                    break;
                 }
 
-                owner.abletonImportedStemCount.store (0);
-                owner.abletonBridgeWaitStartMs.store (0.0);
+                case StemLabAudioProcessor::hostIntegrationReaper:
+                    owner.setStatus (
+                        "Done - audition stems, then Insert Stems");
+                    break;
 
-                owner.setStatus (
-                    "Done - audition stems, then Send Selected");
+                case StemLabAudioProcessor::hostIntegrationNone:
+                default:
+                    owner.setStatus (
+                        "Done - audition stems, then choose what to save");
+                    break;
             }
         }
         else
@@ -516,6 +531,7 @@ public:
 
         owner.currentSampleRate = sampleRate;
         owner.currentInputChannels = outputChannels;
+        owner.systemCaptureSampleRate.store (sampleRate);
         owner.capturedSamples.store (0);
 
         hr = audioClient->Start();
@@ -808,7 +824,7 @@ StemLabAudioProcessor::~StemLabAudioProcessor()
         engineThread.reset();
     }
 
-   #if JUCE_WINDOWS
+   #if JUCE_WINDOWS || JUCE_LINUX
     systemLoopbackThread.reset();
    #endif
 
@@ -1187,6 +1203,7 @@ bool StemLabAudioProcessor::setInputAudioFile (
         captureFile = file;
         lastJobDirectory = juce::File();
         engineLog.clear();
+        reaperSourceInfo = {};
 
         inputSourceLabel =
             sourceLabel.isNotEmpty()
@@ -1563,7 +1580,7 @@ bool StemLabAudioProcessor::startSystemAudioRecording()
 
     stopStandalonePlayback();
 
-   #if JUCE_WINDOWS
+   #if JUCE_WINDOWS || JUCE_LINUX
     if (systemLoopbackThread != nullptr)
     {
         systemLoopbackThread->signalThreadShouldExit();
@@ -1607,12 +1624,17 @@ bool StemLabAudioProcessor::startSystemAudioRecording()
             *this,
             recordingFile);
 
+   #if JUCE_WINDOWS
     setStatus ("Recording system audio - Windows default output");
+   #else
+    setStatus ("Recording system audio - default output monitor");
+   #endif
+
     systemLoopbackThread->startThread();
     return true;
    #else
     setStatus (
-        "System audio recording is Windows-only for now - "
+        "System audio recording is not available on this platform - "
         "record into the host instead");
 
     return false;
@@ -1621,7 +1643,7 @@ bool StemLabAudioProcessor::startSystemAudioRecording()
 
 void StemLabAudioProcessor::stopSystemAudioRecording()
 {
-   #if JUCE_WINDOWS
+   #if JUCE_WINDOWS || JUCE_LINUX
     if (standaloneRecordingMode.load() != recordingSystem
         && systemLoopbackThread == nullptr)
     {
@@ -1911,6 +1933,19 @@ double StemLabAudioProcessor::getCapturedSeconds() const noexcept
             return duration;
     }
 
+    if (standaloneRecordingMode.load() == recordingSystem)
+    {
+        const auto captureRate =
+            systemCaptureSampleRate.load();
+
+        if (captureRate > 0.0)
+        {
+            return static_cast<double> (
+                       capturedSamples.load())
+                / captureRate;
+        }
+    }
+
     if (currentSampleRate <= 0.0)
         return 0.0;
 
@@ -1952,7 +1987,7 @@ bool StemLabAudioProcessor::sendAbletonControlMessage (
 
 bool StemLabAudioProcessor::requestAbletonSourceClip()
 {
-    if (isStandaloneApp()
+    if (getHostIntegration() != hostIntegrationAbletonLive
         || capturing.load()
         || isEngineRunning())
     {
@@ -2036,7 +2071,7 @@ bool StemLabAudioProcessor::requestAbletonSourceClip()
 
 void StemLabAudioProcessor::refreshAbletonSourceClipFromDisk()
 {
-    if (isStandaloneApp()
+    if (getHostIntegration() != hostIntegrationAbletonLive
         || ! abletonClipRequestPending.load())
     {
         return;
@@ -2186,6 +2221,325 @@ void StemLabAudioProcessor::refreshAbletonSourceClipFromDisk()
     }
 }
 
+StemLabAudioProcessor::HostIntegration
+StemLabAudioProcessor::getHostIntegration() const noexcept
+{
+    if (isStandaloneApp())
+        return hostIntegrationNone;
+
+    if (reaperApi != nullptr && reaperApi->isValid())
+        return hostIntegrationReaper;
+
+    // Live offers no in-process API, so its bridge cannot self-identify the
+    // way REAPER's does. On Windows - the only platform Live runs on - the
+    // UDP + Remote Script path stays the assumption for any other host.
+   #if JUCE_WINDOWS
+    return hostIntegrationAbletonLive;
+   #else
+    return hostIntegrationNone;
+   #endif
+}
+
+void StemLabAudioProcessor::setIHostApplication (Steinberg::FUnknown* host)
+{
+    if (reaperApi != nullptr)
+        return;
+
+    reaperApi = stemlab::reaper::Api::tryCreate (host);
+
+    if (reaperApi != nullptr)
+    {
+        const auto version = reaperApi->getAppVersion();
+
+        appendEngineLog (
+            "REAPER host detected"
+            + (version.isNotEmpty() ? " (v" + version + ")" : juce::String())
+            + (reaperApi->isValid()
+                   ? juce::String (" - API bridge ready\n")
+                   : " - missing API functions: "
+                       + reaperApi->getMissingFunctionNames()
+                             .joinIntoString (", ")
+                       + "\n"));
+    }
+
+    runReaperSelfTestIfRequested();
+}
+
+bool StemLabAudioProcessor::requestReaperSourceItem()
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+
+    if (getHostIntegration() != hostIntegrationReaper
+        || capturing.load()
+        || isEngineRunning())
+    {
+        return false;
+    }
+
+    stopStandalonePlayback();
+
+    const auto item =
+        stemlab::reaper::querySelectedItem (*reaperApi);
+
+    if (! item.ok)
+    {
+        setStatus (item.message);
+        return false;
+    }
+
+    if (! setInputAudioFile (
+            item.file,
+            juce::jmax (0.0, item.startQN),
+            item.label))
+    {
+        return false;
+    }
+
+    {
+        const juce::ScopedLock lock (stateLock);
+
+        reaperSourceInfo.valid = true;
+        reaperSourceInfo.startSeconds = item.startSeconds;
+        reaperSourceInfo.lengthSeconds = item.lengthSeconds;
+        reaperSourceInfo.startOffsetSeconds = item.startOffsetSeconds;
+        reaperSourceInfo.playRate = item.playRate;
+        reaperSourceInfo.preservePitch = item.preservePitch;
+        reaperSourceInfo.trackNumber = item.trackNumber;
+    }
+
+    setStatus ("REAPER item ready: " + item.label);
+    return true;
+}
+
+bool StemLabAudioProcessor::insertSelectedStemsIntoReaper()
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+
+    if (getHostIntegration() != hostIntegrationReaper
+        || isEngineRunning()
+        || ! hasSuccessfulJob())
+    {
+        return false;
+    }
+
+    const auto job = getLastJobDirectory();
+
+    const auto manifestFile =
+        job.getChildFile ("stemlab_ableton_manifest.json");
+
+    if (! manifestFile.existsAsFile())
+    {
+        setStatus ("Completed stem manifest was not found");
+        return false;
+    }
+
+    const auto manifest =
+        juce::JSON::parse (manifestFile.loadFileAsString());
+
+    const auto* object = manifest.getDynamicObject();
+
+    const auto* allStems =
+        object != nullptr
+            ? object->getProperty ("stems").getArray()
+            : nullptr;
+
+    if (allStems == nullptr)
+    {
+        setStatus ("Completed stem manifest is invalid");
+        return false;
+    }
+
+    juce::Array<stemlab::reaper::StemToInsert> selected;
+
+    for (const auto& entry : *allStems)
+    {
+        const auto* stemObject = entry.getDynamicObject();
+
+        if (stemObject == nullptr)
+            continue;
+
+        const auto name =
+            stemObject->getProperty ("name").toString();
+
+        for (int i = 0; i < stemCount; ++i)
+        {
+            if (name.equalsIgnoreCase (getStemName (i))
+                && isStemEnabled (i))
+            {
+                selected.add (
+                    { name,
+                      juce::File (
+                          stemObject->getProperty ("path")
+                              .toString()) });
+                break;
+            }
+        }
+    }
+
+    if (selected.isEmpty())
+    {
+        setStatus ("Choose at least one stem to insert");
+        return false;
+    }
+
+    stemlab::reaper::InsertAnchor anchor;
+    juce::String sourceLabel;
+    bool hasReaperGeometry = false;
+
+    {
+        const juce::ScopedLock lock (stateLock);
+
+        sourceLabel = inputSourceLabel;
+        hasReaperGeometry = reaperSourceInfo.valid;
+
+        if (hasReaperGeometry)
+        {
+            anchor.startSeconds = reaperSourceInfo.startSeconds;
+            anchor.lengthSeconds = reaperSourceInfo.lengthSeconds;
+            anchor.startOffsetSeconds = reaperSourceInfo.startOffsetSeconds;
+            anchor.playRate = reaperSourceInfo.playRate;
+            anchor.preservePitch = reaperSourceInfo.preservePitch;
+            anchor.afterTrackNumber = reaperSourceInfo.trackNumber;
+        }
+    }
+
+    if (! hasReaperGeometry)
+    {
+        // A dropped file has no REAPER geometry; place the stems where the
+        // captured start beat lands on the current tempo map.
+        anchor.startSeconds =
+            reaperApi->TimeMap2_QNToTime (
+                nullptr,
+                juce::jmax (0.0, captureStartPpq.load()));
+    }
+
+    const auto result =
+        stemlab::reaper::insertStemTracks (
+            *reaperApi,
+            selected,
+            anchor,
+            sourceLabel);
+
+    setStatus (result.message);
+    return result.inserted > 0;
+}
+
+void StemLabAudioProcessor::runReaperSelfTestIfRequested()
+{
+    /*  Test-only instrumentation: when the environment names a report file,
+        write what the REAPER handshake produced, and optionally exercise the
+        real pull/insert paths against the live project. Never triggered in
+        normal use - both variables have to be set explicitly by a harness.
+    */
+    const auto reportPath =
+        juce::SystemStats::getEnvironmentVariable (
+            "STEMLAB_REAPER_SELFTEST",
+            {});
+
+    if (reportPath.isEmpty())
+        return;
+
+    const juce::File report (reportPath);
+
+    juce::String text;
+    text << "protocol: stemlab-reaper-selftest\n";
+
+    if (reaperApi == nullptr)
+    {
+        text << "reaper: not-detected\n";
+        report.replaceWithText (text);
+        return;
+    }
+
+    text << "reaper: detected\n";
+    text << "version: " << reaperApi->getAppVersion() << "\n";
+    text << "valid: " << (reaperApi->isValid() ? "yes" : "no") << "\n";
+
+    const auto missing = reaperApi->getMissingFunctionNames();
+
+    if (! missing.isEmpty())
+        text << "missing: " << missing.joinIntoString (",") << "\n";
+
+    report.replaceWithText (text);
+
+    const auto action =
+        juce::SystemStats::getEnvironmentVariable (
+            "STEMLAB_REAPER_SELFTEST_ACTION",
+            {});
+
+    if (action.isEmpty() || ! reaperApi->isValid())
+        return;
+
+    // The project may still be loading while plugins initialise; give
+    // REAPER a moment, then run on the message thread like the real UI.
+    juce::WeakReference<StemLabAudioProcessor> weak (this);
+
+    juce::Timer::callAfterDelay (
+        2500,
+        [weak, action, report]
+        {
+            if (weak != nullptr)
+                weak->runReaperSelfTestAction (action, report);
+        });
+}
+
+void StemLabAudioProcessor::runReaperSelfTestAction (
+    const juce::String& action,
+    const juce::File& report)
+{
+    juce::String text = report.loadFileAsString();
+
+    if (action.contains ("pull"))
+    {
+        const auto item =
+            stemlab::reaper::querySelectedItem (*reaperApi);
+
+        text << "pull: " << (item.ok ? "ok" : "failed") << "\n";
+
+        if (item.ok)
+        {
+            text << "pull-file: " << item.file.getFullPathName() << "\n";
+            text << "pull-start: " << juce::String (item.startSeconds, 6) << "\n";
+            text << "pull-length: " << juce::String (item.lengthSeconds, 6) << "\n";
+            text << "pull-label: " << item.label << "\n";
+        }
+        else
+        {
+            text << "pull-message: " << item.message << "\n";
+        }
+
+        if (item.ok && action.contains ("insert"))
+        {
+            // Insert the selected item's own audio twice, standing in for
+            // stems, echoing the item's real geometry.
+            juce::Array<stemlab::reaper::StemToInsert> stems;
+            stems.add ({ "vocals", item.file });
+            stems.add ({ "drums", item.file });
+
+            stemlab::reaper::InsertAnchor anchor;
+            anchor.startSeconds = item.startSeconds;
+            anchor.lengthSeconds = item.lengthSeconds;
+            anchor.startOffsetSeconds = item.startOffsetSeconds;
+            anchor.playRate = item.playRate;
+            anchor.preservePitch = item.preservePitch;
+            anchor.afterTrackNumber = item.trackNumber;
+
+            const auto result =
+                stemlab::reaper::insertStemTracks (
+                    *reaperApi,
+                    stems,
+                    anchor,
+                    "Selftest");
+
+            text << "insert: " << result.inserted << "\n";
+            text << "insert-message: " << result.message << "\n";
+        }
+    }
+
+    text << "selftest: done\n";
+    report.replaceWithText (text);
+}
+
 bool StemLabAudioProcessor::launchSeparationAndExport()
 {
     stopStandalonePlayback();
@@ -2228,9 +2582,17 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
     // auto-discovery resolves that interpreter, launch StemLab's worker as a
     // module. The old stemlab-plugin-job.exe development path still works.
     {
-        if (looksLikePythonInterpreter (
-                juce::File (commandName)))
+        const juce::File commandFile (commandName);
+
+        if (looksLikePythonInterpreter (commandFile))
         {
+            // For the self-contained Engine, -s keeps the user's ~/.local
+            // site-packages from shadowing the Engine's own dependencies. A
+            // system or venv interpreter must NOT get it: a user-site
+            // "pip install --user -e ." setup depends on user site.
+            if (isPortableEngineRuntime (commandFile))
+                command.add ("-s");
+
             command.add ("-m");
             command.add ("stemlab.plugin_job");
         }
@@ -2247,7 +2609,7 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
         engineLog.clear();
     }
 
-    if (! isStandaloneApp())
+    if (getHostIntegration() == hostIntegrationAbletonLive)
     {
         const auto ack =
             job.getChildFile ("stemlab_ableton_ack.json");
@@ -2514,8 +2876,11 @@ void StemLabAudioProcessor::appendEngineLog (const juce::String& text)
 int StemLabAudioProcessor::saveSelectedStemsTo (
     const juce::File& destination)
 {
-    if (! usesLocalFileWorkflow() || ! hasSuccessfulJob())
+    if (getHostIntegration() == hostIntegrationAbletonLive
+        || ! hasSuccessfulJob())
+    {
         return 0;
+    }
 
     if (! destination.isDirectory())
     {
@@ -2569,7 +2934,7 @@ juce::String StemLabAudioProcessor::getAbletonBridgeStatus() const
 
 void StemLabAudioProcessor::refreshAbletonBridgeStatusFromDisk()
 {
-    if (isStandaloneApp())
+    if (getHostIntegration() != hostIntegrationAbletonLive)
         return;
 
     // The invisible Remote Script writes a small heartbeat/status file when
@@ -2799,7 +3164,7 @@ bool StemLabAudioProcessor::sendAbletonBridgeNotification (
 
 bool StemLabAudioProcessor::sendSelectedStemsToAbleton()
 {
-    if (isStandaloneApp()
+    if (getHostIntegration() != hostIntegrationAbletonLive
         || isEngineRunning()
         || ! hasSuccessfulJob())
     {
@@ -2947,7 +3312,7 @@ bool StemLabAudioProcessor::sendSelectedStemsToAbleton()
 
 bool StemLabAudioProcessor::retryAbletonImport()
 {
-    if (isStandaloneApp()
+    if (getHostIntegration() != hostIntegrationAbletonLive
         || isEngineRunning())
     {
         return false;

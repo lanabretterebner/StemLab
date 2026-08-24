@@ -238,6 +238,16 @@ def run_plugin_job(
 
 
 def main():
+    # The separation backends re-invoke sys.executable for Demucs and
+    # BS-RoFormer. When this process was launched without user site-packages
+    # (the plugin passes -s to the self-contained Engine), its children must
+    # inherit that isolation - but a process that IS relying on user site
+    # (e.g. a "pip install --user" development setup) must not lose it.
+    import site
+
+    if not getattr(site, "ENABLE_USER_SITE", True):
+        os.environ.setdefault("PYTHONNOUSERSITE", "1")
+
     try:
         # JUCE's ChildProcess reader interprets our output as UTF-8, so make
         # that contract explicit instead of inheriting Windows cp1252.

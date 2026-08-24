@@ -73,7 +73,7 @@ fi
 
 # JUCE needs these headers. Checking now beats a 200-line CMake error later.
 required_pkgs=(alsa x11 xext xi xrandr xinerama xcursor xcomposite xrender
-                freetype2 fontconfig gl)
+                freetype2 fontconfig gl libpulse-simple)
 missing_pkgs=()
 
 for pkg in "${required_pkgs[@]}"; do
@@ -89,17 +89,17 @@ if [[ ${#missing_pkgs[@]} -gt 0 ]]; then
     libasound2-dev libjack-jackd2-dev \
     libx11-dev libxext-dev libxi-dev libxrandr-dev libxinerama-dev \
     libxcursor-dev libxcomposite-dev libxrender-dev \
-    libfreetype-dev libfontconfig1-dev libgl1-mesa-dev
+    libfreetype-dev libfontconfig1-dev libgl1-mesa-dev libpulse-dev
 
 On Fedora:
   sudo dnf install alsa-lib-devel jack-audio-connection-kit-devel \
     libX11-devel libXext-devel libXi-devel libXrandr-devel libXinerama-devel \
     libXcursor-devel libXcomposite-devel libXrender-devel \
-    freetype-devel fontconfig-devel mesa-libGL-devel
+    freetype-devel fontconfig-devel mesa-libGL-devel pulseaudio-libs-devel
 
 On Arch:
   sudo pacman -S --needed alsa-lib jack2 libx11 libxext libxi libxrandr \
-    libxinerama libxcursor libxcomposite libxrender freetype2 fontconfig mesa
+    libxinerama libxcursor libxcomposite libxrender freetype2 fontconfig mesa libpulse
 EOF
     exit 1
 fi

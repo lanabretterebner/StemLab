@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+#
+# Install the StemLab separation backend on Linux - no venv, no system Python.
+#
+# Downloads a relocatable CPython (python-build-standalone), installs StemLab
+# and its ML dependencies into it, and records the result where the plugin
+# and Standalone app auto-discover it. After this script finishes, StemLab
+# works with zero further configuration.
+#
+#   Engine   ~/.local/share/StemLab/Engine        ($XDG_DATA_HOME override)
+#   Pointer  ~/.config/StemLab/portable_engine_path.txt
+#
+# Usage:
+#   ./install_backend_linux.sh              # auto-detect NVIDIA -> cuda/cpu
+#   ./install_backend_linux.sh --cpu        # force CPU-only torch (smallest)
+#   ./install_backend_linux.sh --cuda       # force CUDA torch
+#   ./install_backend_linux.sh --dest DIR   # custom Engine location
+#   ./install_backend_linux.sh --reinstall  # rebuild the Engine from scratch
+
+set -euo pipefail
+
+# Pinned relocatable CPython. 3.11 matches the interpreter the Windows
+# portable release ships.
+PBS_RELEASE="20250818"
+PBS_PYTHON="3.11.13"
+
+TORCH_FLAVOR="auto"
+REINSTALL=0
+DEST=""
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --cpu)       TORCH_FLAVOR="cpu";  shift ;;
+        --cuda)      TORCH_FLAVOR="cuda"; shift ;;
+        --dest)      DEST="$2";           shift 2 ;;
+        --reinstall) REINSTALL=1;         shift ;;
+        -h|--help)
+            sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            exit 0 ;;
+        *)
+            echo "Unknown option: $1" >&2
+            exit 2 ;;
+    esac
+done
+
+# Relative XDG values are invalid per the spec and are ignored by the plugin,
+# so the installer must ignore them the same way or the pointer file lands
+# where the plugin never looks.
+DATA_HOME="${XDG_DATA_HOME:-}"
+[[ "$DATA_HOME" == /* ]] || DATA_HOME="$HOME/.local/share"
+
+CONFIG_HOME="${XDG_CONFIG_HOME:-}"
+[[ "$CONFIG_HOME" == /* ]] || CONFIG_HOME="$HOME/.config"
+
+[[ -n "$DEST" ]] || DEST="$DATA_HOME/StemLab/Engine"
+
+# The pointer file must hold an absolute path - the plugin resolves it with
+# no working directory of its own.
+[[ "$DEST" == /* ]] || DEST="$PWD/$DEST"
+
+PYTHON="$DEST/bin/python3"
+
+# Written the moment this script creates the directory, before anything else
+# lands in it. rm -rf below only ever runs on a directory carrying it, so
+# "--reinstall --dest /some/precious/dir" can never delete data this script
+# does not own.
+OWNER_MARKER="$DEST/.stemlab-engine"
+
+# Written only after the interpreter extracted and validated, so a run that
+# died mid-extraction is detected and redone instead of trusted.
+READY_MARKER="$DEST/.stemlab-engine-ready"
+
+FLAVOR_FILE="$DEST/.stemlab-torch-flavor"
+
+# ------------------------------------------------------------------ preflight
+
+for tool in curl tar; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "Missing tool: $tool. Install it with your package manager." >&2
+        exit 1
+    }
+done
+
+case "$(uname -m)" in
+    x86_64)  PBS_ARCH="x86_64-unknown-linux-gnu" ;;
+    aarch64) PBS_ARCH="aarch64-unknown-linux-gnu" ;;
+    *)
+        echo "Unsupported architecture: $(uname -m)" >&2
+        exit 1 ;;
+esac
+
+if [[ "$TORCH_FLAVOR" == "auto" ]]; then
+    if command -v nvidia-smi >/dev/null 2>&1 \
+       || [[ -e /proc/driver/nvidia/version ]]; then
+        TORCH_FLAVOR="cuda"
+    else
+        TORCH_FLAVOR="cpu"
+    fi
+    echo "Detected torch flavor: $TORCH_FLAVOR (override with --cpu / --cuda)"
+fi
+
+# A directory this script did not create is never touched, reused, or
+# deleted - whatever its contents look like.
+if [[ -d "$DEST" && ! -f "$OWNER_MARKER" ]] \
+   && [[ -n "$(ls -A "$DEST" 2>/dev/null)" ]]; then
+    echo "Refusing to use $DEST: it already exists and was not created by" >&2
+    echo "this installer. Choose another --dest or remove it yourself." >&2
+    exit 1
+fi
+
+# ------------------------------------------------------------ engine decision
+
+engine_ready=0
+
+if [[ $REINSTALL -eq 0 && -x "$PYTHON" && -f "$READY_MARKER" ]]; then
+    engine_ready=1
+    echo "Reusing existing Engine interpreter: $PYTHON"
+elif [[ $REINSTALL -eq 0 && -d "$DEST" && -f "$OWNER_MARKER" \
+        && ! -f "$READY_MARKER" ]]; then
+    echo "A previous install of $DEST did not finish - rebuilding it."
+fi
+
+if [[ $engine_ready -eq 0 ]]; then
+    PBS_FILE="cpython-${PBS_PYTHON}+${PBS_RELEASE}-${PBS_ARCH}-install_only.tar.gz"
+    PBS_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_RELEASE}/${PBS_FILE}"
+
+    TMP_TAR="$(mktemp --suffix=.tar.gz)"
+    trap 'rm -f "$TMP_TAR"' EXIT
+
+    # Download BEFORE removing anything, so a failed download leaves an
+    # existing working Engine untouched.
+    echo "Downloading relocatable CPython ${PBS_PYTHON} (${PBS_ARCH})..."
+
+    for attempt in 1 2 3 4; do
+        if curl -fSL --retry 0 -o "$TMP_TAR" "$PBS_URL"; then
+            break
+        fi
+
+        [[ $attempt -eq 4 ]] && {
+            echo "Could not download $PBS_URL" >&2
+            echo "The existing Engine (if any) was left untouched." >&2
+            exit 1
+        }
+
+        delay=$((2 * attempt))
+        echo "Download failed. Retrying in ${delay}s..." >&2
+        sleep "$delay"
+    done
+
+    if [[ -d "$DEST" ]]; then
+        if [[ -f "$OWNER_MARKER" ]]; then
+            echo "Removing previous Engine at $DEST..."
+            rm -rf "$DEST"
+        elif [[ -n "$(ls -A "$DEST" 2>/dev/null)" ]]; then
+            # Unreachable after the preflight check, but never worth risking.
+            echo "Refusing to remove $DEST: not created by this installer." >&2
+            exit 1
+        fi
+    fi
+
+    echo "Extracting to $DEST..."
+    mkdir -p "$DEST"
+    touch "$OWNER_MARKER"
+
+    # The archive contains a single python/ directory; strip it so the
+    # layout is Engine/bin/python3, which the plugin recognises as a
+    # portable runtime.
+    if ! tar -xzf "$TMP_TAR" -C "$DEST" --strip-components=1; then
+        echo "Extraction failed - removing the partial Engine." >&2
+        rm -rf "$DEST"
+        exit 1
+    fi
+
+    [[ -x "$PYTHON" ]] || {
+        echo "Extraction did not produce $PYTHON" >&2
+        rm -rf "$DEST"
+        exit 1
+    }
+
+    touch "$READY_MARKER"
+fi
+
+# ------------------------------------------------------------------- backend
+
+echo "Installing the StemLab backend (torch: $TORCH_FLAVOR)..."
+echo "The ML dependencies are large; the first install takes a while."
+
+# Switching torch flavor on an existing Engine needs a forced reinstall -
+# "torch>=2.4" is already satisfied, so a plain install would silently keep
+# the old build.
+TORCH_ARGS=()
+previous_flavor=""
+[[ -f "$FLAVOR_FILE" ]] && previous_flavor="$(cat "$FLAVOR_FILE")"
+
+if [[ -n "$previous_flavor" && "$previous_flavor" != "$TORCH_FLAVOR" ]]; then
+    echo "Switching torch flavor: $previous_flavor -> $TORCH_FLAVOR"
+    TORCH_ARGS+=(--force-reinstall)
+fi
+
+if [[ "$TORCH_FLAVOR" == "cpu" ]]; then
+    # --index-url (not --extra-index-url): torch must come from the CPU
+    # index, never from a newer CUDA release that happens to be on PyPI.
+    TORCH_ARGS+=(--index-url "https://download.pytorch.org/whl/cpu")
+fi
+
+# PYTHONNOUSERSITE keeps the user's ~/.local packages out of dependency
+# resolution - the Engine must be self-contained.
+PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install --upgrade pip --quiet
+
+# Install torch first, pinned to the requested flavor; the main install then
+# sees its requirement already satisfied.
+PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install \
+    ${TORCH_ARGS[@]+"${TORCH_ARGS[@]}"} "torch>=2.4"
+
+PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install "$SCRIPT_DIR"
+
+printf '%s\n' "$TORCH_FLAVOR" > "$FLAVOR_FILE"
+
+# ---------------------------------------------------------------- validation
+
+echo "Verifying the Engine..."
+
+PYTHONNOUSERSITE=1 "$PYTHON" -s - <<'PYCHECK'
+import stemlab
+import torch
+
+print(f"  stemlab import: ok")
+print(f"  torch {torch.__version__}, CUDA available: {torch.cuda.is_available()}")
+PYCHECK
+
+# ------------------------------------------------------------------- pointer
+
+mkdir -p "$CONFIG_HOME/StemLab"
+printf '%s\n' "$PYTHON" > "$CONFIG_HOME/StemLab/portable_engine_path.txt"
+
+cat <<EOF
+
+StemLab backend installed.
+
+  Engine:  $DEST
+  Pointer: $CONFIG_HOME/StemLab/portable_engine_path.txt
+
+The plugin and Standalone app will discover it automatically - no settings
+needed. Re-run this script any time to update.
+EOF
+
+if ! command -v ffmpeg >/dev/null 2>&1; then
+    cat <<'EOF'
+NOTE: ffmpeg was not found on PATH. It is needed for MP3/OGG/AIFF input
+(WAV and FLAC work without it). Install it with your package manager, e.g.:
+  sudo apt install ffmpeg
+EOF
+fi

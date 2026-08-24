@@ -601,13 +601,20 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor (
             if (processor.isStandaloneApp())
                 return "Load or record audio, split it, audition stems, then save";
 
-            if (! StemLabAudioProcessor::isHostBridgeAvailable())
-                return "Drop or select audio, split it, audition stems, then save";
+            switch (processor.getHostIntegration())
+            {
+                case StemLabAudioProcessor::hostIntegrationReaper:
+                    return "Use the selected REAPER item, split it, audition stems, then insert";
 
-            if (! StemLabAudioProcessor::isSystemAudioCaptureSupported())
-                return "Use a Live clip, split it, audition stems, then send";
+                case StemLabAudioProcessor::hostIntegrationAbletonLive:
+                    return StemLabAudioProcessor::isSystemAudioCaptureSupported()
+                        ? "Use a Live clip or record PC audio, split it, audition stems, then send"
+                        : "Use a Live clip, split it, audition stems, then send";
 
-            return "Use a Live clip or record PC audio, split it, audition stems, then send";
+                case StemLabAudioProcessor::hostIntegrationNone:
+                default:
+                    return "Drop or select audio, split it, audition stems, then save";
+            }
         }(),
         juce::dontSendNotification);
 
@@ -689,22 +696,34 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor (
     }
     else
     {
-        if (StemLabAudioProcessor::isHostBridgeAvailable())
+        switch (processor.getHostIntegration())
         {
-            captureButton.setButtonText ("Use Live Clip");
-            captureButton.onClick = [this]
-            {
-                processor.requestAbletonSourceClip();
-                refreshFromProcessor();
-            };
-        }
-        else
-        {
-            captureButton.setButtonText ("Select File");
-            captureButton.onClick = [this]
-            {
-                chooseSourceAudioFile();
-            };
+            case StemLabAudioProcessor::hostIntegrationAbletonLive:
+                captureButton.setButtonText ("Use Live Clip");
+                captureButton.onClick = [this]
+                {
+                    processor.requestAbletonSourceClip();
+                    refreshFromProcessor();
+                };
+                break;
+
+            case StemLabAudioProcessor::hostIntegrationReaper:
+                captureButton.setButtonText ("Use Selected Item");
+                captureButton.onClick = [this]
+                {
+                    processor.requestReaperSourceItem();
+                    refreshFromProcessor();
+                };
+                break;
+
+            case StemLabAudioProcessor::hostIntegrationNone:
+            default:
+                captureButton.setButtonText ("Select File");
+                captureButton.onClick = [this]
+                {
+                    chooseSourceAudioFile();
+                };
+                break;
         }
 
         stopButton.setVisible (false);
@@ -819,9 +838,24 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor (
             juce::Font::bold));
 
     stemsLabel.setText (
-        processor.isStandaloneApp()
-            ? "Audition stems, then choose what to save"
-            : "Audition stems, then choose what to send to Ableton",
+        [this]() -> juce::String
+        {
+            if (processor.isStandaloneApp())
+                return "Audition stems, then choose what to save";
+
+            switch (processor.getHostIntegration())
+            {
+                case StemLabAudioProcessor::hostIntegrationAbletonLive:
+                    return "Audition stems, then choose what to send to Ableton";
+
+                case StemLabAudioProcessor::hostIntegrationReaper:
+                    return "Audition stems, then choose what to insert";
+
+                case StemLabAudioProcessor::hostIntegrationNone:
+                default:
+                    return "Audition stems, then choose what to save";
+            }
+        }(),
         juce::dontSendNotification);
 
     addAndMakeVisible (stemsLabel);
@@ -883,8 +917,11 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor (
                 static_cast<size_t> (i)]);
     }
 
+    // Save-to-folder is useful in every mode except the Ableton bridge,
+    // whose workflow is send-only by design.
     saveSelectedButton.setVisible (
-        processor.usesLocalFileWorkflow());
+        processor.getHostIntegration()
+            != StemLabAudioProcessor::hostIntegrationAbletonLive);
 
     saveSelectedButton.onClick = [this]
     {
@@ -896,20 +933,34 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor (
     sendSelectedButton.setVisible (
         ! processor.usesLocalFileWorkflow());
 
+    sendSelectedButton.setButtonText (
+        processor.getHostIntegration()
+                == StemLabAudioProcessor::hostIntegrationReaper
+            ? "Insert Stems"
+            : "Send Selected");
+
     sendSelectedButton.setColour (
         juce::TextButton::buttonColourId,
         accent());
 
     sendSelectedButton.onClick = [this]
     {
-        processor.sendSelectedStemsToAbleton();
+        if (processor.getHostIntegration()
+                == StemLabAudioProcessor::hostIntegrationReaper)
+            processor.insertSelectedStemsIntoReaper();
+        else
+            processor.sendSelectedStemsToAbleton();
+
         refreshFromProcessor();
     };
 
     addAndMakeVisible (sendSelectedButton);
 
+    // Retry exists for the Ableton bridge's asynchronous import; REAPER
+    // insertion is synchronous, so there is nothing to retry.
     retryImportButton.setVisible (
-        ! processor.usesLocalFileWorkflow());
+        processor.getHostIntegration()
+            == StemLabAudioProcessor::hostIntegrationAbletonLive);
 
     retryImportButton.onClick = [this]
     {
@@ -1348,27 +1399,46 @@ void StemLabAudioProcessorEditor::resized()
         }
     }
 
-    if (processor.usesLocalFileWorkflow())
+    switch (processor.isStandaloneApp()
+                ? StemLabAudioProcessor::hostIntegrationNone
+                : processor.getHostIntegration())
     {
-        saveSelectedButton.setBounds (
-            actionRow.removeFromLeft (
-                width < 620 ? 112 : 128));
+        case StemLabAudioProcessor::hostIntegrationAbletonLive:
+            sendSelectedButton.setBounds (
+                actionRow.removeFromLeft (
+                    width < 620 ? 108 : 126));
 
-        actionRow.removeFromLeft (5);
-    }
-    else
-    {
-        sendSelectedButton.setBounds (
-            actionRow.removeFromLeft (
-                width < 620 ? 108 : 126));
+            actionRow.removeFromLeft (5);
 
-        actionRow.removeFromLeft (5);
+            retryImportButton.setBounds (
+                actionRow.removeFromLeft (
+                    width < 620 ? 60 : 70));
 
-        retryImportButton.setBounds (
-            actionRow.removeFromLeft (
-                width < 620 ? 60 : 70));
+            actionRow.removeFromLeft (5);
+            break;
 
-        actionRow.removeFromLeft (5);
+        case StemLabAudioProcessor::hostIntegrationReaper:
+            sendSelectedButton.setBounds (
+                actionRow.removeFromLeft (
+                    width < 620 ? 104 : 118));
+
+            actionRow.removeFromLeft (5);
+
+            saveSelectedButton.setBounds (
+                actionRow.removeFromLeft (
+                    width < 620 ? 112 : 128));
+
+            actionRow.removeFromLeft (5);
+            break;
+
+        case StemLabAudioProcessor::hostIntegrationNone:
+        default:
+            saveSelectedButton.setBounds (
+                actionRow.removeFromLeft (
+                    width < 620 ? 112 : 128));
+
+            actionRow.removeFromLeft (5);
+            break;
     }
 
     const int locationWidth =
@@ -1631,10 +1701,24 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
         }
         else
         {
-            captureText =
-                StemLabAudioProcessor::isHostBridgeAvailable()
-                    ? "Select a Live audio clip, then Use Live Clip"
-                    : "Drop an audio file here, or click Select File";
+            switch (processor.getHostIntegration())
+            {
+                case StemLabAudioProcessor::hostIntegrationAbletonLive:
+                    captureText =
+                        "Select a Live audio clip, then Use Live Clip";
+                    break;
+
+                case StemLabAudioProcessor::hostIntegrationReaper:
+                    captureText =
+                        "Select an item in REAPER, then Use Selected Item";
+                    break;
+
+                case StemLabAudioProcessor::hostIntegrationNone:
+                default:
+                    captureText =
+                        "Drop an audio file here, or click Select File";
+                    break;
+            }
         }
 
         captureTimeLabel.setText (
@@ -1824,7 +1908,8 @@ void StemLabAudioProcessorEditor::chooseSourceAudioFile()
 
 void StemLabAudioProcessorEditor::chooseSaveFolder()
 {
-    if (! processor.usesLocalFileWorkflow()
+    if (processor.getHostIntegration()
+            == StemLabAudioProcessor::hostIntegrationAbletonLive
         || ! processor.hasSuccessfulJob())
     {
         return;

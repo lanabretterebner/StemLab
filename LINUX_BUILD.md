@@ -1,10 +1,11 @@
 # StemLab on Linux
 
-StemLab builds a native VST3 and Standalone application on Linux. This page
-covers building, installing, and what behaves differently from the Windows
-release.
+StemLab builds a native VST3 and Standalone application on Linux, with
+in-process REAPER integration and PipeWire/PulseAudio system-audio recording.
+This page covers building, installing, and what behaves differently from the
+Windows release.
 
-Tested on Ubuntu 24.04 with GCC 13, CMake 3.28 and JUCE 9.0.0.
+Tested on Ubuntu 24.04 with GCC 13, CMake 3.28, JUCE 9.0.0 and REAPER 7.42.
 
 ## 1. Install the build dependencies
 
@@ -83,13 +84,21 @@ In REAPER, make sure `~/.vst3` is listed under
 
 ## 4. Install the separation backend
 
-The plugin shells out to the Python backend, so that has to exist somewhere it
-can find. A virtualenv beside the repository is the simplest option:
+The plugin shells out to the Python backend. One script sets it up - no venv,
+no system Python, nothing to configure:
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -e .
+./install_backend_linux.sh
 ```
+
+It downloads a relocatable CPython into `~/.local/share/StemLab/Engine`,
+installs StemLab and its ML dependencies into it, and writes the pointer file
+the plugin auto-discovers. Re-run it any time to update. It auto-detects
+NVIDIA and picks the CUDA or CPU torch build; force one with `--cuda` or
+`--cpu` (the CPU build is several gigabytes smaller).
+
+Developers who prefer a venv can still use one - `python3 -m venv .venv &&
+.venv/bin/pip install -e .` next to the repository is found automatically.
 
 The plugin discovers the engine in this order:
 
@@ -98,8 +107,8 @@ The plugin discovers the engine in this order:
    the plugin binary
 3. `.venv/bin/stemlab-plugin-job` or `venv/bin/stemlab-plugin-job`, searched
    upward from the plugin binary, the repo root, and the working directory
-4. the pointer written by the Standalone app at
-   `$XDG_CONFIG_HOME/StemLab/portable_engine_path.txt`
+4. the pointer written by `install_backend_linux.sh` (and by the Standalone
+   app) at `$XDG_CONFIG_HOME/StemLab/portable_engine_path.txt`
 5. `stemlab-plugin-job` on `$PATH`
 
 Step 5 matters because a DAW launched from a desktop launcher does not
@@ -126,31 +135,44 @@ Jobs live in the cache directory because they are large and can always be
 regenerated from the source audio. Override the job location at runtime with
 **Choose File Location** in the plugin.
 
+## REAPER
+
+Inside REAPER the plugin talks to the host directly - REAPER exposes its
+whole API to plugins, so there is no script to install and nothing to
+configure. Add StemLab to any track and the buttons become:
+
+1. Select an audio item in the arrangement.
+2. **Use Selected Item** - StemLab reads the item's audio file, timeline
+   position, and take geometry (trim offset, play rate).
+3. **Separate All Stems**, then audition the results.
+4. **Insert Stems** - one new track per selected stem appears directly under
+   the source track, colour-coded, aligned with the original item, in a
+   single undo block. **Save Selected...** also works if you would rather
+   place the files yourself.
+
+Items whose take is trimmed or rate-shifted are re-created with the same
+trim and rate, so the inserted stems play exactly in sync with the item you
+selected. In-project and section sources (glued/reversed items, project-in-
+project) need a render/glue first - the status line says so.
+
+Requires REAPER 5.02 or later (the API handshake); tested against 7.42. If a
+future or heavily stripped REAPER stops exposing a function StemLab needs,
+the plugin falls back to the Select File / Save Selected workflow and lists
+what was missing under **Settings > Copy diagnostics**.
+
 ## Differences from the Windows build
 
-**System audio recording is not available yet.** The Windows build captures the
-default output device through WASAPI loopback. There is no Linux backend for
-that yet, so the *Record System* / *Record PC* control is hidden rather than
-offered as a button that always fails. Record into your host instead, or use
-your existing PipeWire/PulseAudio routing. A monitor-source backend is the
-planned replacement.
+**System audio recording uses the desktop audio server.** *Record System*
+captures the monitor of your default output through the PulseAudio client
+API, which PipeWire also implements - so it works on both stacks with no
+setup. It records whatever the desktop is playing at 48 kHz stereo. On a
+system running neither (bare ALSA or JACK-only), the button reports what is
+missing instead of recording.
 
 **Ableton Live integration does not apply.** Live has no Linux build, so the
-*Install / Repair Ableton Integration* menu entry is hidden, and so are the
-*Send Selected* / *Retry* controls that hand stems back to a Remote Script.
-
-In their place the Linux plugin uses the same local-file workflow as the
-Standalone app:
-
-1. Drop an audio file onto the plugin window, or click **Select File**.
-2. **Separate All Stems**.
-3. Audition the results, tick the stems you want.
-4. **Save Selected...** and drag them into your project.
-
-Stems are written with the source's timeline position preserved, so they line
-up when you drop them back onto the arrangement. Direct REAPER integration -
-reading the selected item and inserting stem tracks without leaving the
-plugin - is planned separately.
+*Install / Repair Ableton Integration* menu entry is hidden. In hosts other
+than REAPER the plugin offers the same local-file workflow as the Standalone
+app: drop or select a file, separate, audition, **Save Selected...**.
 
 **CUDA is optional.** The plugin asks for `cuda`, and the backend now falls
 back to CPU when CUDA is unavailable, logging which device it chose. CPU
@@ -175,3 +197,7 @@ ldd plugin/build/StemLabPlugin_artefacts/Release/VST3/StemLab.vst3/Contents/x86_
 # Backend tests:
 python3 -m pytest tests -q
 ```
+
+The repository also contains no-hardware harnesses used during the port
+(fake VST3 host, REAPER selftest hooks via `STEMLAB_REAPER_SELFTEST`); see
+the pull-request history for how they are driven.
