@@ -9,11 +9,11 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .audio import STEM_NAMES
 from .pipeline import separate, DEFAULT_ENGINE, ENGINE_CHOICES
 from .pretrained import DEFAULT_MODEL
+from .runtime import configure_utf8_stdio
 
-
-STEM_NAMES = ("vocals", "drums", "bass", "guitar", "piano", "other")
 BRIDGE_HOST = "127.0.0.1"
 BRIDGE_PORT = 39277
 PROGRESS_FILE = "stemlab_progress.txt"
@@ -38,9 +38,9 @@ def write_progress(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    target = output_dir / "stemlab_progress.txt"
+    target = output_dir / PROGRESS_FILE
     temp = output_dir / (
-        f"stemlab_progress.{os.getpid()}.tmp"
+        f"{PROGRESS_FILE}.{os.getpid()}.tmp"
     )
 
     payload = (
@@ -238,21 +238,7 @@ def run_plugin_job(
 
 
 def main():
-    try:
-        # JUCE's ChildProcess reader interprets our output as UTF-8, so make
-        # that contract explicit instead of inheriting Windows cp1252.
-        sys.stdout.reconfigure(
-            encoding="utf-8",
-            errors="replace",
-            line_buffering=True,
-        )
-        sys.stderr.reconfigure(
-            encoding="utf-8",
-            errors="replace",
-            line_buffering=True,
-        )
-    except Exception:
-        pass
+    configure_utf8_stdio()
 
     parser = argparse.ArgumentParser(
         description="Run a StemLab VST capture through the separator and notify Ableton."

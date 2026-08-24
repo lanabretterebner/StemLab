@@ -1,26 +1,27 @@
+"""Top-level CLI: separate, refine an existing stem folder, list models."""
+
 from __future__ import annotations
 
 import argparse
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
-from .pipeline import separate, DEFAULT_ENGINE, ENGINE_CHOICES
+from .pipeline import DEFAULT_ENGINE, ENGINE_CHOICES, separate
 from .pretrained import DEFAULT_MODEL
 from .refinement.pipeline import refine_stem_folder
 
 
-def separate_main():
+def separate_main() -> None:
+    """CLI entry: ``stemlab-separate``."""
     parser = argparse.ArgumentParser(
         description="StemLab multi-engine separation + adaptive refinement"
     )
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--model", default=DEFAULT_MODEL)
-    parser.add_argument(
-        "--engine",
-        choices=ENGINE_CHOICES,
-        default=DEFAULT_ENGINE,
-    )
+    parser.add_argument("--engine", choices=ENGINE_CHOICES, default=DEFAULT_ENGINE)
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
         "--no-refine",
@@ -37,12 +38,12 @@ def separate_main():
         engine=args.engine,
         refine=not args.no_refine,
     )
-
     print(f"baseline: {result.baseline_dir}")
     print(f"final:    {result.final_dir}")
 
 
-def refine_main():
+def refine_main() -> None:
+    """CLI entry: ``stemlab-refine``."""
     parser = argparse.ArgumentParser(
         description="Run StemLab adaptive refinement on existing stems"
     )
@@ -50,11 +51,7 @@ def refine_main():
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
-    result = refine_stem_folder(
-        input_dir=args.stems,
-        output_dir=args.output,
-    )
-
+    result = refine_stem_folder(input_dir=args.stems, output_dir=args.output)
     for stem, stats in result.stats.items():
         print(
             f"{stem}: "
@@ -67,27 +64,17 @@ def refine_main():
         )
 
 
-def models_main():
-    import shutil
-    import subprocess
-
-    from pathlib import Path
-
+def models_main() -> None:
+    """CLI entry: ``stemlab-models`` — list installed RoFormer models."""
     python_dir = Path(sys.executable).resolve().parent
     local = python_dir / "bs-roformer-download.exe"
-
     exe = str(local) if local.exists() else shutil.which("bs-roformer-download")
-
     if exe is None:
         raise SystemExit(
             "bs-roformer-download was not found. "
             "Install StemLab with: python -m pip install -e ."
         )
-
-    subprocess.run(
-        [exe, "--list-models"],
-        check=True,
-    )
+    subprocess.run([exe, "--list-models"], check=True)
 
 
 if __name__ == "__main__":

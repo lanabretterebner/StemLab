@@ -8,10 +8,7 @@ import math
 import numpy as np
 from scipy.signal import istft, stft
 
-from .audio import load_audio, save_audio
-
-
-STEM_NAMES = ("vocals", "drums", "bass", "guitar", "piano", "other")
+from .audio import STEM_NAMES, load_audio, peak_normalize, save_audio
 
 # RoFormer preference when the two models disagree strongly. Agreement tends
 # toward an even 50/50 fusion. These are intentionally conservative rather
@@ -300,14 +297,7 @@ def fuse_stem_pair(
         1e-6,
     )
 
-    # Leave headroom for the existing StemLab refinement and prevent a rare
-    # model disagreement from creating >0 dBFS samples.
-    peak = float(
-        np.max(np.abs(result))
-    ) if result.size else 0.0
-
-    if peak > 0.999:
-        result *= 0.999 / peak
+    result = peak_normalize(result, peak=0.999)
 
     save_audio(
         output_path,

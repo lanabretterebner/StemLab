@@ -1,6 +1,8 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <vector>
+#include <functional>
 #include "PluginProcessor.h"
 
 class StemWaveformComponent final : public juce::Component
@@ -12,6 +14,12 @@ public:
         juce::AudioFormatManager& formatManager,
         juce::AudioThumbnailCache& thumbnailCache);
 
+    StemWaveformComponent (
+        StemLabAudioProcessor& processor,
+        juce::String recursiveId,
+        juce::AudioFormatManager& formatManager,
+        juce::AudioThumbnailCache& thumbnailCache);
+
     void setFile (const juce::File& file);
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
@@ -19,10 +27,46 @@ public:
 private:
     StemLabAudioProcessor& processor;
     int stemIndex = 0;
+    bool recursive = false;
+    juce::String recursiveId;
     juce::AudioThumbnail thumbnail;
     juce::File currentFile;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (StemWaveformComponent)
+};
+
+class RecursiveStemRowComponent final : public juce::Component
+{
+public:
+    RecursiveStemRowComponent (
+        StemLabAudioProcessor& processor,
+        const StemLabRecursiveStemInfo& info,
+        juce::AudioFormatManager& formatManager,
+        juce::AudioThumbnailCache& thumbnailCache,
+        std::function<void (const juce::String&)> toggleExpanded,
+        std::function<bool (const juce::String&)> isExpanded);
+
+    void setInfo (const StemLabRecursiveStemInfo& info);
+    void refresh (bool engineRunning, bool previewPlaying);
+    void resized() override;
+
+    juce::String getItemId() const { return item.id; }
+    juce::String getRootStem() const { return item.rootStem; }
+
+private:
+    void showActionMenu();
+
+    StemLabAudioProcessor& processor;
+    StemLabRecursiveStemInfo item;
+    juce::ToggleButton selectButton;
+    juce::TextButton expandButton { ">" };
+    juce::TextButton playButton { "Play" };
+    juce::TextButton actionButton { "..." };
+    std::function<void (const juce::String&)> toggleExpandedCallback;
+    std::function<bool (const juce::String&)> isExpandedCallback;
+    std::unique_ptr<StemWaveformComponent> waveform;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RecursiveStemRowComponent)
 };
 
 class StemLabAudioProcessorEditor final : public juce::AudioProcessorEditor,
@@ -55,6 +99,14 @@ private:
     void showFirstRunWelcome();
     void launchAbletonSetup();
     void refreshFromProcessor();
+    void syncRecursiveRows();
+    void showRootRecursiveMenu (int stemIndex);
+    bool rootSupportsAdaptiveSplit (int stemIndex) const;
+    bool rootHasChildren (int stemIndex) const;
+    void toggleRootExpanded (int stemIndex);
+    void toggleRecursiveExpanded (const juce::String& itemId);
+    bool isRecursiveExpanded (const juce::String& itemId) const;
+    std::vector<StemLabRecursiveStemInfo> getVisibleRecursiveItems() const;
 
     static bool isSupportedAudioFile (const juce::File& file);
 
@@ -84,7 +136,10 @@ private:
 
     juce::Label stemsLabel;
     std::array<juce::ToggleButton, StemLabAudioProcessor::stemCount> stemButtons;
+    std::array<juce::TextButton, StemLabAudioProcessor::stemCount> stemExpandButtons;
     std::array<juce::TextButton, StemLabAudioProcessor::stemCount> stemPlayButtons;
+    std::array<juce::TextButton, StemLabAudioProcessor::stemCount> stemRecursiveButtons;
+    std::array<bool, StemLabAudioProcessor::stemCount> rootExpanded {};
 
     juce::AudioFormatManager waveformFormats;
     juce::AudioThumbnailCache waveformCache { 24 };
@@ -92,6 +147,11 @@ private:
     std::array<
         std::unique_ptr<StemWaveformComponent>,
         StemLabAudioProcessor::stemCount> waveformComponents;
+
+    juce::Component stemTreeContent;
+    juce::Viewport stemViewport;
+    juce::StringArray collapsedRecursiveIds;
+    std::vector<std::unique_ptr<RecursiveStemRowComponent>> recursiveRows;
 
     juce::TextButton saveSelectedButton { "Save Selected..." };
     juce::TextButton sendSelectedButton { "Send Selected" };

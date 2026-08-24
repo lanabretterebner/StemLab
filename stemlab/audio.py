@@ -1,10 +1,16 @@
+"""Audio load/save helpers used by fusion, refinement, and analysis."""
+
 from __future__ import annotations
 
-from pathlib import Path
 import math
+from pathlib import Path
+
 import numpy as np
 import soundfile as sf
 from scipy.signal import resample_poly
+
+# Logical stem set shared by RoFormer, Demucs 6s, hybrid fusion, and the plugin.
+STEM_NAMES = ("vocals", "drums", "bass", "guitar", "piano", "other")
 
 
 def load_audio(
@@ -12,12 +18,14 @@ def load_audio(
     target_sr: int | None = None,
     stereo: bool = True,
 ) -> tuple[np.ndarray, int]:
-    """Return float32 audio as [channels, samples]."""
-    audio, sr = sf.read(
-        str(path),
-        dtype="float32",
-        always_2d=True,
-    )
+    """Load audio as contiguous float32 ``[channels, samples]``.
+
+    Args:
+        path: File to read.
+        target_sr: If set, resample with ``resample_poly``.
+        stereo: If true, duplicate mono to two channels.
+    """
+    audio, sr = sf.read(str(path), dtype="float32", always_2d=True)
 
     if stereo and audio.shape[1] == 1:
         audio = np.repeat(audio, 2, axis=1)
@@ -35,11 +43,8 @@ def load_audio(
     return np.ascontiguousarray(audio.T), sr
 
 
-def save_audio(
-    path: str | Path,
-    audio: np.ndarray,
-    sample_rate: int,
-):
+def save_audio(path: str | Path, audio: np.ndarray, sample_rate: int) -> None:
+    """Write ``[channels, samples]`` float32 audio as a 32-bit float WAV."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     sf.write(
@@ -51,6 +56,7 @@ def save_audio(
 
 
 def peak_normalize(audio: np.ndarray, peak: float = 0.999) -> np.ndarray:
+    """Scale so the absolute peak does not exceed ``peak``; leave quieter audio."""
     current = float(np.max(np.abs(audio))) if audio.size else 0.0
     if current <= peak or current <= 1e-12:
         return audio

@@ -1,4 +1,4 @@
-#ifndef SourceDir
+﻿#ifndef SourceDir
   #define SourceDir "..\dist\StemLab-0.9.9-Windows"
 #endif
 #ifndef OutputDir
@@ -157,10 +157,16 @@ procedure UpdateAbletonControls();
 var
   Enabled: Boolean;
 begin
-  Enabled := AbletonCheck.Checked;
-  UserLibraryLabel.Enabled := Enabled;
-  UserLibraryEdit.Enabled := Enabled;
-  BrowseButton.Enabled := Enabled;
+  Enabled := False;
+  if Assigned(AbletonCheck) then
+    Enabled := AbletonCheck.Checked;
+
+  if Assigned(UserLibraryLabel) then
+    UserLibraryLabel.Enabled := Enabled;
+  if Assigned(UserLibraryEdit) then
+    UserLibraryEdit.Enabled := Enabled;
+  if Assigned(BrowseButton) then
+    BrowseButton.Enabled := Enabled;
 end;
 
 procedure AbletonClick(Sender: TObject);
@@ -185,22 +191,45 @@ end;
 
 function ShouldInstallAbleton(): Boolean;
 begin
-  Result := AbletonCheck.Checked;
+  { [Files] Check expressions can be evaluated before InitializeWizard. }
+  Result := False;
+  if Assigned(AbletonCheck) then
+    Result := AbletonCheck.Checked;
 end;
 
 function ShouldCreateDesktopShortcut(): Boolean;
 begin
-  Result := DesktopCheck.Checked;
+  { [Icons] Check expressions can be evaluated before InitializeWizard. }
+  Result := False;
+  if Assigned(DesktopCheck) then
+    Result := DesktopCheck.Checked;
 end;
 
 function ShouldCreateStartMenuShortcut(): Boolean;
 begin
-  Result := StartMenuCheck.Checked;
+  { [Icons] Check expressions can be evaluated before InitializeWizard. }
+  Result := False;
+  if Assigned(StartMenuCheck) then
+    Result := StartMenuCheck.Checked;
 end;
 
 function GetRemoteScriptDir(Param: String): String;
+var
+  LibraryPath: String;
 begin
-  Result := AddBackslash(CleanDir(UserLibraryEdit.Text)) + 'Remote Scripts\StemLabRemote';
+  { Code constants may also be expanded before InitializeWizard. }
+  LibraryPath := '';
+
+  if Assigned(UserLibraryEdit) then
+    LibraryPath := CleanDir(UserLibraryEdit.Text);
+
+  if LibraryPath = '' then
+    LibraryPath := DetectUserLibrary();
+
+  if LibraryPath = '' then
+    LibraryPath := ExpandConstant('{userdocs}\Ableton\User Library');
+
+  Result := AddBackslash(LibraryPath) + 'Remote Scripts\StemLabRemote';
 end;
 
 procedure InitializeWizard();

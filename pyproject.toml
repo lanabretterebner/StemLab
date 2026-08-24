@@ -22,12 +22,14 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.5"]
+recursive = ["audio-separator[gpu]==0.44.5"]
 
 [project.scripts]
 stemlab-separate = "stemlab.cli:separate_main"
 stemlab-refine = "stemlab.cli:refine_main"
 stemlab-models = "stemlab.cli:models_main"
 stemlab-plugin-job = "stemlab.plugin_job:main"
+stemlab-recursive-job = "stemlab.recursive_job:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

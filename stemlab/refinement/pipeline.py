@@ -3,13 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
-import re
 
-from ..audio import load_audio, save_audio
+from ..audio import STEM_NAMES, load_audio, save_audio
 from .kick import KickRefinementConfig, refine_kick_bleed
-
-
-STEM_NAMES = ("vocals", "drums", "bass", "guitar", "piano", "other")
 
 
 @dataclass

@@ -1,5 +1,6 @@
 ﻿param(
     [switch]$SkipPortableBuild,
+    [switch]$UseDiskSpanning,
     [string]$FfmpegPath,
     [string]$ReleaseDir,
     [string]$InnoSetupPath
@@ -66,7 +67,9 @@ if ([string]::IsNullOrWhiteSpace($InnoSetupPath)) {
         (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
         (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe"),
         (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 7\ISCC.exe"),
-        (Join-Path $env:ProgramFiles "Inno Setup 7\ISCC.exe")
+        (Join-Path $env:ProgramFiles "Inno Setup 7\ISCC.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 7\ISCC.exe")
     ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
 
     $InnoSetupPath = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
@@ -86,20 +89,26 @@ New-Item -ItemType Directory -Path $Dist -Force | Out-Null
 
 $payloadBytes = (Get-ChildItem $ReleaseDir -Recurse -File | Measure-Object Length -Sum).Sum
 $payloadGiB = $payloadBytes / 1GB
-$spanning = $payloadBytes -gt 3.5GB
+$spanning = [bool]$UseDiskSpanning
 
 Write-Host ""
-Write-Host ("Installer payload: {0:N2} GB" -f $payloadGiB)
+Write-Host ("Installer payload before compression: {0:N2} GB" -f $payloadGiB)
 if ($spanning) {
-    Write-Host "Payload is large, so setup data will be split into .bin slices beside the setup EXE." -ForegroundColor Yellow
+    Write-Host "Disk spanning was explicitly enabled. Setup data will be split into .bin slices." -ForegroundColor Yellow
     Write-Host "Keep the generated EXE and BIN files together when distributing." -ForegroundColor Yellow
 }
 else {
-    Write-Host "Payload is small enough to target a single setup EXE." -ForegroundColor Green
+    Write-Host "Targeting one self-contained setup EXE (no .bin file)." -ForegroundColor Green
+    Write-Host "The final EXE size will be checked against GitHub's 2 GiB release-asset limit." -ForegroundColor DarkGray
 }
 
 $iss = Join-Path $Root "installer\StemLab.iss"
 $assetDir = Join-Path $Root "assets"
+
+# Remove stale installer artifacts from a previous spanning/non-spanning build.
+# This prevents an old .bin file from being mistaken as part of a new single-EXE release.
+Get-ChildItem $Dist -Filter "StemLab-Setup-$Version*" -File -ErrorAction SilentlyContinue |
+    Remove-Item -Force
 
 $arguments = @(
     "/DSourceDir=$ReleaseDir",
@@ -139,6 +148,20 @@ Write-Host "  $setupExe"
 if ($spanning) {
     Get-ChildItem $Dist -Filter "StemLab-Setup-$Version*.bin" |
         ForEach-Object { Write-Host "  $($_.FullName)" }
+}
+else {
+    $setupBytes = (Get-Item $setupExe).Length
+    $setupGiB = $setupBytes / 1GB
+    $githubAssetLimit = 2GB
+
+    Write-Host ("Single-file installer size: {0:N2} GiB" -f $setupGiB)
+    if ($setupBytes -le $githubAssetLimit) {
+        Write-Host "Ready for GitHub Releases as one downloadable EXE." -ForegroundColor Green
+    }
+    else {
+        Write-Host "WARNING: The EXE is larger than GitHub's 2 GiB per-asset limit." -ForegroundColor Yellow
+        Write-Host "Rebuild with -UseDiskSpanning if you need GitHub-hosted release assets." -ForegroundColor Yellow
+    }
 }
 
 try { Stop-Transcript | Out-Null } catch {}

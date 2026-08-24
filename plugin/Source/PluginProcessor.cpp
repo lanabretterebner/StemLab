@@ -1,6 +1,9 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+#include <algorithm>
+#include <functional>
+
 #if defined(JucePlugin_Build_Standalone) && JucePlugin_Build_Standalone
 #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
 #endif
@@ -241,6 +244,133 @@ private:
     StemLabAudioProcessor& owner;
     juce::StringArray command;
     juce::File jobDirectory;
+    std::unique_ptr<juce::ChildProcess> process;
+};
+
+class StemLabRecursiveThread final : public juce::Thread
+{
+public:
+    StemLabRecursiveThread (StemLabAudioProcessor& ownerIn,
+                            juce::StringArray commandIn,
+                            juce::File manifestFileIn)
+        : juce::Thread ("StemLab recursive engine"),
+          owner (ownerIn),
+          command (std::move (commandIn)),
+          manifestFile (std::move (manifestFileIn))
+    {
+    }
+
+    ~StemLabRecursiveThread() override
+    {
+        signalThreadShouldExit();
+
+        if (process != nullptr && process->isRunning())
+            process->kill();
+
+        stopThread (3000);
+    }
+
+    void run() override
+    {
+        owner.setEngineProgress (0.01);
+        process = std::make_unique<juce::ChildProcess>();
+
+        if (! process->start (command,
+                              juce::ChildProcess::wantStdOut
+                                | juce::ChildProcess::wantStdErr))
+        {
+            owner.setStatus ("Could not start Recursive Stem Splitting");
+            owner.appendEngineLog ("Failed to launch recursive engine process.\n");
+            process.reset();
+            return;
+        }
+
+        std::array<char, 4096> buffer {};
+        juce::String pendingOutput;
+
+        auto consumeLines = [&owner = owner, &pendingOutput]
+        {
+            while (true)
+            {
+                const auto newline = pendingOutput.indexOfChar ('\n');
+                if (newline < 0)
+                    break;
+
+                auto line = pendingOutput.substring (0, newline).trimEnd();
+                pendingOutput = pendingOutput.substring (newline + 1);
+
+                if (line.isNotEmpty())
+                    owner.handleEngineOutputLine (line);
+            }
+        };
+
+        while (! threadShouldExit())
+        {
+            const auto bytes = process->readProcessOutput (
+                buffer.data(),
+                static_cast<int> (buffer.size() - 1));
+
+            if (bytes > 0)
+            {
+                buffer[static_cast<size_t> (bytes)] = '\0';
+                pendingOutput += juce::String::fromUTF8 (buffer.data(), bytes);
+                consumeLines();
+            }
+
+            if (! process->isRunning())
+                break;
+
+            wait (35);
+        }
+
+        if (threadShouldExit() && process->isRunning())
+            process->kill();
+
+        while (true)
+        {
+            const auto bytes = process->readProcessOutput (
+                buffer.data(),
+                static_cast<int> (buffer.size() - 1));
+
+            if (bytes <= 0)
+                break;
+
+            buffer[static_cast<size_t> (bytes)] = '\0';
+            pendingOutput += juce::String::fromUTF8 (buffer.data(), bytes);
+            consumeLines();
+        }
+
+        if (pendingOutput.trim().isNotEmpty())
+            owner.handleEngineOutputLine (pendingOutput.trim());
+
+        const auto exitCode = process->getExitCode();
+        process.reset();
+
+        const auto elapsed =
+            juce::jmax (0.0, (nowMs() - owner.engineStartMs.load()) / 1000.0);
+
+        owner.lastEngineDurationSeconds.store (elapsed);
+
+        if (exitCode == 0 && manifestFile.existsAsFile())
+        {
+            owner.finishRecursiveJob (manifestFile);
+            owner.setEngineProgress (1.0);
+            owner.setStatus ("Recursive Stem Splitting complete");
+        }
+        else
+        {
+            if (! owner.getStatus().startsWithIgnoreCase ("Failed - "))
+                owner.setStatus ("Recursive Stem Splitting failed - see diagnostics");
+
+            owner.appendEngineLog (
+                "Recursive engine exit code: " + juce::String (exitCode) + "\n");
+        }
+    }
+
+private:
+    StemLabAudioProcessor& owner;
+    juce::StringArray command;
+    juce::File manifestFile;
     std::unique_ptr<juce::ChildProcess> process;
 };
 
@@ -780,6 +910,12 @@ StemLabAudioProcessor::~StemLabAudioProcessor()
         engineThread.reset();
     }
 
+    if (recursiveThread != nullptr)
+    {
+        recursiveThread->signalThreadShouldExit();
+        recursiveThread.reset();
+    }
+
     systemLoopbackThread.reset();
 
     diskWriterThread.stopThread (2000);
@@ -1090,6 +1226,13 @@ bool StemLabAudioProcessor::loadPreviewFile (
 
     previewTransport.setPosition (0.0);
     previewStemIndex.store (previewStem);
+
+    if (previewStem != -3)
+    {
+        const juce::ScopedLock lock (recursiveLock);
+        previewRecursiveId.clear();
+    }
+
     return true;
 }
 
@@ -1175,6 +1318,7 @@ bool StemLabAudioProcessor::setInputAudioFile (
 
     engineCompletedSuccessfully.store (false);
     engineProgress.store (0.0);
+    clearRecursiveResults();
 
     {
         const juce::ScopedLock lock (abletonBridgeLock);
@@ -2234,6 +2378,8 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
     command.add ("--input");
     command.add (source.getFullPathName());
 
+    clearRecursiveResults();
+
     const auto job = createJobDirectory();
 
     {
@@ -2302,9 +2448,598 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
     return true;
 }
 
+juce::StringArray StemLabAudioProcessor::makePythonModuleCommand (
+    const juce::String& moduleName) const
+{
+   #ifdef STEMLAB_DEV_REPO_ROOT
+    // Development builds may run recursive jobs from a separate environment
+    // while the packaged app runs both jobs from the bundled StemLab Engine.
+    if (moduleName == "stemlab.recursive_job")
+    {
+        const auto devRoot = juce::File (STEMLAB_DEV_REPO_ROOT);
+        const juce::StringArray recursiveDevCandidates
+        {
+            ".substem-venv/Scripts/stemlab-recursive-job.exe",
+            ".substem-venv/Scripts/stemlab-recursive-job",
+            ".venv/Scripts/stemlab-recursive-job.exe",
+            ".venv/Scripts/stemlab-recursive-job"
+        };
+
+        for (const auto& relative : recursiveDevCandidates)
+        {
+            const auto candidate = devRoot.getChildFile (relative);
+            if (candidate.existsAsFile())
+                return { candidate.getFullPathName() };
+        }
+    }
+   #endif
+
+    const auto commandName = getEngineCommand().trim();
+
+    if (commandName.isEmpty())
+        return {};
+
+    const juce::File commandFile (commandName);
+    const auto fileName = commandFile.getFileName();
+
+    juce::StringArray command;
+
+    if (fileName.equalsIgnoreCase ("python.exe")
+        || fileName.equalsIgnoreCase ("pythonw.exe")
+        || fileName.equalsIgnoreCase ("python"))
+    {
+        command.add (commandName);
+        command.add ("-m");
+        command.add (moduleName);
+        return command;
+    }
+
+    if (fileName.containsIgnoreCase ("stemlab-plugin-job"))
+    {
+        auto recursiveExecutable =
+            commandFile.getSiblingFile (
+                fileName.replace ("stemlab-plugin-job", "stemlab-recursive-job"));
+
+        if (recursiveExecutable.existsAsFile())
+        {
+            command.add (recursiveExecutable.getFullPathName());
+            return command;
+        }
+    }
+
+    if (commandName.equalsIgnoreCase ("stemlab-plugin-job"))
+    {
+        command.add ("stemlab-recursive-job");
+        return command;
+    }
+
+    return {};
+}
+
+void StemLabAudioProcessor::clearRecursiveResults()
+{
+    {
+        const juce::ScopedLock lock (recursiveLock);
+        recursiveItems.clear();
+        previewRecursiveId.clear();
+    }
+
+    // Recursive children replace their parent in the default selection for a
+    // completed job. Clearing the recursive tree restores the normal six
+    // top-level stems for the next source/separation.
+    for (auto& value : stemEnabled)
+        value.store (true);
+
+    sendChangeMessage();
+}
+
+std::vector<StemLabRecursiveStemInfo>
+StemLabAudioProcessor::getRecursiveStemItems() const
+{
+    std::vector<StemLabRecursiveStemInfo> snapshot;
+
+    {
+        const juce::ScopedLock lock (recursiveLock);
+        snapshot = recursiveItems;
+    }
+
+    std::vector<StemLabRecursiveStemInfo> ordered;
+    ordered.reserve (snapshot.size());
+
+    std::function<void (const juce::String&, int)> appendChildren;
+    appendChildren = [&] (const juce::String& parentId, int depth)
+    {
+        for (const auto& item : snapshot)
+        {
+            if (item.parentId != parentId)
+                continue;
+
+            auto copy = item;
+            copy.depth = depth;
+            ordered.push_back (copy);
+            appendChildren (item.id, depth + 1);
+        }
+    };
+
+    for (int i = 0; i < stemCount; ++i)
+        appendChildren (getStemName (i), 1);
+
+    // Keep any future/experimental node visible even if a malformed parent
+    // relationship somehow slips into a manifest.
+    for (const auto& item : snapshot)
+    {
+        const auto alreadyPresent = std::any_of (
+            ordered.begin(),
+            ordered.end(),
+            [&item] (const auto& existing)
+            {
+                return existing.id == item.id;
+            });
+
+        if (! alreadyPresent)
+            ordered.push_back (item);
+    }
+
+    for (auto& item : ordered)
+    {
+        const auto prefix = item.id + "/";
+        item.hasChildren = std::any_of (
+            snapshot.begin(),
+            snapshot.end(),
+            [&prefix] (const auto& candidate)
+            {
+                return candidate.id.startsWith (prefix);
+            });
+    }
+
+    return ordered;
+}
+
+juce::File StemLabAudioProcessor::getRecursiveStemFile (
+    const juce::String& itemId) const
+{
+    const juce::ScopedLock lock (recursiveLock);
+
+    for (const auto& item : recursiveItems)
+        if (item.id == itemId)
+            return item.file;
+
+    return {};
+}
+
+void StemLabAudioProcessor::setRecursiveStemEnabled (
+    const juce::String& itemId,
+    bool enabled)
+{
+    {
+        const juce::ScopedLock lock (recursiveLock);
+        for (auto& item : recursiveItems)
+        {
+            if (item.id == itemId)
+            {
+                item.selected = enabled;
+                break;
+            }
+        }
+    }
+
+    sendChangeMessage();
+}
+
+bool StemLabAudioProcessor::isRecursiveStemEnabled (
+    const juce::String& itemId) const
+{
+    const juce::ScopedLock lock (recursiveLock);
+
+    for (const auto& item : recursiveItems)
+        if (item.id == itemId)
+            return item.selected;
+
+    return false;
+}
+
+juce::String StemLabAudioProcessor::getPreviewRecursiveId() const
+{
+    const juce::ScopedLock lock (recursiveLock);
+    return previewRecursiveId;
+}
+
+bool StemLabAudioProcessor::playRecursiveStem (
+    const juce::String& itemId)
+{
+    if (capturing.load() || isEngineRunning() || ! hasSuccessfulJob())
+        return false;
+
+    const auto stemFile = getRecursiveStemFile (itemId);
+
+    if (! stemFile.existsAsFile())
+    {
+        setStatus ("Recursive stem preview file was not found");
+        return false;
+    }
+
+    const auto currentId = getPreviewRecursiveId();
+
+    if (currentId == itemId && previewTransport.isPlaying())
+    {
+        previewTransport.stop();
+        setStatus ("Recursive stem paused");
+        return true;
+    }
+
+    if (currentId != itemId)
+    {
+        if (! loadPreviewFile (stemFile, -3))
+        {
+            setStatus ("Could not load recursive stem preview");
+            return false;
+        }
+
+        const juce::ScopedLock lock (recursiveLock);
+        previewRecursiveId = itemId;
+    }
+
+    if (previewTransport.getCurrentPosition()
+        >= previewTransport.getLengthInSeconds() - 0.01)
+    {
+        previewTransport.setPosition (0.0);
+    }
+
+    previewTransport.start();
+
+    for (const auto& item : getRecursiveStemItems())
+    {
+        if (item.id == itemId)
+        {
+            setStatus ("Playing " + item.label);
+            break;
+        }
+    }
+
+    return true;
+}
+
+bool StemLabAudioProcessor::seekRecursiveStem (
+    const juce::String& itemId,
+    double normalisedPosition)
+{
+    if (capturing.load() || isEngineRunning() || ! hasSuccessfulJob())
+        return false;
+
+    const auto stemFile = getRecursiveStemFile (itemId);
+    if (! stemFile.existsAsFile())
+        return false;
+
+    const auto currentId = getPreviewRecursiveId();
+    const bool keepPlaying =
+        currentId == itemId && previewTransport.isPlaying();
+
+    if (currentId != itemId)
+    {
+        if (! loadPreviewFile (stemFile, -3))
+            return false;
+
+        const juce::ScopedLock lock (recursiveLock);
+        previewRecursiveId = itemId;
+    }
+
+    const auto length = previewTransport.getLengthInSeconds();
+    if (length <= 0.0)
+        return false;
+
+    previewTransport.setPosition (
+        juce::jlimit (0.0, 1.0, normalisedPosition) * length);
+
+    if (keepPlaying)
+        previewTransport.start();
+
+    sendChangeMessage();
+    return true;
+}
+
+void StemLabAudioProcessor::finishRecursiveJob (
+    const juce::File& manifestFile)
+{
+    // The Python side owns separation details. The plugin only consumes the
+    // schema-2 tree contract and turns child nodes into selectable UI rows.
+    const auto parsed = juce::JSON::parse (manifestFile.loadFileAsString());
+    auto* object = parsed.getDynamicObject();
+
+    if (object == nullptr)
+    {
+        setStatus ("Recursive result manifest is invalid");
+        return;
+    }
+
+    const auto parentId = object->getProperty ("parent_id").toString();
+    const auto rootStem = object->getProperty ("root_stem").toString();
+    auto* children = object->getProperty ("children").getArray();
+
+    if (parentId.isEmpty() || rootStem.isEmpty() || children == nullptr)
+    {
+        setStatus ("Recursive result manifest is incomplete");
+        return;
+    }
+
+    std::vector<StemLabRecursiveStemInfo> newItems;
+
+    for (const auto& entry : *children)
+    {
+        auto* child = entry.getDynamicObject();
+        if (child == nullptr)
+            continue;
+
+        StemLabRecursiveStemInfo item;
+        item.id = child->getProperty ("id").toString();
+        item.label = child->getProperty ("label").toString();
+        item.parentId = parentId;
+        item.rootStem = rootStem;
+        item.category = child->getProperty ("category").toString();
+        item.file = juce::File (child->getProperty ("path").toString());
+        item.selected = ! item.label.containsIgnoreCase ("Removed Reverb");
+        item.estimatedSourceCount = juce::jmax (
+            1,
+            static_cast<int> (child->getProperty ("estimated_source_count")));
+        item.confidence = juce::jlimit (
+            0.0,
+            1.0,
+            static_cast<double> (child->getProperty ("confidence")));
+        item.complexity = juce::jlimit (
+            0.0,
+            1.0,
+            static_cast<double> (child->getProperty ("complexity")));
+
+        if (auto* actions = child->getProperty ("actions").getArray())
+        {
+            for (const auto& action : *actions)
+                item.actions.addIfNotAlreadyThere (action.toString());
+        }
+
+        if (item.id.isNotEmpty() && item.file.existsAsFile())
+            newItems.push_back (std::move (item));
+    }
+
+    if (newItems.empty())
+    {
+        setStatus ("Recursive split finished without usable audio files");
+        return;
+    }
+
+    {
+        const juce::ScopedLock lock (recursiveLock);
+        const auto prefix = parentId + "/";
+
+        recursiveItems.erase (
+            std::remove_if (
+                recursiveItems.begin(),
+                recursiveItems.end(),
+                [&] (const auto& item)
+                {
+                    return item.id.startsWith (prefix);
+                }),
+            recursiveItems.end());
+
+        // Once a node is split further, default to its children rather than
+        // sending/saving both the parent and every child at the same time.
+        if (parentId != rootStem)
+        {
+            for (auto& item : recursiveItems)
+                if (item.id == parentId)
+                    item.selected = false;
+        }
+
+        recursiveItems.insert (
+            recursiveItems.end(),
+            newItems.begin(),
+            newItems.end());
+    }
+
+    if (parentId == rootStem)
+    {
+        for (int i = 0; i < stemCount; ++i)
+            if (getStemName (i).equalsIgnoreCase (rootStem))
+                setStemEnabled (i, false);
+    }
+
+    sendChangeMessage();
+}
+
+bool StemLabAudioProcessor::launchRecursiveStemSplit (int rootStemIndex)
+{
+    if (! hasSuccessfulJob()
+        || isEngineRunning()
+        || ! juce::isPositiveAndBelow (rootStemIndex, stemCount))
+    {
+        return false;
+    }
+
+    const auto rootStem = getStemName (rootStemIndex);
+    const bool isVocals = rootStem.equalsIgnoreCase ("vocals");
+    const bool isDrums = rootStem.equalsIgnoreCase ("drums");
+    const bool isLeadCandidate =
+        rootStem.equalsIgnoreCase ("guitar")
+        || rootStem.equalsIgnoreCase ("piano")
+        || rootStem.equalsIgnoreCase ("other");
+
+    if (! isVocals && ! isDrums && ! isLeadCandidate)
+    {
+        setStatus ("Adaptive splitting is not available for this stem yet");
+        return false;
+    }
+
+    const auto source = getCompletedStemFile (rootStemIndex);
+    if (! source.existsAsFile())
+    {
+        setStatus ("Stem file was not found for adaptive splitting");
+        return false;
+    }
+
+    auto command = makePythonModuleCommand ("stemlab.recursive_job");
+    if (command.isEmpty())
+    {
+        setStatus ("Adaptive stem engine could not be located");
+        return false;
+    }
+
+    const auto output =
+        getLastJobDirectory()
+            .getChildFile ("recursive")
+            .getChildFile (rootStem);
+
+    if (output.isDirectory())
+        output.deleteRecursively();
+    output.createDirectory();
+
+    const auto operation =
+        isVocals ? juce::String ("vocals")
+                 : (isDrums ? juce::String ("drums")
+                            : juce::String ("lead"));
+
+    const auto category =
+        isVocals ? juce::String ("vocal.group")
+                 : (isDrums ? juce::String ("drum.group")
+                            : juce::String ("instrument.") + rootStem);
+
+    command.add ("--operation");
+    command.add (operation);
+    command.add ("--input");
+    command.add (source.getFullPathName());
+    command.add ("--output");
+    command.add (output.getFullPathName());
+    command.add ("--parent-id");
+    command.add (rootStem);
+    command.add ("--root-stem");
+    command.add (rootStem);
+    command.add ("--category");
+    command.add (category);
+    command.add ("--depth");
+    command.add ("1");
+
+    recursiveThread.reset();
+    engineProgress.store (0.01);
+    engineStartMs.store (nowMs());
+    lastEngineDurationSeconds.store (0.0);
+
+    if (isVocals)
+        setStatus ("Adaptive vocals: separating lead and backing groups...");
+    else if (isDrums)
+        setStatus ("Adaptive drums: splitting drum components...");
+    else
+        setStatus ("Adaptive lead: detecting foreground and backing layers...");
+
+    recursiveThread = std::make_unique<StemLabRecursiveThread> (
+        *this,
+        command,
+        output.getChildFile ("recursive_manifest.json"));
+
+    recursiveThread->startThread();
+    return true;
+}
+
+bool StemLabAudioProcessor::launchRecursiveAction (
+    const juce::String& itemId,
+    const juce::String& action)
+{
+    if (! hasSuccessfulJob() || isEngineRunning())
+        return false;
+
+    StemLabRecursiveStemInfo target;
+    bool found = false;
+
+    for (const auto& item : getRecursiveStemItems())
+    {
+        if (item.id == itemId)
+        {
+            target = item;
+            found = true;
+            break;
+        }
+    }
+
+    if (! found || ! target.file.existsAsFile())
+    {
+        setStatus ("Adaptive source was not found");
+        return false;
+    }
+
+    if (! target.actions.contains (action))
+    {
+        setStatus ("That adaptive action is not available for this stem");
+        return false;
+    }
+
+    const bool isDeverb = action.equalsIgnoreCase ("deverb");
+    const bool isAdaptiveSplit = action.equalsIgnoreCase ("split");
+
+    if (! isDeverb && ! isAdaptiveSplit)
+    {
+        setStatus ("Adaptive action is not implemented yet");
+        return false;
+    }
+
+    auto command = makePythonModuleCommand ("stemlab.recursive_job");
+    if (command.isEmpty())
+    {
+        setStatus ("Adaptive stem engine could not be located");
+        return false;
+    }
+
+    auto safeFolder = itemId.replace ("/", "_").replace ("\\", "_");
+    const auto operation = isDeverb ? juce::String ("deverb")
+                                    : juce::String ("adaptive");
+    const auto output =
+        getLastJobDirectory()
+            .getChildFile ("recursive")
+            .getChildFile ("actions")
+            .getChildFile (safeFolder + "_" + operation);
+
+    if (output.isDirectory())
+        output.deleteRecursively();
+    output.createDirectory();
+
+    command.add ("--operation");
+    command.add (operation);
+    command.add ("--input");
+    command.add (target.file.getFullPathName());
+    command.add ("--output");
+    command.add (output.getFullPathName());
+    command.add ("--parent-id");
+    command.add (target.id);
+    command.add ("--root-stem");
+    command.add (target.rootStem);
+    command.add ("--category");
+    command.add (target.category.isNotEmpty() ? target.category : "unknown");
+    command.add ("--depth");
+    command.add (juce::String (target.depth + 1));
+
+    recursiveThread.reset();
+    engineProgress.store (0.01);
+    engineStartMs.store (nowMs());
+    lastEngineDurationSeconds.store (0.0);
+
+    setStatus (
+        isDeverb
+            ? "De-reverb: processing isolated lead vocal..."
+            : "Adaptive split: analysing how many useful layers remain...");
+
+    recursiveThread = std::make_unique<StemLabRecursiveThread> (
+        *this,
+        command,
+        output.getChildFile ("recursive_manifest.json"));
+
+    recursiveThread->startThread();
+    return true;
+}
+
+bool StemLabAudioProcessor::isRecursiveEngineRunning() const noexcept
+{
+    return recursiveThread != nullptr && recursiveThread->isThreadRunning();
+}
+
 bool StemLabAudioProcessor::isEngineRunning() const noexcept
 {
-    return engineThread != nullptr && engineThread->isThreadRunning();
+    return (engineThread != nullptr && engineThread->isThreadRunning())
+        || isRecursiveEngineRunning();
 }
 
 double StemLabAudioProcessor::getEngineElapsedSeconds() const noexcept
@@ -2341,6 +3076,12 @@ double StemLabAudioProcessor::getEngineEstimatedRemainingSeconds() const noexcep
 
 void StemLabAudioProcessor::refreshEngineProgressFromDisk()
 {
+    // Recursive jobs stream their progress directly through stdout. The main
+    // job's progress file may still contain 100% from the six-stem pass, so
+    // do not let that stale file overwrite recursive progress/status.
+    if (isRecursiveEngineRunning())
+        return;
+
     if (! isEngineRunning())
         return;
 
@@ -2545,6 +3286,27 @@ int StemLabAudioProcessor::saveSelectedStemsTo (
             target.deleteFile();
 
         if (source.copyFileTo (target))
+            ++saved;
+    }
+
+    for (const auto& item : getRecursiveStemItems())
+    {
+        if (! item.selected || ! item.file.existsAsFile())
+            continue;
+
+        auto safeName = item.id.replace ("/", "_").replace ("\\", "_");
+        const auto outputName =
+            baseName
+            + "_"
+            + safeName
+            + item.file.getFileExtension();
+
+        auto target = destination.getChildFile (outputName);
+
+        if (target.existsAsFile())
+            target.deleteFile();
+
+        if (item.file.copyFileTo (target))
             ++saved;
     }
 
@@ -2866,6 +3628,26 @@ bool StemLabAudioProcessor::sendSelectedStemsToAbleton()
                 break;
             }
         }
+    }
+
+    for (const auto& item : getRecursiveStemItems())
+    {
+        if (! item.selected || ! item.file.existsAsFile())
+            continue;
+
+        auto* recursiveObject = new juce::DynamicObject();
+        recursiveObject->setProperty (
+            "name",
+            item.label);
+        recursiveObject->setProperty (
+            "label",
+            "StemLab - " + item.label);
+        recursiveObject->setProperty (
+            "path",
+            item.file.getFullPathName().replace ("\\", "/"));
+        recursiveObject->setProperty ("recursive", true);
+        recursiveObject->setProperty ("root_stem", item.rootStem);
+        selected.add (juce::var (recursiveObject));
     }
 
     if (selected.isEmpty())

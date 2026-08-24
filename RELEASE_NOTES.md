@@ -1,119 +1,122 @@
-## Packaging revision r13
-
-- Rebased packaging on the last stable r11 build scripts.
-- Uses the new SL waveform-atom branding.
-- Re-encoded the JUCE icon source as a smaller RGBA PNG and the Windows installer/app icon as a multi-size RGBA ICO to avoid the r12 icon build regression.
-- Installer builds now write `StemLab-installer-build.log` so failures stay diagnosable.
-
 # StemLab 0.9.9
 
-## Highlights
+StemLab is a Windows stem-separation application with optional Ableton Live integration.
 
-- BS-RoFormer, Demucs `htdemucs_6s`, and Hybrid separation
-- Optional adaptive StemLab refinement
-- JUCE Standalone + Ableton VST3
-- Invisible StemLabRemote integration
-- Selectable stem audition/import
-- Resizable waveform UI
-- Windows WASAPI system-audio recording
-- Windows-safe progress reporting
-- Portable embedded Python/ML runtime architecture
-- Custom StemLab / StemLab Windows application icon
+It includes the required Python/ML runtime, so you do **not** need to install Python, FFmpeg, Demucs, or the separation models separately.
 
-## Distribution notes
+## Installation
 
-The GitHub repository is source-focused and does not contain model checkpoints,
-a development virtual environment, CMake/JUCE build output, or packaged ML
-runtime binaries.
+1. Download **`StemLab-Setup-0.9.9.exe`** from the GitHub release.
+2. Run the installer.
+3. Choose whether you want:
 
-Use `build_portable_windows.ps1` on Windows to assemble the end-user release
-under `dist/`.
+   * **StemLab Desktop App**
+   * **Ableton Live Integration**
+   * Desktop / Start Menu shortcuts
+4. Finish the installation and launch StemLab.
 
+The installer is a single self-contained file. No additional `.bin` files or runtime downloads are required.
 
-## Build-script fix
+## Using StemLab Standalone
 
-The Windows JUCE build script now anchors CMake source/build paths to
-`plugin\` using `$PSScriptRoot`. This fixes portable builds launched from the
-repository root, where the previous `cmake -S .` incorrectly searched for a
-root-level `CMakeLists.txt`.
+Open StemLab and load an audio file using **Select File** or drag an audio file into the application.
 
+Choose the separation engine and options you want, then start separation.
 
-## Display title
+StemLab supports:
 
-The Standalone UI header and native Windows title bar now display `StemLab`.
-The executable, VST3 product name, internal IDs, and Ableton compatibility
-remain `StemLab`.
+* BS-RoFormer
+* Demucs `htdemucs_6s`
+* Hybrid separation
+* Optional StemLab refinement
+* Up to six separated stems
+* Individual stem waveform previews
+* Stem auditioning before export
+* Selectable stem export
+* Windows system-audio recording
 
+The bundled runtime is installed automatically with StemLab.
 
-## r5 artwork + Ableton installer
+---
 
-- Replaced repository/app artwork with the exact user-supplied pink low-contrast logo.
-- Windows icon resource is made only by square-padding that image; the artwork is not regenerated.
-- `install_ableton_integration.ps1` now works as the main installer from either
-  the source repository or generated portable release.
-- The installer auto-elevates for the Program Files VST3 copy.
-- Ableton User Library detection now only accepts existing library folders and
-  handles common Documents/OneDrive locations.
-- A custom `-UserLibrary` may point to User Library, Remote Scripts, or
-  StemLabRemote.
-- VST3, embedded runtime, and Remote Script are verified after installation.
-- Portable build now includes the Ableton integration installer.
+# Ableton Live Integration
 
+StemLab can send separated stems directly into Ableton Live.
 
-## r6 JUCE bootstrap fix
+## Install the Ableton Integration
 
-Fresh Windows builds no longer rely on CMake's Git-based FetchContent JUCE
-population step.
+During the StemLab installer, enable:
 
-`plugin\build_windows.ps1` now:
+**Ableton Live Integration**
 
-- downloads the pinned JUCE 9.0.0 ZIP directly,
-- retries transient download failures,
-- caches the archive/source under `.portable-cache`,
-- removes corrupt downloads when extraction fails,
-- clears stale/incomplete CMake build state,
-- passes the extracted JUCE tree to CMake with `STEMLAB_JUCE_SOURCE_DIR`.
+The installer will install:
 
-CMake retains a direct archive FetchContent fallback for developers invoking it
-without the PowerShell build helper.
+* `StemLab.vst3`
+* `StemLabRemote`
 
-## r7 Ableton runtime installer reliability
+StemLab will attempt to detect your Ableton User Library automatically.
 
-The elevated Ableton installer no longer uses PowerShell `Copy-Item` for the
-multi-gigabyte embedded Python/ML runtime. It now uses Windows Robocopy with
-visible file activity, multithreaded copying, long/deep-tree handling, bounded
-retries, and proper Robocopy exit-code checks.
+If it cannot find it, select your Ableton **User Library** folder manually when prompted.
 
-Installer failures are also written to `%TEMP%\StemLab-Ableton-install.log`, and
-the UAC-elevated PowerShell window stays open on failure so the actual error is
-visible instead of disappearing immediately.
+A typical location is:
 
-## r8 polished Windows setup wizard
+`Documents\Ableton\User Library`
 
-- Added an Inno Setup 6.7+ GUI installer branded as **StemLab**.
-- Added a dedicated **Choose what to install** page.
-- The desktop app and bundled ML runtime are required.
-- Ableton Live integration is optional and installs both `StemLab.vst3` and
-  `StemLabRemote`.
-- Common Ableton User Library locations are auto-detected, with a Browse button
-  for custom locations.
-- Start Menu and Desktop shortcuts are selectable.
-- The installer uses the existing user-supplied low-contrast pink artwork for
-  its icon/branding rather than generating replacement artwork.
-- Added `build_installer_windows.ps1`, which builds the portable payload and
-  compiles `dist\StemLab-Setup-0.9.9.exe`.
-- Large payloads automatically switch to Inno Setup disk-spanning data files to
-  avoid the Windows single-EXE size limit.
+## Configure Ableton Live
 
-## r9 portable-first GitHub workflow + StemLab branding reset
+After installation, completely restart Ableton Live.
 
-- Restored the product name to **StemLab** in the Standalone UI and Windows title bar.
-- Restored JUCE `COMPANY_NAME` / vendor metadata to **StemLab**.
-- The primary end-user package is now a stable `StemLab-Windows.zip` GitHub Release asset.
-- Added first-run onboarding with **Use Standalone** and **Set Up Ableton** choices.
-- Added **Settings > Ableton Live > Install / Repair Ableton Integration...**.
-- Ableton setup now installs only the VST3 and `StemLabRemote`; the VST3 reuses the portable `Engine\` runtime instead of copying it again.
-- The Standalone app records the current portable engine path under LocalAppData so the VST3 can find it.
-- Ableton User Library setup now falls back to a graphical folder picker when auto-detection fails.
-- Ableton setup no longer force-closes Live; it asks the user to save and quit first.
-- Added `START_HERE.txt` for the extracted release and a one-command `publish_github_release.ps1` helper for maintainers.
+Then open:
+
+**Settings → Link, Tempo & MIDI**
+
+Find an empty **Control Surface** slot and configure:
+
+* **Control Surface:** `StemLabRemote`
+* **Input:** `None`
+* **Output:** `None`
+
+No Max for Live device is required.
+
+## Using StemLab Inside Ableton
+
+1. Add the **StemLab VST3** to an audio track.
+2. Select an audio clip in Ableton's Arrangement View.
+3. Open StemLab.
+4. Choose **Use Live Clip**.
+5. Separate the audio.
+6. Audition the generated stems inside StemLab.
+7. Select the stems you want.
+8. Choose **Send Selected**.
+
+StemLab will send the selected results back into Ableton as separate audio tracks.
+
+If the stems have already been separated, they can be sent again without rerunning the separation process.
+
+## Repairing Ableton Integration
+
+If StemLab does not appear in Ableton or `StemLabRemote` is missing, reinstall or repair the Ableton integration from StemLab.
+
+After repairing, fully restart Ableton Live before checking the VST3 and Control Surface lists again.
+
+---
+
+## System Notes
+
+StemLab 0.9.9 is currently distributed for **64-bit Windows**.
+
+GPU acceleration is supported when a compatible CUDA-capable NVIDIA GPU is available. Processing speed depends on the selected separation engine, audio length, and hardware.
+
+The first separation may take longer while the engine initializes.
+
+## What's Included
+
+StemLab 0.9.9 includes:
+
+* Standalone Windows application
+* Ableton Live VST3
+* StemLabRemote Ableton integration
+* Embedded Python/ML runtime
+* FFmpeg
+* Separation models and supporting dependencies
+* StemLab waveform-based interface and application branding

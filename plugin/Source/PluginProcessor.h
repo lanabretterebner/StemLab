@@ -4,9 +4,29 @@
 #include <array>
 #include <atomic>
 #include <memory>
+#include <vector>
 
 class StemLabEngineThread;
+class StemLabRecursiveThread;
 class StemLabSystemLoopbackThread;
+
+struct StemLabRecursiveStemInfo
+{
+    // Mirrors each child entry in stemlab.recursive schema-2 manifests.
+    juce::String id;
+    juce::String label;
+    juce::String parentId;
+    juce::String rootStem;
+    juce::String category;
+    juce::File file;
+    juce::StringArray actions;
+    bool selected = true;
+    bool hasChildren = false;
+    int depth = 1;
+    int estimatedSourceCount = 1;
+    double confidence = 0.0;
+    double complexity = 0.0;
+};
 
 class StemLabAudioProcessor final : public juce::AudioProcessor,
                                     public juce::ChangeBroadcaster,
@@ -121,6 +141,22 @@ public:
 
     // Separation -----------------------------------------------------------
     bool launchSeparationAndExport();
+
+    // Recursive Stem Splitting --------------------------------------------
+    // Adaptive tree roots currently support Vocals, Drums, Guitar, Piano,
+    // and Other. Child nodes advertise their own actions through the manifest.
+    bool launchRecursiveStemSplit (int rootStemIndex);
+    bool launchRecursiveAction (const juce::String& itemId,
+                                const juce::String& action);
+    bool isRecursiveEngineRunning() const noexcept;
+    std::vector<StemLabRecursiveStemInfo> getRecursiveStemItems() const;
+    juce::File getRecursiveStemFile (const juce::String& itemId) const;
+    void setRecursiveStemEnabled (const juce::String& itemId, bool enabled);
+    bool isRecursiveStemEnabled (const juce::String& itemId) const;
+    bool playRecursiveStem (const juce::String& itemId);
+    bool seekRecursiveStem (const juce::String& itemId, double normalisedPosition);
+    juce::String getPreviewRecursiveId() const;
+
     bool isEngineRunning() const noexcept;
     bool hasSuccessfulJob() const noexcept
     {
@@ -215,12 +251,16 @@ public:
 
 private:
     friend class StemLabEngineThread;
+    friend class StemLabRecursiveThread;
     friend class StemLabSystemLoopbackThread;
 
     void handleAsyncUpdate() override;
     void setStatus (const juce::String&);
     void setEngineProgress (double progress);
     void handleEngineOutputLine (const juce::String& line);
+    juce::StringArray makePythonModuleCommand (const juce::String& moduleName) const;
+    void finishRecursiveJob (const juce::File& manifestFile);
+    void clearRecursiveResults();
     juce::String discoverEngineCommand() const;
     void appendEngineLog (const juce::String&);
     void finalizeHostCapture();
@@ -285,7 +325,12 @@ private:
     std::atomic<double> abletonBridgeWaitStartMs { 0.0 };
 
     std::unique_ptr<StemLabEngineThread> engineThread;
+    std::unique_ptr<StemLabRecursiveThread> recursiveThread;
     std::unique_ptr<StemLabSystemLoopbackThread> systemLoopbackThread;
+
+    mutable juce::CriticalSection recursiveLock;
+    std::vector<StemLabRecursiveStemInfo> recursiveItems;
+    juce::String previewRecursiveId;
 
     juce::AudioFormatManager previewFormats;
     std::unique_ptr<juce::AudioFormatReaderSource> previewReaderSource;

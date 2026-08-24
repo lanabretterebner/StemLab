@@ -253,6 +253,21 @@ StemWaveformComponent::StemWaveformComponent (
     setInterceptsMouseClicks (true, false);
 }
 
+StemWaveformComponent::StemWaveformComponent (
+    StemLabAudioProcessor& processorIn,
+    juce::String recursiveIdIn,
+    juce::AudioFormatManager& formatManager,
+    juce::AudioThumbnailCache& thumbnailCache)
+    : processor (processorIn),
+      stemIndex (-3),
+      recursive (true),
+      recursiveId (std::move (recursiveIdIn)),
+      thumbnail (512, formatManager, thumbnailCache)
+{
+    setMouseCursor (juce::MouseCursor::PointingHandCursor);
+    setInterceptsMouseClicks (true, false);
+}
+
 void StemWaveformComponent::setFile (const juce::File& file)
 {
     if (file == currentFile)
@@ -447,7 +462,12 @@ void StemWaveformComponent::paint (juce::Graphics& g)
     const auto previewIndex =
         processor.getPreviewStemIndex();
 
-    if (previewIndex == stemIndex)
+    const bool isCurrentPreview =
+        recursive
+            ? processor.getPreviewRecursiveId() == recursiveId
+            : previewIndex == stemIndex;
+
+    if (isCurrentPreview)
     {
         const auto previewLength =
             processor.getPreviewLengthSeconds();
@@ -528,11 +548,228 @@ void StemWaveformComponent::mouseDown (
             static_cast<double> (event.position.x)
                 / static_cast<double> (getWidth()));
 
-    processor.seekCompletedStem (
-        stemIndex,
-        normalised);
+    if (recursive)
+        processor.seekRecursiveStem (recursiveId, normalised);
+    else
+        processor.seekCompletedStem (stemIndex, normalised);
 
     repaint();
+}
+
+RecursiveStemRowComponent::RecursiveStemRowComponent (
+    StemLabAudioProcessor& processorIn,
+    const StemLabRecursiveStemInfo& info,
+    juce::AudioFormatManager& formatManager,
+    juce::AudioThumbnailCache& thumbnailCache,
+    std::function<void (const juce::String&)> toggleExpanded,
+    std::function<bool (const juce::String&)> isExpanded)
+    : processor (processorIn),
+      item (info),
+      toggleExpandedCallback (std::move (toggleExpanded)),
+      isExpandedCallback (std::move (isExpanded))
+{
+    selectButton.onClick = [this]
+    {
+        processor.setRecursiveStemEnabled (
+            item.id,
+            selectButton.getToggleState());
+    };
+
+    expandButton.onClick = [this]
+    {
+        const auto id = item.id;
+        const auto callback = toggleExpandedCallback;
+        juce::MessageManager::callAsync (
+            [callback, id]
+            {
+                if (callback)
+                    callback (id);
+            });
+    };
+
+    playButton.onClick = [this]
+    {
+        processor.playRecursiveStem (item.id);
+    };
+
+    actionButton.setTooltip ("Adaptive actions");
+    actionButton.onClick = [this]
+    {
+        showActionMenu();
+    };
+
+    waveform = std::make_unique<StemWaveformComponent> (
+        processor,
+        item.id,
+        formatManager,
+        thumbnailCache);
+
+    addAndMakeVisible (selectButton);
+    addAndMakeVisible (expandButton);
+    addAndMakeVisible (playButton);
+    addAndMakeVisible (actionButton);
+    addAndMakeVisible (*waveform);
+
+    setInfo (info);
+}
+
+void RecursiveStemRowComponent::setInfo (
+    const StemLabRecursiveStemInfo& info)
+{
+    item = info;
+    auto displayLabel = item.label;
+    if (item.estimatedSourceCount > 1
+        && (item.actions.contains ("split") || item.hasChildren))
+    {
+        displayLabel +=
+            " (est. "
+            + juce::String (item.estimatedSourceCount)
+            + " sources)";
+    }
+    selectButton.setButtonText (displayLabel);
+    selectButton.setTooltip (
+        "Category: " + item.category
+        + " | confidence " + juce::String (juce::roundToInt (item.confidence * 100.0)) + "%");
+    expandButton.setVisible (item.hasChildren);
+    expandButton.setButtonText (
+        item.hasChildren && isExpandedCallback && isExpandedCallback (item.id)
+            ? "v"
+            : ">");
+    selectButton.setToggleState (
+        item.selected,
+        juce::dontSendNotification);
+
+    actionButton.setVisible (! item.actions.isEmpty());
+
+    if (waveform != nullptr)
+        waveform->setFile (item.file);
+
+    resized();
+}
+
+void RecursiveStemRowComponent::refresh (
+    bool engineRunning,
+    bool previewPlaying)
+{
+    const bool ready =
+        ! engineRunning
+        && item.file.existsAsFile();
+
+    selectButton.setEnabled (ready);
+    playButton.setEnabled (ready);
+    actionButton.setEnabled (ready && ! item.actions.isEmpty());
+    actionButton.setVisible (! item.actions.isEmpty());
+    expandButton.setVisible (item.hasChildren);
+    expandButton.setEnabled (item.hasChildren);
+    expandButton.setButtonText (
+        item.hasChildren && isExpandedCallback && isExpandedCallback (item.id)
+            ? "v"
+            : ">");
+
+    selectButton.setToggleState (
+        processor.isRecursiveStemEnabled (item.id),
+        juce::dontSendNotification);
+
+    playButton.setButtonText (
+        previewPlaying
+            && processor.getPreviewRecursiveId() == item.id
+                ? "Pause"
+                : "Play");
+
+    if (waveform != nullptr)
+    {
+        waveform->setFile (item.file);
+        waveform->setEnabled (ready);
+        waveform->repaint();
+    }
+}
+
+void RecursiveStemRowComponent::resized()
+{
+    auto row = getLocalBounds();
+
+    const int indent = juce::jlimit (12, 54, item.depth * 14);
+    row.removeFromLeft (indent);
+
+    if (item.hasChildren)
+    {
+        expandButton.setBounds (row.removeFromLeft (22).reduced (1, 3));
+        row.removeFromLeft (2);
+    }
+    else
+    {
+        expandButton.setBounds (0, 0, 0, 0);
+        row.removeFromLeft (24);
+    }
+
+    const int actionWidth = item.actions.isEmpty() ? 0 : 30;
+
+    if (actionWidth > 0)
+    {
+        actionButton.setBounds (
+            row.removeFromRight (actionWidth).reduced (1, 2));
+        row.removeFromRight (3);
+    }
+    else
+    {
+        actionButton.setBounds (0, 0, 0, 0);
+    }
+
+    playButton.setBounds (
+        row.removeFromRight (50).reduced (1, 2));
+    row.removeFromRight (4);
+
+    const int labelWidth = juce::jlimit (96, 160, getWidth() / 4);
+    selectButton.setBounds (
+        row.removeFromLeft (labelWidth).reduced (0, 1));
+    row.removeFromLeft (4);
+
+    if (waveform != nullptr)
+        waveform->setBounds (row.reduced (0, 1));
+}
+
+void RecursiveStemRowComponent::showActionMenu()
+{
+    juce::PopupMenu menu;
+
+    constexpr int deverbId = 1;
+    constexpr int splitFurtherId = 2;
+
+    bool hasActions = false;
+
+    if (item.actions.contains ("deverb"))
+    {
+        menu.addItem (deverbId, "De-Reverb");
+        hasActions = true;
+    }
+
+    if (item.actions.contains ("split"))
+    {
+        menu.addItem (splitFurtherId, "Adaptive Split Further");
+        hasActions = true;
+    }
+
+    if (! hasActions)
+        return;
+
+    auto safeThis = juce::Component::SafePointer<RecursiveStemRowComponent> (this);
+
+    menu.showMenuAsync (
+        juce::PopupMenu::Options().withTargetComponent (&actionButton),
+        [safeThis] (int result)
+        {
+            if (safeThis == nullptr || result == 0)
+                return;
+
+            if (result == deverbId)
+                safeThis->processor.launchRecursiveAction (
+                    safeThis->item.id,
+                    "deverb");
+            else if (result == splitFurtherId)
+                safeThis->processor.launchRecursiveAction (
+                    safeThis->item.id,
+                    "split");
+        });
 }
 
 StemLabAudioProcessorEditor::StemLabAudioProcessorEditor (
@@ -800,6 +1037,12 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor (
 
     addAndMakeVisible (stemsLabel);
 
+    rootExpanded.fill (true);
+    stemViewport.setViewedComponent (&stemTreeContent, false);
+    stemViewport.setScrollBarsShown (true, false);
+    stemViewport.setScrollBarThickness (10);
+    addAndMakeVisible (stemViewport);
+
     waveformFormats.registerBasicFormats();
 
     for (int i = 0;
@@ -809,8 +1052,14 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor (
         auto& button =
             stemButtons[static_cast<size_t> (i)];
 
+        auto& expandButton =
+            stemExpandButtons[static_cast<size_t> (i)];
+
         auto& preview =
             stemPlayButtons[static_cast<size_t> (i)];
+
+        auto& recursiveButton =
+            stemRecursiveButtons[static_cast<size_t> (i)];
 
         const auto name =
             StemLabAudioProcessor::getStemName (i);
@@ -832,6 +1081,13 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor (
                     .getToggleState());
         };
 
+        expandButton.setButtonText (">");
+        expandButton.setTooltip ("Expand/collapse adaptive children");
+        expandButton.onClick = [this, i]
+        {
+            toggleRootExpanded (i);
+        };
+
         preview.setButtonText ("Play");
         preview.onClick = [this, i]
         {
@@ -839,8 +1095,18 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor (
             refreshFromProcessor();
         };
 
-        addAndMakeVisible (button);
-        addAndMakeVisible (preview);
+        recursiveButton.setButtonText ("...");
+        recursiveButton.setTooltip ("Adaptive split options");
+        recursiveButton.setVisible (rootSupportsAdaptiveSplit (i));
+        recursiveButton.onClick = [this, i]
+        {
+            showRootRecursiveMenu (i);
+        };
+
+        stemTreeContent.addAndMakeVisible (expandButton);
+        stemTreeContent.addAndMakeVisible (button);
+        stemTreeContent.addAndMakeVisible (preview);
+        stemTreeContent.addAndMakeVisible (recursiveButton);
 
         waveformComponents[
             static_cast<size_t> (i)]
@@ -852,7 +1118,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor (
                     waveformFormats,
                     waveformCache);
 
-        addAndMakeVisible (
+        stemTreeContent.addAndMakeVisible (
             *waveformComponents[
                 static_cast<size_t> (i)]);
     }
@@ -1058,6 +1324,192 @@ void StemLabAudioProcessorEditor::paint (
     }
 }
 
+void StemLabAudioProcessorEditor::showRootRecursiveMenu (int stemIndex)
+{
+    if (! juce::isPositiveAndBelow (stemIndex, StemLabAudioProcessor::stemCount))
+        return;
+
+    const auto stemName = StemLabAudioProcessor::getStemName (stemIndex);
+    const bool supportsSplit = rootSupportsAdaptiveSplit (stemIndex);
+    const bool hasChildren = rootHasChildren (stemIndex);
+
+    if (! supportsSplit && ! hasChildren)
+        return;
+
+    juce::PopupMenu menu;
+    if (supportsSplit)
+    {
+        juce::String label = "Adaptive Split";
+        if (stemName.equalsIgnoreCase ("vocals"))
+            label = "Split Lead / Backing Vocals";
+        else if (stemName.equalsIgnoreCase ("drums"))
+            label = "Split Drum Components";
+        else
+            label = "Lead / Foreground Split (Experimental)";
+        menu.addItem (1, label);
+    }
+
+    if (hasChildren)
+    {
+        if (supportsSplit)
+            menu.addSeparator();
+        menu.addItem (2, rootExpanded[static_cast<size_t> (stemIndex)]
+                            ? "Collapse Children"
+                            : "Expand Children");
+    }
+
+    auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor> (this);
+    menu.showMenuAsync (
+        juce::PopupMenu::Options().withTargetComponent (
+            &stemRecursiveButtons[static_cast<size_t> (stemIndex)]),
+        [safeThis, stemIndex] (int result)
+        {
+            if (safeThis == nullptr || result == 0)
+                return;
+            if (result == 1)
+                safeThis->processor.launchRecursiveStemSplit (stemIndex);
+            else if (result == 2)
+                safeThis->toggleRootExpanded (stemIndex);
+            safeThis->refreshFromProcessor();
+        });
+}
+
+bool StemLabAudioProcessorEditor::rootSupportsAdaptiveSplit (int stemIndex) const
+{
+    const auto name = StemLabAudioProcessor::getStemName (stemIndex);
+    return name.equalsIgnoreCase ("vocals")
+        || name.equalsIgnoreCase ("drums")
+        || name.equalsIgnoreCase ("guitar")
+        || name.equalsIgnoreCase ("piano")
+        || name.equalsIgnoreCase ("other");
+}
+
+bool StemLabAudioProcessorEditor::rootHasChildren (int stemIndex) const
+{
+    const auto root = StemLabAudioProcessor::getStemName (stemIndex);
+    for (const auto& item : processor.getRecursiveStemItems())
+        if (item.rootStem.equalsIgnoreCase (root))
+            return true;
+    return false;
+}
+
+void StemLabAudioProcessorEditor::toggleRootExpanded (int stemIndex)
+{
+    if (! juce::isPositiveAndBelow (stemIndex, StemLabAudioProcessor::stemCount))
+        return;
+    auto& expanded = rootExpanded[static_cast<size_t> (stemIndex)];
+    expanded = ! expanded;
+    syncRecursiveRows();
+    resized();
+}
+
+void StemLabAudioProcessorEditor::toggleRecursiveExpanded (const juce::String& itemId)
+{
+    const int index = collapsedRecursiveIds.indexOf (itemId);
+    if (index >= 0)
+        collapsedRecursiveIds.remove (index);
+    else
+        collapsedRecursiveIds.addIfNotAlreadyThere (itemId);
+    syncRecursiveRows();
+    resized();
+}
+
+bool StemLabAudioProcessorEditor::isRecursiveExpanded (const juce::String& itemId) const
+{
+    return ! collapsedRecursiveIds.contains (itemId);
+}
+
+std::vector<StemLabRecursiveStemInfo>
+StemLabAudioProcessorEditor::getVisibleRecursiveItems() const
+{
+    const auto all = processor.getRecursiveStemItems();
+    std::vector<StemLabRecursiveStemInfo> visible;
+    visible.reserve (all.size());
+
+    for (const auto& item : all)
+    {
+        int rootIndex = -1;
+        for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
+            if (StemLabAudioProcessor::getStemName (i).equalsIgnoreCase (item.rootStem))
+                rootIndex = i;
+
+        if (rootIndex >= 0 && ! rootExpanded[static_cast<size_t> (rootIndex)])
+            continue;
+
+        bool hiddenByAncestor = false;
+        for (const auto& collapsed : collapsedRecursiveIds)
+        {
+            if (item.id.startsWith (collapsed + "/"))
+            {
+                hiddenByAncestor = true;
+                break;
+            }
+        }
+        if (! hiddenByAncestor)
+            visible.push_back (item);
+    }
+    return visible;
+}
+
+void StemLabAudioProcessorEditor::syncRecursiveRows()
+{
+    const auto items = getVisibleRecursiveItems();
+
+    bool rebuild = items.size() != recursiveRows.size();
+
+    if (! rebuild)
+    {
+        for (size_t i = 0; i < items.size(); ++i)
+        {
+            if (recursiveRows[i] == nullptr
+                || recursiveRows[i]->getItemId() != items[i].id)
+            {
+                rebuild = true;
+                break;
+            }
+        }
+    }
+
+    if (rebuild)
+    {
+        recursiveRows.clear();
+        recursiveRows.reserve (items.size());
+
+        for (const auto& item : items)
+        {
+            auto safeEditor =
+                juce::Component::SafePointer<StemLabAudioProcessorEditor> (this);
+
+            auto row = std::make_unique<RecursiveStemRowComponent> (
+                processor,
+                item,
+                waveformFormats,
+                waveformCache,
+                [safeEditor] (const juce::String& id)
+                {
+                    if (safeEditor != nullptr)
+                        safeEditor->toggleRecursiveExpanded (id);
+                },
+                [safeEditor] (const juce::String& id)
+                {
+                    return safeEditor != nullptr
+                        ? safeEditor->isRecursiveExpanded (id)
+                        : true;
+                });
+
+            stemTreeContent.addAndMakeVisible (*row);
+            recursiveRows.push_back (std::move (row));
+        }
+
+        resized();
+    }
+    else
+    {
+        for (size_t i = 0; i < items.size(); ++i)
+            recursiveRows[i]->setInfo (items[i]);
+    }
+}
+
 void StemLabAudioProcessorEditor::resized()
 {
     const int width =
@@ -1223,92 +1675,74 @@ void StemLabAudioProcessorEditor::resized()
     area.removeFromBottom (
         bottomGap);
 
-    // Grow waveform rows with the window. This is the core scaling behavior:
-    // 540px-tall window -> compact strips; 900px+ -> large waveform views.
-    const int availableStemHeight =
-        juce::jmax (
-            6 * 28,
-            area.getHeight());
+    const int totalStemRows =
+        StemLabAudioProcessor::stemCount
+        + static_cast<int> (recursiveRows.size());
+    const int minimumRowHeight = compact ? 36 : 42;
+    const int preferredRowHeight = juce::jlimit (
+        minimumRowHeight,
+        72,
+        area.getHeight() / juce::jmax (1, totalStemRows));
+    const int contentHeight = juce::jmax (
+        area.getHeight(),
+        preferredRowHeight * totalStemRows);
 
-    const int stemRowHeight =
-        juce::jlimit (
-            28,
-            105,
-            availableStemHeight
-                / StemLabAudioProcessor::stemCount);
+    stemViewport.setBounds (area);
+    const int contentWidth = juce::jmax (320, stemViewport.getWidth() - 12);
+    stemTreeContent.setSize (contentWidth, contentHeight);
+    auto treeArea = stemTreeContent.getLocalBounds().reduced (2, 0);
 
-    // Centre the stem rows if rounding leaves a little unused vertical room.
-    const int rowsHeight =
-        stemRowHeight
-        * StemLabAudioProcessor::stemCount;
+    const int checkboxWidth = width < 620 ? 88 : 116;
+    const int playWidth = width < 620 ? 48 : 55;
+    const int actionWidth = width < 620 ? 28 : 32;
+    const int expandWidth = 24;
 
-    if (area.getHeight() > rowsHeight)
+    for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
     {
-        area.removeFromTop (
-            (area.getHeight() - rowsHeight)
-            / 2);
-    }
+        auto row = treeArea.removeFromTop (preferredRowHeight);
+        const int rowPad = preferredRowHeight < 42 ? 2 : 4;
 
-    const int checkboxWidth =
-        width < 620 ? 72 : 86;
-
-    const int playWidth =
-        width < 620 ? 48 : 55;
-
-    for (int i = 0;
-         i < StemLabAudioProcessor::stemCount;
-         ++i)
-    {
-        auto row =
-            area.removeFromTop (
-                stemRowHeight);
-
-        const int rowPad =
-            stemRowHeight < 38
-                ? 2
-                : 4;
-
-        auto checkboxArea =
-            row.removeFromLeft (
-                checkboxWidth)
-                .reduced (0, rowPad);
-
-        stemButtons[
-            static_cast<size_t> (i)]
-            .setBounds (
-                checkboxArea);
-
-        row.removeFromLeft (
-            width < 620 ? 2 : 4);
-
-        auto playArea =
-            row.removeFromRight (
-                playWidth)
-                .reduced (
-                    0,
-                    juce::jmax (
-                        2,
-                        rowPad));
-
-        stemPlayButtons[
-            static_cast<size_t> (i)]
-            .setBounds (
-                playArea);
-
-        row.removeFromRight (
-            width < 620 ? 3 : 5);
-
-        if (auto* waveform =
-                waveformComponents[
-                    static_cast<size_t> (i)]
-                    .get())
+        auto& expandButton = stemExpandButtons[static_cast<size_t> (i)];
+        const bool hasChildren = rootHasChildren (i);
+        expandButton.setVisible (hasChildren);
+        expandButton.setButtonText (
+            hasChildren && rootExpanded[static_cast<size_t> (i)] ? "v" : ">");
+        if (hasChildren)
+            expandButton.setBounds (row.removeFromLeft (expandWidth).reduced (1, rowPad));
+        else
         {
-            waveform->setBounds (
-                row.reduced (
-                    0,
-                    juce::jmax (
-                        1,
-                        rowPad - 1)));
+            expandButton.setBounds (0, 0, 0, 0);
+            row.removeFromLeft (expandWidth);
+        }
+
+        auto checkboxArea = row.removeFromLeft (checkboxWidth).reduced (0, rowPad);
+        stemButtons[static_cast<size_t> (i)].setBounds (checkboxArea);
+        row.removeFromLeft (4);
+
+        auto& recursiveButton = stemRecursiveButtons[static_cast<size_t> (i)];
+        if (rootSupportsAdaptiveSplit (i) || hasChildren)
+        {
+            recursiveButton.setBounds (row.removeFromRight (actionWidth).reduced (0, rowPad));
+            row.removeFromRight (3);
+        }
+        else
+            recursiveButton.setBounds (0, 0, 0, 0);
+
+        stemPlayButtons[static_cast<size_t> (i)].setBounds (
+            row.removeFromRight (playWidth).reduced (0, rowPad));
+        row.removeFromRight (5);
+
+        if (auto* waveform = waveformComponents[static_cast<size_t> (i)].get())
+            waveform->setBounds (row.reduced (0, juce::jmax (1, rowPad - 1)));
+
+        const auto rootName = StemLabAudioProcessor::getStemName (i);
+        for (auto& recursiveRow : recursiveRows)
+        {
+            if (recursiveRow != nullptr
+                && recursiveRow->getRootStem().equalsIgnoreCase (rootName))
+            {
+                recursiveRow->setBounds (treeArea.removeFromTop (preferredRowHeight));
+            }
         }
     }
 
@@ -1397,6 +1831,8 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
     const auto jobDone =
         processor.hasSuccessfulJob();
+
+    syncRecursiveRows();
 
     captureButton.setEnabled (
         ! capturing
@@ -1508,6 +1944,12 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
             stemButtons[
                 static_cast<size_t> (i)]
+                .setToggleState (
+                    processor.isStemEnabled (i),
+                    juce::dontSendNotification);
+
+            stemButtons[
+                static_cast<size_t> (i)]
                 .setEnabled (
                     jobDone
                     && ! engineRunning
@@ -1529,6 +1971,24 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
                         ? "Pause"
                         : "Play");
 
+            auto& recursiveButton =
+                stemRecursiveButtons[static_cast<size_t> (i)];
+
+            recursiveButton.setVisible (rootSupportsAdaptiveSplit (i) || rootHasChildren (i));
+            recursiveButton.setEnabled (
+                rootSupportsAdaptiveSplit (i)
+                && jobDone
+                && ! engineRunning
+                && ! capturing
+                && stemFile.existsAsFile());
+
+            auto& expandButton = stemExpandButtons[static_cast<size_t> (i)];
+            const bool hasChildren = rootHasChildren (i);
+            expandButton.setVisible (hasChildren);
+            expandButton.setEnabled (hasChildren);
+            expandButton.setButtonText (
+                hasChildren && rootExpanded[static_cast<size_t> (i)] ? "v" : ">");
+
             if (auto* waveform =
                     waveformComponents[
                         static_cast<size_t> (i)]
@@ -1542,6 +2002,12 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
                     && stemFile.existsAsFile());
             }
         }
+
+        for (auto& row : recursiveRows)
+            if (row != nullptr)
+                row->refresh (
+                    engineRunning || capturing,
+                    processor.isStandalonePlaying());
 
         saveSelectedButton.setEnabled (
             jobDone
@@ -1655,6 +2121,12 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
             stemButtons[
                 static_cast<size_t> (i)]
+                .setToggleState (
+                    processor.isStemEnabled (i),
+                    juce::dontSendNotification);
+
+            stemButtons[
+                static_cast<size_t> (i)]
                 .setEnabled (
                     jobDone
                     && ! engineRunning
@@ -1678,6 +2150,24 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
                         ? "Pause"
                         : "Play");
 
+            auto& recursiveButton =
+                stemRecursiveButtons[static_cast<size_t> (i)];
+
+            recursiveButton.setVisible (rootSupportsAdaptiveSplit (i) || rootHasChildren (i));
+            recursiveButton.setEnabled (
+                rootSupportsAdaptiveSplit (i)
+                && jobDone
+                && ! engineRunning
+                && ! capturing
+                && stemFile.existsAsFile());
+
+            auto& expandButton = stemExpandButtons[static_cast<size_t> (i)];
+            const bool hasChildren = rootHasChildren (i);
+            expandButton.setVisible (hasChildren);
+            expandButton.setEnabled (hasChildren);
+            expandButton.setButtonText (
+                hasChildren && rootExpanded[static_cast<size_t> (i)] ? "v" : ">");
+
             if (auto* waveform =
                     waveformComponents[
                         static_cast<size_t> (i)]
@@ -1692,6 +2182,16 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
                     && stemFile.existsAsFile());
             }
         }
+
+        for (const auto& item : processor.getRecursiveStemItems())
+            if (item.selected)
+                ++selectedCount;
+
+        for (auto& row : recursiveRows)
+            if (row != nullptr)
+                row->refresh (
+                    engineRunning || capturing,
+                    processor.isStandalonePlaying());
 
         sendSelectedButton.setEnabled (
             jobDone
