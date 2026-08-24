@@ -74,9 +74,20 @@ def models_main():
     from pathlib import Path
 
     python_dir = Path(sys.executable).resolve().parent
-    local = python_dir / "bs-roformer-download.exe"
 
-    exe = str(local) if local.exists() else shutil.which("bs-roformer-download")
+    local = next(
+        (
+            candidate
+            for candidate in (
+                python_dir / "bs-roformer-download.exe",
+                python_dir / "bs-roformer-download",
+            )
+            if candidate.exists()
+        ),
+        None,
+    )
+
+    exe = str(local) if local is not None else shutil.which("bs-roformer-download")
 
     if exe is None:
         raise SystemExit(

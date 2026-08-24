@@ -18,6 +18,7 @@ if (STEMLAB_JUCE_SOURCE_DIR AND EXISTS "${STEMLAB_JUCE_SOURCE_DIR}/CMakeLists.tx
         "${STEMLAB_JUCE_SOURCE_DIR}"
         "${CMAKE_BINARY_DIR}/juce"
     )
+    set(STEMLAB_JUCE_ROOT "${STEMLAB_JUCE_SOURCE_DIR}")
 else()
     include(FetchContent)
 
@@ -30,6 +31,28 @@ else()
     )
 
     FetchContent_MakeAvailable(JUCE)
+    set(STEMLAB_JUCE_ROOT "${juce_SOURCE_DIR}")
+endif()
+
+# The REAPER host integration queries IReaperHostApplication, which needs the
+# Steinberg base headers JUCE already ships. Only ReaperHost.cpp includes
+# them. JUCE 9 keeps the SDK under juce_audio_processors_headless; older
+# layouts under juce_audio_processors.
+set(STEMLAB_VST3_SDK_DIR "")
+
+foreach(_stemlab_sdk_candidate
+    "${STEMLAB_JUCE_ROOT}/modules/juce_audio_processors_headless/format_types/VST3_SDK"
+    "${STEMLAB_JUCE_ROOT}/modules/juce_audio_processors/format_types/VST3_SDK")
+    if (NOT STEMLAB_VST3_SDK_DIR
+        AND EXISTS "${_stemlab_sdk_candidate}/pluginterfaces/base/funknown.h")
+        set(STEMLAB_VST3_SDK_DIR "${_stemlab_sdk_candidate}")
+    endif()
+endforeach()
+
+if (NOT STEMLAB_VST3_SDK_DIR)
+    message(FATAL_ERROR
+        "Could not find the VST3 base headers inside the JUCE source tree at "
+        "${STEMLAB_JUCE_ROOT}")
 endif()
 
 juce_add_plugin(StemLabPlugin
@@ -61,7 +84,33 @@ target_sources(StemLabPlugin
         Source/PluginProcessor.h
         Source/PluginEditor.cpp
         Source/PluginEditor.h
+        Source/StemLabPaths.cpp
+        Source/StemLabPaths.h
+        Source/ReaperHost.cpp
+        Source/ReaperHost.h
+        Source/ReaperBridge.cpp
+        Source/ReaperBridge.h
+        Source/LinuxSystemCapture.cpp
+        Source/LinuxSystemCapture.h
 )
+
+target_include_directories(StemLabPlugin
+    PRIVATE
+        "${STEMLAB_VST3_SDK_DIR}"
+)
+
+# ReaperHost.cpp calls through interfaces that only REAPER implements, outside
+# this binary. Under LTO, GCC's whole-program devirtualisation proves those
+# interfaces have no implementation anywhere in the plugin and rewrites the
+# calls into __cxa_pure_virtual traps - a guaranteed crash the first time the
+# bridge runs inside REAPER. Keeping this one file out of LTO leaves its
+# virtual calls opaque and therefore intact.
+if (NOT MSVC)
+    set_source_files_properties(Source/ReaperHost.cpp
+        PROPERTIES
+            COMPILE_OPTIONS "-fno-lto;-fno-devirtualize"
+    )
+endif()
 
 target_compile_definitions(StemLabPlugin
     PUBLIC
@@ -89,6 +138,25 @@ if (WIN32)
         PRIVATE
             ole32
             uuid
+    )
+elseif (UNIX AND NOT APPLE)
+    # JUCE already propagates X11/freetype/ALSA through its own targets. What
+    # it does not add is the dynamic loader, which juce_audio_devices needs to
+    # pick up JACK at runtime, or the thread library on some toolchains.
+    find_package(Threads REQUIRED)
+
+    target_link_libraries(StemLabPlugin
+        PRIVATE
+            Threads::Threads
+            ${CMAKE_DL_LIBS}
+    )
+
+    # JACK is loaded with dlopen, so enabling it costs nothing at link time and
+    # gives Standalone users on PipeWire/JACK a working device.
+    target_compile_definitions(StemLabPlugin
+        PUBLIC
+            JUCE_JACK=1
+            JUCE_ALSA=1
     )
 endif()
 

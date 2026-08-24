@@ -22,6 +22,34 @@ ENGINE_CHOICES = (
 DEFAULT_ENGINE = ENGINE_ROFORMER
 
 
+def resolve_device(device: str) -> str:
+    """Turn a requested device into one this machine can actually use.
+
+    The plugin asks for "cuda" unconditionally. That was a safe assumption for
+    the Windows release, and a bad one on a Linux machine with no NVIDIA GPU,
+    a ROCm-only torch build, or a driver mismatch. Falling back to CPU with a
+    clear log line beats handing the user a torch stack trace.
+
+    "auto" is accepted for callers that would rather not guess at all.
+    """
+    requested = str(device or "").strip().lower()
+
+    if requested not in ("", "auto", "cuda"):
+        return requested
+
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        # torch missing or unimportable is a separate, louder failure that
+        # the backends will report; do not mask it as a device problem.
+        pass
+
+    return "cpu"
+
+
 @dataclass
 class PipelineResult:
     baseline_dir: Path
@@ -69,10 +97,21 @@ def separate(
 
         log(f"STEMLAB_PROGRESS {percent:.1f} {stage}")
 
+    requested_device = device
+    device = resolve_device(device)
+
     progress(5.0, "Preparing")
     log(f"Input: {input_path}")
     log(f"Output: {output_dir}")
     log(f"Separation engine: {engine}")
+
+    if device != str(requested_device).strip().lower():
+        log(
+            f"Device: {device} "
+            f"(requested {requested_device}, CUDA is not available here)"
+        )
+    else:
+        log(f"Device: {device}")
 
     if engine == ENGINE_ROFORMER:
         progress(10.0, "Loading BS-RoFormer")

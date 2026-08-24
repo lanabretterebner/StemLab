@@ -4,8 +4,9 @@
 
 # StemLab
 
-StemLab is an open-source six-stem music separator for Windows with a JUCE
-Standalone application and Ableton Live VST3 integration.
+StemLab is an open-source six-stem music separator with a JUCE Standalone
+application and a VST3 plugin. It runs on Windows, with Ableton Live
+integration, and on Linux, with native REAPER integration.
 
 It separates audio into:
 
@@ -21,8 +22,10 @@ mode that combines both model outputs before optional StemLab refinement.
 
 ## Features
 
-- Windows Standalone application
-- Ableton Live VST3
+- Windows and Linux Standalone application
+- VST3 plugin
+- Ableton Live integration (Windows)
+- REAPER integration (Linux; no scripts or extensions to install)
 - BS-RoFormer separation
 - Demucs six-stem separation
 - Hybrid RoFormer + Demucs fusion
@@ -31,7 +34,8 @@ mode that combines both model outputs before optional StemLab refinement.
 - MP3/WAV/FLAC/OGG/AIFF input through FFmpeg normalization
 - Resizable, volume-colored waveform previews
 - Stem Play/Pause and click-to-seek auditioning
-- Windows system-audio recording
+- System-audio recording (WASAPI loopback on Windows, PipeWire/PulseAudio
+  monitor on Linux)
 - Selective stem export
 - Selective Ableton stem import
 - Invisible `StemLabRemote` Ableton integration
@@ -179,9 +183,28 @@ Typical workflow:
 `StemLabRemote` creates the selected Arrangement tracks/clips underneath the
 source track.
 
+## Linux
+
+Linux builds the VST3 and Standalone targets natively, and one more script
+installs the separation backend with no venv or system Python:
+
+```bash
+./plugin/build_linux.sh
+./plugin/install_vst3.sh
+./install_backend_linux.sh
+```
+
+Inside REAPER, StemLab talks to the host directly: **Use Selected Item**
+reads the selected arrangement item, and **Insert Stems** creates
+colour-coded stem tracks under the source track, aligned with the original
+selection. No Remote Script, extension, or configuration is involved.
+
+See `LINUX_BUILD.md` for dependencies, the REAPER workflow, engine
+discovery, and where StemLab writes files.
+
 ## Building From Source
 
-Development currently targets **Python 3.11 on Windows**.
+Development targets **Python 3.10+**, on Windows and Linux.
 
 Install the Python backend:
 
@@ -266,6 +289,8 @@ StemLab/
 ├── build_portable_windows.ps1
 ├── PORTABLE_INSTALL.txt
 ├── ABLETON_QUICKSTART.md
+├── LINUX_BUILD.md
+├── install_backend_linux.sh
 ├── pyproject.toml
 ├── LICENSE
 ├── THIRD_PARTY.md
