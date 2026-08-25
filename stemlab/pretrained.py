@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import locale
 import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .runtime import drain_cr_lf_stream, last_progress_percent
+from .runtime import run_progress_process
 
 DEFAULT_MODEL = "roformer-model-bs-roformer-sw-by-jarredou"
 
@@ -75,14 +73,6 @@ def _normalise_input_for_backend(
     return staged
 
 
-@dataclass
-class PretrainedResult:
-    """Audio files produced by one RoFormer run."""
-
-    output_dir: Path
-    files: list[Path]
-
-
 class RoFormerBackend:
     """Adapter around the documented ``bs-roformer-infer`` CLI."""
 
@@ -112,13 +102,11 @@ class RoFormerBackend:
         self,
         input_path: str | Path,
         output_dir: str | Path,
-    ) -> PretrainedResult:
+    ) -> list[Path]:
         """Run RoFormer into ``output_dir`` and return the written stem files."""
         input_path = Path(input_path).resolve()
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
-
-        command_prefix = [sys.executable, "-m", "stemlab.bs_roformer_cli"]
 
         with tempfile.TemporaryDirectory(prefix="stemlab_input_") as td:
             staging = Path(td)
@@ -128,7 +116,9 @@ class RoFormerBackend:
                 log=self._log,
             )
             command = [
-                *command_prefix,
+                sys.executable,
+                "-m",
+                "stemlab.bs_roformer_cli",
                 "--input_folder",
                 str(staging),
                 "--store_dir",
@@ -144,36 +134,12 @@ class RoFormerBackend:
             self._log(f"Device: {self.device}")
             self._progress(0.0)
 
-            process = subprocess.Popen(
+            return_code = run_progress_process(
                 command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                bufsize=0,
+                self._log,
+                self._progress,
+                log_progress_lines=False,
             )
-            assert process.stdout is not None
-
-            last_reported = -1
-            backend_encoding = locale.getpreferredencoding(False) or "utf-8"
-
-            def consume_segment(raw: bytes) -> None:
-                nonlocal last_reported
-                if not raw:
-                    return
-                percent = last_progress_percent(raw)
-                if percent is not None:
-                    rounded = int(percent)
-                    if rounded != last_reported:
-                        last_reported = rounded
-                        self._progress(percent)
-                try:
-                    text = raw.decode(backend_encoding, errors="replace").strip()
-                except LookupError:
-                    text = raw.decode("utf-8", errors="replace").strip()
-                if text and percent is None:
-                    self._log(text)
-
-            drain_cr_lf_stream(process.stdout, consume_segment)
-            return_code = process.wait()
             if return_code != 0:
                 raise subprocess.CalledProcessError(return_code, command)
             self._progress(100.0)
@@ -187,4 +153,4 @@ class RoFormerBackend:
             raise RuntimeError(
                 "The pretrained separator finished but StemLab found no output audio."
             )
-        return PretrainedResult(output_dir=output_dir, files=files)
+        return files

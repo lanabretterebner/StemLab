@@ -50,7 +50,6 @@ class RecursiveChild:
     actions: tuple[str, ...] = ()
     confidence: float = 0.0
     estimated_source_count: int = 1
-    complexity: float = 0.0
 
 
 def default_model_dir() -> Path:
@@ -189,7 +188,6 @@ def _with_adaptive_metadata(
                 actions=tuple(actions),
                 confidence=assessment.confidence,
                 estimated_source_count=assessment.estimated_source_count,
-                complexity=assessment.complexity,
             )
         )
 
@@ -208,7 +206,6 @@ def _write_manifest(
     source_category: str = "unknown",
     depth: int = 1,
 ) -> Path:
-    source_profile = analyse_audio(source)
     # Schema 2 is consumed directly by PluginProcessor::finishRecursiveJob().
     # Additive fields are fine, but renaming these keys requires a matching C++
     # parser update and a migration plan for any saved job metadata.
@@ -222,11 +219,6 @@ def _write_manifest(
         "root_stem": root_stem,
         "depth": depth,
         "model": model,
-        "source_analysis": {
-            "estimated_source_count": source_profile.estimated_source_count,
-            "confidence": source_profile.confidence,
-            "complexity": source_profile.complexity,
-        },
         "children": [
             {
                 "id": child.id,
@@ -236,7 +228,6 @@ def _write_manifest(
                 "actions": list(child.actions),
                 "confidence": round(float(child.confidence), 5),
                 "estimated_source_count": int(child.estimated_source_count),
-                "complexity": round(float(child.complexity), 5),
             }
             for child in children
         ],
@@ -413,6 +404,7 @@ def split_lead_group(
     current = input_path
     peeled: list[tuple[Path, float]] = []
     pass_count = max(1, target_count - 1)
+    first_split = None
 
     for pass_index in range(pass_count):
         pass_dir = output_dir / f"foreground_pass_{pass_index + 1}"
@@ -425,6 +417,8 @@ def split_lead_group(
             progress(base + span * (percent / 100.0), stage)
 
         split = split_foreground(current, pass_dir, progress=pass_progress)
+        if pass_index == 0:
+            first_split = split
         assessments = assess_children(current, [split.foreground, split.backing])
         fg_assessment = assessments[split.foreground]
         bed_assessment = assessments[split.backing]
@@ -446,9 +440,9 @@ def split_lead_group(
     if not peeled:
         # Always return a useful two-way attempt when the user explicitly asks
         # for lead separation, even when the adaptive loop is conservative.
-        fallback = split_foreground(input_path, output_dir / "foreground_pass_1", progress=progress)
-        peeled = [(fallback.foreground, fallback.confidence)]
-        current = fallback.backing
+        assert first_split is not None
+        peeled = [(first_split.foreground, first_split.confidence)]
+        current = first_split.backing
 
     children: list[RecursiveChild] = []
     for index, (path, confidence) in enumerate(peeled, start=1):

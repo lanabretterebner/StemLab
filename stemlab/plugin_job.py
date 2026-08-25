@@ -5,11 +5,10 @@ import json
 import os
 import time
 import socket
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .audio import STEM_NAMES
+from .audio import STEM_NAMES, find_stem_file
 from .pipeline import separate, DEFAULT_ENGINE, ENGINE_CHOICES
 from .pretrained import DEFAULT_MODEL
 from .runtime import configure_utf8_stdio
@@ -82,21 +81,6 @@ def write_progress(
         pass
 
 
-def find_stem_file(folder: Path, stem: str) -> Path | None:
-    candidates = [
-        p for p in folder.rglob("*")
-        if p.is_file()
-        and p.suffix.lower() in {".wav", ".flac"}
-        and stem.lower() in p.stem.lower()
-    ]
-    if not candidates:
-        return None
-
-    # Prefer shorter names because they tend to be direct stem outputs rather
-    # than duplicated/debug variants.
-    return sorted(candidates, key=lambda p: (len(p.name), p.name.lower()))[0]
-
-
 def manifest_audio_path(path: Path) -> str:
     # Live's create_audio_clip expects an absolute file path. Forward slashes
     # avoid backslash escaping problems when the JSON is read by Max JS.
@@ -105,7 +89,6 @@ def manifest_audio_path(path: Path) -> str:
 
 def build_manifest(
     *,
-    output_dir: Path,
     final_dir: Path,
     input_path: Path,
     start_ppq: float,
@@ -207,7 +190,6 @@ def run_plugin_job(
     write_progress(output_dir, 96.0, "Building stem list")
     final_dir = result.final_dir
     manifest = build_manifest(
-        output_dir=output_dir,
         final_dir=final_dir,
         input_path=input_path,
         start_ppq=start_ppq,

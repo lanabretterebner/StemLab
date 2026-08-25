@@ -11,6 +11,23 @@ from scipy.signal import resample_poly
 
 # Logical stem set shared by RoFormer, Demucs 6s, hybrid fusion, and the plugin.
 STEM_NAMES = ("vocals", "drums", "bass", "guitar", "piano", "other")
+AUDIO_EXTENSIONS = {".wav", ".flac"}
+
+
+def find_stem_file(folder: str | Path, stem: str) -> Path | None:
+    """Find the shortest matching WAV/FLAC name under a backend output folder."""
+    matches = [
+        path
+        for path in Path(folder).rglob("*")
+        if path.is_file()
+        and path.suffix.lower() in AUDIO_EXTENSIONS
+        and stem.lower() in path.stem.lower()
+    ]
+    return min(
+        matches,
+        key=lambda path: (len(path.name), str(path).lower()),
+        default=None,
+    )
 
 
 def load_audio(

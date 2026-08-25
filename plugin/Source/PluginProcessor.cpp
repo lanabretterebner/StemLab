@@ -99,12 +99,10 @@ class StemLabEngineThread final : public juce::Thread
 {
 public:
     StemLabEngineThread (StemLabAudioProcessor& ownerIn,
-                         juce::StringArray commandIn,
-                         juce::File jobDirectoryIn)
+                         juce::StringArray commandIn)
         : juce::Thread ("StemLab engine"),
           owner (ownerIn),
-          command (std::move (commandIn)),
-          jobDirectory (std::move (jobDirectoryIn))
+          command (std::move (commandIn))
     {
     }
 
@@ -243,7 +241,6 @@ public:
 private:
     StemLabAudioProcessor& owner;
     juce::StringArray command;
-    juce::File jobDirectory;
     std::unique_ptr<juce::ChildProcess> process;
 };
 
@@ -891,7 +888,6 @@ StemLabAudioProcessor::StemLabAudioProcessor()
 
 StemLabAudioProcessor::~StemLabAudioProcessor()
 {
-    cancelPendingUpdate();
     stopCapture();
     stopStandalonePlayback();
 
@@ -963,11 +959,6 @@ void StemLabAudioProcessor::prepareToPlay (int samplesPerBlockExpected,
     previewTransport.prepareToPlay (samplesPerBlockExpected, sampleRate);
 }
 
-void StemLabAudioProcessor::releaseResourcesForAudioSource()
-{
-    previewTransport.releaseResources();
-}
-
 void StemLabAudioProcessor::getNextAudioBlock (
     const juce::AudioSourceChannelInfo& bufferToFill)
 {
@@ -1008,80 +999,20 @@ void StemLabAudioProcessor::processBlock (
             buffer.getNumSamples());
     }
 
-    bool hostPlaying = false;
-    bool hasHostPosition = false;
-    double hostPpq = 0.0;
-    juce::int64 hostTimelineSample = 0;
-
     if (! isStandaloneApp())
     {
         if (auto* hostPlayHead = getPlayHead())
         {
             if (auto position = hostPlayHead->getPosition())
             {
-                hasHostPosition = true;
-                hostPlaying = position->getIsPlaying();
-
                 if (auto value = position->getPpqPosition())
-                    hostPpq = *value;
-
-                if (auto value = position->getTimeInSamples())
-                    hostTimelineSample = *value;
-
-                lastKnownHostPpq.store (
-                    juce::jmax (0.0, hostPpq));
-
-                lastKnownHostTimelineSample.store (
-                    juce::jmax<juce::int64> (
-                        0,
-                        hostTimelineSample));
+                    lastKnownHostPpq.store (juce::jmax (0.0, *value));
             }
-        }
-
-        // Arm Capture means "start on the first playing Live audio block".
-        // This avoids recording silence between pressing the button and
-        // starting Live's transport, and makes the captured PPQ unambiguous.
-        if (captureArmed.load()
-            && hasHostPosition
-            && hostPlaying
-            && threadedWriter != nullptr)
-        {
-            captureStartPpq.store (
-                juce::jmax (0.0, hostPpq));
-
-            captureStartTimelineSample.store (
-                hostTimelineSample);
-
-            capturedSamples.store (0);
-
-            activeWriter.store (
-                threadedWriter.get(),
-                std::memory_order_release);
-
-            captureArmed.store (false);
-            capturing.store (true);
-            hostWasPlayingDuringCapture.store (true);
-        }
-
-        // Once Live stops after capture actually started, close the writer on
-        // the message thread. We never destroy the writer from the audio thread.
-        if (capturing.load()
-            && hostWasPlayingDuringCapture.load()
-            && hasHostPosition
-            && ! hostPlaying)
-        {
-            activeWriter.store (
-                nullptr,
-                std::memory_order_release);
-
-            capturing.store (false);
-            captureFinalizeRequested.store (true);
-            triggerAsyncUpdate();
         }
     }
 
-    // Physical-input/VST capture uses audio arriving through this processor.
-    // System loopback is captured by a separate WASAPI thread.
+    // Standalone input recording uses audio arriving through this processor;
+    // system loopback is captured by a separate WASAPI thread.
     if (standaloneRecordingMode.load() != recordingSystem)
     {
         if (auto* writer =
@@ -1154,29 +1085,6 @@ void StemLabAudioProcessor::processBlock (
     // is supplied by previewPlayer as a separate AudioDeviceManager callback.
     if (isStandaloneApp())
         buffer.clear();
-}
-
-void StemLabAudioProcessor::handleAsyncUpdate()
-{
-    if (captureFinalizeRequested.exchange (false))
-        finalizeHostCapture();
-}
-
-void StemLabAudioProcessor::finalizeHostCapture()
-{
-    activeWriter.store (
-        nullptr,
-        std::memory_order_release);
-
-    threadedWriter.reset();
-    captureArmed.store (false);
-    capturing.store (false);
-    hostWasPlayingDuringCapture.store (false);
-
-    if (capturedSamples.load() > 0)
-        setStatus ("Capture ready - choose stems");
-    else
-        setStatus ("Capture stopped");
 }
 
 bool StemLabAudioProcessor::isStandaloneApp() const noexcept
@@ -1309,12 +1217,6 @@ bool StemLabAudioProcessor::setInputAudioFile (
 
     captureStartPpq.store (
         juce::jmax (0.0, startPpq));
-
-    captureStartTimelineSample.store (0);
-
-    captureArmed.store (false);
-    captureFinalizeRequested.store (false);
-    hostWasPlayingDuringCapture.store (false);
 
     engineCompletedSuccessfully.store (false);
     engineProgress.store (0.0);
@@ -1581,7 +1483,7 @@ bool StemLabAudioProcessor::startStandaloneRecording()
 
     currentInputChannels = juce::jlimit (1, 2, activeInputs);
 
-    const auto recordingFile = createRecordingFile();
+    const auto recordingFile = createRecordingFile ("input");
 
     auto stream =
         std::make_unique<juce::FileOutputStream> (recordingFile);
@@ -1626,7 +1528,6 @@ bool StemLabAudioProcessor::startStandaloneRecording()
     capturedSamples.store (0);
     inputDurationSeconds.store (0.0);
     captureStartPpq.store (0.0);
-    captureStartTimelineSample.store (0);
     engineCompletedSuccessfully.store (false);
     engineProgress.store (0.0);
 
@@ -1684,7 +1585,7 @@ bool StemLabAudioProcessor::startSystemAudioRecording()
         systemLoopbackThread.reset();
     }
 
-    const auto recordingFile = createSystemRecordingFile();
+    const auto recordingFile = createRecordingFile ("system");
 
     {
         const juce::ScopedLock lock (stateLock);
@@ -1702,13 +1603,6 @@ bool StemLabAudioProcessor::startSystemAudioRecording()
             : juce::jmax (
                 0.0,
                 lastKnownHostPpq.load()));
-
-    captureStartTimelineSample.store (
-        isStandaloneApp()
-            ? 0
-            : juce::jmax<juce::int64> (
-                0,
-                lastKnownHostTimelineSample.load()));
 
     engineCompletedSuccessfully.store (false);
     engineProgress.store (0.0);
@@ -1773,22 +1667,8 @@ void StemLabAudioProcessor::stopSystemAudioRecording()
    #endif
 }
 
-juce::File StemLabAudioProcessor::createCaptureFile() const
-{
-    auto folder = juce::File::getSpecialLocation (
-                      juce::File::userDocumentsDirectory)
-                      .getChildFile ("StemLab")
-                      .getChildFile ("Captures");
-
-    folder.createDirectory();
-
-    return folder.getNonexistentChildFile (
-        "capture_" + timestampForFilename(),
-        ".wav",
-        false);
-}
-
-juce::File StemLabAudioProcessor::createRecordingFile() const
+juce::File StemLabAudioProcessor::createRecordingFile (
+    const juce::String& prefix) const
 {
     auto folder = juce::File::getSpecialLocation (
                       juce::File::userDocumentsDirectory)
@@ -1798,22 +1678,7 @@ juce::File StemLabAudioProcessor::createRecordingFile() const
     folder.createDirectory();
 
     return folder.getNonexistentChildFile (
-        "input_" + timestampForFilename(),
-        ".wav",
-        false);
-}
-
-juce::File StemLabAudioProcessor::createSystemRecordingFile() const
-{
-    auto folder = juce::File::getSpecialLocation (
-                      juce::File::userDocumentsDirectory)
-                      .getChildFile ("StemLab")
-                      .getChildFile ("Recordings");
-
-    folder.createDirectory();
-
-    return folder.getNonexistentChildFile (
-        "system_" + timestampForFilename(),
+        prefix + "_" + timestampForFilename(),
         ".wav",
         false);
 }
@@ -1875,158 +1740,13 @@ juce::File StemLabAudioProcessor::getJobRootDirectory() const
         .getChildFile ("Jobs");
 }
 
-bool StemLabAudioProcessor::startCapture()
-{
-    if (isStandaloneApp())
-        return startStandaloneRecording();
-
-    if (capturing.load()
-        || captureArmed.load()
-        || captureFinalizeRequested.load()
-        || isEngineRunning())
-    {
-        return false;
-    }
-
-    if (currentSampleRate <= 0.0)
-    {
-        setStatus ("Audio device is not ready");
-        return false;
-    }
-
-    const auto newCaptureFile =
-        createCaptureFile();
-
-    auto stream =
-        std::make_unique<juce::FileOutputStream> (
-            newCaptureFile);
-
-    if (! stream->openedOk())
-    {
-        setStatus ("Could not create capture WAV");
-        return false;
-    }
-
-    juce::WavAudioFormat wav;
-
-    auto* rawWriter = wav.createWriterFor (
-        stream.get(),
-        currentSampleRate,
-        static_cast<unsigned int> (
-            juce::jlimit (
-                1,
-                2,
-                currentInputChannels)),
-        24,
-        {},
-        0);
-
-    if (rawWriter == nullptr)
-    {
-        setStatus ("Could not create WAV writer");
-        return false;
-    }
-
-    stream.release();
-
-    threadedWriter =
-        std::make_unique<
-            juce::AudioFormatWriter::ThreadedWriter> (
-                rawWriter,
-                diskWriterThread,
-                32768);
-
-    {
-        const juce::ScopedLock lock (stateLock);
-        captureFile = newCaptureFile;
-        lastJobDirectory = {};
-        engineLog.clear();
-    }
-
-    capturedSamples.store (0);
-    inputDurationSeconds.store (0.0);
-    captureStartPpq.store (-1.0);
-    captureStartTimelineSample.store (-1);
-    hostWasPlayingDuringCapture.store (false);
-    captureFinalizeRequested.store (false);
-    captureArmed.store (true);
-    capturing.store (false);
-    engineCompletedSuccessfully.store (false);
-    engineProgress.store (0.0);
-
-    {
-        const juce::ScopedLock lock (abletonBridgeLock);
-        abletonBridgeStatus =
-            "StemLabRemote status will appear after separation";
-    }
-
-    abletonImportedStemCount.store (0);
-
-    setStatus ("Armed - press Play in Ableton");
-    return true;
-}
-
 void StemLabAudioProcessor::stopCapture()
 {
-    if (isStandaloneApp())
-    {
-        const auto mode =
-            standaloneRecordingMode.load();
-
-        if (mode == recordingSystem)
-            stopSystemAudioRecording();
-        else if (mode == recordingInput)
-            stopStandaloneRecording();
-
-        return;
-    }
-
-    const bool wasArmed =
-        captureArmed.exchange (false);
-
-    const bool wasCapturing =
-        capturing.exchange (false);
-
-    activeWriter.store (
-        nullptr,
-        std::memory_order_release);
-
-    captureFinalizeRequested.store (false);
-    cancelPendingUpdate();
-
-    threadedWriter.reset();
-    hostWasPlayingDuringCapture.store (false);
-
-    if (wasArmed
-        && ! wasCapturing
-        && capturedSamples.load() == 0)
-    {
-        const auto emptyCapture =
-            getCaptureFile();
-
-        if (emptyCapture.existsAsFile())
-            emptyCapture.deleteFile();
-
-        {
-            const juce::ScopedLock lock (stateLock);
-            captureFile = {};
-        }
-
-        setStatus ("Capture cancelled");
-        return;
-    }
-
-    if (capturedSamples.load() > 0)
-    {
-        if (captureStartPpq.load() < 0.0)
-            captureStartPpq.store (0.0);
-
-        setStatus ("Capture ready - choose stems");
-    }
-    else
-    {
-        setStatus ("Capture stopped");
-    }
+    const auto mode = standaloneRecordingMode.load();
+    if (mode == recordingSystem)
+        stopSystemAudioRecording();
+    else if (mode == recordingInput)
+        stopStandaloneRecording();
 }
 
 double StemLabAudioProcessor::getCapturedSeconds() const noexcept
@@ -2052,12 +1772,6 @@ juce::File StemLabAudioProcessor::getCaptureFile() const
 {
     const juce::ScopedLock lock (stateLock);
     return captureFile;
-}
-
-juce::File StemLabAudioProcessor::getAbletonClipReplyFile() const
-{
-    const juce::ScopedLock lock (stateLock);
-    return abletonClipReplyFile;
 }
 
 bool StemLabAudioProcessor::sendAbletonControlMessage (
@@ -2325,9 +2039,7 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
 {
     stopStandalonePlayback();
 
-    if (capturing.load()
-        || captureArmed.load()
-        || captureFinalizeRequested.load())
+    if (capturing.load())
     {
         setStatus ("Finish the capture before separating");
         return false;
@@ -2441,8 +2153,7 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
 
     engineThread = std::make_unique<StemLabEngineThread> (
         *this,
-        command,
-        job);
+        command);
 
     engineThread->startThread();
     return true;
@@ -2784,10 +2495,6 @@ void StemLabAudioProcessor::finishRecursiveJob (
             0.0,
             1.0,
             static_cast<double> (child->getProperty ("confidence")));
-        item.complexity = juce::jlimit (
-            0.0,
-            1.0,
-            static_cast<double> (child->getProperty ("complexity")));
 
         if (auto* actions = child->getProperty ("actions").getArray())
         {

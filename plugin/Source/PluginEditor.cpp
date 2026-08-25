@@ -1811,12 +1811,6 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     const auto capturing =
         processor.isCapturing();
 
-    const auto captureArmed =
-        processor.isCaptureArmed();
-
-    const auto captureFinalizing =
-        processor.isCaptureFinalizing();
-
     const auto recordingMode =
         processor.getStandaloneRecordingMode();
 
@@ -1836,16 +1830,12 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
     captureButton.setEnabled (
         ! capturing
-        && ! captureArmed
-        && ! captureFinalizing
         && ! engineRunning);
 
     stopButton.setEnabled (false);
 
     separateButton.setEnabled (
         ! capturing
-        && ! captureArmed
-        && ! captureFinalizing
         && ! processor.isAwaitingAbletonSourceClip()
         && ! engineRunning
         && captureExists);

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import locale
 import re
+import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import BinaryIO
 
 _PERCENT_RE = re.compile(rb"(?<!\d)(\d{1,3}(?:\.\d+)?)%")
@@ -52,3 +54,43 @@ def drain_cr_lf_stream(stdout: BinaryIO, on_segment: Callable[[bytes], None]) ->
                 segment.clear()
         else:
             segment.extend(byte)
+
+
+def run_progress_process(
+    command: Sequence[str],
+    log: Callable[[str], None],
+    progress: Callable[[float], None],
+    *,
+    log_progress_lines: bool = True,
+) -> int:
+    """Run a model CLI while forwarding CR/LF progress output."""
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=0,
+    )
+    assert process.stdout is not None
+
+    last_reported = -1
+    encoding = locale.getpreferredencoding(False) or "utf-8"
+
+    def consume_segment(raw: bytes) -> None:
+        nonlocal last_reported
+        if not raw:
+            return
+
+        percent = last_progress_percent(raw)
+        if percent is not None and int(percent) != last_reported:
+            last_reported = int(percent)
+            progress(percent)
+
+        try:
+            text = raw.decode(encoding, errors="replace").strip()
+        except LookupError:
+            text = raw.decode("utf-8", errors="replace").strip()
+        if text and (log_progress_lines or percent is None):
+            log(text)
+
+    drain_cr_lf_stream(process.stdout, consume_segment)
+    return process.wait()

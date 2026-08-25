@@ -21,9 +21,7 @@ class CancelConfig:
 @dataclass
 class CancelResult:
     cleaned: np.ndarray
-    matched_reference: np.ndarray
     confidence: float
-    alignment_samples: int
 
 
 def _mono(x: np.ndarray) -> np.ndarray:
@@ -66,12 +64,10 @@ def _shift(x: np.ndarray, samples: int) -> np.ndarray:
     return out
 
 
-def _stft_multichannel(x: np.ndarray, sr: int, cfg: CancelConfig):
+def _stft_multichannel(x: np.ndarray, sr: int, cfg: CancelConfig) -> np.ndarray:
     specs = []
-    freqs = None
-    times = None
     for ch in range(x.shape[0]):
-        freqs, times, z = signal.stft(
+        _, _, z = signal.stft(
             x[ch],
             fs=sr,
             window="hann",
@@ -82,7 +78,7 @@ def _stft_multichannel(x: np.ndarray, sr: int, cfg: CancelConfig):
             padded=True,
         )
         specs.append(z)
-    return freqs, times, np.stack(specs, axis=0)
+    return np.stack(specs, axis=0)
 
 
 def _istft_multichannel(
@@ -172,8 +168,8 @@ def adaptive_cancel(
     )
     aligned = _shift(reference, alignment)
 
-    _, _, r = _stft_multichannel(aligned, sr, cfg)
-    _, _, y = _stft_multichannel(target, sr, cfg)
+    r = _stft_multichannel(aligned, sr, cfg)
+    y = _stft_multichannel(target, sr, cfg)
 
     # Similarity before fitting is intentionally part of confidence. If the
     # target does not resemble the reference at all, do almost nothing.
@@ -222,7 +218,5 @@ def adaptive_cancel(
 
     return CancelResult(
         cleaned=cleaned.astype(np.float32),
-        matched_reference=matched.astype(np.float32),
         confidence=confidence,
-        alignment_samples=alignment,
     )

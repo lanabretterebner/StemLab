@@ -51,8 +51,8 @@ def refine_main() -> None:
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
-    result = refine_stem_folder(input_dir=args.stems, output_dir=args.output)
-    for stem, stats in result.stats.items():
+    stats_by_stem = refine_stem_folder(input_dir=args.stems, output_dir=args.output)
+    for stem, stats in stats_by_stem.items():
         print(
             f"{stem}: "
             f"events={stats.events_detected} "

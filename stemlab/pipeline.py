@@ -26,7 +26,6 @@ DEFAULT_ENGINE = ENGINE_ROFORMER
 class PipelineResult:
     baseline_dir: Path
     final_dir: Path
-    refined: bool
     engine: str
 
 
@@ -196,14 +195,14 @@ def separate(
                 f"Refining {stem.title()} ({index}/{total})",
             )
 
-        result = refine_stem_folder(
+        stats_by_stem = refine_stem_folder(
             input_dir=baseline_dir,
             output_dir=final_dir,
             cfg=refinement_config,
             progress_callback=on_refine_progress,
         )
 
-        for stem, stats in result.stats.items():
+        for stem, stats in stats_by_stem.items():
             log(
                 f"{stem}: "
                 f"events={stats.events_detected}, "
@@ -221,6 +220,5 @@ def separate(
     return PipelineResult(
         baseline_dir=baseline_dir,
         final_dir=final_dir,
-        refined=refine,
         engine=engine,
     )

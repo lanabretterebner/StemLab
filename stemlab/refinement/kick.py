@@ -29,7 +29,6 @@ class KickRefinementConfig:
 @dataclass
 class KickRefinementStats:
     events_detected: int
-    reference_events: int
     cancellations_attempted: int
     cancellations_applied: int
     rejected_event_confidence: int
@@ -96,7 +95,7 @@ def build_kick_reference(
     events: list[Event],
     sr: int,
     cfg: KickRefinementConfig,
-) -> tuple[np.ndarray | None, list[Event]]:
+) -> np.ndarray | None:
     pre = int(sr * cfg.reference_pre_ms / 1000.0)
     post = int(sr * cfg.reference_post_ms / 1000.0)
 
@@ -112,7 +111,7 @@ def build_kick_reference(
     )[: cfg.max_reference_events]
 
     if not strong:
-        return None, []
+        return None
 
     regions = []
     for e in strong:
@@ -143,7 +142,7 @@ def build_kick_reference(
         amplitudes.append(float(np.max(np.abs(region))))
 
     reference *= float(np.median(amplitudes))
-    return reference, strong
+    return reference
 
 
 def refine_kick_bleed(
@@ -165,7 +164,7 @@ def refine_kick_bleed(
     cfg = cfg or KickRefinementConfig()
 
     events = detect_kick_events(drums, sr=sr)
-    reference, reference_events = build_kick_reference(
+    reference = build_kick_reference(
         drums,
         events,
         sr,
@@ -175,7 +174,6 @@ def refine_kick_bleed(
     if reference is None:
         return target.copy(), KickRefinementStats(
             events_detected=len(events),
-            reference_events=0,
             cancellations_attempted=0,
             cancellations_applied=0,
             rejected_event_confidence=len(events),
@@ -269,7 +267,6 @@ def refine_kick_bleed(
 
     stats = KickRefinementStats(
         events_detected=len(events),
-        reference_events=len(reference_events),
         cancellations_attempted=attempted,
         cancellations_applied=applied,
         rejected_event_confidence=rejected_event,

@@ -25,13 +25,11 @@ struct StemLabRecursiveStemInfo
     int depth = 1;
     int estimatedSourceCount = 1;
     double confidence = 0.0;
-    double complexity = 0.0;
 };
 
 class StemLabAudioProcessor final : public juce::AudioProcessor,
                                     public juce::ChangeBroadcaster,
-                                    public juce::AudioSource,
-                                    private juce::AsyncUpdater
+                                    public juce::AudioSource
 {
 public:
     enum StandaloneRecordingMode
@@ -49,7 +47,6 @@ public:
 
     // AudioSource callbacks used only by the Standalone preview player.
     void prepareToPlay (int samplesPerBlockExpected, double sampleRate) override;
-    void releaseResourcesForAudioSource();
     void getNextAudioBlock (const juce::AudioSourceChannelInfo& bufferToFill) override;
 
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
@@ -72,10 +69,6 @@ public:
 
     void getStateInformation (juce::MemoryBlock&) override;
     void setStateInformation (const void*, int) override;
-
-    // Capture / standalone input ------------------------------------------
-    bool startCapture();
-    void stopCapture();
 
     // Generic source loading used by Standalone, Ableton clip retrieval, and
     // Windows system-audio recording.
@@ -129,11 +122,6 @@ public:
     double getPreviewLengthSeconds() const noexcept;
 
     bool isCapturing() const noexcept { return capturing.load(); }
-    bool isCaptureArmed() const noexcept { return captureArmed.load(); }
-    bool isCaptureFinalizing() const noexcept
-    {
-        return captureFinalizeRequested.load();
-    }
 
     double getCapturedSeconds() const noexcept;
     juce::File getCaptureFile() const;
@@ -254,7 +242,7 @@ private:
     friend class StemLabRecursiveThread;
     friend class StemLabSystemLoopbackThread;
 
-    void handleAsyncUpdate() override;
+    void stopCapture();
     void setStatus (const juce::String&);
     void setEngineProgress (double progress);
     void handleEngineOutputLine (const juce::String& line);
@@ -263,14 +251,10 @@ private:
     void clearRecursiveResults();
     juce::String discoverEngineCommand() const;
     void appendEngineLog (const juce::String&);
-    void finalizeHostCapture();
     bool sendAbletonBridgeNotification (const juce::File& manifestFile);
     bool sendAbletonControlMessage (const juce::String& message);
-    juce::File getAbletonClipReplyFile() const;
 
-    juce::File createCaptureFile() const;
-    juce::File createRecordingFile() const;
-    juce::File createSystemRecordingFile() const;
+    juce::File createRecordingFile (const juce::String& prefix) const;
     juce::File createJobDirectory() const;
     bool loadPreviewFile (const juce::File& file, int previewStem);
 
@@ -279,15 +263,10 @@ private:
     std::atomic<juce::AudioFormatWriter::ThreadedWriter*> activeWriter { nullptr };
 
     std::atomic<bool> capturing { false };
-    std::atomic<bool> captureArmed { false };
-    std::atomic<bool> captureFinalizeRequested { false };
-    std::atomic<bool> hostWasPlayingDuringCapture { false };
     std::atomic<int> standaloneRecordingMode { recordingNone };
     std::atomic<juce::int64> capturedSamples { 0 };
     std::atomic<double> captureStartPpq { -1.0 };
-    std::atomic<juce::int64> captureStartTimelineSample { -1 };
     std::atomic<double> lastKnownHostPpq { 0.0 };
-    std::atomic<juce::int64> lastKnownHostTimelineSample { 0 };
 
     std::atomic<bool> abletonClipRequestPending { false };
     std::atomic<double> abletonClipRequestStartMs { 0.0 };

@@ -86,8 +86,7 @@ The Python engine writes schema 2 manifests. Each child contains:
   "category": "instrument.lead",
   "actions": [],
   "confidence": 0.82,
-  "estimated_source_count": 1,
-  "complexity": 0.34
+  "estimated_source_count": 1
 }
 ```
 

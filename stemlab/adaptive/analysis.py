@@ -13,37 +13,28 @@ _EPS = 1.0e-9
 
 @dataclass(frozen=True)
 class AudioProfile:
-    duration_seconds: float
     rms: float
-    peak: float
-    active_fraction: float
-    stereo_correlation: float
-    spectral_flatness: float
-    complexity: float
     estimated_source_count: int
     confidence: float
 
 
 @dataclass(frozen=True)
 class ChildAssessment:
-    path: Path
     confidence: float
     estimated_source_count: int
-    complexity: float
     energy_ratio: float
 
 
-def _read_analysis_excerpt(path: Path, *, seconds_per_window: float = 8.0) -> tuple[np.ndarray, int, float]:
+def _read_analysis_excerpt(path: Path, *, seconds_per_window: float = 8.0) -> tuple[np.ndarray, int]:
     """Read a few representative windows instead of loading a whole song."""
     info = sf.info(str(path))
     sample_rate = int(info.samplerate)
     total_frames = int(info.frames)
-    duration = total_frames / max(1, sample_rate)
     window_frames = max(1, int(seconds_per_window * sample_rate))
 
     if total_frames <= window_frames * 3:
         audio, _ = sf.read(str(path), dtype="float32", always_2d=True)
-        return audio, sample_rate, duration
+        return audio, sample_rate
 
     starts = (
         0,
@@ -59,9 +50,9 @@ def _read_analysis_excerpt(path: Path, *, seconds_per_window: float = 8.0) -> tu
                 windows.append(block)
 
     if not windows:
-        return np.zeros((1, max(1, info.channels)), dtype=np.float32), sample_rate, duration
+        return np.zeros((1, max(1, info.channels)), dtype=np.float32), sample_rate
 
-    return np.concatenate(windows, axis=0), sample_rate, duration
+    return np.concatenate(windows, axis=0), sample_rate
 
 
 def _frame_rms(mono: np.ndarray, frame: int = 2048, hop: int = 1024) -> np.ndarray:
@@ -102,7 +93,7 @@ def _spectral_flatness(mono: np.ndarray) -> float:
 
 def analyse_audio(path: Path) -> AudioProfile:
     path = Path(path)
-    audio, _sample_rate, duration = _read_analysis_excerpt(path)
+    audio, _sample_rate = _read_analysis_excerpt(path)
     if audio.ndim != 2:
         audio = np.atleast_2d(audio).T
 
@@ -161,20 +152,14 @@ def analyse_audio(path: Path) -> AudioProfile:
     confidence = float(np.clip(0.35 + 0.65 * loudness_confidence, 0.0, 1.0))
 
     return AudioProfile(
-        duration_seconds=float(duration),
         rms=rms,
-        peak=peak,
-        active_fraction=active_fraction,
-        stereo_correlation=stereo_correlation,
-        spectral_flatness=flatness,
-        complexity=complexity,
         estimated_source_count=estimated_count,
         confidence=confidence,
     )
 
 
 def _excerpt_mono(path: Path) -> np.ndarray:
-    audio, _sample_rate, _duration = _read_analysis_excerpt(path, seconds_per_window=5.0)
+    audio, _sample_rate = _read_analysis_excerpt(path, seconds_per_window=5.0)
     if audio.ndim != 2:
         audio = np.atleast_2d(audio).T
     mono = np.mean(audio, axis=1, dtype=np.float64)
@@ -227,10 +212,8 @@ def assess_children(parent: Path, children: Iterable[Path]) -> dict[Path, ChildA
             )
         )
         result[path] = ChildAssessment(
-            path=path,
             confidence=confidence,
             estimated_source_count=profile.estimated_source_count,
-            complexity=profile.complexity,
             energy_ratio=float(energy_ratio),
         )
 

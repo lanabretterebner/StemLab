@@ -2,29 +2,18 @@
 
 from __future__ import annotations
 
-import locale
 import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 from .audio import STEM_NAMES
 from .pretrained import _normalise_input_for_backend
-from .runtime import drain_cr_lf_stream, last_progress_percent
+from .runtime import run_progress_process
 
 DEFAULT_DEMUCS_MODEL = "htdemucs_6s"
-DEMUCS_STEMS = STEM_NAMES
-
-
-@dataclass
-class DemucsResult:
-    """Audio files produced by one Demucs run."""
-
-    output_dir: Path
-    files: list[Path]
 
 
 class DemucsBackend:
@@ -60,7 +49,7 @@ class DemucsBackend:
         self,
         input_path: str | Path,
         output_dir: str | Path,
-    ) -> DemucsResult:
+    ) -> list[Path]:
         """Run Demucs, then copy the six stems into a flat ``output_dir``."""
         input_path = Path(input_path).resolve()
         output_dir = Path(output_dir).resolve()
@@ -110,41 +99,12 @@ class DemucsBackend:
             self._log(f"Device: {self.device}")
             self._progress(0.0)
 
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                bufsize=0,
-            )
-            assert process.stdout is not None
-
-            last_reported = -1
-            backend_encoding = locale.getpreferredencoding(False) or "utf-8"
-
-            def consume_segment(raw: bytes) -> None:
-                nonlocal last_reported
-                if not raw:
-                    return
-                percent = last_progress_percent(raw)
-                if percent is not None:
-                    rounded = int(percent)
-                    if rounded != last_reported:
-                        last_reported = rounded
-                        self._progress(percent)
-                try:
-                    text = raw.decode(backend_encoding, errors="replace").strip()
-                except LookupError:
-                    text = raw.decode("utf-8", errors="replace").strip()
-                if text:
-                    self._log(text)
-
-            drain_cr_lf_stream(process.stdout, consume_segment)
-            exit_code = process.wait()
+            exit_code = run_progress_process(command, self._log, self._progress)
             if exit_code != 0:
                 raise RuntimeError(f"Demucs failed with exit code {exit_code}")
 
             copied: list[Path] = []
-            for stem in DEMUCS_STEMS:
+            for stem in STEM_NAMES:
                 candidates = sorted(
                     raw_output.rglob(f"{stem}.wav"),
                     key=lambda path: (
@@ -166,4 +126,4 @@ class DemucsBackend:
                 "Demucs separation complete: "
                 + ", ".join(path.name for path in copied)
             )
-            return DemucsResult(output_dir=output_dir, files=copied)
+            return copied

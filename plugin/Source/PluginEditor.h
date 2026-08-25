@@ -122,8 +122,6 @@ private:
     juce::TextButton stopButton { "Stop" };
     juce::TextButton playButton { "Play" };
     juce::Label captureTimeLabel;
-    juce::Label recordHintLabel;
-    juce::Label dropHintLabel;
 
     juce::ToggleButton refinementButton { "StemLab refinement" };
 
