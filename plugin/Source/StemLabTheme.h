@@ -5,192 +5,128 @@
 #include <optional>
 
 /*
-    Every visual decision StemLab's interface makes, in one place.
+    Every visual decision StemLab's interface makes, in one place: the
+    "Nocturne" design system, draft 1a "Lanes" (docs/redesign/README.md is
+    the spec, docs/redesign/styles.css the source token sheet).
 
     The editor deliberately contains no colour or font literals, and its
     layout keeps only hairline 0-1 px trims inline: everything else it asks
-    this header for. A redesign therefore starts - and mostly ends - here
-    and in StemLabLookAndFeel, without touching control wiring, processor
-    state, or layout logic.
+    this header for. Restyle by changing values here and drawing in
+    StemLabLookAndFeel; only re-arrangements of the interface itself touch
+    the editor.
 
-        colours   Surfaces, text, accents, and per-widget fills.
-        palette   Waveform display palettes plus the cross-DAW stem identity
-                  colours shared with the Ableton Remote Script.
-        fonts     Every font the interface uses.
-        metrics   Layout dimensions. Entries that adapt to window size take
-                  the editor's responsive flags (narrow: width < compactWidth,
-                  shallow: height < compactHeight) and return the compact or
-                  regular value.
-
-    The values below transcribe the shipping 0.9.9 look exactly. Renaming or
-    regrouping tokens is refactoring; changing values is the redesign.
+        colours   Ground/surface/text, the accent and neutral ramps, and
+                  per-component colour roles.
+        palette   The cross-DAW stem identity colours shared with the
+                  Ableton Remote Script.
+        fonts     Inter-based type scale (weight 500 is expressed as
+                  juce::Font::bold and resolved to Inter Medium by
+                  StemLabLookAndFeel; nothing renders bolder than 500).
+        metrics   Layout dimensions of the fixed-width Lanes panel.
 */
 
 namespace stemlab::theme
 {
     namespace colours
     {
-        // Application surfaces.
-        inline juce::Colour windowBackground() { return juce::Colour::fromRGB(14, 17, 22); }
-        inline juce::Colour panel() { return juce::Colour::fromRGB(22, 27, 34); }
-        inline juce::Colour panelOutline() { return juce::Colour::fromRGB(43, 50, 61); }
+        // Nocturne ground and surface.
+        inline juce::Colour ground() { return juce::Colour(0xff161826); }
+        inline juce::Colour surface() { return juce::Colour(0xff232532); }
 
-        // Brand accent: primary action buttons, progress fill, and the
-        // drag-and-drop highlight all share this hue.
-        inline juce::Colour accent() { return juce::Colour::fromRGB(113, 93, 255); }
+        inline juce::Colour text() { return juce::Colour(0xffe9e9ed); }
+        inline juce::Colour divider() { return text().withAlpha(0.16f); }
 
-        // Secondary text: subtitle, capture status, timing line.
-        inline juce::Colour textMuted() { return juce::Colour::fromRGB(145, 154, 168); }
+        // The one blurple accent, used as lines, tints, and glows.
+        inline juce::Colour accent() { return juce::Colour(0xff9184d9); }
 
-        // Record buttons. System/PC capture reads as "hot"; input capture is
-        // a calmer slate so the two arm states scan differently.
-        inline juce::Colour recordSystem() { return juce::Colour::fromRGB(194, 66, 94); }
-        inline juce::Colour recordInput() { return juce::Colour::fromRGB(87, 102, 126); }
+        // Accent ramp (OKLCH-generated in the token sheet).
+        inline juce::Colour accent100() { return juce::Colour(0xfff5f4ff); }
+        inline juce::Colour accent200() { return juce::Colour(0xffe7e5fe); }
+        inline juce::Colour accent300() { return juce::Colour(0xffd2cefd); }
+        inline juce::Colour accent400() { return juce::Colour(0xffb5abfc); }
+        inline juce::Colour accent500() { return juce::Colour(0xff968ae0); }
+        inline juce::Colour accent600() { return juce::Colour(0xff796cbf); }
+        inline juce::Colour accent700() { return juce::Colour(0xff5d5294); }
+        inline juce::Colour accent800() { return juce::Colour(0xff423a6a); }
+        inline juce::Colour accent900() { return juce::Colour(0xff2b2741); }
 
-        inline juce::Colour progressTrack() { return juce::Colour::fromRGB(35, 42, 52); }
+        // Neutral ramp.
+        inline juce::Colour neutral100() { return juce::Colour(0xfff3f5fe); }
+        inline juce::Colour neutral200() { return juce::Colour(0xffe4e7f5); }
+        inline juce::Colour neutral300() { return juce::Colour(0xffcfd3e5); }
+        inline juce::Colour neutral400() { return juce::Colour(0xffb2b6ca); }
+        inline juce::Colour neutral500() { return juce::Colour(0xff9397ab); }
+        inline juce::Colour neutral600() { return juce::Colour(0xff75798c); }
+        inline juce::Colour neutral700() { return juce::Colour(0xff595d6c); }
+        inline juce::Colour neutral800() { return juce::Colour(0xff3f424d); }
+        inline juce::Colour neutral900() { return juce::Colour(0xff292b31); }
 
-        // Waveform tiles.
-        inline juce::Colour waveformBackground() { return juce::Colour::fromRGB(12, 15, 20); }
-        inline juce::Colour waveformGrid() { return juce::Colour::fromRGB(44, 51, 62); }
-        inline juce::Colour waveformCentreLine() { return juce::Colour::fromRGB(56, 63, 74); }
-        inline juce::Colour waveformOutline() { return juce::Colour::fromRGB(54, 61, 73); }
-        inline juce::Colour waveformPlayhead() { return juce::Colours::white.withAlpha(0.95f); }
+        // Muted text = text at a per-component opacity (spec: 40-75%).
+        inline juce::Colour text75() { return text().withAlpha(0.75f); }
+        inline juce::Colour text50() { return text().withAlpha(0.50f); }
+        inline juce::Colour text45() { return text().withAlpha(0.45f); }
 
-        inline juce::Colour waveformPlaceholderText() { return textMuted().withAlpha(0.65f); }
+        // Shared interactive roles.
+        inline juce::Colour outline() { return text().withAlpha(0.16f); }
+        inline juce::Colour hoverFill() { return text().withAlpha(0.07f); }
+        inline juce::Colour rowHoverFill() { return text().withAlpha(0.03f); }
+        inline juce::Colour accentTint10() { return accent().withAlpha(0.10f); }
+        inline juce::Colour accentTint13() { return accent().withAlpha(0.13f); }
+        inline juce::Colour accentHover18() { return accent400().withAlpha(0.18f); }
+        inline juce::Colour focusRing() { return accent(); }
 
-        // The elapsed/total time badge drawn over the previewing waveform.
-        inline juce::Colour badgeFill()
-        {
-            return juce::Colour::fromRGB(9, 11, 16).withAlpha(0.78f);
-        }
+        // Panel edge + shadow (approximates Nocturne's shadow-md).
+        inline juce::Colour panelEdge() { return neutral700(); }
+        inline juce::Colour panelShadow() { return juce::Colours::black.withAlpha(0.55f); }
+        inline juce::Colour accentGlow() { return accent().withAlpha(0.40f); }
 
-        inline juce::Colour badgeText() { return juce::Colours::white.withAlpha(0.9f); }
+        // Primary (filled) action: Separate control shell, Insert Stems.
+        inline juce::Colour primaryFill() { return accent700(); }
+        inline juce::Colour primaryFillHover() { return accent600(); }
+        inline juce::Colour primaryEdge() { return accent400(); }
+        inline juce::Colour primaryText() { return accent100(); }
 
-        // Whole-window file-drag state.
-        inline juce::Colour dragOverlay() { return accent().withAlpha(0.08f); }
-        inline juce::Colour dragBorder() { return accent(); }
-        inline juce::Colour dragPromptText() { return juce::Colours::white; }
+        // Refine toggle segment.
+        inline juce::Colour refineFill() { return accent900(); }
+        inline juce::Colour refineFillHover() { return accent800(); }
+        inline juce::Colour refineText() { return accent300(); }
+        inline juce::Colour refineDivider() { return accent200().withAlpha(0.30f); }
+        inline juce::Colour pillTrack() { return accent500(); }
+        inline juce::Colour pillTrackOff() { return neutral800(); }
+        inline juce::Colour pillKnob() { return accent100(); }
+
+        // Record dot: the accent doubles as the arm/recording indicator.
+        inline juce::Colour recordDot() { return accent(); }
+
+        // Stem lanes.
+        inline juce::Colour laneWell() { return ground(); }
+        inline juce::Colour waveUnplayed() { return neutral700(); }
+        inline juce::Colour wavePlayed() { return accent(); }
+        inline juce::Colour waveMuted() { return neutral800(); }
+        inline juce::Colour playhead() { return accent(); }
+        inline juce::Colour playheadGlow() { return accent().withAlpha(0.35f); }
+
+        inline juce::Colour checkboxFill() { return accent(); }
+        inline juce::Colour checkboxCheck() { return ground(); }
+        inline juce::Colour checkboxBorder() { return text().withAlpha(0.30f); }
+
+        inline juce::Colour muteActiveFill() { return neutral800(); }
+        inline juce::Colour muteActiveText() { return neutral200(); }
+        inline juce::Colour soloActiveFill() { return accent800(); }
+        inline juce::Colour soloActiveText() { return accent100(); }
+
+        // Transport.
+        inline juce::Colour scrubTrack() { return neutral800(); }
+        inline juce::Colour scrubFill() { return accent(); }
+
+        // Footer.
+        inline juce::Colour progressTrack() { return neutral800(); }
+        inline juce::Colour progressFill() { return accent(); }
+        inline juce::Colour statusCheck() { return accent(); }
     }
 
     namespace palette
     {
-        /*
-            User-selectable waveform palettes. Index 0 is the volume-mapped
-            spectrum ramp; 1..6 are the solid hues below. The count and the
-            user's choice live in StemLabAudioProcessor (waveformColourCount /
-            getWaveformColourIndex); the menu names live in the editor's
-            settings menu ("Spectrum (Volume)", "Violet", "Cyan", "Emerald",
-            "Amber", "Pink", "Ice"). Keep all three in step.
-        */
-        inline juce::Colour solidWaveformColour(int index)
-        {
-            switch (index)
-            {
-            case 1:
-                return juce::Colour::fromRGB(132, 102, 255); // Violet
-
-            case 2:
-                return juce::Colour::fromRGB(52, 210, 255); // Cyan
-
-            case 3:
-                return juce::Colour::fromRGB(66, 225, 154); // Emerald
-
-            case 4:
-                return juce::Colour::fromRGB(255, 179, 66); // Amber
-
-            case 5:
-                return juce::Colour::fromRGB(255, 91, 176); // Pink
-
-            case 6:
-                return juce::Colour::fromRGB(224, 234, 244); // Ice
-
-            default:
-                return juce::Colour::fromRGB(132, 102, 255);
-            }
-        }
-
-        inline juce::Colour interpolateRamp(const juce::Colour& first, const juce::Colour& second,
-                                            float amount)
-        {
-            return first.interpolatedWith(second, juce::jlimit(0.0f, 1.0f, amount));
-        }
-
-        inline juce::Colour spectrumColourForLevel(float level)
-        {
-            // Level is a perceptual 0..1 value derived from local dBFS.
-            // Quiet material starts violet/blue, medium material moves through
-            // cyan/green, and strong peaks reach yellow/orange.
-            const auto value = juce::jlimit(0.0f, 1.0f, level);
-
-            const juce::Colour violet = juce::Colour::fromRGB(119, 92, 255);
-
-            const juce::Colour blue = juce::Colour::fromRGB(61, 124, 255);
-
-            const juce::Colour cyan = juce::Colour::fromRGB(46, 220, 255);
-
-            const juce::Colour green = juce::Colour::fromRGB(70, 231, 151);
-
-            const juce::Colour yellow = juce::Colour::fromRGB(245, 235, 89);
-
-            const juce::Colour orange = juce::Colour::fromRGB(255, 154, 66);
-
-            if (value < 0.18f)
-                return interpolateRamp(violet, blue, value / 0.18f);
-
-            if (value < 0.38f)
-                return interpolateRamp(blue, cyan, (value - 0.18f) / 0.20f);
-
-            if (value < 0.62f)
-                return interpolateRamp(cyan, green, (value - 0.38f) / 0.24f);
-
-            if (value < 0.84f)
-                return interpolateRamp(green, yellow, (value - 0.62f) / 0.22f);
-
-            return interpolateRamp(yellow, orange, (value - 0.84f) / 0.16f);
-        }
-
-        inline juce::Colour waveformColourForLevel(int paletteIndex, float level)
-        {
-            const auto value = juce::jlimit(0.0f, 1.0f, level);
-
-            if (paletteIndex == 0)
-                return spectrumColourForLevel(value).withAlpha(0.96f);
-
-            // Solid palettes remain the selected hue, but still react to volume:
-            // quieter sections are darker/desaturated and peaks become brighter.
-            auto base = solidWaveformColour(paletteIndex);
-
-            const auto muted =
-                base.withSaturation(juce::jlimit(0.20f, 1.0f, base.getSaturation() * 0.58f))
-                    .withMultipliedBrightness(0.50f);
-
-            const auto hot =
-                base.withSaturation(juce::jlimit(0.0f, 1.0f, base.getSaturation() * 1.10f))
-                    .withMultipliedBrightness(1.18f);
-
-            return muted.interpolatedWith(hot, value).withAlpha(0.94f);
-        }
-
-        // The dB window behind every waveform colour: peaks below the floor
-        // count as silence, and the map range decides where the spectrum
-        // ramp's breakpoints land in real musical dynamics.
-        constexpr float silenceFloorDecibels = -54.0f;
-        constexpr float levelMapMinDecibels = -48.0f;
-        constexpr float levelMapMaxDecibels = 0.0f;
-
-        inline float perceptualWaveformLevel(float peak)
-        {
-            const auto safePeak = juce::jlimit(0.0f, 1.0f, peak);
-
-            // dB mapping makes the colour changes useful across real musical
-            // dynamics instead of bunching almost everything near "quiet".
-            const auto decibels = juce::Decibels::gainToDecibels(safePeak, silenceFloorDecibels);
-
-            return juce::jlimit(0.0f, 1.0f,
-                                juce::jmap(decibels, levelMapMinDecibels, levelMapMaxDecibels,
-                                           0.0f, 1.0f));
-        }
-
         /*
             Cross-DAW stem identity colours: the track colours REAPER and
             Ableton create for inserted stems, so a user moving between hosts
@@ -198,12 +134,9 @@ namespace stemlab::theme
 
             Must stay byte-identical with _stem_color in
             integrations/ableton/StemLabRemote/__init__.py - the Remote
-            Script cannot include this header.
-
-            Note these are similar to, but NOT the same as, the solid
-            waveform hues above (e.g. drums 0xFF9A42 here vs Amber 0xFFB342
-            there). Unifying them is a redesign decision, not a refactor:
-            changing either side alters what users already see.
+            Script cannot include this header. Deliberately independent from
+            the interface accent: these belong to the user's DAW project,
+            not to StemLab's theme.
         */
         inline std::optional<juce::Colour> stemIdentityColour(const juce::String& stemName)
         {
@@ -230,225 +163,183 @@ namespace stemlab::theme
 
     namespace fonts
     {
-        inline juce::FontOptions title() { return juce::FontOptions(24.0f, juce::Font::bold); }
+        // Weight 500 is expressed as juce::Font::bold; the LookAndFeel maps
+        // "bold" to the bundled Inter Medium, so nothing exceeds 500.
+        inline juce::FontOptions title() { return juce::FontOptions(17.0f, juce::Font::bold); }
 
-        inline juce::FontOptions status() { return juce::FontOptions(14.0f, juce::Font::bold); }
+        inline juce::FontOptions body() { return juce::FontOptions(13.0f); }
+        inline juce::FontOptions bodyMedium() { return juce::FontOptions(13.0f, juce::Font::bold); }
 
-        inline juce::FontOptions sectionHeading()
+        inline juce::FontOptions laneName() { return juce::FontOptions(13.5f, juce::Font::bold); }
+
+        inline juce::FontOptions separateLabel()
         {
-            return juce::FontOptions(15.0f, juce::Font::bold);
+            return juce::FontOptions(13.5f, juce::Font::bold);
         }
 
-        inline juce::FontOptions dragPrompt() { return juce::FontOptions(18.0f, juce::Font::bold); }
+        inline juce::FontOptions refineLabel() { return juce::FontOptions(11.0f); }
 
-        inline juce::FontOptions waveformPlaceholder() { return juce::FontOptions(11.0f); }
-
-        inline juce::FontOptions badge() { return juce::FontOptions(10.5f); }
+        inline juce::FontOptions meta() { return juce::FontOptions(11.0f); }
+        inline juce::FontOptions status() { return juce::FontOptions(11.5f); }
+        inline juce::FontOptions time() { return juce::FontOptions(12.0f); }
+        inline juce::FontOptions footerPath() { return juce::FontOptions(12.0f); }
+        inline juce::FontOptions smallButton() { return juce::FontOptions(10.0f); }
+        inline juce::FontOptions tooltip() { return juce::FontOptions(12.0f); }
     }
 
     namespace metrics
     {
-        // Below these the editor switches to its compact spacing. Width and
-        // height act independently: narrow windows shrink button widths,
-        // shallow windows shrink row heights.
-        constexpr int compactWidth = 620;
-        constexpr int compactHeight = 620;
-
-        constexpr int pick(bool compact, int compactValue, int regularValue)
-        {
-            return compact ? compactValue : regularValue;
-        }
-
         namespace window
         {
-            constexpr int defaultWidth = 680;
-            constexpr int defaultHeight = 680;
-
-            constexpr int minWidth = 540;
-            constexpr int minHeight = 540;
-            constexpr int maxWidth = 1400;
-            constexpr int maxHeight = 1200;
-
-            constexpr int outerPadding(bool compact) { return pick(compact, 12, 18); }
+            // Fixed-size panel per the 1a spec: an 880px-wide surface on a
+            // 12px ground margin, height fitting the content stack exactly
+            // (six lanes; adaptive child lanes scroll within the lanes
+            // region rather than growing the window).
+            constexpr int groundMargin = 12;
+            constexpr int width = 880 + 2 * groundMargin;
+            constexpr int height = 588;
         }
 
         namespace panel
         {
-            constexpr float cornerRadius = 12.0f;
-
-            // paint() carves the panel out of a fixed 18px margin and a fixed
-            // 78px header reserve; resized() adapts its padding separately.
-            // Kept as-is to preserve the shipped look - at compact sizes the
-            // painted panel sits a few pixels wider than the laid-out
-            // controls. Worth unifying during the redesign.
-            constexpr float paintMargin = 18.0f;
-            constexpr float headerReserve = 78.0f;
-
-            constexpr float outlineThickness = 1.0f;
-            constexpr float dragOutlineThickness = 2.5f;
-            constexpr int dragPromptInset = 60;
-
-            constexpr int insetX(bool narrow) { return pick(narrow, 7, 12); }
-            constexpr int insetY(bool shallow) { return pick(shallow, 5, 8); }
+            constexpr float cornerRadius = 14.0f;
+            constexpr int padX = 22;
+            constexpr int padY = 20;
+            constexpr int stackGap = 14;
+            constexpr int shadowRadius = 18;
+            constexpr int shadowOffsetY = 6;
         }
 
         namespace header
         {
-            constexpr int height(bool shallow) { return pick(shallow, 46, 56); }
-            constexpr int titleRowHeight(bool shallow) { return pick(shallow, 27, 32); }
-            constexpr int settingsButtonWidth(bool narrow) { return pick(narrow, 74, 82); }
-            constexpr int settingsButtonGap = 6;
-            constexpr int gapBelow(bool shallow) { return pick(shallow, 4, 8); }
+            constexpr int height = 30;
+            constexpr int glyphSize = 20;
+            constexpr int glyphGap = 10;
+            constexpr int settingsButton = 32;
+            constexpr float settingsRadius = 8.0f;
+            constexpr int settingsIcon = 15;
         }
 
-        namespace controls
+        namespace source
         {
-            // Vertical rhythm of the stacked control rows.
-            constexpr int rowGap(bool shallow) { return pick(shallow, 3, 5); }
-            constexpr int tightRowGap(bool shallow) { return pick(shallow, 2, 4); }
+            constexpr float radius = 8.0f;
+            constexpr int padX = 12;
+            constexpr int padY = 10;
+            constexpr int gap = 12;
+            constexpr int height = 56;
 
-            // Horizontal gaps between buttons inside a row.
-            constexpr int buttonGap = 5;
-            constexpr int buttonGapWide = 6;
+            constexpr int captureButtonWidth = 132;
+            constexpr int recordButtonWidth = 108;
+            constexpr int recordDot = 10;
 
-            constexpr int inputRowHeight(bool shallow) { return pick(shallow, 30, 34); }
-
-            constexpr int captureButtonWidthStandalone(bool narrow)
-            {
-                return pick(narrow, 92, 102);
-            }
-
-            constexpr int captureButtonWidthHosted(bool narrow) { return pick(narrow, 98, 108); }
-
-            constexpr int playButtonWidth(bool narrow) { return pick(narrow, 52, 58); }
-
-            constexpr int recordSystemWidthHosted(bool narrow) { return pick(narrow, 82, 92); }
-
-            // The standalone app moves recording onto its own second row.
-            constexpr int recordingRowHeight(bool shallow) { return pick(shallow, 28, 32); }
-            constexpr int recordSystemWidthStandalone(bool narrow)
-            {
-                return pick(narrow, 104, 116);
-            }
-            constexpr int recordInputWidth(bool narrow) { return pick(narrow, 96, 108); }
-
-            constexpr int refinementHeight(bool shallow) { return pick(shallow, 22, 25); }
-            constexpr int separateButtonHeight(bool shallow) { return pick(shallow, 31, 36); }
-            constexpr int statusHeight(bool shallow) { return pick(shallow, 18, 20); }
-            constexpr int progressHeight(bool shallow) { return pick(shallow, 15, 18); }
-            constexpr int timingHeight(bool shallow) { return pick(shallow, 17, 20); }
-            constexpr int stemsHeadingHeight(bool shallow) { return pick(shallow, 19, 22); }
+            // The Separate split control.
+            constexpr int separateMinWidth = 260;
+            constexpr int separateHeight = 36;
+            constexpr int separateExtraLeftGap = 8;
+            constexpr float separateRadius = 8.0f;
+            constexpr int refinePadLeft = 12;
+            constexpr int refinePadRight = 14;
+            constexpr int pillWidth = 22;
+            constexpr int pillHeight = 12;
+            constexpr int pillKnob = 8;
+            constexpr int pillGap = 8;
         }
 
-        namespace actionRow
+        namespace lanes
         {
-            constexpr int height(bool shallow) { return pick(shallow, 30, 34); }
-            constexpr int gapAbove(bool shallow) { return pick(shallow, 3, 5); }
+            // Grid per row: include | name | waveform | controls.
+            constexpr int includeColumn = 18;
+            constexpr int nameColumn = 92;
+            constexpr int controlsColumn = 78;
+            constexpr int columnGap = 12;
 
-            constexpr int sendWidthAbleton(bool narrow) { return pick(narrow, 108, 126); }
-            constexpr int retryWidth(bool narrow) { return pick(narrow, 60, 70); }
-            constexpr int sendWidthReaper(bool narrow) { return pick(narrow, 104, 118); }
-            constexpr int saveWidth(bool narrow) { return pick(narrow, 112, 128); }
-            constexpr int locationWidth(bool narrow) { return pick(narrow, 132, 150); }
+            constexpr int rowPadY = 5;
+            constexpr float rowRadius = 6.0f;
+            constexpr int wellHeight = 40;
+            constexpr float wellRadius = 6.0f;
+
+            constexpr int checkbox = 15;
+            constexpr float checkboxRadius = 4.0f;
+            constexpr float checkboxBorder = 1.5f;
+
+            constexpr int smButton = 22;
+            constexpr float smRadius = 6.0f;
+            constexpr int smGap = 6;
+            constexpr int layersIcon = 14;
+
+            // Waveform bars: 2px rounded bars on a ~4px pitch (approx. 150
+            // bars across the reference 612px well).
+            constexpr float barWidth = 2.0f;
+            constexpr float barPitch = 4.0f;
+            constexpr float barMinHeight = 2.0f;
+            constexpr float playheadWidth = 1.0f;
+            constexpr float playheadGlowWidth = 8.0f;
+
+            constexpr float excludedOpacity = 0.45f;
+
+            // Adaptive child lanes indent under their root.
+            constexpr int childIndent = 26;
+
+            constexpr int scrollbarThickness = 8;
         }
 
-        namespace stemTree
+        namespace transport
         {
-            constexpr int scrollbarThickness = 10;
-
-            // Row height flexes with the window between these bounds; rows
-            // tighter than the threshold drop to the smaller padding.
-            constexpr int minRowHeight(bool shallow) { return pick(shallow, 36, 42); }
-            constexpr int maxRowHeight = 72;
-            constexpr int rowPadThreshold = 42;
-            constexpr int rowPad(bool tight) { return pick(tight, 2, 4); }
-
-            constexpr int contentMinWidth = 320;
-            constexpr int viewportWidthInset = 12;
-            constexpr int treeInsetX = 2;
-
-            // Root stem rows.
-            constexpr int expandWidth = 24;
-            constexpr int checkboxWidth(bool narrow) { return pick(narrow, 88, 116); }
-            constexpr int checkboxGap = 4;
-            constexpr int playWidth(bool narrow) { return pick(narrow, 48, 55); }
-            constexpr int playGap = 5;
-            constexpr int menuWidth(bool narrow) { return pick(narrow, 28, 32); }
-            constexpr int menuGap = 3;
+            constexpr int height = 34;
+            constexpr int playButton = 34;
+            constexpr int gap = 14;
+            constexpr int timeWidth = 92;
+            constexpr int scrubHeight = 3;
+            constexpr float scrubRadius = 2.0f;
+            constexpr int abWidth = 150;
+            constexpr int abHeight = 28;
+            constexpr float abRadius = 8.0f;
         }
 
-        namespace adaptiveRow
+        namespace footer
         {
-            // Child rows of the adaptive stem tree indent by depth.
-            constexpr int indentPerDepth = 14;
-            constexpr int indentMin = 12;
-            constexpr int indentMax = 54;
+            constexpr int dividerFade = 48;
+            constexpr int dividerGap = 12;
+            constexpr int height = 34;
+            constexpr int gap = 10;
+            constexpr int statusLineGap = 6;
+            constexpr int statusRightMargin = 28;
+            constexpr int progressHeight = 3;
+            constexpr int progressLabelWidth = 110;
+            constexpr int folderIcon = 14;
+            constexpr int changeWidth = 56;
+            constexpr int saveWidth = 96;
+            constexpr int insertWidth = 108;
+            constexpr int buttonHeight = 30;
+        }
 
-            constexpr int expandWidth = 22;
-            constexpr int expandGap = 2;
-            constexpr int noExpandIndent = 24;
-            constexpr int expandPadX = 1;
-            constexpr int expandPadY = 3;
+        namespace buttons
+        {
+            constexpr float radius = 8.0f;
+            constexpr int height = 30;
+            constexpr int padX = 12;
+        }
 
-            constexpr int menuWidth = 30;
-            constexpr int menuGap = 3;
-
-            constexpr int playWidth = 50;
-            constexpr int playGap = 4;
-
-            // Vertical trim on the play/menu buttons and on label/waveform.
-            constexpr int buttonPadX = 1;
-            constexpr int buttonPadY = 2;
-            constexpr int contentPadY = 1;
-
-            constexpr int labelMinWidth = 96;
-            constexpr int labelMaxWidth = 160;
-            constexpr int labelWidthDivisor = 4;
-            constexpr int labelGap = 4;
+        namespace focus
+        {
+            constexpr float ringWidth = 2.0f;
+            constexpr float ringOffset = 2.0f;
         }
 
         namespace waveform
         {
-            constexpr float cornerRadius = 6.0f;
-            constexpr int inset = 4;
-
-            constexpr int gridDivisions = 8;
-
-            // A tile draws at most this many stacked channel lanes; files
-            // with more channels collapse into two.
-            constexpr int maxChannelLanes = 2;
-
-            // Two-pixel slices retain plenty of visual detail while keeping the
-            // six simultaneous waveform previews cheap to repaint at 20 Hz.
-            constexpr int sliceWidth = 2;
-
-            constexpr float channelHalfHeightRatio = 0.46f;
-
-            // Keep extremely quiet material visible without pretending it is
-            // loud: the trace never collapses below this half-height.
-            constexpr float minVisibleHalfHeight = 0.55f;
-
-            constexpr float traceThickness = 1.45f;
-            constexpr float playheadThickness = 1.5f;
-
-            constexpr int badgeRowHeight = 17;
-            constexpr int badgeWidth = 82;
-            constexpr float badgeCornerRadius = 4.0f;
-            constexpr int badgeTextInsetX = 4;
-
-            constexpr float outlineInset = 0.5f;
-            constexpr float outlineThickness = 1.0f;
+            // Thumbnail resolution/cache for the lane previews.
+            constexpr int thumbnailResolution = 512;
+            constexpr int thumbnailCacheSize = 24;
 
             // Below this many pixels of travel a gesture is a seek click;
             // beyond it, an external file drag.
             constexpr int clickVersusDragThreshold = 8;
-
-            constexpr int thumbnailResolution = 512;
-            constexpr int thumbnailCacheSize = 24;
         }
 
-        // The editor repaints waveforms and re-polls processor state at this
-        // rate; StemWaveformComponent's repaint cost is budgeted around it.
+        constexpr float disabledOpacity = 0.45f;
+
+        // The editor repaints lanes and re-polls processor state at this rate.
         constexpr int uiRefreshHz = 20;
     }
 }

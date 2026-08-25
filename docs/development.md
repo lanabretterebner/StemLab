@@ -55,10 +55,11 @@ PluginProcessor sends manifest path over localhost UDP
 
 ### `plugin/Source/PluginEditor.h/.cpp`
 
-Owns the visible UI:
+Owns the visible UI (the Nocturne 1a "Lanes" panel):
 
-- `StemWaveformComponent` draws and seeks waveforms.
-- `RecursiveStemRowComponent` renders one adaptive-tree child.
+- `StemLaneWaveform` draws one lane's bar waveform and seeks the shared
+  transport; dragging it exports the stem file.
+- `StemLaneComponent` renders one stem lane (root or adaptive child).
 - `StemLabAudioProcessorEditor` creates controls, lays them out, and turns
   button clicks into processor calls.
 

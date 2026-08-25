@@ -5,20 +5,23 @@
 #include <functional>
 #include "PluginProcessor.h"
 #include "StemLabLookAndFeel.h"
+#include "StemLabWidgets.h"
 
-/** Draws one source/stem waveform and converts mouse clicks into preview seeks. */
-class StemWaveformComponent final : public juce::Component
+/**
+ * One lane's waveform well: rounded ground-coloured well, 2px rounded bars
+ * from the real audio peaks (played portion in accent, unplayed neutral),
+ * and the shared playhead. Clicks seek the shared transport; dragging
+ * exports the stem file to any DAW or file manager.
+ */
+class StemLaneWaveform final : public juce::Component
 {
 public:
-    StemWaveformComponent(StemLabAudioProcessor& processor, int stemIndex,
-                          juce::AudioFormatManager& formatManager,
-                          juce::AudioThumbnailCache& thumbnailCache);
-
-    StemWaveformComponent(StemLabAudioProcessor& processor, juce::String recursiveId,
-                          juce::AudioFormatManager& formatManager,
-                          juce::AudioThumbnailCache& thumbnailCache);
+    StemLaneWaveform(StemLabAudioProcessor& processor, juce::AudioFormatManager& formatManager,
+                     juce::AudioThumbnailCache& thumbnailCache);
 
     void setFile(const juce::File& file);
+    void setMutedAppearance(bool muted);
+
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
     void mouseDrag(const juce::MouseEvent&) override;
@@ -26,55 +29,68 @@ public:
 
 private:
     StemLabAudioProcessor& processor;
-    int stemIndex = 0;
-    bool recursive = false;
-    juce::String recursiveId;
     juce::AudioThumbnail thumbnail;
     juce::File currentFile;
+    bool mutedAppearance = false;
     bool externalDragStarted = false;
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StemWaveformComponent)
-};
-
-/** One selectable, playable row in the adaptive stem tree. */
-class RecursiveStemRowComponent final : public juce::Component
-{
-public:
-    RecursiveStemRowComponent(StemLabAudioProcessor& processor,
-                              const StemLabRecursiveStemInfo& info,
-                              juce::AudioFormatManager& formatManager,
-                              juce::AudioThumbnailCache& thumbnailCache,
-                              std::function<void(const juce::String&)> toggleExpanded,
-                              std::function<bool(const juce::String&)> isExpanded);
-
-    void setInfo(const StemLabRecursiveStemInfo& info);
-    void refresh(bool engineRunning, bool previewPlaying);
-    void resized() override;
-
-    juce::String getItemId() const { return item.id; }
-    juce::String getRootStem() const { return item.rootStem; }
-
-private:
-    void showActionMenu();
-
-    StemLabAudioProcessor& processor;
-    StemLabRecursiveStemInfo item;
-    juce::ToggleButton selectButton;
-    juce::TextButton expandButton{">"};
-    juce::TextButton playButton{"Play"};
-    juce::TextButton actionButton{"..."};
-    std::function<void(const juce::String&)> toggleExpandedCallback;
-    std::function<bool(const juce::String&)> isExpandedCallback;
-    std::unique_ptr<StemWaveformComponent> waveform;
-
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(RecursiveStemRowComponent)
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StemLaneWaveform)
 };
 
 /**
- * StemLab's complete JUCE interface.
+ * One stem lane: include checkbox | name | waveform well | controls.
  *
- * This class owns controls and layout only. Audio state and background jobs live
- * in StemLabAudioProcessor; separation algorithms live in the Python package.
+ * Root lanes (stemIndex 0..5) carry Solo, Mute, and the adaptive-split
+ * layers menu. Adaptive child lanes (childId non-empty) indent under their
+ * root and carry an exclusive-audition Solo plus their own layers menu.
+ */
+class StemLaneComponent final : public juce::Component
+{
+public:
+    StemLaneComponent(StemLabAudioProcessor& processor, int stemIndex, juce::String childId,
+                      juce::AudioFormatManager& formatManager,
+                      juce::AudioThumbnailCache& thumbnailCache,
+                      std::function<void()> refreshEditor,
+                      std::function<void(int)> showRootMenu,
+                      std::function<void(const juce::String&)> showChildMenu);
+
+    void refresh();
+
+    bool isChildLane() const noexcept { return childId.isNotEmpty(); }
+    juce::String getChildId() const { return childId; }
+    juce::String getRootStem() const { return childInfo.rootStem; }
+
+    void setChildInfo(const StemLabRecursiveStemInfo& info);
+
+    void resized() override;
+    void paint(juce::Graphics&) override;
+
+private:
+    StemLabAudioProcessor& processor;
+    int stemIndex;
+    juce::String childId;
+    StemLabRecursiveStemInfo childInfo;
+    juce::File laneFile;
+
+    stemlab::widgets::IncludeCheckbox include;
+    juce::Label nameLabel;
+    std::unique_ptr<StemLaneWaveform> waveform;
+    juce::TextButton soloButton{"S"};
+    juce::TextButton muteButton{"M"};
+    std::unique_ptr<stemlab::widgets::IconButton> layersButton;
+
+    std::function<void()> refreshEditor;
+    std::function<void(int)> showRootMenu;
+    std::function<void(const juce::String&)> showChildMenu;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StemLaneComponent)
+};
+
+/**
+ * StemLab's complete JUCE interface: the Nocturne 1a "Lanes" panel
+ * (docs/redesign/README.md). This class owns controls and layout only.
+ * Audio state and background jobs live in StemLabAudioProcessor;
+ * separation algorithms live in the Python package.
  */
 class StemLabAudioProcessorEditor final : public juce::AudioProcessorEditor,
                                           public juce::FileDragAndDropTarget,
@@ -107,69 +123,74 @@ private:
     void showFirstRunWelcome();
     void launchAbletonSetup();
     void refreshFromProcessor();
-    void syncRecursiveRows();
-    void showRootRecursiveMenu(int stemIndex);
+
+    void showRootLayersMenu(int stemIndex);
+    void showChildLayersMenu(const juce::String& itemId);
     bool rootSupportsAdaptiveSplit(int stemIndex) const;
     bool rootHasChildren(int stemIndex) const;
     void toggleRootExpanded(int stemIndex);
-    void toggleRecursiveExpanded(const juce::String& itemId);
-    bool isRecursiveExpanded(const juce::String& itemId) const;
     std::vector<StemLabRecursiveStemInfo> getVisibleRecursiveItems() const;
+    void syncLanes();
+
+    juce::String composeStatusLine() const;
+    juce::String displayPath(const juce::File& directory) const;
 
     static bool isSupportedAudioFile(const juce::File& file);
 
     StemLabAudioProcessor& processor;
 
-    // Installed over JUCE's default so the redesign has one restyling hook;
-    // see StemLabLookAndFeel.h. The destructor detaches it before members
-    // are torn down.
     StemLabLookAndFeel lookAndFeel;
+    juce::TooltipWindow tooltipWindow{this};
 
+    // Header.
     juce::Label titleLabel;
-    juce::Label subtitleLabel;
-    juce::TextButton settingsButton{"Settings"};
+    std::unique_ptr<stemlab::widgets::IconButton> settingsButton;
 
-    juce::TextButton captureButton{"Capture"};
-    juce::TextButton recordInputButton{"Record Input"};
-    juce::TextButton recordSystemButton{"Record System"};
-    juce::TextButton stopButton{"Stop"};
-    juce::TextButton playButton{"Play"};
-    juce::Label captureTimeLabel;
+    // Source strip.
+    juce::Label fileNameLabel;
+    juce::Label fileMetaLabel;
+    juce::TextButton captureButton;
+    stemlab::widgets::RecordButton recordSystemButton{"Record PC"};
+    stemlab::widgets::RecordButton recordInputButton{"Record In"};
+    stemlab::widgets::SeparateSplitControl separateControl;
 
-    juce::ToggleButton refinementButton{"StemLab refinement"};
-
-    juce::TextButton separateButton{"Separate"};
-
-    double progressValue = 0.0;
-    juce::ProgressBar progressBar{progressValue};
-    juce::Label statusLabel;
-    juce::Label timingLabel;
-
-    juce::Label stemsLabel;
-    std::array<juce::ToggleButton, StemLabAudioProcessor::stemCount> stemButtons;
-    std::array<juce::TextButton, StemLabAudioProcessor::stemCount> stemExpandButtons;
-    std::array<juce::TextButton, StemLabAudioProcessor::stemCount> stemPlayButtons;
-    std::array<juce::TextButton, StemLabAudioProcessor::stemCount> stemRecursiveButtons;
-    std::array<bool, StemLabAudioProcessor::stemCount> rootExpanded{};
-
+    // Lanes.
     juce::AudioFormatManager waveformFormats;
     juce::AudioThumbnailCache waveformCache{
         stemlab::theme::metrics::waveform::thumbnailCacheSize};
-
-    std::array<std::unique_ptr<StemWaveformComponent>, StemLabAudioProcessor::stemCount>
-        waveformComponents;
-
-    juce::Component stemTreeContent;
-    juce::Viewport stemViewport;
+    juce::Viewport laneViewport;
+    juce::Component laneContent;
+    std::array<std::unique_ptr<StemLaneComponent>, StemLabAudioProcessor::stemCount> rootLanes;
+    std::vector<std::unique_ptr<StemLaneComponent>> childLanes;
+    std::array<bool, StemLabAudioProcessor::stemCount> rootExpanded{};
     juce::StringArray collapsedRecursiveIds;
-    std::vector<std::unique_ptr<RecursiveStemRowComponent>> recursiveRows;
+    void layoutLanes();
 
-    juce::TextButton saveSelectedButton{"Save Selected..."};
-    juce::TextButton sendSelectedButton{"Send Selected"};
-    juce::TextButton retryImportButton{"Retry"};
-    juce::TextButton openJobButton{"Choose File Location"};
+    // Transport.
+    stemlab::widgets::PlayCircleButton playButton;
+    juce::Label timeLabel;
+    stemlab::widgets::Scrubber scrubber;
+    stemlab::widgets::SegmentedControl abControl{"Original", "Stems"};
+    bool sawSuccessfulJob = false;
 
-    juce::Label bridgeLabel;
+    // Footer.
+    stemlab::widgets::FadingDivider footerDivider;
+    juce::Label statusLabel;
+    double progressValue = 0.0;
+    juce::ProgressBar progressBar{progressValue};
+    juce::Label progressLabel;
+    juce::Label pathLabel;
+    juce::TextButton changeFolderButton{"Change"};
+    juce::TextButton saveButton{"Save Stems"};
+    juce::TextButton retryButton{"Retry"};
+    juce::TextButton insertButton;
+
+    // Layout rectangles paint() needs (computed in resized()).
+    juce::Rectangle<int> panelBounds;
+    juce::Rectangle<int> brandGlyphBounds;
+    juce::Rectangle<int> sourceStripBounds;
+    juce::Rectangle<int> statusIconBounds;
+    juce::Rectangle<int> folderIconBounds;
 
     std::unique_ptr<juce::FileChooser> fileChooser;
     std::unique_ptr<juce::FileChooser> audioFileChooser;

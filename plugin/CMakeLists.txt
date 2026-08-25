@@ -76,6 +76,8 @@ juce_add_plugin(StemLabPlugin
 juce_add_binary_data(StemLabAssets
     SOURCES
         Resources/StemLabIcon.png
+        Resources/fonts/Inter-Regular.ttf
+        Resources/fonts/Inter-Medium.ttf
 )
 
 target_sources(StemLabPlugin
@@ -86,6 +88,9 @@ target_sources(StemLabPlugin
         Source/PluginEditor.h
         Source/StemLabTheme.h
         Source/StemLabLookAndFeel.h
+        Source/StemLabLookAndFeel.cpp
+        Source/StemLabWidgets.h
+        Source/StemLabWidgets.cpp
         Source/StemLabPaths.cpp
         Source/StemLabPaths.h
         Source/ReaperHost.cpp
