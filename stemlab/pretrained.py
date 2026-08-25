@@ -24,17 +24,100 @@ def _find_ffmpeg() -> str | None:
     return shutil.which("ffmpeg")
 
 
+def _clear_audio_files(folder: Path) -> None:
+    """Remove audio left by an earlier run so lookups cannot see stale stems."""
+    if not folder.is_dir():
+        return
+
+    for path in folder.rglob("*"):
+        if path.is_file() and path.suffix.lower() in {".wav", ".flac"}:
+            try:
+                path.unlink()
+            except OSError:
+                # A file another process holds open is not worth failing a
+                # separation over; it is overwritten or ignored downstream.
+                pass
+
+
+def _canonicalise_output_names(
+    output_dir: Path,
+    track_prefix: str,
+    log: Callable[[str], None],
+) -> None:
+    """Rename "{track}_{instrument}.wav" outputs to plain "{instrument}.wav"."""
+    prefix = f"{track_prefix}_"
+
+    for path in sorted(output_dir.glob(f"{prefix}*")):
+        if not path.is_file() or path.suffix.lower() not in {".wav", ".flac"}:
+            continue
+
+        instrument = path.stem[len(prefix) :].strip().lower()
+
+        if not instrument:
+            continue
+
+        target = path.with_name(f"{instrument}{path.suffix.lower()}")
+
+        if target == path:
+            continue
+
+        try:
+            path.replace(target)
+        except OSError as exc:
+            # Keep the original name rather than losing the stem; the
+            # tiered lookup in audio.find_stem_file still resolves it.
+            log(f"Could not rename {path.name} to {target.name}: {exc}")
+
+
+def _convert_with_soundfile(input_path: Path, staged: Path) -> bool:
+    """Rewrite a losslessly-decodable input as WAV without needing ffmpeg."""
+    try:
+        import soundfile as sf
+
+        data, sample_rate = sf.read(str(input_path), always_2d=True)
+        sf.write(str(staged), data, sample_rate, subtype="PCM_24")
+    except Exception:
+        return False
+
+    return staged.exists()
+
+
 def _normalise_input_for_backend(
     input_path: Path,
     staging_dir: Path,
     log: Callable[[str], None],
+    passthrough_extensions: set[str] | None = None,
 ) -> Path:
-    """Return a WAV/FLAC the separator can decode, converting via ffmpeg if needed."""
+    """Return audio the separator can decode, converting when it cannot.
+
+    ``passthrough_extensions`` is what the calling backend reads natively.
+    It matters because the backends disagree: Demucs decodes FLAC happily,
+    while the BS-RoFormer CLI discovers its input with a case-sensitive
+    ``glob("*.wav")`` and sees nothing else - a staged FLAC (or an
+    upper-case ``SONG.WAV``) made it fail with "No .wav files found".
+    """
+    if passthrough_extensions is None:
+        passthrough_extensions = {".wav", ".flac"}
+
     extension = input_path.suffix.lower()
-    if extension in {".wav", ".flac"}:
-        staged = staging_dir / input_path.name
+
+    if extension in passthrough_extensions:
+        # Always stage under the lower-cased extension so a case-sensitive
+        # backend glob still finds the file on Linux.
+        staged = staging_dir / f"{input_path.stem}{extension}"
         shutil.copy2(input_path, staged)
         return staged
+
+    if extension == ".flac":
+        # Lossless and already a soundfile dependency, so this needs no
+        # ffmpeg install just to feed FLAC to a WAV-only backend.
+        staged = staging_dir / f"{input_path.stem}_stemlab_input.wav"
+        log("Converting FLAC to WAV for the separator...")
+
+        if _convert_with_soundfile(input_path, staged):
+            return staged
+
+        log("soundfile could not decode the FLAC; falling back to ffmpeg.")
 
     ffmpeg = _find_ffmpeg()
     if ffmpeg is None:
@@ -115,12 +198,19 @@ class RoFormerBackend:
         output_dir.mkdir(parents=True, exist_ok=True)
         device = resolve_torch_device(self.device, self._log)
 
+        # Outputs are named after the input track, so a reused output
+        # directory would accumulate one set per run instead of overwriting.
+        # Stem lookup would then be free to pick a previous song's audio.
+        _clear_audio_files(output_dir)
+
         with tempfile.TemporaryDirectory(prefix="stemlab_input_") as td:
             staging = Path(td)
-            _normalise_input_for_backend(
+            staged = _normalise_input_for_backend(
                 input_path=input_path,
                 staging_dir=staging,
                 log=self._log,
+                # The upstream CLI only ever discovers "*.wav".
+                passthrough_extensions={".wav"},
             )
             command = [
                 sys.executable,
@@ -152,6 +242,12 @@ class RoFormerBackend:
             if return_code != 0:
                 raise subprocess.CalledProcessError(return_code, command)
             self._progress(100.0)
+
+            # The CLI writes "{track}_{instrument}.wav". Renaming those to
+            # plain "{instrument}.wav" makes every downstream lookup exact:
+            # a track called "guitar_take" no longer makes all six outputs
+            # look like the guitar stem.
+            _canonicalise_output_names(output_dir, staged.stem, self._log)
 
         files = sorted(
             p

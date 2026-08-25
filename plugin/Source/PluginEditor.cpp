@@ -666,10 +666,14 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
     separateControl.onSeparate = [this]
     {
-        // While a job runs the action segment is the abort switch.
-        if (processor.isEngineRunning())
-            processor.cancelSeparation();
-        else
+        // Act on what the button was showing when it was clicked, not on
+        // the state a moment later: the engine can finish between the last
+        // refresh and the click, and re-reading it there would turn a click
+        // on "Cancel" into a fresh multi-minute separation (or a click on
+        // "Separate" into cancelling a split someone just started).
+        if (separateControlShowsCancel)
+            processor.cancelSeparation(); // harmless if the engine just ended
+        else if (!processor.isEngineRunning())
             processor.launchSeparationAndExport();
 
         refreshFromProcessor();
@@ -847,6 +851,11 @@ bool StemLabAudioProcessorEditor::isSupportedAudioFile(const juce::File& file)
 
 bool StemLabAudioProcessorEditor::isInterestedInFileDrag(const juce::StringArray& files)
 {
+    // Loading a source resets the job state a running engine still writes
+    // to, so do not invite a drop that filesDropped would have to refuse.
+    if (processor.isCapturing() || processor.isEngineRunning())
+        return false;
+
     for (const auto& path : files)
     {
         if (isSupportedAudioFile(juce::File(path)))
@@ -863,6 +872,12 @@ void StemLabAudioProcessorEditor::filesDropped(const juce::StringArray& files, i
 
     if (processor.isCapturing())
         return;
+
+    if (processor.isEngineRunning())
+    {
+        processor.postUiStatus("Cancel the running job before loading another file");
+        return;
+    }
 
     for (const auto& path : files)
     {
@@ -1493,7 +1508,9 @@ void StemLabAudioProcessorEditor::timerCallback()
     // its children; this is where that reaches the monitor.
     processor.refreshStemMixIfNeeded();
 
-    if (!processor.isStandaloneApp())
+    // Only the Ableton bridge ever writes those files; polling for them in
+    // REAPER or a plain host is pure disk traffic at the timer rate.
+    if (processor.getHostIntegration() == StemLabAudioProcessor::hostIntegrationAbletonLive)
     {
         processor.refreshAbletonSourceClipFromDisk();
         processor.refreshAbletonBridgeStatusFromDisk();
@@ -1590,6 +1607,8 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
     // The action segment doubles as Cancel while a job runs.
     const bool cancelPending = processor.isCancelRequested();
+
+    separateControlShowsCancel = engineRunning;
 
     separateControl.setActionText(engineRunning ? (cancelPending ? "Cancelling..." : "Cancel")
                                                 : "Separate");
@@ -2144,8 +2163,20 @@ void StemLabAudioProcessorEditor::chooseEngineExecutable()
     if (!start.exists())
         start = juce::File::getSpecialLocation(juce::File::userHomeDirectory);
 
-    fileChooser =
-        std::make_unique<juce::FileChooser>("Choose stemlab-plugin-job executable", start, "*.exe");
+    // On Linux the engine is an extensionless console script or a python
+    // binary, so an "*.exe" filter showed an empty listing everywhere and
+    // made manual engine selection impossible. An empty pattern shows all
+    // files.
+    const juce::String executablePattern {
+#if JUCE_WINDOWS
+        "*.exe"
+#else
+        ""
+#endif
+    };
+
+    fileChooser = std::make_unique<juce::FileChooser>("Choose stemlab-plugin-job executable", start,
+                                                      executablePattern);
 
     fileChooser->launchAsync(juce::FileBrowserComponent::openMode |
                                  juce::FileBrowserComponent::canSelectFiles,

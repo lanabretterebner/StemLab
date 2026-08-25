@@ -246,14 +246,63 @@ StemLabSystemLoopbackThread::StemLabSystemLoopbackThread (
 StemLabSystemLoopbackThread::~StemLabSystemLoopbackThread()
 {
     signalThreadShouldExit();
+    notify();
 
-    // The run() loop only ever waits in bounded sleeps, so this cannot reach
-    // JUCE's cancellation path.
-    stopThread (4000);
+    /*
+        The loop waits only in bounded sleeps, but the last thing run() does
+        is destroy the ThreadedWriter, which synchronously flushes its FIFO
+        and finalises the WAV header - disk I/O of no fixed duration on a
+        spun-down external drive or a stalled network mount.
+
+        stopThread()'s timeout would escalate that to pthread_cancel, and a
+        forced unwind through noexcept destructor frames calls
+        std::terminate: the whole host dies, and the recording with it. So
+        wait generously first, and keep the timed stop only as a
+        last-resort backstop for a genuinely wedged filesystem.
+    */
+    if (! waitForThreadToExit (30000))
+        stopThread (2000);
 }
+
+namespace
+{
+/*
+    Keep this module mapped for the rest of the process.
+
+    The reader below runs detached and self-owned, which is deliberate:
+    pa_simple_read blocks with no cancellation point, so nothing may join
+    it. Its heap state outlives the plugin safely - but the code it
+    executes lives in this shared object, and a host that unloads the
+    plugin (JUCE hosts, plug-in scanners) would pull those pages out from
+    under a reader still inside its final read. Holding an extra
+    RTLD_NODELETE reference costs one leaked handle and removes the
+    entire class of crash.
+*/
+void pinModuleForDetachedThreads()
+{
+    static const bool pinned = []
+    {
+        Dl_info info{};
+
+        if (dladdr (reinterpret_cast<const void*> (&pinModuleForDetachedThreads), &info) == 0)
+            return false;
+
+        if (info.dli_fname == nullptr)
+            return false;
+
+        // Intentionally leaked: this reference is what keeps the module
+        // mapped, so it must never be released.
+        return dlopen (info.dli_fname, RTLD_NOW | RTLD_NOLOAD | RTLD_NODELETE) != nullptr;
+    }();
+
+    juce::ignoreUnused (pinned);
+}
+} // namespace
 
 void StemLabSystemLoopbackThread::run()
 {
+    pinModuleForDetachedThreads();
+
     auto reader = std::make_shared<PulseReader>();
 
     std::thread ([reader] { reader->run(); }).detach();
@@ -309,9 +358,31 @@ void StemLabSystemLoopbackThread::run()
                 }
             }
 
-            writer->write (
+            // ThreadedWriter::write does not block: when its FIFO is full
+            // it returns false and DISCARDS the block. Silently dropping
+            // audio here produced a time-compressed recording that still
+            // reported success, so wait for the disk instead - and only
+            // give up (loudly) if it never catches up.
+            bool written = writer->write (
                 converted.getArrayOfReadPointers(),
                 frames);
+
+            for (int attempt = 0; ! written && attempt < 200; ++attempt)
+            {
+                wait (10);
+
+                written = writer->write (
+                    converted.getArrayOfReadPointers(),
+                    frames);
+            }
+
+            if (! written)
+            {
+                fail (
+                    "The recording disk cannot keep up - stopping before more"
+                    " audio is lost");
+                return false;
+            }
 
             owner.capturedSamples.fetch_add (
                 static_cast<juce::int64> (frames));

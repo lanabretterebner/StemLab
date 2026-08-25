@@ -49,11 +49,22 @@ def _fuse_channel(
     if roformer.size == 0:
         return roformer.astype(np.float32, copy=True)
 
-    noverlap = n_fft - hop
+    # scipy shrinks nperseg to the signal length but leaves noverlap alone,
+    # so a block shorter than the overlap raises "noverlap must be less than
+    # nperseg". Clamp both to what this block can actually support.
+    frames = int(roformer.shape[0])
+    nperseg = min(n_fft, frames)
+    noverlap = min(n_fft - hop, nperseg - 1)
+
+    if nperseg < 2:
+        # Sub-frame remainder: a straight blend is indistinguishable from a
+        # transform at this length and cannot fail.
+        blended = roformer_preference * roformer + (1.0 - roformer_preference) * demucs
+        return blended.astype(np.float32, copy=False)
 
     _, _, zr = stft(
         roformer,
-        nperseg=n_fft,
+        nperseg=nperseg,
         noverlap=noverlap,
         window="hann",
         boundary="zeros",
@@ -62,7 +73,7 @@ def _fuse_channel(
 
     _, _, zd = stft(
         demucs,
-        nperseg=n_fft,
+        nperseg=nperseg,
         noverlap=noverlap,
         window="hann",
         boundary="zeros",
@@ -99,7 +110,7 @@ def _fuse_channel(
 
     _, audio = istft(
         fused,
-        nperseg=n_fft,
+        nperseg=nperseg,
         noverlap=noverlap,
         window="hann",
         input_onesided=True,
@@ -192,7 +203,23 @@ def fuse_stem_pair(
         chunk - overlap,
     )
 
+    # A trailing chunk shorter than one analysis frame cannot be transformed
+    # (scipy shrinks nperseg to the block but keeps noverlap, then refuses).
+    # Pulling such a tail back into the previous chunk keeps every block
+    # transformable; the overlap weighting below already handles the extra
+    # overlap that creates.
+    minimum_chunk = 4096
+
+    starts = []
+
     for start in range(0, length, step):
+        if start > 0 and length - start < minimum_chunk:
+            starts.append(max(0, length - chunk))
+            break
+
+        starts.append(start)
+
+    for start in starts:
         end = min(
             length,
             start + chunk,

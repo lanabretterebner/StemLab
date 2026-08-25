@@ -120,9 +120,14 @@ def separate(
     log(f"Output: {output_dir}")
     log(f"Separation engine: {engine}")
 
+    # "gpu" is an accepted alias for cuda, so resolving it is not a
+    # downgrade - reporting "not available here" for a working GPU sent
+    # users troubleshooting a healthy install.
+    equivalent_request = {"gpu": "cuda"}.get(requested_device, requested_device)
+
     if requested_device in ("", "auto"):
         log(f"Device: {device} (auto-selected)")
-    elif device != requested_device:
+    elif device != equivalent_request:
         log(f"Device: {device} (requested {requested_device}, which is not available here)")
     else:
         log(f"Device: {device}")

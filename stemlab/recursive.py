@@ -8,6 +8,7 @@ model quirks in this module; the plugin should only need stable child metadata.
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -101,6 +102,21 @@ def _find_output(paths: Iterable[Path], *needles: str) -> Path | None:
     return None
 
 
+def _json_safe_float(value: float) -> float:
+    """Round for the manifest, refusing NaN/inf.
+
+    json.dumps writes those as the bare tokens NaN/Infinity, which no strict
+    JSON parser accepts - the plugin's would reject the whole manifest and
+    discard a split whose audio is sitting on disk.
+    """
+    number = float(value)
+
+    if not math.isfinite(number):
+        return 0.0
+
+    return round(number, 5)
+
+
 def _safe_id_part(text: str) -> str:
     out = []
     previous_underscore = False
@@ -128,7 +144,11 @@ def _children_from_outputs(
     children: list[RecursiveChild] = []
     used: set[Path] = set()
     for label, needles, category, actions in preferred:
-        found = _find_output(paths, *needles)
+        # Search only what is still unclaimed. Needles overlap by design
+        # ("reverb" is inside "no_reverb"), so matching against the whole
+        # list could return a file an earlier entry already took - and the
+        # entry that really wanted it then silently lost its label.
+        found = _find_output([path for path in paths if path not in used], *needles)
         if found is not None and found not in used:
             children.append(
                 RecursiveChild(
@@ -228,7 +248,7 @@ def _write_manifest(
                 "path": str(child.path.resolve()),
                 "category": child.category,
                 "actions": list(child.actions),
-                "confidence": round(float(child.confidence), 5),
+                "confidence": _json_safe_float(child.confidence),
                 "estimated_source_count": int(child.estimated_source_count),
             }
             for child in children

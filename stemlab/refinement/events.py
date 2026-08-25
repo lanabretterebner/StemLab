@@ -44,6 +44,13 @@ def detect_kick_events(
     locations for the adaptive cancellation experiment and is easy to inspect.
     """
     x = _mono(drums)
+
+    # sosfiltfilt needs more samples than its edge padding, and the envelope
+    # work below indexes env[0]; neither survives an empty or very short
+    # stem. Nothing to refine there anyway.
+    if x.shape[0] < 64:
+        return []
+
     low = _lowpass(x, sr)
 
     # Short RMS-ish low-frequency energy envelope.

@@ -124,21 +124,52 @@ def _terminate_registered_processes() -> None:
 def _make_parent_death_check() -> Callable[[], bool]:
     """Return a poll function that is True once the launching process died.
 
-    POSIX reparents an orphan, so a changed ppid means the plugin (or the
-    whole host) is gone. Windows keeps the stale parent pid, so a handle to
-    the parent is opened up front and polled instead - the early open also
-    pins the pid against reuse.
+    The plugin passes its own pid in STEMLAB_PARENT_PID, which is what makes
+    this reliable: comparing ppid against the value seen at startup only
+    works if this thread started before the parent died, and it does not -
+    importing torch takes seconds, and a host that dies during that window
+    has already had this process reparented. An explicitly named pid has no
+    such window.
+
+    Without the variable (an older plugin, or a manual run) it falls back to
+    watching for reparenting, which is still right in the common case.
     """
+    named_parent = 0
+
+    try:
+        named_parent = int(os.environ.get("STEMLAB_PARENT_PID", "") or 0)
+    except ValueError:
+        named_parent = 0
+
     if sys.platform == "win32":
         import ctypes
 
         synchronize = 0x00100000
         wait_object_0 = 0
         kernel32 = ctypes.windll.kernel32
-        handle = kernel32.OpenProcess(synchronize, False, os.getppid())
+        target = named_parent or os.getppid()
+        handle = kernel32.OpenProcess(synchronize, False, target)
+
         if not handle:
-            return lambda: False
+            # A named parent that cannot be opened has already exited (the
+            # pid is gone); an unopenable ppid is not conclusive.
+            return (lambda: True) if named_parent else (lambda: False)
+
         return lambda: kernel32.WaitForSingleObject(handle, 0) == wait_object_0
+
+    if named_parent > 0:
+
+        def named_parent_died() -> bool:
+            try:
+                os.kill(named_parent, 0)
+            except ProcessLookupError:
+                return True
+            except PermissionError:
+                # Alive, just not ours to signal.
+                return False
+            return False
+
+        return named_parent_died
 
     initial_parent = os.getppid()
     return lambda: os.getppid() != initial_parent
@@ -245,6 +276,16 @@ def run_progress_process(
 
     with _active_processes_lock:
         _active_processes.append(process)
+
+    # A shutdown that snapshotted the registry just before this append would
+    # _exit without ever seeing this child, leaving a fresh torch process
+    # running with nobody attached. shut_down sets the flag before it
+    # snapshots, so checking it here covers the opposite ordering too.
+    if _shutdown_in_progress.is_set():
+        try:
+            process.terminate()
+        except OSError:
+            pass
 
     last_reported = -1
     last_download_reported = -1

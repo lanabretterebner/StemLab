@@ -37,7 +37,14 @@ def write_progress(
     locked. The next progress callback will try again.
     """
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # Same contract as the write below: a progress update must never be
+        # able to abort a separation (a folder deleted or briefly locked
+        # mid-job would otherwise raise straight through the pipeline).
+        return
 
     target = output_dir / PROGRESS_FILE
     temp = output_dir / (f"{PROGRESS_FILE}.{os.getpid()}.tmp")
@@ -228,6 +235,18 @@ def run_plugin_job(
 
 def main() -> None:
     """CLI entry used by ``stemlab-plugin-job`` and the JUCE process bridge."""
+    try:
+        _main()
+    except Exception as exc:
+        # The plugin reads the failure reason from this line. It has to live
+        # inside main(): the console-script entry points call main()
+        # directly, so a wrapper under __main__ never ran for venv installs
+        # and those users only ever saw the generic "engine failed".
+        print(f"STEMLAB_ERROR {exc}", flush=True)
+        raise
+
+
+def _main() -> None:
     # The separation backends re-invoke sys.executable for Demucs and
     # BS-RoFormer. When this process was launched without user site-packages
     # (the plugin passes -s to the self-contained Engine), its children must
@@ -277,8 +296,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as exc:
-        print(f"STEMLAB_ERROR {exc}", flush=True)
-        raise
+    main()

@@ -390,7 +390,18 @@ private:
     juce::File createJobDirectory() const;
     bool loadPreviewFile(const juce::File& file, int previewStem);
 
+    /**
+     * Held by the audio thread around the capture write and by the message
+     * thread while it clears activeWriter, so the writer can never be
+     * destroyed while a write is in flight through it.
+     */
+    juce::CriticalSection writerLock;
+
     juce::TimeSliceThread diskWriterThread{"StemLab capture writer"};
+
+    /** Feeds the monitoring read-ahead buffers so playback never reads disk
+        from the audio thread. */
+    juce::TimeSliceThread previewReadThread{"StemLab preview reader"};
     std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> threadedWriter;
     std::atomic<juce::AudioFormatWriter::ThreadedWriter*> activeWriter{nullptr};
 
@@ -490,6 +501,32 @@ private:
     std::atomic<double> engineProgressRate{0.0};
 
     std::atomic<bool> engineCancelRequested{false};
+
+    /** True once this job emitted a STEMLAB_PROGRESS line, which retires the
+        raw "NN%" scraping fallback kept for pre-protocol engines. */
+    std::atomic<bool> sawEngineProgressProtocol{false};
+
+    /**
+     * Resolved stem files for the current job. The editor asks for these
+     * many times per redraw; without a cache each answer costs a recursive
+     * enumeration of the job tree. Invalidated by a change of job directory
+     * or of completion state.
+     */
+    mutable juce::CriticalSection stemFileCacheLock;
+    mutable juce::File stemFileCacheJob;
+    mutable bool stemFileCacheJobDone = false;
+    mutable std::array<juce::File, stemCount> stemFileCache;
+
+    static juce::File matchStemFile(const juce::Array<juce::File>& candidates,
+                                    const juce::String& stem);
+
+    /**
+     * Liveness token for delayed message-thread callbacks. A cancel arms a
+     * timer that outlives nothing else: the weak copy it captures expires
+     * with this processor, so a plugin removed before the grace period ends
+     * cannot be called back.
+     */
+    std::shared_ptr<int> lifetimeToken{std::make_shared<int>(0)};
 
     mutable juce::CriticalSection abletonBridgeLock;
     juce::String abletonBridgeStatus{"Bridge not confirmed yet"};

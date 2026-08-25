@@ -11,6 +11,16 @@ from .runtime import configure_utf8_stdio, start_cancel_watchdog
 
 def main() -> None:
     """CLI entry: ``stemlab-recursive-job``."""
+    try:
+        _main()
+    except Exception as exc:
+        # Must be inside main(): console-script entry points bypass the
+        # __main__ block, and the plugin needs this line to show a reason.
+        print(f"STEMLAB_ERROR {exc}", flush=True)
+        raise
+
+
+def _main() -> None:
     configure_utf8_stdio()
 
     parser = argparse.ArgumentParser(description="Run a StemLab Adaptive Stem Tree job.")
@@ -52,8 +62,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as exc:
-        print(f"STEMLAB_ERROR {exc}", flush=True)
-        raise
+    main()
