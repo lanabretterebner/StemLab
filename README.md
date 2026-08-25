@@ -4,8 +4,9 @@
 
 # StemLab
 
-StemLab is a Windows application and Ableton Live VST3 for separating music into
-vocals, drums, bass, guitar, piano, and other stems.
+StemLab is a Windows and Linux application and VST3 for separating music into
+vocals, drums, bass, guitar, piano, and other stems, with direct Ableton Live
+integration on Windows and direct REAPER integration on Linux.
 
 The repository contains the source-development workflow. It deliberately does
 not contain generated builds, model weights, virtual environments, or installer
@@ -17,9 +18,11 @@ packaging.
 - BS-RoFormer, Demucs `htdemucs_6s`, and hybrid separation
 - Optional kick-bleed refinement
 - Adaptive vocal, drum, and foreground stem trees
-- File, physical-input, and Windows system-audio capture
+- File, physical-input, and system-audio capture (WASAPI loopback on Windows,
+  PipeWire/PulseAudio monitor on Linux)
 - Waveform preview and selective export
-- Direct import into Ableton through `StemLabRemote`
+- Direct import into Ableton through `StemLabRemote` (Windows)
+- In-process REAPER integration on Linux - no scripts or extensions to install
 
 ## Set Up Development
 
@@ -45,6 +48,22 @@ To reuse a different environment:
 ```powershell
 .\scripts\setup_dev.ps1 -EnvironmentPath C:\path\to\venv
 ```
+
+## Linux
+
+Linux builds natively and needs no venv or system Python for the backend:
+
+```bash
+./plugin/build_linux.sh          # Standalone + VST3
+./plugin/install_vst3.sh         # -> ~/.vst3
+./install_backend_linux.sh       # self-contained Engine + auto-discovery
+```
+
+Inside REAPER, StemLab talks to the host directly: **Use Selected Item** reads
+the selected arrangement item and **Insert Stems** creates colour-coded stem
+tracks under the source track, aligned with the original selection. See
+`LINUX_BUILD.md` for dependencies, the REAPER workflow, and where StemLab
+writes files.
 
 ## Build And Run
 
@@ -138,6 +157,7 @@ scripts/                 Development setup, build, and install commands
 stemlab/                 Python separation and DSP engine
 tests/                   Fast unit tests using generated audio
 pyproject.toml           Python package, commands, and tool settings
+LINUX_BUILD.md           Linux build, install, and REAPER guide
 ```
 
 Directories such as `.venv/`, `.portable-cache/`, `plugin/build/`, `dist/`,

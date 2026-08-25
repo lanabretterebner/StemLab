@@ -6,9 +6,17 @@
 #include <memory>
 #include <vector>
 
+namespace stemlab::reaper
+{
+struct Api;
+}
+
 class StemLabEngineThread;
 class StemLabRecursiveThread;
+
+#if JUCE_WINDOWS || JUCE_LINUX
 class StemLabSystemLoopbackThread;
+#endif
 
 /** One node in the adaptive stem tree returned by Python's schema-2 manifest. */
 struct StemLabRecursiveStemInfo
@@ -37,7 +45,8 @@ struct StemLabRecursiveStemInfo
  */
 class StemLabAudioProcessor final : public juce::AudioProcessor,
                                     public juce::ChangeBroadcaster,
-                                    public juce::AudioSource
+                                    public juce::AudioSource,
+                                    public juce::VST3ClientExtensions
 {
 public:
     enum StandaloneRecordingMode
@@ -92,6 +101,42 @@ public:
     bool setStandaloneInputFile(const juce::File& file);
     bool isStandaloneApp() const noexcept;
 
+    /**
+     * Which host-integration path this instance can use.
+     *
+     * REAPER is detected at runtime: the VST3 wrapper hands over the host
+     * context during initialisation, and if it answers to
+     * IReaperHostApplication the whole ReaScript API is available in-process.
+     * Ableton Live has no such API, so its Windows-only UDP + Remote Script
+     * bridge stays the assumption for any other Windows host. Everywhere else
+     * the plugin offers the same local-file workflow as the Standalone app.
+     */
+    enum HostIntegration
+    {
+        hostIntegrationNone = 0,
+        hostIntegrationAbletonLive,
+        hostIntegrationReaper
+    };
+
+    HostIntegration getHostIntegration() const noexcept;
+
+    bool usesLocalFileWorkflow() const noexcept
+    {
+        return isStandaloneApp() || getHostIntegration() == hostIntegrationNone;
+    }
+
+    // juce::VST3ClientExtensions
+    juce::VST3ClientExtensions* getVST3ClientExtensions() override { return this; }
+    void setIHostApplication(Steinberg::FUnknown* host) override;
+
+    /**
+     * REAPER bridge. Both are message-thread only - the ReaScript API has no
+     * other home - and both no-op with a status update if REAPER stopped
+     * providing what they need.
+     */
+    bool requestReaperSourceItem();
+    bool insertSelectedStemsIntoReaper();
+
     /** Ask StemLabRemote for Ableton's selected Arrangement audio clip. */
     bool requestAbletonSourceClip();
     void refreshAbletonSourceClipFromDisk();
@@ -104,7 +149,21 @@ public:
     bool startStandaloneRecording();
     void stopStandaloneRecording();
 
-    /** Start/stop Windows WASAPI loopback recording of the default output. */
+    /**
+     * Start/stop system-audio recording of the default output: WASAPI
+     * loopback on Windows, the PulseAudio/PipeWire monitor source on Linux.
+     * Platforms without a backend hide the control instead of offering a
+     * button that always fails.
+     */
+    static constexpr bool isSystemAudioCaptureSupported() noexcept
+    {
+#if JUCE_WINDOWS || JUCE_LINUX
+        return true;
+#else
+        return false;
+#endif
+    }
+
     bool startSystemAudioRecording();
     void stopSystemAudioRecording();
 
@@ -216,7 +275,10 @@ public:
 private:
     friend class StemLabEngineThread;
     friend class StemLabRecursiveThread;
+
+#if JUCE_WINDOWS || JUCE_LINUX
     friend class StemLabSystemLoopbackThread;
+#endif
 
     void stopCapture();
     void setStatus(const juce::String&);
@@ -251,6 +313,13 @@ private:
     double currentSampleRate = 44100.0;
     int currentInputChannels = 2;
 
+    // Rate of the WAV a system-capture thread is writing. Atomic because the
+    // capture thread stores it while the editor timer reads it through
+    // getCapturedSeconds(); the host can concurrently rewrite
+    // currentSampleRate in prepareToPlay, so that field cannot be trusted for
+    // the recording-time readout.
+    std::atomic<double> systemCaptureSampleRate{0.0};
+
     mutable juce::CriticalSection stateLock;
     juce::File captureFile;
     juce::File lastJobDirectory;
@@ -263,6 +332,32 @@ private:
     juce::String engineCommand{"stemlab-plugin-job"};
     juce::String status{"Ready"};
     juce::String engineLog;
+
+    // Resolved once when the VST3 wrapper delivers the host context, before
+    // any editor exists; read from the message thread afterwards.
+    std::unique_ptr<stemlab::reaper::Api> reaperApi;
+
+    /**
+     * Geometry of the last item pulled with Use Selected Item, echoed back by
+     * Insert Stems so the new items match the original selection even when
+     * the take was trimmed or rate-shifted. Guarded by stateLock; cleared
+     * whenever a different source is loaded.
+     */
+    struct ReaperSourceInfo
+    {
+        bool valid = false;
+        double startSeconds = 0.0;
+        double lengthSeconds = 0.0;
+        double startOffsetSeconds = 0.0;
+        double playRate = 1.0;
+        bool preservePitch = true;
+        int trackNumber = 0;
+    };
+
+    ReaperSourceInfo reaperSourceInfo;
+
+    void runReaperSelfTestIfRequested();
+    void runReaperSelfTestAction(const juce::String& action, const juce::File& report);
 
     std::array<std::atomic<bool>, stemCount> stemEnabled;
     std::atomic<bool> refinementEnabled{true};
@@ -281,7 +376,10 @@ private:
 
     std::unique_ptr<StemLabEngineThread> engineThread;
     std::unique_ptr<StemLabRecursiveThread> recursiveThread;
+
+#if JUCE_WINDOWS || JUCE_LINUX
     std::unique_ptr<StemLabSystemLoopbackThread> systemLoopbackThread;
+#endif
 
     mutable juce::CriticalSection recursiveLock;
     std::vector<StemLabRecursiveStemInfo> recursiveItems;
@@ -300,5 +398,6 @@ private:
 
     std::atomic<int> previewStemIndex{-2}; // -2 none, -1 source, 0..5 stem
 
+    JUCE_DECLARE_WEAK_REFERENCEABLE(StemLabAudioProcessor)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StemLabAudioProcessor)
 };

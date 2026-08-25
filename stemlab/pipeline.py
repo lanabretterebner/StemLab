@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from .device import resolve_torch_device
 from .demucs_backend import DEFAULT_DEMUCS_MODEL, DemucsBackend
 from .hybrid import fuse_stem_folders
 from .pretrained import DEFAULT_MODEL, RoFormerBackend
@@ -31,24 +32,16 @@ def resolve_device(device: str) -> str:
     a ROCm-only torch build, or a driver mismatch. Falling back to CPU with a
     clear log line beats handing the user a torch stack trace.
 
-    "auto" is accepted for callers that would rather not guess at all.
+    "auto" is accepted for callers that would rather not guess at all. The
+    actual CUDA probe lives in stemlab.device so the pipeline and the
+    individual backends share one answer.
     """
     requested = str(device or "").strip().lower()
 
-    if requested not in ("", "auto", "cuda"):
-        return requested
+    if requested in ("", "auto"):
+        requested = "cuda"
 
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            return "cuda"
-    except Exception:
-        # torch missing or unimportable is a separate, louder failure that
-        # the backends will report; do not mask it as a device problem.
-        pass
-
-    return "cpu"
+    return resolve_torch_device(requested)
 
 
 @dataclass

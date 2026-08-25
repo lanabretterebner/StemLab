@@ -52,8 +52,8 @@ builds with `JUCE_WEB_BROWSER=0` and `JUCE_USE_CURL=0`.
 ```
 
 This downloads the pinned JUCE 9.0.0 source into `.portable-cache/` and passes
-it straight to CMake, exactly as `build_windows.ps1` does on Windows. Git is
-not needed for the JUCE step.
+it straight to CMake, exactly as `scripts/build_plugin.ps1` does on Windows.
+Git is not needed for the JUCE step.
 
 Useful flags:
 
@@ -118,6 +118,10 @@ it explicitly under **Settings > Choose StemLab engine**, or export
 
 `ffmpeg` is used to normalise compressed input. The system package is fine —
 install it with your package manager.
+
+The installer also sets up adaptive/recursive stem splitting (the per-stem
+"split further" actions) with the CPU or GPU build of `audio-separator`
+matching your torch flavor.
 
 ## Where StemLab writes files
 

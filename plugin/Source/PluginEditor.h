@@ -94,8 +94,8 @@ private:
     void changeListenerCallback(juce::ChangeBroadcaster*) override;
 
     void chooseEngineExecutable();
-    void chooseSourceAudioFile();
-    bool loadSourceFile (const juce::File& file);
+    void chooseStandaloneAudioFile();
+    bool loadSourceFile(const juce::File& file);
     void chooseSaveFolder();
     void chooseJobRootFolder();
     void showSettingsMenu();
