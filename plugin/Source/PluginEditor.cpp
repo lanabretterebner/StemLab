@@ -934,23 +934,17 @@ void StemLabAudioProcessorEditor::paint(juce::Graphics& g)
 
 void StemLabAudioProcessorEditor::paintPanel(juce::Graphics& g)
 {
-    namespace panel = theme::metrics::panel;
-
     g.fillAll(theme::colours::ground());
 
-    // Panel: surface, 1px edge, soft drop shadow (Nocturne shadow-md).
-    juce::DropShadow(theme::colours::panelShadow(), panel::shadowRadius,
-                     {0, panel::shadowOffsetY})
-        .drawForRectangle(g, panelBounds);
-
+    // The surface is the window: no inset, no corners, nothing behind it to
+    // cast a shadow onto. Only the drag signal draws an edge.
     g.setColour(theme::colours::surface());
-    g.fillRoundedRectangle(panelBounds.toFloat(), panel::cornerRadius);
+    g.fillRect(panelBounds);
 
-    // Only the drag signal draws an edge; at rest the shadow is the panel.
     if (dragActive)
     {
         g.setColour(theme::colours::accent());
-        g.drawRoundedRectangle(panelBounds.toFloat().reduced(1.0f), panel::cornerRadius, 2.0f);
+        g.drawRect(panelBounds.toFloat().reduced(1.0f), 2.0f);
     }
 
     // Brand glyph.
@@ -1000,7 +994,7 @@ void StemLabAudioProcessorEditor::paintPanel(juce::Graphics& g)
     if (dragActive)
     {
         g.setColour(theme::colours::accentTint10());
-        g.fillRoundedRectangle(panelBounds.toFloat(), panel::cornerRadius);
+        g.fillRect(panelBounds);
 
         g.setColour(theme::colours::text());
         g.setFont(theme::fonts::title());
