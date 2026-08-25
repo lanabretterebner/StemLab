@@ -39,21 +39,37 @@ public:
     struct Entry
     {
         std::unique_ptr<juce::AudioFormatReaderSource> source;
+        std::unique_ptr<juce::BufferingAudioSource> buffered;
         int stemIndex = 0;
     };
 
+    // ~0.7 s at 48 kHz: enough to ride out a disk hiccup, small enough that
+    // a seek refills quickly.
+    static constexpr int readAheadSamples = 32768;
+
     StemLabStemMixSource(std::vector<Entry> entriesIn,
                          const std::array<std::atomic<bool>, StemLabAudioProcessor::stemCount>& soloIn,
-                         const std::array<std::atomic<bool>, StemLabAudioProcessor::stemCount>& muteIn)
+                         const std::array<std::atomic<bool>, StemLabAudioProcessor::stemCount>& muteIn,
+                         juce::TimeSliceThread& readThread)
         : entries(std::move(entriesIn)), solo(soloIn), mute(muteIn)
     {
         currentGains.resize(entries.size(), 0.0f);
+
+        // Every entry is a WAV on disk. Reading six of them straight from
+        // getNextAudioBlock puts file I/O on the audio thread, where one
+        // slow read is an xrun; buffering moves that onto readThread while
+        // the gain/solo/mute mixing below stays live at block rate.
+        for (auto& entry : entries)
+        {
+            entry.buffered = std::make_unique<juce::BufferingAudioSource>(
+                entry.source.get(), readThread, false, readAheadSamples, 2);
+        }
     }
 
     void prepareToPlay(int samplesPerBlockExpected, double sampleRate) override
     {
         for (auto& entry : entries)
-            entry.source->prepareToPlay(samplesPerBlockExpected, sampleRate);
+            entry.buffered->prepareToPlay(samplesPerBlockExpected, sampleRate);
 
         // The wrapping ResamplingAudioSource asks for up to its ring-buffer
         // size (our expected block + 32) in one call, and hosts occasionally
@@ -69,7 +85,7 @@ public:
     void releaseResources() override
     {
         for (auto& entry : entries)
-            entry.source->releaseResources();
+            entry.buffered->releaseResources();
 
         scratch.setSize(0, 0);
     }
@@ -111,12 +127,19 @@ public:
             const float next =
                 previous + juce::jlimit(-maxDelta, maxDelta, target - previous);
 
-            if (next <= 0.0f && previous <= 0.0f)
-                continue; // fully silent; position is re-seeded from blockStart anyway
-
+            // Silent stems are still pulled, only not mixed: a buffered
+            // source that stopped being read would have to refill from a
+            // jumped position when it comes back, dropping audio at the
+            // start of every unmute.
             juce::AudioSourceChannelInfo scratchInfo(&scratch, 0, info.numSamples);
-            entry.source->setNextReadPosition(blockStart);
-            entry.source->getNextAudioBlock(scratchInfo);
+            entry.buffered->setNextReadPosition(blockStart);
+            entry.buffered->getNextAudioBlock(scratchInfo);
+
+            if (next <= 0.0f && previous <= 0.0f)
+            {
+                currentGains[i] = next;
+                continue;
+            }
 
             const auto channels = juce::jmin(info.buffer->getNumChannels(),
                                              scratch.getNumChannels());
@@ -148,7 +171,7 @@ public:
         juce::int64 longest = 0;
 
         for (const auto& entry : entries)
-            longest = juce::jmax(longest, entry.source->getTotalLength());
+            longest = juce::jmax(longest, entry.buffered->getTotalLength());
 
         return longest;
     }
@@ -278,25 +301,70 @@ namespace
 constexpr juce::uint32 engineCancelExitCode = 75;
 
 /*
-    Stop a job process without orphaning its model subprocesses. The plugin
-    can only kill its direct child; the torch worker underneath would keep
-    burning CPU. Writing the cancel sentinel makes the engine's watchdog
-    (polling every 0.5 s) take the whole job down from the inside; engines
-    without the watchdog get the old direct kill once the grace period ends.
+    Name this process to the engines it launches.
+
+    Their watchdog shuts a job down when the plugin disappears, but it can
+    only recognise that if it knows which pid to watch. Deriving it from
+    getppid() at watchdog start is too late - the engine spends seconds
+    importing torch first, and a host that dies in that window has already
+    had the job reparented, so the comparison baseline is the reaper.
+
+    An environment variable carries this rather than a command-line flag:
+    an engine too old to know the variable ignores it, while an unknown
+    flag would make its argument parser reject the whole job.
 */
-void shutDownJobProcess(juce::ChildProcess& process, const juce::File& cancelFile)
+void publishParentPidForEngines()
 {
-    if (!process.isRunning())
+    const auto pid = juce::String(static_cast<int>(
+#if JUCE_WINDOWS
+        GetCurrentProcessId()
+#else
+        getpid()
+#endif
+        ));
+
+#if JUCE_WINDOWS
+    _putenv_s("STEMLAB_PARENT_PID", pid.toRawUTF8());
+#else
+    setenv("STEMLAB_PARENT_PID", pid.toRawUTF8(), 1);
+#endif
+}
+
+/*
+    Stop a job process without orphaning its model subprocesses, then make
+    sure it is really gone.
+
+    The plugin can only kill its direct child; the torch worker underneath
+    would keep burning CPU. Writing the cancel sentinel makes the engine's
+    watchdog (polling every 0.5 s) take the whole job down from the inside.
+    Engines without the watchdog - and a wedged one - are killed once the
+    grace period expires.
+
+    That final kill is also the only thing that can free the reader thread:
+    it parks inside ChildProcess::readProcessOutput, which on both platforms
+    returns only once the requested bytes arrive or the child closes the
+    pipe. No exit flag is observable until the child is gone, so this must
+    be callable from a thread other than the reader - hence the lock, which
+    guards the ChildProcess object's lifetime (reads happen through a raw
+    pointer taken once, which stays valid while this holds the lock).
+*/
+void stopJobProcess(juce::CriticalSection& processLock,
+                    std::unique_ptr<juce::ChildProcess>& process, const juce::File& cancelFile,
+                    int graceMilliseconds)
+{
+    const juce::ScopedLock lock(processLock);
+
+    if (process == nullptr || !process->isRunning())
         return;
 
     if (cancelFile != juce::File())
         cancelFile.replaceWithText("cancel\n");
 
-    for (int i = 0; i < 30 && process.isRunning(); ++i)
-        juce::Thread::sleep(100);
+    for (int waited = 0; waited < graceMilliseconds && process->isRunning(); waited += 50)
+        juce::Thread::sleep(50);
 
-    if (process.isRunning())
-        process.kill();
+    if (process->isRunning())
+        process->kill();
 }
 } // namespace
 
@@ -304,9 +372,9 @@ class StemLabEngineThread final : public juce::Thread
 {
 public:
     StemLabEngineThread(StemLabAudioProcessor& ownerIn, juce::StringArray commandIn,
-                        juce::File cancelFileIn)
+                        juce::File cancelFileIn, juce::File successMarkerIn)
         : juce::Thread("StemLab engine"), owner(ownerIn), command(std::move(commandIn)),
-          cancelFile(std::move(cancelFileIn))
+          cancelFile(std::move(cancelFileIn)), successMarker(std::move(successMarkerIn))
     {
     }
 
@@ -314,12 +382,18 @@ public:
     {
         signalThreadShouldExit();
 
-        // run() shuts the process down gracefully (sentinel first, kill as
-        // fallback); the timeout must outlast that grace window.
-        stopThread(6000);
+        // The reader is almost always parked inside readProcessOutput, where
+        // no exit flag is visible. Take the child down first so the join
+        // below is short and never reaches JUCE's force-kill fallback.
+        stopChildProcess(3000);
 
-        if (process != nullptr && process->isRunning())
-            process->kill();
+        stopThread(6000);
+    }
+
+    /** Sentinel-then-kill; safe from any thread, including while run() reads. */
+    void stopChildProcess(int graceMilliseconds)
+    {
+        stopJobProcess(processLock, process, cancelFile, graceMilliseconds);
     }
 
     void run() override
@@ -327,13 +401,21 @@ public:
         owner.setStatus("Starting...");
         owner.setEngineProgress(0.02);
 
-        process = std::make_unique<juce::ChildProcess>();
+        juce::ChildProcess* childProcess = nullptr;
 
-        if (!process->start(command,
-                            juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+        {
+            const juce::ScopedLock lock(processLock);
+            process = std::make_unique<juce::ChildProcess>();
+            childProcess = process.get();
+        }
+
+        if (!childProcess->start(command,
+                                 juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
         {
             owner.setStatus("Could not start StemLab engine");
             owner.appendEngineLog("Failed to launch engine process.\n");
+
+            const juce::ScopedLock lock(processLock);
             process.reset();
             return;
         }
@@ -357,12 +439,10 @@ public:
             }
         };
 
-        double cancelRequestedAtMs = 0.0;
-
         while (!threadShouldExit())
         {
-            const auto bytes =
-                process->readProcessOutput(buffer.data(), static_cast<int>(buffer.size() - 1));
+            const auto bytes = childProcess->readProcessOutput(
+                buffer.data(), static_cast<int>(buffer.size() - 1));
 
             if (bytes > 0)
             {
@@ -371,29 +451,16 @@ public:
                 consumeLines();
             }
 
-            if (!process->isRunning())
+            if (!isChildRunning())
                 break;
-
-            // On cancel, the engine's watchdog normally exits the job on
-            // its own; an engine without one is killed after a grace period.
-            if (owner.engineCancelRequested.load())
-            {
-                if (cancelRequestedAtMs <= 0.0)
-                    cancelRequestedAtMs = nowMs();
-                else if (nowMs() - cancelRequestedAtMs > 4000.0)
-                    process->kill();
-            }
 
             wait(35);
         }
 
-        if (threadShouldExit() && process->isRunning())
-            shutDownJobProcess(*process, cancelFile);
-
         while (true)
         {
-            const auto bytes =
-                process->readProcessOutput(buffer.data(), static_cast<int>(buffer.size() - 1));
+            const auto bytes = childProcess->readProcessOutput(
+                buffer.data(), static_cast<int>(buffer.size() - 1));
 
             if (bytes <= 0)
                 break;
@@ -406,8 +473,13 @@ public:
         if (pendingOutput.trim().isNotEmpty())
             owner.handleEngineOutputLine(pendingOutput.trim());
 
-        const auto exitCode = process->getExitCode();
-        process.reset();
+        juce::uint32 exitCode = 0;
+
+        {
+            const juce::ScopedLock lock(processLock);
+            exitCode = process->getExitCode();
+            process.reset();
+        }
 
         // Unloading mid-job: the processor is going away, nobody is left to
         // read status, and the members it points at are about to die.
@@ -425,7 +497,7 @@ public:
             owner.appendEngineLog("Separation cancelled by user.\n");
             owner.setStatus("Separation cancelled");
         }
-        else if (exitCode == 0)
+        else if (exitCode == 0 && successMarker.existsAsFile())
         {
             owner.engineCompletedSuccessfully.store(true);
             owner.setEngineProgress(1.0);
@@ -464,14 +536,38 @@ public:
             if (!owner.getStatus().startsWithIgnoreCase("Failed - "))
                 owner.setStatus("StemLab engine failed - see Settings > Copy diagnostics");
 
-            owner.appendEngineLog("Engine exit code: " + juce::String(exitCode) + "\n");
+            if (exitCode == 0)
+            {
+                // A child killed by a signal (the OOM killer on a big model,
+                // or a crash inside native torch code) is reaped without an
+                // exit status, and getExitCode() then reports 0. Only the
+                // job's own manifest proves the run actually finished.
+                owner.appendEngineLog(
+                    "Engine stopped before writing its manifest - it was terminated"
+                    " (out of memory or a crash) rather than finishing.\n");
+            }
+            else
+            {
+                owner.appendEngineLog("Engine exit code: " + juce::String(exitCode) + "\n");
+            }
         }
     }
 
 private:
+    bool isChildRunning()
+    {
+        const juce::ScopedLock lock(processLock);
+        return process != nullptr && process->isRunning();
+    }
+
     StemLabAudioProcessor& owner;
     juce::StringArray command;
     juce::File cancelFile;
+    juce::File successMarker;
+
+    // Guards the ChildProcess object's lifetime and its state calls. The
+    // blocking read runs outside it through a raw pointer.
+    juce::CriticalSection processLock;
     std::unique_ptr<juce::ChildProcess> process;
 };
 
@@ -489,24 +585,38 @@ public:
     {
         signalThreadShouldExit();
 
-        // run() shuts the process down gracefully (sentinel first, kill as
-        // fallback); the timeout must outlast that grace window.
-        stopThread(6000);
+        // See StemLabEngineThread: the reader cannot observe the exit flag
+        // while it is parked in readProcessOutput, so the child goes first.
+        stopChildProcess(3000);
 
-        if (process != nullptr && process->isRunning())
-            process->kill();
+        stopThread(6000);
+    }
+
+    /** Sentinel-then-kill; safe from any thread, including while run() reads. */
+    void stopChildProcess(int graceMilliseconds)
+    {
+        stopJobProcess(processLock, process, cancelFile, graceMilliseconds);
     }
 
     void run() override
     {
         owner.setEngineProgress(0.01);
-        process = std::make_unique<juce::ChildProcess>();
 
-        if (!process->start(command,
-                            juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+        juce::ChildProcess* childProcess = nullptr;
+
+        {
+            const juce::ScopedLock lock(processLock);
+            process = std::make_unique<juce::ChildProcess>();
+            childProcess = process.get();
+        }
+
+        if (!childProcess->start(command,
+                                 juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
         {
             owner.setStatus("Could not start Recursive Stem Splitting");
             owner.appendEngineLog("Failed to launch recursive engine process.\n");
+
+            const juce::ScopedLock lock(processLock);
             process.reset();
             return;
         }
@@ -530,12 +640,10 @@ public:
             }
         };
 
-        double cancelRequestedAtMs = 0.0;
-
         while (!threadShouldExit())
         {
-            const auto bytes =
-                process->readProcessOutput(buffer.data(), static_cast<int>(buffer.size() - 1));
+            const auto bytes = childProcess->readProcessOutput(
+                buffer.data(), static_cast<int>(buffer.size() - 1));
 
             if (bytes > 0)
             {
@@ -544,27 +652,16 @@ public:
                 consumeLines();
             }
 
-            if (!process->isRunning())
+            if (!isChildRunning())
                 break;
-
-            if (owner.engineCancelRequested.load())
-            {
-                if (cancelRequestedAtMs <= 0.0)
-                    cancelRequestedAtMs = nowMs();
-                else if (nowMs() - cancelRequestedAtMs > 4000.0)
-                    process->kill();
-            }
 
             wait(35);
         }
 
-        if (threadShouldExit() && process->isRunning())
-            shutDownJobProcess(*process, cancelFile);
-
         while (true)
         {
-            const auto bytes =
-                process->readProcessOutput(buffer.data(), static_cast<int>(buffer.size() - 1));
+            const auto bytes = childProcess->readProcessOutput(
+                buffer.data(), static_cast<int>(buffer.size() - 1));
 
             if (bytes <= 0)
                 break;
@@ -577,8 +674,13 @@ public:
         if (pendingOutput.trim().isNotEmpty())
             owner.handleEngineOutputLine(pendingOutput.trim());
 
-        const auto exitCode = process->getExitCode();
-        process.reset();
+        juce::uint32 exitCode = 0;
+
+        {
+            const juce::ScopedLock lock(processLock);
+            exitCode = process->getExitCode();
+            process.reset();
+        }
 
         if (threadShouldExit())
             return;
@@ -611,10 +713,18 @@ public:
     }
 
 private:
+    bool isChildRunning()
+    {
+        const juce::ScopedLock lock(processLock);
+        return process != nullptr && process->isRunning();
+    }
+
     StemLabAudioProcessor& owner;
     juce::StringArray command;
     juce::File manifestFile;
     juce::File cancelFile;
+
+    juce::CriticalSection processLock;
     std::unique_ptr<juce::ChildProcess> process;
 };
 
@@ -798,8 +908,10 @@ public:
         auto writer = std::make_unique<juce::AudioFormatWriter::ThreadedWriter>(
             formatWriter.release(), owner.diskWriterThread, 65536);
 
-        owner.currentSampleRate = sampleRate;
-        owner.currentInputChannels = outputChannels;
+        // currentSampleRate/currentInputChannels belong to the host's
+        // prepareToPlay and are plain members; writing them from this
+        // capture thread raced that. systemCaptureSampleRate is the atomic
+        // the duration readout actually consults.
         owner.systemCaptureSampleRate.store(sampleRate);
         owner.capturedSamples.store(0);
 
@@ -984,6 +1096,9 @@ StemLabAudioProcessor::StemLabAudioProcessor()
 
     previewFormats.registerBasicFormats();
     diskWriterThread.startThread();
+    previewReadThread.startThread();
+
+    publishParentPidForEngines();
 
     const auto discoveredEngine = discoverEngineCommand();
 
@@ -1062,6 +1177,10 @@ StemLabAudioProcessor::~StemLabAudioProcessor()
 #endif
 
     diskWriterThread.stopThread(2000);
+
+    // After both transports have been cleared above, so no buffering source
+    // is still expecting to be fed.
+    previewReadThread.stopThread(2000);
 }
 
 void StemLabAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
@@ -1074,8 +1193,11 @@ void StemLabAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock
         previewTransport.prepareToPlay(samplesPerBlock, sampleRate);
         stemMixTransport.prepareToPlay(samplesPerBlock, sampleRate);
 
+        // Generous headroom: some hosts deliver blocks larger than they
+        // announced (offline bounces especially), and growing this buffer
+        // inside processBlock would allocate on the audio thread.
         previewScratch.setSize(juce::jmax(1, getTotalNumOutputChannels()),
-                               juce::jmax(1, samplesPerBlock), false, false, true);
+                               juce::jmax(4096, 4 * samplesPerBlock), false, false, true);
     }
 }
 
@@ -1145,6 +1267,10 @@ void StemLabAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
     // system loopback is captured by a separate WASAPI thread.
     if (standaloneRecordingMode.load() != recordingSystem)
     {
+        // Uncontended except at the moment recording stops, which is the
+        // only time the writer can be destroyed (see stopStandaloneRecording).
+        const juce::ScopedLock lock(writerLock);
+
         if (auto* writer = activeWriter.load(std::memory_order_acquire))
         {
             writer->write(buffer.getArrayOfReadPointers(), buffer.getNumSamples());
@@ -1236,7 +1362,10 @@ bool StemLabAudioProcessor::loadPreviewFile(const juce::File& file, int previewS
 
     previewReaderSource = std::make_unique<juce::AudioFormatReaderSource>(readerPtr, true);
 
-    previewTransport.setSource(previewReaderSource.get(), 0, nullptr, sourceRate);
+    // Read ahead on previewReadThread: with no buffer the audio thread
+    // decodes the WAV itself, so one slow read is a dropout in the host.
+    previewTransport.setSource(previewReaderSource.get(), StemLabStemMixSource::readAheadSamples,
+                               &previewReadThread, sourceRate);
 
     previewTransport.setPosition(0.0);
     previewStemIndex.store(previewStem);
@@ -1256,6 +1385,17 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
     if (!file.existsAsFile())
     {
         setStatus("Selected audio file does not exist");
+        return false;
+    }
+
+    // Loading a source clears the job directory and result state that the
+    // running engine thread still reports into. Swapping it mid-job left the
+    // finished stems unreachable while the UI announced them as done, so
+    // every path in - drag-and-drop, the file chooser, a late Ableton clip
+    // reply - is refused until the job ends.
+    if (isEngineRunning())
+    {
+        setStatus("Cancel the running job before loading another file");
         return false;
     }
 
@@ -1389,6 +1529,20 @@ juce::File StemLabAudioProcessor::getCompletedStemFile(int index) const
     if (!job.isDirectory())
         return {};
 
+    const bool jobDone = engineCompletedSuccessfully.load();
+
+    {
+        // The UI asks for all six of these several times per redraw, at
+        // 20 Hz, for as long as the editor is open. Enumerating the job
+        // tree each time pegged a core once a job had finished - and worse
+        // on a network share - so one scan serves every lookup until the
+        // job state itself changes.
+        const juce::ScopedLock lock(stemFileCacheLock);
+
+        if (stemFileCacheJob == job && stemFileCacheJobDone == jobDone)
+            return stemFileCache[static_cast<size_t>(index)];
+    }
+
     auto sourceFolder = job.getChildFile("refined");
 
     if (!sourceFolder.isDirectory())
@@ -1405,15 +1559,51 @@ juce::File StemLabAudioProcessor::getCompletedStemFile(int index) const
 
     candidates.addArray(flacs);
 
-    const auto stem = getStemName(index);
+    std::array<juce::File, stemCount> resolved;
+
+    for (int stemIndex = 0; stemIndex < stemCount; ++stemIndex)
+        resolved[static_cast<size_t>(stemIndex)] =
+            matchStemFile(candidates, getStemName(stemIndex));
+
+    {
+        const juce::ScopedLock lock(stemFileCacheLock);
+        stemFileCacheJob = job;
+        stemFileCacheJobDone = jobDone;
+        stemFileCache = resolved;
+    }
+
+    return resolved[static_cast<size_t>(index)];
+}
+
+juce::File StemLabAudioProcessor::matchStemFile(const juce::Array<juce::File>& candidates,
+                                                const juce::String& stem)
+{
+    // Most to least specific, mirroring stemlab.audio.find_stem_file: an
+    // exact name, then the "{track}_{stem}" convention, then a loose
+    // substring. A bare substring alone picks the wrong file when the track
+    // itself is named after a stem ("guitar_take_bass.wav" matching guitar).
+    juce::File suffixMatch;
+    juce::File looseMatch;
 
     for (const auto& candidate : candidates)
     {
-        if (candidate.getFileNameWithoutExtension().containsIgnoreCase(stem))
+        const auto name = candidate.getFileNameWithoutExtension();
+
+        if (name.equalsIgnoreCase(stem))
             return candidate;
+
+        if (suffixMatch == juce::File() &&
+            (name.endsWithIgnoreCase("_" + stem) || name.endsWithIgnoreCase("-" + stem)))
+        {
+            suffixMatch = candidate;
+        }
+        else if (looseMatch == juce::File() && name.containsIgnoreCase(stem))
+        {
+            looseMatch = candidate;
+        }
     }
 
-    return {};
+    return suffixMatch != juce::File() ? suffixMatch : looseMatch;
 }
 
 void StemLabAudioProcessor::stopStandalonePlayback()
@@ -1494,8 +1684,11 @@ bool StemLabAudioProcessor::ensureStemMixLoaded()
     stemMixTransport.setSource(nullptr);
 
     stemMixSource =
-        std::make_unique<StemLabStemMixSource>(std::move(entries), stemSolo, stemMute);
+        std::make_unique<StemLabStemMixSource>(std::move(entries), stemSolo, stemMute,
+                                               previewReadThread);
 
+    // The mix source buffers each stem internally, so the transport itself
+    // needs no read-ahead: solo and mute stay live at block rate.
     stemMixTransport.setSource(stemMixSource.get(), 0, nullptr, mixRate);
     stemMixTransport.setPosition(wasMixActive ? previousPosition : 0.0);
 
@@ -1814,7 +2007,15 @@ void StemLabAudioProcessor::stopStandaloneRecording()
         return;
     }
 
-    activeWriter.store(nullptr, std::memory_order_release);
+    {
+        // The audio thread loads activeWriter and then writes through it.
+        // Publishing null does not close that window - it may already hold
+        // the old pointer - so wait here until any in-flight write is done
+        // before the writer is destroyed under it.
+        const juce::ScopedLock lock(writerLock);
+        activeWriter.store(nullptr, std::memory_order_release);
+    }
+
     threadedWriter.reset();
     standaloneRecordingMode.store(recordingNone);
 
@@ -2338,12 +2539,22 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
     const auto cancelFile = job.getChildFile("stemlab_cancel.txt");
     cancelFile.deleteFile();
 
+    // Likewise a progress file from an earlier run in this directory would
+    // be read as this job's progress until the engine overwrites it.
+    job.getChildFile("stemlab_progress.txt").deleteFile();
+
+    sawEngineProgressProtocol.store(false);
+
     {
         const juce::ScopedLock lock(stateLock);
         activeCancelFile = cancelFile;
     }
 
-    engineThread = std::make_unique<StemLabEngineThread>(*this, command, cancelFile);
+    // Exit code 0 alone does not prove success: a child killed by a signal
+    // is reaped without a status and reports 0, so the job's own manifest
+    // is what the completion handler checks.
+    engineThread = std::make_unique<StemLabEngineThread>(
+        *this, command, cancelFile, job.getChildFile("stemlab_ableton_manifest.json"));
 
     engineThread->startThread();
     return true;
@@ -2876,12 +3087,38 @@ void StemLabAudioProcessor::cancelSeparation()
     engineCancelRequested.store(true);
 
     // The engine's watchdog shuts the job down from the inside, taking its
-    // model subprocesses with it. The engine thread hard-kills engines that
-    // never pick the sentinel up (releases without the watchdog).
+    // model subprocesses with it. A direct kill would only reach the
+    // interpreter and orphan the torch worker.
     if (cancelFile != juce::File())
         cancelFile.replaceWithText("cancel\n");
 
     setStatus("Cancelling...");
+
+    // An engine without the watchdog never sees the sentinel, and its
+    // reader thread is parked inside readProcessOutput where no flag can
+    // reach it. Enforce the grace period from here instead: this timer
+    // callback lands on the message thread, which is free to kill the
+    // child and thereby release the reader.
+    std::weak_ptr<int> lifetime = lifetimeToken;
+
+    juce::Timer::callAfterDelay(4000,
+                                [this, lifetime]
+                                {
+                                    if (lifetime.expired())
+                                        return;
+
+                                    if (!engineCancelRequested.load())
+                                        return;
+
+                                    if (engineThread != nullptr && engineThread->isThreadRunning())
+                                        engineThread->stopChildProcess(0);
+
+                                    if (recursiveThread != nullptr &&
+                                        recursiveThread->isThreadRunning())
+                                    {
+                                        recursiveThread->stopChildProcess(0);
+                                    }
+                                });
 }
 
 void StemLabAudioProcessor::refreshEngineProgressFromDisk()
@@ -2906,7 +3143,15 @@ void StemLabAudioProcessor::refreshEngineProgressFromDisk()
         return;
 
     const auto text = progressFile.loadFileAsString().trim();
-    const auto separator = text.indexOfChar('|');
+
+    // The engine writes "percent\nstage". A '|' separator is also accepted
+    // so an older engine paired with this plugin keeps working; looking
+    // only for '|' made this whole fallback channel silently inert, because
+    // no engine has ever written one.
+    auto separator = text.indexOfChar('\n');
+
+    if (separator <= 0)
+        separator = text.indexOfChar('|');
 
     if (separator <= 0)
         return;
@@ -2958,15 +3203,27 @@ void StemLabAudioProcessor::setStatus(const juce::String& newStatus)
 
 void StemLabAudioProcessor::setEngineProgress(double progress)
 {
-    const auto current = engineProgress.load();
-    const auto next = juce::jmax(current, juce::jlimit(0.0, 1.0, progress));
+    const auto next = juce::jlimit(0.0, 1.0, progress);
+
+    // Two threads report progress: the engine reader parsing stdout and the
+    // message thread polling the progress file. A load/compare/store would
+    // let them interleave and publish the older of two values, undoing the
+    // monotonic guarantee this clamp exists to provide - and feeding the
+    // ETA a rate computed over the wrong interval.
+    auto current = engineProgress.load();
+
+    while (next > current && !engineProgress.compare_exchange_weak(current, next))
+    {
+    }
 
     if (next > current)
     {
         const auto now = nowMs();
-        const auto previousUpdate = engineProgressUpdateMs.load();
+        const auto previousUpdate = engineProgressUpdateMs.exchange(now);
 
-        // Keep a smoothed progress-per-second rate for the fallback ETA.
+        // Smoothed progress-per-second for the fallback ETA. Only the
+        // thread that won the exchange above gets here for this step, so
+        // the delta and the interval always belong together.
         if (previousUpdate > 0.0 && now > previousUpdate)
         {
             const auto instantRate = (next - current) / ((now - previousUpdate) / 1000.0);
@@ -2975,11 +3232,7 @@ void StemLabAudioProcessor::setEngineProgress(double progress)
             engineProgressRate.store(smoothed <= 0.0 ? instantRate
                                                      : 0.3 * instantRate + 0.7 * smoothed);
         }
-
-        engineProgressUpdateMs.store(now);
     }
-
-    engineProgress.store(next);
 
     sendChangeMessage();
 }
@@ -3017,6 +3270,8 @@ void StemLabAudioProcessor::handleEngineOutputLine(const juce::String& line)
 
         if (tokens.size() >= 2)
         {
+            sawEngineProgressProtocol.store(true);
+
             const auto percent = juce::jlimit(0, 100, tokens[1].getIntValue());
 
             setEngineProgress(percent / 100.0);
@@ -3031,6 +3286,14 @@ void StemLabAudioProcessor::handleEngineOutputLine(const juce::String& line)
 
         return;
     }
+
+    // Legacy fallback: pick a bare "NN%" out of raw model output. It is
+    // only for engines too old to emit STEMLAB_PROGRESS at all - once this
+    // job has spoken the protocol, raw percentages are noise. A first-run
+    // model download prints its own 0-100% and used to drag the bar to 78%
+    // before separation had even started.
+    if (sawEngineProgressProtocol.load())
+        return;
 
     const auto percentPos = line.indexOfChar('%');
 
