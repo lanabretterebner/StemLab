@@ -137,6 +137,14 @@ public:
     bool requestReaperSourceItem();
     bool insertSelectedStemsIntoReaper();
 
+    /**
+     * True when the file is one of the current job's outputs. Dropping such
+     * a file back onto the editor (easily done by cancelling an outbound
+     * stem drag over the window) must not replace the source and wipe the
+     * completed job.
+     */
+    bool isFileFromCurrentJob(const juce::File& file) const;
+
     /** Ask StemLabRemote for Ableton's selected Arrangement audio clip. */
     bool requestAbletonSourceClip();
     void refreshAbletonSourceClipFromDisk();

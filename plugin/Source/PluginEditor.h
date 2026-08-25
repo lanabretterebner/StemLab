@@ -20,6 +20,8 @@ public:
     void setFile(const juce::File& file);
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
+    void mouseDrag(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override;
 
 private:
     StemLabAudioProcessor& processor;
@@ -28,6 +30,7 @@ private:
     juce::String recursiveId;
     juce::AudioThumbnail thumbnail;
     juce::File currentFile;
+    bool externalDragStarted = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StemWaveformComponent)
 };

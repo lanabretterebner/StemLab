@@ -352,13 +352,25 @@ void StemWaveformComponent::paint(juce::Graphics& g)
     g.drawRoundedRectangle(full.reduced(0.5f), 6.0f, 1.0f);
 }
 
-void StemWaveformComponent::mouseDown(const juce::MouseEvent& event)
+void StemWaveformComponent::mouseDown(const juce::MouseEvent&)
 {
-    if (!currentFile.existsAsFile() || getWidth() <= 0)
+    // The gesture is ambiguous at press time: a click seeks, a drag exports.
+    // Deciding at release keeps a drag from disturbing whatever the preview
+    // transport is doing.
+    externalDragStarted = false;
+}
+
+void StemWaveformComponent::mouseUp(const juce::MouseEvent& event)
+{
+    if (externalDragStarted || !currentFile.existsAsFile() || getWidth() <= 0)
+        return;
+
+    if (event.getDistanceFromDragStart() >= 8)
         return;
 
     const auto normalised = juce::jlimit(
-        0.0, 1.0, static_cast<double>(event.position.x) / static_cast<double>(getWidth()));
+        0.0, 1.0,
+        static_cast<double>(event.mouseDownPosition.x) / static_cast<double>(getWidth()));
 
     if (recursive)
         processor.seekRecursiveStem(recursiveId, normalised);
@@ -366,6 +378,30 @@ void StemWaveformComponent::mouseDown(const juce::MouseEvent& event)
         processor.seekCompletedStem(stemIndex, normalised);
 
     repaint();
+}
+
+void StemWaveformComponent::mouseDrag(const juce::MouseEvent& event)
+{
+    /*
+     * Dragging a completed waveform exports it to whatever the pointer lands
+     * on - a DAW arrangement, a file manager, an editor. This is what makes
+     * StemLab useful in hosts that have no integration path at all: every
+     * host accepts an audio-file drop.
+     *
+     * A small threshold keeps click-to-seek working; canMoveFiles is false
+     * because the job directory must keep its copy for Insert/Send/Save.
+     */
+    if (externalDragStarted || !currentFile.existsAsFile())
+        return;
+
+    if (event.getDistanceFromDragStart() < 8)
+        return;
+
+    // Keep the return value: a false start (e.g. the previous drag's XDND
+    // transaction still pending) must not latch and kill the rest of the
+    // gesture - the next mouseDrag event simply retries.
+    externalDragStarted = juce::DragAndDropContainer::performExternalDragDropOfFiles(
+        juce::StringArray{currentFile.getFullPathName()}, false, this);
 }
 
 RecursiveStemRowComponent::RecursiveStemRowComponent(
@@ -958,7 +994,18 @@ void StemLabAudioProcessorEditor::filesDropped(const juce::StringArray& files, i
     {
         const juce::File file(path);
 
-        if (isSupportedAudioFile(file) && loadSourceFile(file))
+        if (!isSupportedAudioFile(file))
+            continue;
+
+        if (processor.isFileFromCurrentJob(file))
+        {
+            // A stem dragged out and released back over the window would
+            // otherwise become the new source and wipe the finished job.
+            processor.postUiStatus("That file is one of this job's stems");
+            continue;
+        }
+
+        if (loadSourceFile(file))
         {
             refreshFromProcessor();
             return;
