@@ -1,12 +1,17 @@
+"""Detect low-frequency transient events in a drum stem."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
+
 import numpy as np
-from scipy.signal import butter, sosfiltfilt, find_peaks
+from scipy.signal import butter, find_peaks, sosfiltfilt
 
 
 @dataclass(frozen=True)
 class Event:
+    """A detected transient's sample position and normalized confidence."""
+
     sample: int
     confidence: float
 
@@ -72,7 +77,7 @@ def detect_kick_events(
             sample=int(p),
             confidence=float(np.clip(h / scale, 0.0, 1.0)),
         )
-        for p, h in zip(peaks, heights)
+        for p, h in zip(peaks, heights, strict=True)
     ]
 
     return events

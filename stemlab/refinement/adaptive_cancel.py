@@ -1,12 +1,17 @@
+"""Constrained spectral matching and subtraction for one leakage event."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
+
 import numpy as np
 from scipy import signal
 
 
 @dataclass
 class CancelConfig:
+    """Safety limits and FFT settings for adaptive spectral cancellation."""
+
     n_fft: int = 2048
     hop_length: int = 256
     max_alignment_ms: float = 12.0
@@ -20,6 +25,8 @@ class CancelConfig:
 
 @dataclass
 class CancelResult:
+    """Cleaned audio and the match confidence that produced it."""
+
     cleaned: np.ndarray
     confidence: float
 
@@ -156,8 +163,7 @@ def adaptive_cancel(
 
     if reference.shape != target.shape:
         raise ValueError(
-            f"reference and target must have same shape; "
-            f"got {reference.shape} vs {target.shape}"
+            f"reference and target must have same shape; got {reference.shape} vs {target.shape}"
         )
 
     alignment = _best_alignment(
@@ -208,9 +214,8 @@ def adaptive_cancel(
     if confidence < cfg.confidence_threshold:
         strength = 0.0
     else:
-        normalized = (
-            (confidence - cfg.confidence_threshold)
-            / max(1e-6, 1.0 - cfg.confidence_threshold)
+        normalized = (confidence - cfg.confidence_threshold) / max(
+            1e-6, 1.0 - cfg.confidence_threshold
         )
         strength = cfg.subtraction_strength * np.clip(normalized, 0.0, 1.0)
 

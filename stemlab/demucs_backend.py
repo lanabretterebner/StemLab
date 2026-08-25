@@ -30,6 +30,7 @@ class DemucsBackend:
         log_callback: Callable[[str], None] | None = None,
         progress_callback: Callable[[float], None] | None = None,
     ) -> None:
+        """Configure the model, device, logging, and progress callbacks."""
         self.model = model
         self.device = device
         self.log_callback = log_callback
@@ -114,16 +115,11 @@ class DemucsBackend:
                     ),
                 )
                 if not candidates:
-                    raise RuntimeError(
-                        f"Demucs finished but did not produce the {stem} stem."
-                    )
+                    raise RuntimeError(f"Demucs finished but did not produce the {stem} stem.")
                 destination = output_dir / f"{stem}.wav"
                 shutil.copy2(candidates[0], destination)
                 copied.append(destination)
 
             self._progress(100.0)
-            self._log(
-                "Demucs separation complete: "
-                + ", ".join(path.name for path in copied)
-            )
+            self._log("Demucs separation complete: " + ", ".join(path.name for path in copied))
             return copied

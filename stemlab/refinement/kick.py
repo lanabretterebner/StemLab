@@ -1,14 +1,19 @@
+"""Build a kick reference and remove matching bleed from another stem."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
 import numpy as np
 
-from .events import Event, detect_kick_events
 from .adaptive_cancel import CancelConfig, adaptive_cancel
+from .events import Event, detect_kick_events
 
 
 @dataclass
 class KickRefinementConfig:
+    """Timing, confidence, and cancellation settings for kick refinement."""
+
     reference_pre_ms: float = 8.0
     reference_post_ms: float = 180.0
 
@@ -28,6 +33,8 @@ class KickRefinementConfig:
 
 @dataclass
 class KickRefinementStats:
+    """Counters reported after refining one target stem."""
+
     events_detected: int
     cancellations_attempted: int
     cancellations_applied: int
@@ -96,13 +103,11 @@ def build_kick_reference(
     sr: int,
     cfg: KickRefinementConfig,
 ) -> np.ndarray | None:
+    """Build a robust kick prototype from the strongest detected events."""
     pre = int(sr * cfg.reference_pre_ms / 1000.0)
     post = int(sr * cfg.reference_post_ms / 1000.0)
 
-    strong = [
-        e for e in events
-        if e.confidence >= cfg.min_event_confidence
-    ]
+    strong = [e for e in events if e.confidence >= cfg.min_event_confidence]
 
     strong = sorted(
         strong,
@@ -241,10 +246,7 @@ def refine_kick_bleed(
         real_len = end - start
 
         # Only the delta is blended into the real stem.
-        correction = (
-            result.cleaned[:, :real_len]
-            - target_region[:, :real_len]
-        )
+        correction = result.cleaned[:, :real_len] - target_region[:, :real_len]
 
         # Short fades ensure the correction reaches exactly zero at region
         # boundaries, eliminating hard-splice discontinuities/clicks.

@@ -1,88 +1,153 @@
 # StemLab Developer Guide
 
-This guide maps the adaptive stem tree code so one change does not require
-understanding the whole app.
+You do not need to understand the whole repository before making a useful
+change. Start with one execution path, keep the tests green, and use the API
+comments in the headers/modules as your map.
 
-## The five files to learn first
+## If You Know Java
 
-| Area | File | What belongs here |
-| --- | --- | --- |
-| JUCE UI | `plugin/Source/PluginEditor.cpp/.h` | Layout, buttons, waveform tree, menus, collapse/expand behavior |
-| Host/engine bridge | `plugin/Source/PluginProcessor.cpp/.h` | Launch Python jobs, parse manifests, playback, Ableton/DAW integration |
-| Separation router | `stemlab/recursive.py` | Decides which backend runs and writes the tree manifest |
-| Audio analysis | `stemlab/adaptive/analysis.py` | Composite/source-count estimates and anti-ghost child scoring |
-| Recursion policy | `stemlab/adaptive/policy.py` | Thresholds that decide whether another split is offered |
-| Instrument lead backend | `stemlab/adaptive/foreground.py` | Experimental foreground-vs-bed DSP separator |
+The same ideas appear under slightly different names:
 
-A good rule: **UI decisions stay in `PluginEditor`; audio/separation decisions stay in Python.** `PluginProcessor` is the bridge between them.
+| StemLab code | Rough Java equivalent |
+| --- | --- |
+| Python module (`audio.py`) | A small utility/service class |
+| Python package (`refinement/`) | A Java package |
+| `@dataclass` | A record or data-only POJO |
+| Python type hint (`Path | None`) | A declared type that may be null |
+| Python docstring (`"""..."""`) | Javadoc attached to a module/class/method |
+| C++ header (`.h`) | Public class declaration/interface |
+| C++ source (`.cpp`) | Method implementation |
+| `std::unique_ptr<T>` | One owner of a heap object |
+| `std::atomic<T>` | Thread-safe value shared by callbacks |
+| Lambda (`[x] (...) { ... }`) | A Java lambda/callback |
 
-## Visual Studio workflow
+Python indentation defines blocks, so there are no braces. A leading underscore
+means "internal to this module" by convention. C++ is stricter than Java about
+object lifetime and threading; avoid changing ownership or audio callbacks until
+you are comfortable with the surrounding code.
 
-From the StemLab repository root:
+## First Commands
+
+From the repository root:
 
 ```powershell
-.\setup_recursive_dev.ps1
-cd plugin
-.\build_windows.ps1
+.\setup_dev.ps1
+.\plugin\build_windows.ps1
+& ".\plugin\build\StemLabPlugin_artefacts\Release\Standalone\StemLab.exe"
 ```
 
-CMake generates the Visual Studio solution under `plugin\build`. Open the generated `.sln` in Visual Studio, but edit the real files under `plugin\Source`, **not copies under `plugin\build`**. The build directory is generated and can be deleted/recreated.
+Run tests by themselves with:
 
-For UI work, the easiest target to debug is the **Standalone** StemLab target. You do not need to launch Ableton every time you move a button or change tree behavior. Once the standalone build behaves correctly, test the VST3 in Ableton/Reason.
-
-## Safe first edits you can own
-
-### Change when StemLab offers another adaptive split
-
-Open:
-
-`stemlab/adaptive/policy.py`
-
-The thresholds in `should_offer_split()` are intentionally readable. For example, raising the confidence threshold makes StemLab more conservative; lowering it makes it offer more branches.
-
-### Change how many layers the experimental lead splitter may create
-
-Open:
-
-`stemlab/recursive.py`
-
-Change:
-
-```python
-MAX_DYNAMIC_CHILDREN = 5
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Do not make this huge yet. Every additional peel costs processing time and can amplify artifacts.
+`tests/` contains real unit tests, not generated output. Keep it. Each test
+creates tiny synthetic files/signals and checks one contract without running a
+multi-gigabyte model.
 
-### Change tree row sizing/layout
+## Main Execution Path
 
-Open:
+When a user presses **Separate**:
 
-`plugin/Source/PluginEditor.cpp`
+```text
+PluginEditor button callback
+    -> StemLabAudioProcessor::launchSeparationAndExport()
+    -> StemLabEngineThread starts stemlab-plugin-job
+    -> plugin_job.run_plugin_job()
+    -> pipeline.separate()
+    -> RoFormerBackend / DemucsBackend / hybrid fusion
+    -> optional refinement
+    -> WAV files + JSON manifest
+    -> PluginProcessor notices completion
+    -> PluginEditor refreshes waveforms and buttons
+```
 
-Search for:
+This process boundary is intentional. Neural inference must never run on the
+real-time audio thread.
 
-`minimumRowHeight`
+When **Send Selected** is used in Ableton:
 
-That block controls the scrollable tree layout. It is isolated from the audio engine.
+```text
+PluginProcessor sends manifest path over localhost UDP
+    -> StemLabRemote validates the manifest
+    -> Ableton creates tracks and audio clips on its main thread
+    -> StemLabRemote writes progress/ack JSON
+    -> PluginProcessor polls that JSON and updates the UI
+```
 
-### Add a new splitter later
+## C++ Frontend
 
-1. Put the backend in `stemlab/adaptive/`.
-2. Return audio files; do not make the backend know about JUCE.
-3. Register an operation in `run_recursive()` in `stemlab/recursive.py`.
-4. Give each child a `category`, `actions`, and metadata.
-5. JUCE will render the returned children from the manifest without needing a new hard-coded stem count.
+### `plugin/Source/PluginEditor.h/.cpp`
 
-## Adaptive manifest contract
+Owns visible behavior:
 
-The Python engine writes schema 2 manifests. Each child contains:
+- `StemWaveformComponent` draws and seeks waveforms.
+- `RecursiveStemRowComponent` renders one adaptive-tree child.
+- `StemLabAudioProcessorEditor` creates controls, lays them out, and translates
+  button clicks into processor calls.
+
+Change this area for labels, colors, row sizes, menus, or control placement.
+Do not put model selection or file-processing algorithms here.
+
+### `plugin/Source/PluginProcessor.h/.cpp`
+
+Owns application state and external work:
+
+- captures host, physical-input, or system-loopback audio;
+- launches and monitors Python jobs;
+- reads manifests/progress files;
+- previews completed audio;
+- communicates with `StemLabRemote`.
+
+The header is the best entry point. Its `/** ... */` blocks are Doxygen comments,
+the C++ equivalent of Javadoc, and Visual Studio displays them in tooltips.
+
+JUCE-required methods such as `processBlock`, `prepareToPlay`, and
+`getStateInformation` are framework callbacks. Read JUCE documentation before
+changing their signatures or thread behavior.
+
+## Python Engine
+
+| Module | Responsibility |
+| --- | --- |
+| `audio.py` | Shared WAV/FLAC loading, saving, resampling, and stem lookup |
+| `pipeline.py` | Public router for RoFormer, Demucs, hybrid, and refinement |
+| `pretrained.py` | BS-RoFormer process adapter |
+| `demucs_backend.py` | Demucs process adapter and output normalization |
+| `hybrid.py` | Spectral fusion of the two model estimates |
+| `plugin_job.py` | JUCE command arguments, progress files, Ableton manifest |
+| `runtime.py` | Safe child-process output/progress handling |
+| `recursive.py` | Adaptive operation router and tree-manifest writer |
+| `adaptive/analysis.py` | Conservative source-complexity estimates |
+| `adaptive/policy.py` | Rules for offering another recursive split |
+| `adaptive/foreground.py` | Experimental foreground/backing DSP splitter |
+| `refinement/events.py` | Kick-event detection |
+| `refinement/adaptive_cancel.py` | Constrained spectral subtraction |
+| `refinement/kick.py` | Per-event kick-bleed correction |
+| `refinement/pipeline.py` | Applies refinement across a stem folder |
+
+Public modules, classes, and functions use Python docstrings. In an editor,
+hover the name or use `help(name)` to read them.
+
+## Stable Contracts
+
+Two JSON formats connect otherwise independent parts of the program:
+
+- `stemlab_ableton_manifest.json` connects Python output to `StemLabRemote`.
+- `recursive_manifest.json` schema 2 connects Python adaptive jobs to the JUCE
+  stem tree.
+
+You can add optional JSON fields safely. Renaming/removing a field requires a
+matching change on both sides plus tests.
+
+An adaptive child currently looks like:
 
 ```json
 {
   "id": "guitar/lead_foreground",
   "label": "Lead / Foreground",
-  "path": "...wav",
+  "path": "C:/.../lead_foreground.wav",
   "category": "instrument.lead",
   "actions": [],
   "confidence": 0.82,
@@ -90,32 +155,50 @@ The Python engine writes schema 2 manifests. Each child contains:
 }
 ```
 
-The JUCE plugin should treat this manifest as the API boundary. This is important for future developers: replacing a model should not require redesigning the UI.
+## Good First Changes
 
-## Current limitations
+Change recursion thresholds in `stemlab/adaptive/policy.py`. The tests run in a
+few seconds and the function has no JUCE dependency.
 
-- Vocal lead/backing and drum component splitting use trained `audio-separator` models.
-- Guitar/Piano/Other lead splitting is currently **experimental DSP foreground extraction**, not a trained semantic lead-instrument model.
-- `estimated_source_count` is a conservative compositeness heuristic. It is used to decide how far the tree may grow; it should not be presented as ground-truth musician counting.
-- Adaptive depth is capped in `adaptive/policy.py` as a safety/performance guard.
+Change stem names/colors in the focused lookup functions rather than searching
+through DSP code.
 
-## Tests
+For UI spacing, find the relevant component's `resized()` method in
+`PluginEditor.cpp`. JUCE uses `resized()` much like a manual Java layout manager.
 
-The adaptive DSP path has a model-free smoke test:
+For a Python behavior change:
 
-```powershell
-python -m pytest tests\test_adaptive_tree.py -q
+1. Find the smallest owning module in the table above.
+2. Add or adjust a test that demonstrates the intended result.
+3. Make the change.
+4. Run pytest.
+5. Run the Standalone app when the change crosses the C++/Python boundary.
+
+## Files You Do Not Edit
+
+These directories are generated and ignored:
+
+```text
+.venv/
+.substem-venv/
+.portable-cache/
+.vs/
+dist/
+plugin/build/
+**/__pycache__/
+*.egg-info/
 ```
 
-This does not download a model. It creates a synthetic stereo mixture, checks the analyzer, runs the foreground splitter, and validates the schema-2 manifest.
+Deleting them is safe when their programs are closed, but they will be recreated.
+Never edit copies of source files under `plugin/build`; edit `plugin/Source`.
 
-## Suggested Git workflow
+## Current Limits
 
-Use small branches by responsibility, for example:
-
-- `ui/tree-density`
-- `engine/source-counting`
-- `separator/lead-model`
-- `integration/reason`
-
-That makes it much easier for another developer to review one feature without reading the entire StemLab history.
+- Recursive vocal/drum splitting requires `audio-separator` model downloads.
+- Guitar/piano/other adaptive splitting is experimental DSP, not a semantic
+  instrument classifier.
+- The source-count estimate is a recursion heuristic, not a literal musician
+  count.
+- `PluginProcessor.cpp`, `PluginEditor.cpp`, and `StemLabRemote/__init__.py` are
+  still the largest modules because they coordinate framework APIs. Extract one
+  responsibility at a time, build, test, and checkpoint each extraction.

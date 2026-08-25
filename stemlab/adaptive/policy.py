@@ -1,7 +1,8 @@
+"""Rules that decide whether a child stem may be split recursively."""
+
 from __future__ import annotations
 
 from .analysis import ChildAssessment
-
 
 MAX_ADAPTIVE_DEPTH = 4
 

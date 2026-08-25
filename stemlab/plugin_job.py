@@ -1,15 +1,17 @@
+"""File/UDP bridge between the JUCE app, Python pipeline, and Ableton Live."""
+
 from __future__ import annotations
 
 import argparse
 import json
 import os
-import time
 import socket
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .audio import STEM_NAMES, find_stem_file
-from .pipeline import separate, DEFAULT_ENGINE, ENGINE_CHOICES
+from .pipeline import DEFAULT_ENGINE, ENGINE_CHOICES, separate
 from .pretrained import DEFAULT_MODEL
 from .runtime import configure_utf8_stdio
 
@@ -38,14 +40,9 @@ def write_progress(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     target = output_dir / PROGRESS_FILE
-    temp = output_dir / (
-        f"{PROGRESS_FILE}.{os.getpid()}.tmp"
-    )
+    temp = output_dir / (f"{PROGRESS_FILE}.{os.getpid()}.tmp")
 
-    payload = (
-        f"{max(0.0, min(100.0, float(percent))):.1f}\n"
-        f"{str(stage)}\n"
-    )
+    payload = f"{max(0.0, min(100.0, float(percent))):.1f}\n{str(stage)}\n"
 
     try:
         temp.write_text(
@@ -82,6 +79,7 @@ def write_progress(
 
 
 def manifest_audio_path(path: Path) -> str:
+    """Return an absolute, JSON-safe audio path for Ableton's clip API."""
     # Live's create_audio_clip expects an absolute file path. Forward slashes
     # avoid backslash escaping problems when the JSON is read by Max JS.
     return str(path.resolve()).replace("\\", "/")
@@ -96,6 +94,7 @@ def build_manifest(
     refined: bool,
     engine: str = DEFAULT_ENGINE,
 ) -> dict:
+    """Build the stable JSON payload consumed by ``StemLabRemote``."""
     stems = []
 
     for stem in selected_stems:
@@ -124,6 +123,7 @@ def build_manifest(
 
 
 def write_manifest(path: Path, data: dict) -> None:
+    """Write a readable UTF-8 manifest, creating its parent directory."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(data, indent=2, ensure_ascii=False),
@@ -132,6 +132,7 @@ def write_manifest(path: Path, data: dict) -> None:
 
 
 def encode_path_for_udp(path: Path) -> str:
+    """Encode a path as one whitespace-safe hexadecimal UDP token."""
     # UDP messages entering Max are atomized on whitespace. Hex gives us a
     # transport-safe single atom regardless of spaces in Windows paths.
     return str(path.resolve()).encode("utf-8").hex().upper()
@@ -142,6 +143,7 @@ def notify_ableton(
     host: str = BRIDGE_HOST,
     port: int = BRIDGE_PORT,
 ) -> None:
+    """Tell the local Ableton Remote Script that a manifest is ready."""
     encoded = encode_path_for_udp(manifest_path)
     payload = f"stemlab_ready {encoded}".encode("ascii")
 
@@ -161,6 +163,7 @@ def run_plugin_job(
     refine: bool = True,
     notify: bool = True,
 ) -> Path:
+    """Separate audio, write an Ableton manifest, and optionally notify Live."""
     selected = []
     for stem in selected_stems:
         normalized = stem.lower().strip()
@@ -219,7 +222,8 @@ def run_plugin_job(
     return manifest_path
 
 
-def main():
+def main() -> None:
+    """CLI entry used by ``stemlab-plugin-job`` and the JUCE process bridge."""
     configure_utf8_stdio()
 
     parser = argparse.ArgumentParser(

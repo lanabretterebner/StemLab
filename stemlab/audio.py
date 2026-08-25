@@ -41,6 +41,7 @@ def load_audio(
         path: File to read.
         target_sr: If set, resample with ``resample_poly``.
         stereo: If true, duplicate mono to two channels.
+
     """
     audio, sr = sf.read(str(path), dtype="float32", always_2d=True)
 

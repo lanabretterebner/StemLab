@@ -1,312 +1,153 @@
 <p align="center">
-  <img src="assets/StemLabLogo.png" alt="StemLab" width="520">
+  <img src="plugin/Resources/StemLabIcon.png" alt="StemLab" width="420">
 </p>
 
 # StemLab
 
-StemLab is an open-source six-stem music separator for Windows with a JUCE
-Standalone application and Ableton Live VST3 integration.
+StemLab is a Windows application and Ableton Live VST3 for separating music into
+vocals, drums, bass, guitar, piano, and other stems.
 
-It separates audio into:
-
-- Vocals
-- Drums
-- Bass
-- Guitar
-- Piano
-- Other
-
-StemLab supports **BS-RoFormer**, **Demucs `htdemucs_6s`**, and a **Hybrid**
-mode that combines both model outputs before optional StemLab refinement.
+The repository contains the source-development workflow. It deliberately does
+not contain generated builds, model weights, virtual environments, or installer
+packaging.
 
 ## Features
 
-- Windows Standalone application
-- Ableton Live VST3
-- BS-RoFormer separation
-- Demucs six-stem separation
-- Hybrid RoFormer + Demucs fusion
-- Optional adaptive StemLab refinement
-- NVIDIA CUDA acceleration
-- MP3/WAV/FLAC/OGG/AIFF input through FFmpeg normalization
-- Resizable, volume-colored waveform previews
-- Stem Play/Pause and click-to-seek auditioning
-- Windows system-audio recording
-- Selective stem export
-- Selective Ableton stem import
-- Invisible `StemLabRemote` Ableton integration
-- No Max for Live device required
+- JUCE Standalone application and VST3
+- BS-RoFormer, Demucs `htdemucs_6s`, and hybrid separation
+- Optional kick-bleed refinement
+- Adaptive vocal, drum, and foreground stem trees
+- File, physical-input, and Windows system-audio capture
+- Waveform preview and selective export
+- Direct import into Ableton through `StemLabRemote`
 
-## Download for Windows
+## Set Up Development
 
-For normal users, install StemLab from the **GitHub Releases** page rather than
-downloading the source repository. The Windows installer bundles the tested
-StemLab runtime, including FFmpeg, so users do not need to install Python or
-FFmpeg separately.
+StemLab currently targets 64-bit Windows and Python 3.11. Install:
 
-Download `StemLab-Setup-0.9.9.exe` from the latest release and run it. If that
-release also contains `StemLab-Setup-0.9.9-*.bin` files, download those files to
-the same folder as the EXE before starting setup.
+- Visual Studio with **Desktop development with C++** and CMake tools
+- Python 3.11
+- FFmpeg on `PATH` when working with compressed audio
+- An NVIDIA/CUDA setup for practical model inference
 
-The installer can install the desktop application and, optionally, the Ableton
-Live VST3 + `StemLabRemote` integration.
-
-### For developers
-
-This repository contains source code only. Large assembled runtime files such
-as `Engine/ffmpeg.exe` belong in `dist/` and GitHub Release assets, not in git
-history.
-
-Build the Windows installer with:
+From an ordinary PowerShell window in the repository root:
 
 ```powershell
-.\build_installer_windows.ps1
+.\setup_dev.ps1
 ```
 
-If FFmpeg is not on PATH, point the builder at the executable you want to ship:
+This creates `.venv`, installs StemLab plus its development/recursive
+dependencies, and runs the unit tests. The first install is large because the
+audio backends depend on PyTorch and pretrained-model tooling.
+
+To reuse a different environment:
 
 ```powershell
-.\build_installer_windows.ps1 -FfmpegPath "C:\path\to\ffmpeg.exe"
+.\setup_dev.ps1 -EnvironmentPath C:\path\to\venv
 ```
 
-That script first builds the portable payload under:
+## Build And Run
 
-```text
-dist\StemLab-0.9.9-Windows\
-```
-
-The portable builder copies a working `ffmpeg.exe` from PATH into the generated
-`Engine/` folder. You may select a specific redistributable binary instead:
+Build the Standalone application and VST3:
 
 ```powershell
-.\build_portable_windows.ps1 -FfmpegPath "C:\path\to\ffmpeg.exe"
+.\plugin\build_windows.ps1
 ```
 
-To build and publish/update the GitHub Release, install GitHub CLI, authenticate
-once with `gh auth login`, then run:
+The script finds Visual Studio, downloads the pinned JUCE source when needed,
+and performs an incremental Release build. Use `-Clean` only when you need to
+discard the CMake build directory.
+
+Run the Standalone app:
 
 ```powershell
-.\publish_github_release.ps1
+& ".\plugin\build\StemLabPlugin_artefacts\Release\Standalone\StemLab.exe"
 ```
 
-The publisher uploads the setup EXE and any Inno Setup `.bin` slices. Add
-`-IncludePortableZip` if you also want the portable ZIP on the release.
-
-> **FFmpeg licensing:** StemLab's MIT license does not replace FFmpeg's license.
-> Before distributing the bundled binary, verify that the particular FFmpeg
-> build you chose is redistributable under its own configuration/license terms.
-> The build automatically writes `FFMPEG_BUILD_INFO.txt` into the release to
-> record the exact FFmpeg configuration being shipped.
-
-## Separation Engines
-
-Choose an engine from:
-
-```text
-Settings > Separation Engine
-```
-
-### BS-RoFormer
-
-Uses `bs-roformer-infer` with the configured six-stem pretrained checkpoint.
-
-### Demucs
-
-Uses upstream Demucs with `htdemucs_6s`.
-
-### Hybrid
-
-Runs BS-RoFormer and Demucs sequentially, compares their stem estimates in the
-spectral domain, and fuses them before optional StemLab refinement.
-
-The models run sequentially to limit peak GPU-memory pressure.
-
-## StemLab Refinement
-
-The optional refinement stage currently focuses on reducing kick/drum bleed in
-non-drum stems.
-
-It:
-
-1. detects likely kick events,
-2. finds isolated source examples,
-3. builds a reference,
-4. matches that reference in STFT space,
-5. estimates a constrained complex transfer,
-6. subtracts only matched components,
-7. gates processing by confidence/similarity.
-
-The process is intentionally conservative: preserving legitimate musical
-content takes priority over removing every trace of bleed.
-
-## Standalone Workflow
-
-1. Open or drag an audio file into `StemLab.exe`.
-2. Choose the separation engine.
-3. Enable or disable StemLab refinement.
-4. Click **Separate All Stems**.
-5. Audition the completed stem waveforms.
-6. Select the stems you want to save.
-
-StemLab can also capture the current Windows playback mix using WASAPI
-loopback.
-
-## Ableton Live
-
-StemLab uses two pieces inside Ableton:
-
-```text
-StemLab.vst3
-StemLabRemote
-```
-
-For installation, see:
-
-```text
-ABLETON_QUICKSTART.md
-```
-
-Typical workflow:
-
-1. Add StemLab to an audio track.
-2. Select an Arrangement audio clip.
-3. Click **Use Live Clip**.
-4. Click **Separate All Stems**.
-5. Audition the completed stems.
-6. Check the stems you want.
-7. Click **Send Selected**.
-
-`StemLabRemote` creates the selected Arrangement tracks/clips underneath the
-source track.
-
-## Building From Source
-
-Development currently targets **Python 3.11 on Windows**.
-
-Install the Python backend:
+Install the development VST3 and Ableton Remote Script:
 
 ```powershell
-python -m pip install -e .
+.\install_ableton.ps1
 ```
 
-Build the JUCE Standalone + VST3 targets:
+The installer asks for administrator permission to copy the VST3 into the
+standard Windows plug-in folder. It never closes Ableton automatically.
+
+See [ABLETON_QUICKSTART.md](ABLETON_QUICKSTART.md) for Ableton configuration.
+
+## Test
+
+`tests/` is the unit-test suite and should stay in source control. Run it after
+every behavior change:
 
 ```powershell
-cd plugin
-.\build_windows.ps1
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Outputs are written under:
+The tests use synthetic audio, so they do not download model weights or require
+Ableton.
+
+## How It Fits Together
 
 ```text
-plugin\build\StemLabPlugin_artefacts\Release\
+JUCE button / host audio
+        |
+        v
+PluginEditor -> PluginProcessor -> stemlab-plugin-job
+                                      |
+                                      v
+                                  pipeline.py
+                           /          |          \
+                    RoFormer       Demucs       Hybrid
+                           \          |          /
+                                      v
+                                  WAV stems
+                                      |
+                        Plugin preview / StemLabRemote
 ```
 
-including:
+- `PluginEditor` owns controls, layout, and waveforms.
+- `PluginProcessor` owns capture, playback, child processes, and bridge state.
+- `stemlab/plugin_job.py` translates between JUCE arguments and Python.
+- `stemlab/pipeline.py` chooses the separation engine and optional refinement.
+- `stemlab/recursive.py` routes adaptive child-stem operations.
+- `StemLabRemote` is the only code allowed to manipulate Ableton tracks/clips.
 
-```text
-Standalone\StemLab.exe
-VST3\StemLab.vst3
-```
-
-To build the complete self-contained Windows package, run this from the
-repository root:
-
-```powershell
-.\build_portable_windows.ps1
-```
-
-The nested JUCE build is path-independent and always uses `plugin\CMakeLists.txt`,
-regardless of the shell's current working directory.
-
-The portable builder creates:
-
-```text
-dist\StemLab-0.9.9-Windows\
-dist\StemLab-0.9.9-Windows.zip
-```
-
-The portable release intentionally excludes development environments, build
-caches, tests, source-control metadata, model checkpoints, and other local
-development files.
+The beginner-oriented tour is in [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md).
 
 ## Command Line
 
-Basic separation:
+After setup, separation can also run without the JUCE app:
 
 ```powershell
-stemlab-separate --input "song.wav" --output ".\output"
+.\.venv\Scripts\stemlab-separate.exe `
+    --input "song.wav" `
+    --output ".\output"
 ```
 
-Skip StemLab refinement:
+Use `--engine roformer`, `--engine demucs`, or `--engine hybrid`. Add
+`--no-refine` to keep the raw model output.
 
-```powershell
-stemlab-separate --input "song.wav" --output ".\output" --no-refine
-```
-
-Refine an existing six-stem directory:
-
-```powershell
-stemlab-refine --stems ".\stems" --output ".\refined"
-```
-
-## Project Structure
+## Repository Map
 
 ```text
-StemLab/
-├── ableton_remote/       Ableton Remote Script
-├── assets/               Repository artwork
-├── plugin/               JUCE VST3 + Standalone source
-│   ├── Resources/        Embedded application artwork
-│   └── Source/
-├── scripts/              Development/smoke-test utilities
-├── stemlab/              Python separation backend
-│   └── refinement/
-├── tests/                Automated source tests
-├── build_portable_windows.ps1
-├── PORTABLE_INSTALL.txt
-├── ABLETON_QUICKSTART.md
-├── pyproject.toml
-├── LICENSE
-├── THIRD_PARTY.md
-└── README.md
+ableton_remote/          Ableton Live control-surface bridge
+plugin/                  JUCE C++ frontend and build definition
+stemlab/                 Python separation and DSP engine
+tests/                   Fast unit tests using generated audio
+ABLETON_QUICKSTART.md    Ableton setup and workflow
+DEVELOPER_GUIDE.md       Code tour for new contributors
+install_ableton.ps1      Development VST3/Remote Script installer
+setup_dev.ps1            Python environment setup
+pyproject.toml           Python package, commands, and tool settings
 ```
 
-## Pretrained Models
-
-StemLab does not commit pretrained checkpoint bytes to this repository.
-
-Weights are downloaded separately by their respective backends when required.
-Individual model checkpoints may have attribution, redistribution, or usage
-terms separate from StemLab's source-code license.
+Directories such as `.venv/`, `.portable-cache/`, `plugin/build/`, `dist/`,
+`__pycache__/`, and `.vs/` are generated locally and ignored by Git. Edit only
+the source files listed above.
 
 ## License
 
-StemLab's original source code is released under the **MIT License**.
-
-Third-party frameworks, libraries, runtimes, and pretrained models retain their
-own licenses and terms. See `THIRD_PARTY.md` and `plugin/LICENSE-NOTE.md`.
-
-## Version
-
-Current version: **0.9.9**
-
-This version includes the portable runtime architecture and the embedded
-StemLab / StemLab Windows application artwork while retaining the current
-multi-engine separation, Ableton integration, waveform, recording, and
-refinement workflow.
-
-
-### JUCE download/cache
-
-`plugin\build_windows.ps1` downloads the pinned JUCE 9.0.0 source archive into:
-
-```text
-.portable-cache\JUCE-9.0.0\
-```
-
-and passes that extracted source directly to CMake. Git is not required for the
-JUCE build step.
-
-If a JUCE download is interrupted, rerun the build. The script retries transient
-download failures and removes a corrupt cached archive if extraction fails.
+StemLab's original code is MIT licensed. JUCE, FFmpeg, model runtimes, and
+pretrained checkpoints retain their own terms; see
+[THIRD_PARTY.md](THIRD_PARTY.md).

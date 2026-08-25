@@ -71,8 +71,7 @@ def models_main() -> None:
     exe = str(local) if local.exists() else shutil.which("bs-roformer-download")
     if exe is None:
         raise SystemExit(
-            "bs-roformer-download was not found. "
-            "Install StemLab with: python -m pip install -e ."
+            "bs-roformer-download was not found. Install StemLab with: python -m pip install -e ."
         )
     subprocess.run([exe, "--list-models"], check=True)
 

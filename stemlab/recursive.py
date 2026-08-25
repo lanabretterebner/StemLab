@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .adaptive.analysis import assess_children, analyse_audio
+from .adaptive.analysis import analyse_audio, assess_children
 from .adaptive.foreground import split_foreground
 from .adaptive.policy import MAX_ADAPTIVE_DEPTH, should_offer_split
 
@@ -53,6 +53,7 @@ class RecursiveChild:
 
 
 def default_model_dir() -> Path:
+    """Return the per-user cache directory for recursive model files."""
     local = os.environ.get("LOCALAPPDATA")
     if local:
         return Path(local) / "StemLab" / "Models" / "Recursive"
@@ -92,9 +93,7 @@ def _resolved_outputs(output_dir: Path, result: Iterable[str]) -> list[Path]:
 
 
 def _find_output(paths: Iterable[Path], *needles: str) -> Path | None:
-    normalised_needles = [
-        x.lower().replace("-", "_").replace(" ", "_") for x in needles
-    ]
+    normalised_needles = [x.lower().replace("-", "_").replace(" ", "_") for x in needles]
     for path in paths:
         normalised = path.stem.lower().replace("-", "_").replace(" ", "_")
         if any(needle in normalised for needle in normalised_needles):
@@ -175,11 +174,14 @@ def _with_adaptive_metadata(
             continue
 
         actions = list(child.actions)
-        if should_offer_split(
-            assessment,
-            depth=depth,
-            category=child.category,
-        ) and "split" not in actions:
+        if (
+            should_offer_split(
+                assessment,
+                depth=depth,
+                category=child.category,
+            )
+            and "split" not in actions
+        ):
             actions.append("split")
 
         updated.append(
@@ -247,6 +249,7 @@ def split_drums(
     progress: ProgressCallback | None = None,
     depth: int = 1,
 ) -> Path:
+    """Split a drum stem into component children and return its manifest."""
     model_dir = model_dir or default_model_dir()
     if progress:
         progress(4.0, "Loading recursive drum model")
@@ -320,6 +323,7 @@ def split_vocals(
     progress: ProgressCallback | None = None,
     depth: int = 1,
 ) -> Path:
+    """Split vocals into lead/backing children and return its manifest."""
     model_dir = model_dir or default_model_dir()
     if progress:
         progress(4.0, "Loading lead/backing vocal model")
@@ -409,10 +413,14 @@ def split_lead_group(
     for pass_index in range(pass_count):
         pass_dir = output_dir / f"foreground_pass_{pass_index + 1}"
 
-        def pass_progress(percent: float, stage: str) -> None:
+        def pass_progress(
+            percent: float,
+            stage: str,
+            pass_number: int = pass_index,
+        ) -> None:
             if not progress:
                 return
-            base = 8.0 + (pass_index / pass_count) * 78.0
+            base = 8.0 + (pass_number / pass_count) * 78.0
             span = 78.0 / pass_count
             progress(base + span * (percent / 100.0), stage)
 
@@ -494,6 +502,7 @@ def deverb_vocal(
     progress: ProgressCallback | None = None,
     depth: int = 1,
 ) -> Path:
+    """Split a vocal into dry signal and removed reverb components."""
     model_dir = model_dir or default_model_dir()
     if progress:
         progress(4.0, "Loading vocal de-reverb model")
@@ -568,6 +577,7 @@ def run_recursive(
     model_dir: Path | None = None,
     progress: ProgressCallback | None = None,
 ) -> Path:
+    """Route one recursive operation and return the generated manifest path."""
     input_path = input_path.expanduser().resolve()
     output_dir = output_dir.expanduser().resolve()
     depth = max(1, min(MAX_ADAPTIVE_DEPTH, int(depth)))

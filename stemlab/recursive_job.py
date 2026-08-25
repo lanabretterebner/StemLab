@@ -13,9 +13,7 @@ def main() -> None:
     """CLI entry: ``stemlab-recursive-job``."""
     configure_utf8_stdio()
 
-    parser = argparse.ArgumentParser(
-        description="Run a StemLab Adaptive Stem Tree job."
-    )
+    parser = argparse.ArgumentParser(description="Run a StemLab Adaptive Stem Tree job.")
     parser.add_argument(
         "--operation",
         choices=("vocals", "drums", "deverb", "lead", "adaptive"),

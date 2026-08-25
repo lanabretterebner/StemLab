@@ -5,8 +5,8 @@ separation policy can evolve without touching the JUCE plugin.
 """
 
 from .analysis import AudioProfile, ChildAssessment, analyse_audio, assess_children
-from .policy import MAX_ADAPTIVE_DEPTH, should_offer_split
 from .foreground import ForegroundSplit, split_foreground
+from .policy import MAX_ADAPTIVE_DEPTH, should_offer_split
 
 __all__ = [
     "AudioProfile",

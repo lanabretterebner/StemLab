@@ -1,3 +1,5 @@
+"""Apply conservative refinement to a complete six-stem output folder."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -14,6 +16,7 @@ def refine_stem_folder(
     cfg: KickRefinementConfig | None = None,
     progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> dict[str, KickRefinementStats]:
+    """Copy all stems while reducing kick bleed in configured target stems."""
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -25,20 +28,13 @@ def refine_stem_folder(
     drums, sr = load_audio(drum_path)
     stats = {}
 
-    available = [
-        (stem, find_stem_file(input_dir, stem))
-        for stem in STEM_NAMES
-    ]
-    available = [
-        (stem, path)
-        for stem, path in available
-        if path is not None
-    ]
+    available = [(stem, find_stem_file(input_dir, stem)) for stem in STEM_NAMES]
+    available = [(stem, path) for stem, path in available if path is not None]
 
     total = max(1, len(available))
 
     for index, (stem, path) in enumerate(available, start=1):
-        audio, stem_sr = load_audio(path, target_sr=sr)
+        audio, _ = load_audio(path, target_sr=sr)
         out_path = output_dir / path.name
 
         if stem in kick_targets:

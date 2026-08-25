@@ -1,3 +1,5 @@
+"""Estimate whether an audio stem contains material worth splitting again."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,12 +9,13 @@ from typing import Iterable
 import numpy as np
 import soundfile as sf
 
-
 _EPS = 1.0e-9
 
 
 @dataclass(frozen=True)
 class AudioProfile:
+    """Small, model-free summary of one audio file's apparent complexity."""
+
     rms: float
     estimated_source_count: int
     confidence: float
@@ -20,12 +23,16 @@ class AudioProfile:
 
 @dataclass(frozen=True)
 class ChildAssessment:
+    """Evidence used by the recursion policy to accept or reject a child stem."""
+
     confidence: float
     estimated_source_count: int
     energy_ratio: float
 
 
-def _read_analysis_excerpt(path: Path, *, seconds_per_window: float = 8.0) -> tuple[np.ndarray, int]:
+def _read_analysis_excerpt(
+    path: Path, *, seconds_per_window: float = 8.0
+) -> tuple[np.ndarray, int]:
     """Read a few representative windows instead of loading a whole song."""
     info = sf.info(str(path))
     sample_rate = int(info.samplerate)
@@ -92,6 +99,7 @@ def _spectral_flatness(mono: np.ndarray) -> float:
 
 
 def analyse_audio(path: Path) -> AudioProfile:
+    """Analyze representative excerpts and return a conservative source estimate."""
     path = Path(path)
     audio, _sample_rate = _read_analysis_excerpt(path)
     if audio.ndim != 2:
@@ -126,10 +134,7 @@ def analyse_audio(path: Path) -> AudioProfile:
     # whether offering another recursive split is worth the compute.
     complexity = float(
         np.clip(
-            0.38 * active_fraction
-            + 0.24 * flatness
-            + 0.22 * stereo_width
-            + 0.16 * crest_norm,
+            0.38 * active_fraction + 0.24 * flatness + 0.22 * stereo_width + 0.16 * crest_norm,
             0.0,
             1.0,
         )
@@ -204,9 +209,7 @@ def assess_children(parent: Path, children: Iterable[Path]) -> dict[Path, ChildA
         independence = 1.0 - float(np.clip(duplicate_penalty[path], 0.0, 1.0))
         confidence = float(
             np.clip(
-                0.50 * profile.confidence
-                + 0.30 * energy_score
-                + 0.20 * independence,
+                0.50 * profile.confidence + 0.30 * energy_score + 0.20 * independence,
                 0.0,
                 1.0,
             )

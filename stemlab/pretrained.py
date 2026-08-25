@@ -83,6 +83,7 @@ class RoFormerBackend:
         log_callback: Callable[[str], None] | None = None,
         progress_callback: Callable[[float], None] | None = None,
     ) -> None:
+        """Configure the model, device, logging, and progress callbacks."""
         self.model = model
         self.device = device
         self.log_callback = log_callback

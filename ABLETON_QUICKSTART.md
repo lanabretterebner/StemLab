@@ -1,61 +1,46 @@
-# StemLab - Ableton Live quick start
+# StemLab With Ableton Live
 
-The normal Windows release already contains everything StemLab needs:
-
-```text
-StemLab.exe
-StemLab.vst3
-StemLabRemote\
-Engine\
-```
-
-No Max for Live device is required.
-
-## Recommended setup
-
-1. Download and extract `StemLab-Windows.zip` from GitHub Releases.
-2. Run `StemLab.exe` once.
-3. On the first-launch screen click **Set Up Ableton**.
-
-You can also run the same setup later from:
+StemLab uses two components inside Ableton:
 
 ```text
-Settings > Ableton Live > Install / Repair Ableton Integration...
+StemLab.vst3       Captures/loads audio and runs separation
+StemLabRemote      Creates Arrangement tracks and clips
 ```
 
-The setup requests Administrator permission only for the normal VST3 folder and
-installs:
+No Max for Live device or MIDI port is required.
+
+## Build And Install
+
+From the source repository:
+
+```powershell
+.\setup_dev.ps1
+.\plugin\build_windows.ps1
+.\install_ableton.ps1
+```
+
+The final command installs:
 
 ```text
 StemLab.vst3
   -> C:\Program Files\Common Files\VST3\StemLab.vst3
 
-StemLabRemote\
-  -> <your Ableton User Library>\Remote Scripts\StemLabRemote
+StemLabRemote
+  -> <Ableton User Library>\Remote Scripts\StemLabRemote
 ```
 
-The large `Engine\` directory is **not copied**. The VST3 reuses the Engine in
-the extracted StemLab folder. Keep that folder in place.
+If automatic User Library detection fails, locate it with **Browser > User
+Library > Show in Explorer**, then run:
 
-If the User Library cannot be detected automatically, StemLab opens a folder
-picker. In Ableton you can locate the correct folder with:
-
-```text
-Browser > right-click User Library > Show in Explorer
+```powershell
+.\install_ableton.ps1 -UserLibrary "C:\full\path\to\User Library"
 ```
 
-StemLab does not force-close Ableton. If Live is open, save your project and
-fully quit Live before running setup again.
+Save and close Ableton before installing; the script refuses to force-close it.
 
-## Enable StemLabRemote
+## Enable The Remote Script
 
-Restart Ableton Live, then open:
-
-```text
-Settings > Link, Tempo & MIDI
-```
-
-Set:
+Restart Ableton and open **Settings > Link, Tempo & MIDI**. Choose:
 
 ```text
 Control Surface = StemLabRemote
@@ -63,29 +48,17 @@ Input = None
 Output = None
 ```
 
-## Verify the VST3
+If StemLab is missing from the plug-in browser, open **Settings > Plug-ins** and
+rescan VST3 plug-ins.
 
-If StemLab does not appear in Live:
+## Workflow
 
-```text
-Settings > Plug-ins > Rescan
-```
-
-The VST3 is installed to the standard Windows location:
-
-```text
-C:\Program Files\Common Files\VST3\StemLab.vst3
-```
-
-## Normal workflow
-
-1. Put **StemLab** on an audio track.
+1. Put StemLab on an audio track.
 2. Select an Arrangement audio clip.
-3. Click **Use Live Clip**.
-4. Click **Separate All Stems**.
-5. Audition the completed stems.
-6. Check the stems you want.
-7. Click **Send Selected**.
+3. Click **Use Live Clip** in StemLab.
+4. Choose an engine and click **Separate**.
+5. Audition and select completed stems.
+6. Click **Send Selected**.
 
-`StemLabRemote` creates the selected Arrangement tracks beneath the source
-track.
+`StemLabRemote` creates the selected stems as Arrangement tracks beneath the
+source track.

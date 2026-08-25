@@ -12,15 +12,9 @@ from importlib.metadata import entry_points
 
 def main() -> int:
     """Run the installed ``bs-roformer-infer`` console script in-process."""
-    matches = [
-        ep
-        for ep in entry_points(group="console_scripts")
-        if ep.name == "bs-roformer-infer"
-    ]
+    matches = [ep for ep in entry_points(group="console_scripts") if ep.name == "bs-roformer-infer"]
     if not matches:
-        raise RuntimeError(
-            "bs-roformer-infer is not installed in the StemLab runtime."
-        )
+        raise RuntimeError("bs-roformer-infer is not installed in the StemLab runtime.")
     result = matches[0].load()()
     return int(result) if isinstance(result, int) else 0
 

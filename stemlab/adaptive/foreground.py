@@ -1,3 +1,5 @@
+"""Experimental DSP splitter for a prominent lead and its backing bed."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,12 +9,13 @@ import numpy as np
 import soundfile as sf
 from scipy import ndimage, signal
 
-
 _EPS = 1.0e-8
 
 
 @dataclass(frozen=True)
 class ForegroundSplit:
+    """Paths and confidence returned by :func:`split_foreground`."""
+
     foreground: Path
     backing: Path
     confidence: float
