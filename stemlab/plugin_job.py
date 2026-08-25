@@ -1,19 +1,20 @@
+"""File/UDP bridge between the JUCE app, Python pipeline, and Ableton Live."""
+
 from __future__ import annotations
 
 import argparse
 import json
 import os
-import time
 import socket
-import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .pipeline import separate, DEFAULT_ENGINE, ENGINE_CHOICES
+from .audio import STEM_NAMES, find_stem_file
+from .pipeline import DEFAULT_ENGINE, ENGINE_CHOICES, separate
 from .pretrained import DEFAULT_MODEL
+from .runtime import configure_utf8_stdio
 
-
-STEM_NAMES = ("vocals", "drums", "bass", "guitar", "piano", "other")
 BRIDGE_HOST = "127.0.0.1"
 BRIDGE_PORT = 39277
 PROGRESS_FILE = "stemlab_progress.txt"
@@ -38,15 +39,10 @@ def write_progress(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    target = output_dir / "stemlab_progress.txt"
-    temp = output_dir / (
-        f"stemlab_progress.{os.getpid()}.tmp"
-    )
+    target = output_dir / PROGRESS_FILE
+    temp = output_dir / (f"{PROGRESS_FILE}.{os.getpid()}.tmp")
 
-    payload = (
-        f"{max(0.0, min(100.0, float(percent))):.1f}\n"
-        f"{str(stage)}\n"
-    )
+    payload = f"{max(0.0, min(100.0, float(percent))):.1f}\n{str(stage)}\n"
 
     try:
         temp.write_text(
@@ -82,22 +78,8 @@ def write_progress(
         pass
 
 
-def find_stem_file(folder: Path, stem: str) -> Path | None:
-    candidates = [
-        p for p in folder.rglob("*")
-        if p.is_file()
-        and p.suffix.lower() in {".wav", ".flac"}
-        and stem.lower() in p.stem.lower()
-    ]
-    if not candidates:
-        return None
-
-    # Prefer shorter names because they tend to be direct stem outputs rather
-    # than duplicated/debug variants.
-    return sorted(candidates, key=lambda p: (len(p.name), p.name.lower()))[0]
-
-
 def manifest_audio_path(path: Path) -> str:
+    """Return an absolute, JSON-safe audio path for Ableton's clip API."""
     # Live's create_audio_clip expects an absolute file path. Forward slashes
     # avoid backslash escaping problems when the JSON is read by Max JS.
     return str(path.resolve()).replace("\\", "/")
@@ -105,7 +87,6 @@ def manifest_audio_path(path: Path) -> str:
 
 def build_manifest(
     *,
-    output_dir: Path,
     final_dir: Path,
     input_path: Path,
     start_ppq: float,
@@ -113,6 +94,7 @@ def build_manifest(
     refined: bool,
     engine: str = DEFAULT_ENGINE,
 ) -> dict:
+    """Build the stable JSON payload consumed by ``StemLabRemote``."""
     stems = []
 
     for stem in selected_stems:
@@ -141,6 +123,7 @@ def build_manifest(
 
 
 def write_manifest(path: Path, data: dict) -> None:
+    """Write a readable UTF-8 manifest, creating its parent directory."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(data, indent=2, ensure_ascii=False),
@@ -149,6 +132,7 @@ def write_manifest(path: Path, data: dict) -> None:
 
 
 def encode_path_for_udp(path: Path) -> str:
+    """Encode a path as one whitespace-safe hexadecimal UDP token."""
     # UDP messages entering Max are atomized on whitespace. Hex gives us a
     # transport-safe single atom regardless of spaces in Windows paths.
     return str(path.resolve()).encode("utf-8").hex().upper()
@@ -159,6 +143,7 @@ def notify_ableton(
     host: str = BRIDGE_HOST,
     port: int = BRIDGE_PORT,
 ) -> None:
+    """Tell the local Ableton Remote Script that a manifest is ready."""
     encoded = encode_path_for_udp(manifest_path)
     payload = f"stemlab_ready {encoded}".encode("ascii")
 
@@ -178,6 +163,7 @@ def run_plugin_job(
     refine: bool = True,
     notify: bool = True,
 ) -> Path:
+    """Separate audio, write an Ableton manifest, and optionally notify Live."""
     selected = []
     for stem in selected_stems:
         normalized = stem.lower().strip()
@@ -207,7 +193,6 @@ def run_plugin_job(
     write_progress(output_dir, 96.0, "Building stem list")
     final_dir = result.final_dir
     manifest = build_manifest(
-        output_dir=output_dir,
         final_dir=final_dir,
         input_path=input_path,
         start_ppq=start_ppq,
@@ -237,32 +222,9 @@ def run_plugin_job(
     return manifest_path
 
 
-def main():
-    # The separation backends re-invoke sys.executable for Demucs and
-    # BS-RoFormer. When this process was launched without user site-packages
-    # (the plugin passes -s to the self-contained Engine), its children must
-    # inherit that isolation - but a process that IS relying on user site
-    # (e.g. a "pip install --user" development setup) must not lose it.
-    import site
-
-    if not getattr(site, "ENABLE_USER_SITE", True):
-        os.environ.setdefault("PYTHONNOUSERSITE", "1")
-
-    try:
-        # JUCE's ChildProcess reader interprets our output as UTF-8, so make
-        # that contract explicit instead of inheriting Windows cp1252.
-        sys.stdout.reconfigure(
-            encoding="utf-8",
-            errors="replace",
-            line_buffering=True,
-        )
-        sys.stderr.reconfigure(
-            encoding="utf-8",
-            errors="replace",
-            line_buffering=True,
-        )
-    except Exception:
-        pass
+def main() -> None:
+    """CLI entry used by ``stemlab-plugin-job`` and the JUCE process bridge."""
+    configure_utf8_stdio()
 
     parser = argparse.ArgumentParser(
         description="Run a StemLab VST capture through the separator and notify Ableton."

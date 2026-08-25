@@ -22,13 +22,30 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.5"]
+recursive = ["audio-separator[gpu]==0.44.5"]
 
 [project.scripts]
 stemlab-separate = "stemlab.cli:separate_main"
 stemlab-refine = "stemlab.cli:refine_main"
 stemlab-models = "stemlab.cli:models_main"
 stemlab-plugin-job = "stemlab.plugin_job:main"
+stemlab-recursive-job = "stemlab.recursive_job:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["stemlab*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Ableton loads this module inside Live and supplies dynamic API attributes that
+# static lint rules cannot see.
+"integrations/ableton/StemLabRemote/__init__.py" = ["ALL"]

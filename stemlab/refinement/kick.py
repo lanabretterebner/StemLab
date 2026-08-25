@@ -1,14 +1,19 @@
+"""Build a kick reference and remove matching bleed from another stem."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
 import numpy as np
 
-from .events import Event, detect_kick_events
 from .adaptive_cancel import CancelConfig, adaptive_cancel
+from .events import Event, detect_kick_events
 
 
 @dataclass
 class KickRefinementConfig:
+    """Timing, confidence, and cancellation settings for kick refinement."""
+
     reference_pre_ms: float = 8.0
     reference_post_ms: float = 180.0
 
@@ -28,8 +33,9 @@ class KickRefinementConfig:
 
 @dataclass
 class KickRefinementStats:
+    """Counters reported after refining one target stem."""
+
     events_detected: int
-    reference_events: int
     cancellations_attempted: int
     cancellations_applied: int
     rejected_event_confidence: int
@@ -96,14 +102,12 @@ def build_kick_reference(
     events: list[Event],
     sr: int,
     cfg: KickRefinementConfig,
-) -> tuple[np.ndarray | None, list[Event]]:
+) -> np.ndarray | None:
+    """Build a robust kick prototype from the strongest detected events."""
     pre = int(sr * cfg.reference_pre_ms / 1000.0)
     post = int(sr * cfg.reference_post_ms / 1000.0)
 
-    strong = [
-        e for e in events
-        if e.confidence >= cfg.min_event_confidence
-    ]
+    strong = [e for e in events if e.confidence >= cfg.min_event_confidence]
 
     strong = sorted(
         strong,
@@ -112,7 +116,7 @@ def build_kick_reference(
     )[: cfg.max_reference_events]
 
     if not strong:
-        return None, []
+        return None
 
     regions = []
     for e in strong:
@@ -143,7 +147,7 @@ def build_kick_reference(
         amplitudes.append(float(np.max(np.abs(region))))
 
     reference *= float(np.median(amplitudes))
-    return reference, strong
+    return reference
 
 
 def refine_kick_bleed(
@@ -165,7 +169,7 @@ def refine_kick_bleed(
     cfg = cfg or KickRefinementConfig()
 
     events = detect_kick_events(drums, sr=sr)
-    reference, reference_events = build_kick_reference(
+    reference = build_kick_reference(
         drums,
         events,
         sr,
@@ -175,7 +179,6 @@ def refine_kick_bleed(
     if reference is None:
         return target.copy(), KickRefinementStats(
             events_detected=len(events),
-            reference_events=0,
             cancellations_attempted=0,
             cancellations_applied=0,
             rejected_event_confidence=len(events),
@@ -243,10 +246,7 @@ def refine_kick_bleed(
         real_len = end - start
 
         # Only the delta is blended into the real stem.
-        correction = (
-            result.cleaned[:, :real_len]
-            - target_region[:, :real_len]
-        )
+        correction = result.cleaned[:, :real_len] - target_region[:, :real_len]
 
         # Short fades ensure the correction reaches exactly zero at region
         # boundaries, eliminating hard-splice discontinuities/clicks.
@@ -269,7 +269,6 @@ def refine_kick_bleed(
 
     stats = KickRefinementStats(
         events_detected=len(events),
-        reference_events=len(reference_events),
         cancellations_attempted=attempted,
         cancellations_applied=applied,
         rejected_event_confidence=rejected_event,

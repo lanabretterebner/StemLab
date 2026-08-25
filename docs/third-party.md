@@ -13,11 +13,10 @@ StemLab's Standalone application and VST3 frontend are built with JUCE.
 This repository currently pins JUCE 9.0.0 through CMake FetchContent rather
 than committing JUCE source into the StemLab repository.
 
-JUCE has its own licensing model. Anyone building or distributing StemLab
-binaries is responsible for complying with the JUCE license applicable to
-their distribution.
-
-See `plugin/LICENSE-NOTE.md`.
+JUCE has its own dual licensing model (open-source AGPLv3 or a commercial JUCE
+license). Anyone building or distributing StemLab binaries is responsible for
+complying with the JUCE license applicable to that distribution. The VST3 SDK
+included by current JUCE releases has separate terms.
 
 ## BS-RoFormer
 
@@ -48,19 +47,13 @@ upstream licensing/terms.
 
 ## Python / ML runtime
 
-The portable Windows builder can assemble an embedded runtime containing
-third-party components including CPython, PyTorch, NumPy, SciPy, SoundFile,
-PyYAML, tqdm, Demucs, BS-RoFormer inference dependencies, and their transitive
-dependencies.
+StemLab's development environment contains third-party components including
+CPython, PyTorch, NumPy, SciPy, SoundFile, PyYAML, tqdm, Demucs, BS-RoFormer
+inference dependencies, audio-separator, and their transitive dependencies.
 
 Those packages retain their respective upstream licenses.
 
-The CPython embeddable distribution includes its upstream `LICENSE.txt` inside
-the generated `Engine` directory.
-
 ## FFmpeg
-
-The portable build copies an `ffmpeg.exe` from the build machine.
 
 FFmpeg licensing obligations depend on the configuration of the specific FFmpeg
 binary being redistributed. Before publishing a binary release, verify the

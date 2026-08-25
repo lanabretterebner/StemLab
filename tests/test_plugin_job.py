@@ -3,7 +3,6 @@ from pathlib import Path
 from stemlab.plugin_job import (
     build_manifest,
     encode_path_for_udp,
-    find_stem_file,
 )
 
 
@@ -18,7 +17,6 @@ def test_manifest_selects_requested_stems(tmp_path):
     source.write_bytes(b"fake")
 
     data = build_manifest(
-        output_dir=tmp_path,
         final_dir=final_dir,
         input_path=source,
         start_ppq=17.25,

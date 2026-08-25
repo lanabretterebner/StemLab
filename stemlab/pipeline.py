@@ -1,15 +1,16 @@
+"""Top-level separation pipeline shared by the CLI and JUCE worker."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .demucs_backend import DemucsBackend, DEFAULT_DEMUCS_MODEL
+from .demucs_backend import DEFAULT_DEMUCS_MODEL, DemucsBackend
 from .hybrid import fuse_stem_folders
-from .pretrained import RoFormerBackend, DEFAULT_MODEL
+from .pretrained import DEFAULT_MODEL, RoFormerBackend
 from .refinement.kick import KickRefinementConfig
 from .refinement.pipeline import refine_stem_folder
-
 
 ENGINE_ROFORMER = "roformer"
 ENGINE_DEMUCS = "demucs"
@@ -52,9 +53,10 @@ def resolve_device(device: str) -> str:
 
 @dataclass
 class PipelineResult:
+    """Locations and engine name produced by one separation run."""
+
     baseline_dir: Path
     final_dir: Path
-    refined: bool
     engine: str
 
 
@@ -70,6 +72,11 @@ def separate(
     log_callback: Callable[[str], None] | None = None,
     progress_callback: Callable[[float, str], None] | None = None,
 ) -> PipelineResult:
+    """Run the selected model engine and optional kick-bleed refinement.
+
+    Progress callbacks receive a percentage from 0 to 100 and a short stage
+    label suitable for the JUCE status display.
+    """
     input_path = Path(input_path)
     output_dir = Path(output_dir)
     baseline_dir = output_dir / "baseline"
@@ -79,8 +86,7 @@ def separate(
 
     if engine not in ENGINE_CHOICES:
         raise ValueError(
-            f"Unknown separation engine: {engine}. "
-            f"Choose one of: {', '.join(ENGINE_CHOICES)}"
+            f"Unknown separation engine: {engine}. Choose one of: {', '.join(ENGINE_CHOICES)}"
         )
 
     def log(message: str):
@@ -235,14 +241,14 @@ def separate(
                 f"Refining {stem.title()} ({index}/{total})",
             )
 
-        result = refine_stem_folder(
+        stats_by_stem = refine_stem_folder(
             input_dir=baseline_dir,
             output_dir=final_dir,
             cfg=refinement_config,
             progress_callback=on_refine_progress,
         )
 
-        for stem, stats in result.stats.items():
+        for stem, stats in stats_by_stem.items():
             log(
                 f"{stem}: "
                 f"events={stats.events_detected}, "
@@ -260,6 +266,5 @@ def separate(
     return PipelineResult(
         baseline_dir=baseline_dir,
         final_dir=final_dir,
-        refined=refine,
         engine=engine,
     )

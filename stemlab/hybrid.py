@@ -1,17 +1,15 @@
+"""Fuse RoFormer and Demucs estimates in the time-frequency domain."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
 from pathlib import Path
 from typing import Callable
-import math
 
 import numpy as np
 from scipy.signal import istft, stft
 
-from .audio import load_audio, save_audio
-
-
-STEM_NAMES = ("vocals", "drums", "bass", "guitar", "piano", "other")
+from .audio import STEM_NAMES, find_stem_file, load_audio, peak_normalize, save_audio
 
 # RoFormer preference when the two models disagree strongly. Agreement tends
 # toward an even 50/50 fusion. These are intentionally conservative rather
@@ -24,32 +22,6 @@ ROFORMER_PREFERENCE = {
     "piano": 0.60,
     "other": 0.55,
 }
-
-
-@dataclass
-class HybridFusionResult:
-    output_dir: Path
-    files: list[Path]
-
-
-def _find_stem(folder: Path, stem: str) -> Path:
-    candidates = sorted(
-        [
-            path for path in folder.rglob("*.wav")
-            if stem.lower() in path.stem.lower()
-        ],
-        key=lambda path: (
-            len(path.name),
-            str(path).lower(),
-        ),
-    )
-
-    if not candidates:
-        raise FileNotFoundError(
-            f"Could not find {stem} in {folder}"
-        )
-
-    return candidates[0]
 
 
 def _pad_to_length(audio: np.ndarray, length: int) -> np.ndarray:
@@ -105,39 +77,25 @@ def _fuse_channel(
     # 1 when the two models agree on local magnitude, approaching 0 as their
     # estimates diverge. The log-ratio makes equal relative disagreements act
     # similarly at quiet and loud levels.
-    disagreement = np.abs(
-        np.log((mag_r + eps) / (mag_d + eps))
-    )
+    disagreement = np.abs(np.log((mag_r + eps) / (mag_d + eps)))
     agreement = np.exp(-disagreement).astype(np.float32)
 
     # Agreement -> 50/50 consensus.
     # Disagreement -> gently favor the model with the stronger prior for this
     # stem instead of blindly averaging contradictory estimates.
-    weight_r = (
-        0.5 * agreement
-        + roformer_preference * (1.0 - agreement)
-    ).astype(np.float32)
+    weight_r = (0.5 * agreement + roformer_preference * (1.0 - agreement)).astype(np.float32)
 
     weight_d = 1.0 - weight_r
 
-    mixed_complex = (
-        weight_r * zr
-        + weight_d * zd
-    )
+    mixed_complex = weight_r * zr + weight_d * zd
 
-    target_magnitude = (
-        weight_r * mag_r
-        + weight_d * mag_d
-    )
+    target_magnitude = weight_r * mag_r + weight_d * mag_d
 
     # Straight complex averaging can accidentally cancel when the models have
     # small phase differences. Restore the intended weighted magnitude while
     # retaining the blended phase.
     mixed_magnitude = np.abs(mixed_complex)
-    fused = mixed_complex * (
-        target_magnitude
-        / (mixed_magnitude + eps)
-    )
+    fused = mixed_complex * (target_magnitude / (mixed_magnitude + eps))
 
     _, audio = istft(
         fused,
@@ -186,6 +144,7 @@ def fuse_stem_pair(
     chunk_seconds: float = 16.0,
     overlap_seconds: float = 0.35,
 ) -> None:
+    """Fuse one matching pair of model outputs and write a normalized WAV."""
     roformer, sr = load_audio(
         roformer_path,
         stereo=True,
@@ -286,9 +245,7 @@ def fuse_stem_pair(
                 )
                 envelope[-fade:] = np.sin(phase) ** 2
 
-        result[:, start:end] += (
-            fused * envelope[None, :]
-        )
+        result[:, start:end] += fused * envelope[None, :]
 
         weight[start:end] += envelope
 
@@ -300,14 +257,7 @@ def fuse_stem_pair(
         1e-6,
     )
 
-    # Leave headroom for the existing StemLab refinement and prevent a rare
-    # model disagreement from creating >0 dBFS samples.
-    peak = float(
-        np.max(np.abs(result))
-    ) if result.size else 0.0
-
-    if peak > 0.999:
-        result *= 0.999 / peak
+    result = peak_normalize(result, peak=0.999)
 
     save_audio(
         output_path,
@@ -322,7 +272,8 @@ def fuse_stem_folders(
     output_dir: str | Path,
     log_callback: Callable[[str], None] | None = None,
     progress_callback: Callable[[int, int, str], None] | None = None,
-) -> HybridFusionResult:
+) -> list[Path]:
+    """Fuse all six named stems from two model-output directories."""
     roformer_dir = Path(roformer_dir)
     demucs_dir = Path(demucs_dir)
     output_dir = Path(output_dir)
@@ -331,14 +282,17 @@ def fuse_stem_folders(
     files: list[Path] = []
 
     for index, stem in enumerate(STEM_NAMES, start=1):
-        roformer_path = _find_stem(
+        roformer_path = find_stem_file(
             roformer_dir,
             stem,
         )
-        demucs_path = _find_stem(
+        demucs_path = find_stem_file(
             demucs_dir,
             stem,
         )
+        if roformer_path is None or demucs_path is None:
+            missing = roformer_dir if roformer_path is None else demucs_dir
+            raise FileNotFoundError(f"Could not find {stem} in {missing}")
         output_path = output_dir / f"{stem}.wav"
 
         if log_callback:
@@ -363,7 +317,4 @@ def fuse_stem_folders(
                 stem,
             )
 
-    return HybridFusionResult(
-        output_dir=output_dir,
-        files=files,
-    )
+    return files

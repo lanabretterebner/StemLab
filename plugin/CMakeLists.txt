@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # JUCE 9.0.0 is pinned for reproducible builds.
 #
-# Normal Windows builds download/extract JUCE in build_windows.ps1 and pass
+# Normal Windows builds download/extract JUCE in scripts/build_plugin.ps1 and pass
 # STEMLAB_JUCE_SOURCE_DIR here. This avoids CMake's Git/FetchContent clone
 # sub-build, which is fragile on fresh Windows machines.
 set(STEMLAB_JUCE_SOURCE_DIR "" CACHE PATH "Path to an extracted JUCE 9.0.0 source tree")
