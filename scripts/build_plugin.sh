@@ -7,10 +7,10 @@
 # CMake's FetchContent git sub-build.
 #
 # Usage:
-#   ./build_linux.sh
-#   ./build_linux.sh --juce-source /path/to/JUCE     # use an existing checkout
-#   ./build_linux.sh --build-type Debug
-#   ./build_linux.sh --clean
+#   ./scripts/build_plugin.sh
+#   ./scripts/build_plugin.sh --juce-source /path/to/JUCE   # existing checkout
+#   ./scripts/build_plugin.sh --build-type Debug
+#   ./scripts/build_plugin.sh --clean
 
 set -euo pipefail
 
@@ -19,8 +19,8 @@ BUILD_TYPE="Release"
 JUCE_SOURCE=""
 CLEAN=0
 
-PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(dirname "$PLUGIN_ROOT")"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PLUGIN_ROOT="$REPO_ROOT/plugin"
 BUILD_DIR="$PLUGIN_ROOT/build"
 CACHE_ROOT="$REPO_ROOT/.portable-cache"
 
@@ -197,4 +197,4 @@ if [[ -f "$ARTEFACTS/Standalone/StemLab" ]]; then
 fi
 echo
 echo "Install the plugin into ~/.vst3 with:"
-echo "  $PLUGIN_ROOT/install_vst3.sh"
+echo "  $REPO_ROOT/scripts/install_vst3.sh"

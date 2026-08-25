@@ -5,6 +5,15 @@ in-process REAPER integration and PipeWire/PulseAudio system-audio recording.
 This page covers building, installing, and what behaves differently from the
 Windows release.
 
+The quickest path is the self-contained bundle, which includes the Engine:
+
+```bash
+./scripts/build_portable.sh      # builds dist/StemLab-<version>-Linux/
+cd dist/StemLab-*-Linux && ./install.sh
+```
+
+The sections below cover the individual pieces.
+
 Tested on Ubuntu 24.04 with GCC 13, CMake 3.28, JUCE 9.0.0 and REAPER 7.42.
 
 ## 1. Install the build dependencies
@@ -38,7 +47,7 @@ sudo pacman -S --needed base-devel cmake pkgconf curl unzip \
   libxcursor libxcomposite libxrender freetype2 fontconfig mesa
 ```
 
-`build_linux.sh` checks for all of these with `pkg-config` before configuring,
+`scripts/build_plugin.sh` checks for all of these with `pkg-config` before configuring,
 and prints the exact install command for your distribution if anything is
 missing.
 
@@ -48,7 +57,7 @@ builds with `JUCE_WEB_BROWSER=0` and `JUCE_USE_CURL=0`.
 ## 2. Build the plugin
 
 ```bash
-./plugin/build_linux.sh
+./scripts/build_plugin.sh
 ```
 
 This downloads the pinned JUCE 9.0.0 source into `.portable-cache/` and passes
@@ -58,9 +67,9 @@ Git is not needed for the JUCE step.
 Useful flags:
 
 ```bash
-./plugin/build_linux.sh --juce-source /path/to/JUCE   # reuse a local checkout
-./plugin/build_linux.sh --build-type Debug
-./plugin/build_linux.sh --clean
+./scripts/build_plugin.sh --juce-source /path/to/JUCE   # reuse a local checkout
+./scripts/build_plugin.sh --build-type Debug
+./scripts/build_plugin.sh --clean
 ```
 
 Outputs land in:
@@ -73,7 +82,7 @@ plugin/build/StemLabPlugin_artefacts/Release/Standalone/StemLab
 ## 3. Install the VST3
 
 ```bash
-./plugin/install_vst3.sh
+./scripts/install_vst3.sh
 ```
 
 That copies the bundle to `~/.vst3/StemLab.vst3` and verifies the module inside
@@ -88,14 +97,34 @@ The plugin shells out to the Python backend. One script sets it up - no venv,
 no system Python, nothing to configure:
 
 ```bash
-./install_backend_linux.sh
+./scripts/install_backend.sh
 ```
 
 It downloads a relocatable CPython into `~/.local/share/StemLab/Engine`,
 installs StemLab and its ML dependencies into it, and writes the pointer file
-the plugin auto-discovers. Re-run it any time to update. It auto-detects
-NVIDIA and picks the CUDA or CPU torch build; force one with `--cuda` or
-`--cpu` (the CPU build is several gigabytes smaller).
+the plugin auto-discovers. Re-run it any time to update.
+
+### GPU flavors
+
+The installer picks a PyTorch build automatically only when the choice is
+safe (NVIDIA present → CUDA, otherwise CPU) and prints a hint when it spots
+AMD or Intel hardware; force a flavor with a flag:
+
+| Flag | Hardware | Notes |
+| --- | --- | --- |
+| `--cuda` | NVIDIA | PyPI's default torch build. Auto-detected. |
+| `--rocm` | AMD (RDNA2+ dGPU) | Official Linux ROCm wheels; the wheel bundles its own ROCm userspace, so the stock `amdgpu` kernel driver is enough. Suggested when AMD hardware is seen, never auto-picked - APUs/iGPUs report HIP as available but crash, so opt in only on a discrete card. |
+| `--xpu` | Intel Arc / Xe | Official torch XPU wheels; needs Intel's compute runtime (`intel-compute-runtime` / level-zero). Suggested, not auto-picked. |
+| `--cpu` | none | Smallest install; slow but correct. The no-GPU default. |
+
+The plugin always asks the backend for the best device, and the backend
+resolves it at run time: CUDA (which is also how ROCm answers), then XPU,
+then CPU. An unsupported GPU therefore degrades to CPU with a log line
+instead of failing.
+
+Adaptive/recursive splitting runs through onnxruntime, which has no
+ROCm/XPU build on PyPI - on those flavors the recursive stage runs on CPU
+while the main separation offloads.
 
 Developers who prefer a venv can still use one - `python3 -m venv .venv &&
 .venv/bin/pip install -e .` next to the repository is found automatically.
@@ -107,7 +136,7 @@ The plugin discovers the engine in this order:
    the plugin binary
 3. `.venv/bin/stemlab-plugin-job` or `venv/bin/stemlab-plugin-job`, searched
    upward from the plugin binary, the repo root, and the working directory
-4. the pointer written by `install_backend_linux.sh` (and by the Standalone
+4. the pointer written by `scripts/install_backend.sh` (and by the Standalone
    app) at `$XDG_CONFIG_HOME/StemLab/portable_engine_path.txt`
 5. `stemlab-plugin-job` on `$PATH`
 
@@ -178,11 +207,16 @@ missing instead of recording.
 than REAPER the plugin offers the same local-file workflow as the Standalone
 app: drop or select a file, separate, audition, **Save Selected...**.
 
-**CUDA is optional.** The plugin asks for `cuda`, and the backend now falls
-back to CPU when CUDA is unavailable, logging which device it chose. CPU
-separation works but is considerably slower — Demucs is tolerable, BS-RoFormer
-much less so. Check the engine log under **Settings > Copy diagnostics** if a
-job takes longer than you expect.
+**A GPU is optional.** The plugin asks the backend for the best device and
+the backend probes at run time (CUDA/ROCm, then XPU, then CPU), logging which
+one it chose. CPU separation works but is considerably slower — Demucs is
+tolerable, BS-RoFormer much less so. Check the engine log under **Settings >
+Copy diagnostics** if a job takes longer than you expect.
+
+**Drag stems anywhere.** Every completed waveform — root stems and adaptive
+children — can be dragged straight out of the plugin into any application
+that accepts audio files: a DAW arrangement, a file manager, an editor. Click
+still seeks; drag exports.
 
 ## Wayland
 
