@@ -33,7 +33,7 @@ StemLab currently targets 64-bit Windows and Python 3.11. Install:
 From an ordinary PowerShell window in the repository root:
 
 ```powershell
-.\setup_dev.ps1
+.\scripts\setup_dev.ps1
 ```
 
 This creates `.venv`, installs StemLab plus its development/recursive
@@ -43,7 +43,7 @@ audio backends depend on PyTorch and pretrained-model tooling.
 To reuse a different environment:
 
 ```powershell
-.\setup_dev.ps1 -EnvironmentPath C:\path\to\venv
+.\scripts\setup_dev.ps1 -EnvironmentPath C:\path\to\venv
 ```
 
 ## Build And Run
@@ -51,7 +51,7 @@ To reuse a different environment:
 Build the Standalone application and VST3:
 
 ```powershell
-.\plugin\build_windows.ps1
+.\scripts\build_plugin.ps1
 ```
 
 The script finds Visual Studio, downloads the pinned JUCE source when needed,
@@ -67,13 +67,13 @@ Run the Standalone app:
 Install the development VST3 and Ableton Remote Script:
 
 ```powershell
-.\install_ableton.ps1
+.\scripts\install_ableton.ps1
 ```
 
 The installer asks for administrator permission to copy the VST3 into the
 standard Windows plug-in folder. It never closes Ableton automatically.
 
-See [ABLETON_QUICKSTART.md](ABLETON_QUICKSTART.md) for Ableton configuration.
+See [docs/ableton.md](docs/ableton.md) for Ableton configuration.
 
 ## Test
 
@@ -113,7 +113,7 @@ PluginEditor -> PluginProcessor -> stemlab-plugin-job
 - `stemlab/recursive.py` routes adaptive child-stem operations.
 - `StemLabRemote` is the only code allowed to manipulate Ableton tracks/clips.
 
-The beginner-oriented tour is in [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md).
+The module and runtime reference is in [docs/development.md](docs/development.md).
 
 ## Command Line
 
@@ -131,14 +131,12 @@ Use `--engine roformer`, `--engine demucs`, or `--engine hybrid`. Add
 ## Repository Map
 
 ```text
-ableton_remote/          Ableton Live control-surface bridge
-plugin/                  JUCE C++ frontend and build definition
+docs/                    Development, Ableton, and licensing notes
+integrations/ableton/    Ableton Live control-surface bridge
+plugin/                  JUCE C++ frontend, assets, and CMake definition
+scripts/                 Development setup, build, and install commands
 stemlab/                 Python separation and DSP engine
 tests/                   Fast unit tests using generated audio
-ABLETON_QUICKSTART.md    Ableton setup and workflow
-DEVELOPER_GUIDE.md       Code tour for new contributors
-install_ableton.ps1      Development VST3/Remote Script installer
-setup_dev.ps1            Python environment setup
 pyproject.toml           Python package, commands, and tool settings
 ```
 
@@ -150,4 +148,4 @@ the source files listed above.
 
 StemLab's original code is MIT licensed. JUCE, FFmpeg, model runtimes, and
 pretrained checkpoints retain their own terms; see
-[THIRD_PARTY.md](THIRD_PARTY.md).
+[docs/third-party.md](docs/third-party.md).

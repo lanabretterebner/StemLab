@@ -48,4 +48,4 @@ select = ["E4", "E7", "E9", "F", "B"]
 [tool.ruff.lint.per-file-ignores]
 # Ableton loads this module inside Live and supplies dynamic API attributes that
 # static lint rules cannot see.
-"ableton_remote/StemLabRemote/__init__.py" = ["ALL"]
+"integrations/ableton/StemLabRemote/__init__.py" = ["ALL"]

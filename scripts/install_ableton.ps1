@@ -4,9 +4,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Root = $PSScriptRoot
-$VstSource = Join-Path $Root "plugin\build\StemLabPlugin_artefacts\Release\VST3\StemLab.vst3"
-$RemoteSource = Join-Path $Root "ableton_remote\StemLabRemote"
+$RepoRoot = Split-Path $PSScriptRoot -Parent
+$VstSource = Join-Path $RepoRoot "plugin\build\StemLabPlugin_artefacts\Release\VST3\StemLab.vst3"
+$RemoteSource = Join-Path $RepoRoot "integrations\ableton\StemLabRemote"
 $VstDestination = Join-Path $env:CommonProgramFiles "VST3\StemLab.vst3"
 
 function Normalize-UserLibrary([string]$Path) {

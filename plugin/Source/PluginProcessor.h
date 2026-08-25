@@ -271,6 +271,7 @@ private:
 
     std::atomic<double> engineProgress{0.0};
     std::atomic<double> engineStartMs{0.0};
+    std::atomic<double> engineProgressUpdateMs{0.0};
     std::atomic<double> lastEngineDurationSeconds{0.0};
     std::atomic<bool> engineCompletedSuccessfully{false};
 

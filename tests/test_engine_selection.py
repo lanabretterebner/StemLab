@@ -1,8 +1,10 @@
 import numpy as np
 import soundfile as sf
 
+from stemlab.device import resolve_torch_device
 from stemlab.hybrid import fuse_stem_pair
 from stemlab.pipeline import ENGINE_CHOICES
+from stemlab.recursive import _require_separator
 
 
 def test_engine_choices():
@@ -11,6 +13,49 @@ def test_engine_choices():
         "demucs",
         "hybrid",
     )
+
+
+def test_cuda_request_falls_back_when_torch_has_no_cuda(monkeypatch):
+    class FakeCuda:
+        @staticmethod
+        def is_available():
+            return False
+
+    class FakeTorch:
+        cuda = FakeCuda()
+
+    messages: list[str] = []
+
+    def fake_import_module(name):
+        assert name == "torch"
+        return FakeTorch()
+
+    monkeypatch.setattr("importlib.import_module", fake_import_module)
+
+    assert resolve_torch_device("cuda", messages.append) == "cpu"
+    assert "Falling back to CPU" in messages[0]
+
+
+def test_cuda_request_uses_cuda_when_torch_supports_it(monkeypatch):
+    class FakeCuda:
+        @staticmethod
+        def is_available():
+            return True
+
+    class FakeTorch:
+        cuda = FakeCuda()
+
+    def fake_import_module(name):
+        assert name == "torch"
+        return FakeTorch()
+
+    monkeypatch.setattr("importlib.import_module", fake_import_module)
+
+    assert resolve_torch_device("cuda", lambda _: None) == "cuda"
+
+
+def test_recursive_dependency_is_installed():
+    _require_separator()
 
 
 def test_hybrid_fusion_writes_audio(tmp_path):

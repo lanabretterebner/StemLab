@@ -1797,6 +1797,7 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
     engineCompletedSuccessfully.store(false);
     engineProgress.store(0.01);
     engineStartMs.store(nowMs());
+    engineProgressUpdateMs.store(engineStartMs.load());
     lastEngineDurationSeconds.store(0.0);
 
     engineThread = std::make_unique<StemLabEngineThread>(*this, command);
@@ -1808,26 +1809,6 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
 juce::StringArray
 StemLabAudioProcessor::makePythonModuleCommand(const juce::String& moduleName) const
 {
-#ifdef STEMLAB_DEV_REPO_ROOT
-    // Development builds may run recursive jobs from a separate environment
-    // while the packaged app runs both jobs from the bundled StemLab Engine.
-    if (moduleName == "stemlab.recursive_job")
-    {
-        const auto devRoot = juce::File(STEMLAB_DEV_REPO_ROOT);
-        const juce::StringArray recursiveDevCandidates{
-            ".substem-venv/Scripts/stemlab-recursive-job.exe",
-            ".substem-venv/Scripts/stemlab-recursive-job",
-            ".venv/Scripts/stemlab-recursive-job.exe", ".venv/Scripts/stemlab-recursive-job"};
-
-        for (const auto& relative : recursiveDevCandidates)
-        {
-            const auto candidate = devRoot.getChildFile(relative);
-            if (candidate.existsAsFile())
-                return {candidate.getFullPathName()};
-        }
-    }
-#endif
-
     const auto commandName = getEngineCommand().trim();
 
     if (commandName.isEmpty())
@@ -1849,6 +1830,7 @@ StemLabAudioProcessor::makePythonModuleCommand(const juce::String& moduleName) c
 
     if (fileName.containsIgnoreCase("stemlab-plugin-job"))
     {
+        // Development installs place both workers in the same environment.
         auto recursiveExecutable = commandFile.getSiblingFile(
             fileName.replace("stemlab-plugin-job", "stemlab-recursive-job"));
 
@@ -2227,6 +2209,7 @@ bool StemLabAudioProcessor::launchRecursiveStemSplit(int rootStemIndex)
     recursiveThread.reset();
     engineProgress.store(0.01);
     engineStartMs.store(nowMs());
+    engineProgressUpdateMs.store(engineStartMs.load());
     lastEngineDurationSeconds.store(0.0);
 
     if (isVocals)
@@ -2319,6 +2302,7 @@ bool StemLabAudioProcessor::launchRecursiveAction(const juce::String& itemId,
     recursiveThread.reset();
     engineProgress.store(0.01);
     engineStartMs.store(nowMs());
+    engineProgressUpdateMs.store(engineStartMs.load());
     lastEngineDurationSeconds.store(0.0);
 
     setStatus(isDeverb ? "De-reverb: processing isolated lead vocal..."
@@ -2365,12 +2349,16 @@ double StemLabAudioProcessor::getEngineEstimatedRemainingSeconds() const noexcep
     if (progress < 0.12 || progress >= 0.995)
         return -1.0;
 
-    const auto elapsed = getEngineElapsedSeconds();
+    const auto updated = engineProgressUpdateMs.load();
+    const auto start = engineStartMs.load();
 
-    if (elapsed <= 0.1)
+    // Model calls can sit on one progress marker for minutes. In that case an
+    // elapsed-time projection grows forever, so report an unknown ETA instead.
+    if (updated <= start || nowMs() - updated > 5000.0)
         return -1.0;
 
-    const auto estimate = elapsed * (1.0 - progress) / progress;
+    const auto elapsedAtUpdate = (updated - start) / 1000.0;
+    const auto estimate = elapsedAtUpdate * (1.0 - progress) / progress;
     return juce::jlimit(0.0, 60.0 * 60.0, estimate);
 }
 
@@ -2449,8 +2437,12 @@ void StemLabAudioProcessor::setStatus(const juce::String& newStatus)
 void StemLabAudioProcessor::setEngineProgress(double progress)
 {
     const auto current = engineProgress.load();
+    const auto next = juce::jmax(current, juce::jlimit(0.0, 1.0, progress));
 
-    engineProgress.store(juce::jmax(current, juce::jlimit(0.0, 1.0, progress)));
+    if (next > current)
+        engineProgressUpdateMs.store(nowMs());
+
+    engineProgress.store(next);
 
     sendChangeMessage();
 }

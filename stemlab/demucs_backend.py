@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 from .audio import STEM_NAMES
+from .device import resolve_torch_device
 from .pretrained import _normalise_input_for_backend
 from .runtime import run_progress_process
 
@@ -55,6 +56,7 @@ class DemucsBackend:
         input_path = Path(input_path).resolve()
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
+        device = resolve_torch_device(self.device, self._log)
 
         probe = subprocess.run(
             [
@@ -89,7 +91,7 @@ class DemucsBackend:
                 "--name",
                 self.model,
                 "--device",
-                self.device,
+                device,
                 "--out",
                 str(raw_output),
                 str(staged),
@@ -97,7 +99,7 @@ class DemucsBackend:
 
             self._log("Starting Demucs separation...")
             self._log(f"Model: {self.model}")
-            self._log(f"Device: {self.device}")
+            self._log(f"Device: {device}")
             self._progress(0.0)
 
             exit_code = run_progress_process(command, self._log, self._progress)

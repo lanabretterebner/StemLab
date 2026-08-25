@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 from typing import Callable
 
+from .device import resolve_torch_device
 from .runtime import run_progress_process
 
 DEFAULT_MODEL = "roformer-model-bs-roformer-sw-by-jarredou"
@@ -108,6 +109,7 @@ class RoFormerBackend:
         input_path = Path(input_path).resolve()
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
+        device = resolve_torch_device(self.device, self._log)
 
         with tempfile.TemporaryDirectory(prefix="stemlab_input_") as td:
             staging = Path(td)
@@ -125,14 +127,14 @@ class RoFormerBackend:
                 "--store_dir",
                 str(output_dir),
                 "--device",
-                self.device,
+                device,
                 "--model",
                 self.model,
             ]
 
             self._log("Starting pretrained BS-RoFormer separation...")
             self._log(f"Model: {self.model}")
-            self._log(f"Device: {self.device}")
+            self._log(f"Device: {device}")
             self._progress(0.0)
 
             return_code = run_progress_process(

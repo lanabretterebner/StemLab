@@ -6,8 +6,8 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
-$PluginRoot = $PSScriptRoot
-$RepoRoot = Split-Path $PluginRoot -Parent
+$RepoRoot = Split-Path $PSScriptRoot -Parent
+$PluginRoot = Join-Path $RepoRoot "plugin"
 $BuildDir = Join-Path $PluginRoot "build"
 $CacheRoot = Join-Path $RepoRoot ".portable-cache"
 $JuceZip = Join-Path $CacheRoot "JUCE-$JuceVersion.zip"

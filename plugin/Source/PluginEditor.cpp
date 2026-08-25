@@ -37,7 +37,8 @@ juce::File abletonSetupScript()
 
     for (int depth = 0; depth < 6 && root.exists(); ++depth)
     {
-        const auto candidate = root.getChildFile("install_ableton.ps1");
+        const auto candidate =
+            root.getChildFile("scripts").getChildFile("install_ableton.ps1");
 
         if (candidate.existsAsFile())
             return candidate;
@@ -1814,7 +1815,8 @@ void StemLabAudioProcessorEditor::launchAbletonSetup()
     {
         juce::AlertWindow::showMessageBoxAsync(
             juce::MessageBoxIconType::WarningIcon, "Ableton setup not found",
-            "install_ableton.ps1 was not found in the StemLab source tree.", "OK", this);
+            "scripts/install_ableton.ps1 was not found in the StemLab source tree.", "OK",
+            this);
         return;
     }
 
@@ -1845,7 +1847,8 @@ void StemLabAudioProcessorEditor::launchAbletonSetup()
     {
         juce::AlertWindow::showMessageBoxAsync(
             juce::MessageBoxIconType::WarningIcon, "Could not start Ableton setup",
-            "Run install_ableton.ps1 from the StemLab source folder instead.", "OK", this);
+            "Run scripts/install_ableton.ps1 from the StemLab source folder instead.", "OK",
+            this);
     }
 }
 

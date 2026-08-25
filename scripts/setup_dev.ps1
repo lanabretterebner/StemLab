@@ -3,13 +3,13 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Root = $PSScriptRoot
+$RepoRoot = Split-Path $PSScriptRoot -Parent
 
 if ([System.IO.Path]::IsPathRooted($EnvironmentPath)) {
     $Environment = [System.IO.Path]::GetFullPath($EnvironmentPath)
 }
 else {
-    $Environment = [System.IO.Path]::GetFullPath((Join-Path $Root $EnvironmentPath))
+    $Environment = [System.IO.Path]::GetFullPath((Join-Path $RepoRoot $EnvironmentPath))
 }
 
 $Python = Join-Path $Environment "Scripts\python.exe"
@@ -22,11 +22,11 @@ if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) {
 
 Write-Host "Installing StemLab, developer tools, and recursive separation support..."
 Write-Host "This is a large first-time install because it includes the audio models' runtimes." -ForegroundColor DarkGray
-& $Python -m pip install -e "$Root[dev,recursive]"
+& $Python -m pip install -e "$RepoRoot[dev,recursive]"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host "Running the unit tests..."
-& $Python -m pytest -q $Root
+& $Python -m pytest -q $RepoRoot
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $MainJob = Join-Path $Environment "Scripts\stemlab-plugin-job.exe"
@@ -41,4 +41,4 @@ foreach ($Job in @($MainJob, $RecursiveJob)) {
 Write-Host ""
 Write-Host "StemLab development environment is ready." -ForegroundColor Green
 Write-Host "  Python: $Python"
-Write-Host "  Tests:  $Root\tests"
+Write-Host "  Tests:  $RepoRoot\tests"
