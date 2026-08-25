@@ -83,12 +83,16 @@ class RoFormerBackend:
         device: str = "cuda",
         log_callback: Callable[[str], None] | None = None,
         progress_callback: Callable[[float], None] | None = None,
+        eta_callback: Callable[[float], None] | None = None,
+        download_callback: Callable[[float], None] | None = None,
     ) -> None:
         """Configure the model, device, logging, and progress callbacks."""
         self.model = model
         self.device = device
         self.log_callback = log_callback
         self.progress_callback = progress_callback
+        self.eta_callback = eta_callback
+        self.download_callback = download_callback
 
     def _log(self, message: str) -> None:
         if self.log_callback:
@@ -141,6 +145,8 @@ class RoFormerBackend:
                 command,
                 self._log,
                 self._progress,
+                eta=self.eta_callback,
+                download=self.download_callback,
                 log_progress_lines=False,
             )
             if return_code != 0:
