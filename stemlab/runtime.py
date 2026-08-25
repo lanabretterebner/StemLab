@@ -1,15 +1,57 @@
-"""Shared process helpers for StemLab job runners and model backends."""
+"""Shared process helpers for FI-STEM job runners and model backends."""
 
 from __future__ import annotations
 
-import locale
+import os
+import queue
 import re
 import subprocess
 import sys
+import threading
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from pathlib import Path
 from typing import BinaryIO
 
 _PERCENT_RE = re.compile(rb"(?<!\d)(\d{1,3}(?:\.\d+)?)%")
+
+
+def _configure_packaged_models() -> None:
+    """Point third-party backends at release-local model caches when present."""
+    engine = Path(sys.executable).resolve().parent
+    caches = engine / "ModelCaches"
+    if not caches.is_dir():
+        return
+    os.environ.setdefault("BS_ROFORMER_MODELS_PATH", str(caches / "bs-roformer-infer"))
+    demucs_repo = caches / "demucs"
+    if (demucs_repo / "5c90dfd2-34c22ccb.th").is_file():
+        os.environ.setdefault("STEMLAB_DEMUCS_MODEL_REPO", str(demucs_repo))
+    os.environ.setdefault("HF_HOME", str(caches / "huggingface"))
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+    os.environ.setdefault("STEMLAB_RECURSIVE_MODEL_DIR", str(engine / "Models" / "Recursive"))
+
+
+_configure_packaged_models()
+
+
+class JobCancelled(RuntimeError):
+    """Raised when the user cancels one specific FI-STEM worker job."""
+
+
+@dataclass(frozen=True)
+class CancellationToken:
+    """Cooperative cancellation backed by a per-job sentinel file."""
+
+    path: Path | None = None
+
+    @property
+    def requested(self) -> bool:
+        return self.path is not None and self.path.exists()
+
+    def raise_if_cancelled(self) -> None:
+        if self.requested:
+            raise JobCancelled("FI-STEM job cancelled")
 
 
 def configure_utf8_stdio() -> None:
@@ -19,6 +61,19 @@ def configure_utf8_stdio() -> None:
         sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
     except Exception:
         pass
+
+
+def child_process_env() -> dict[str, str]:
+    """Return an inherited environment that forces Python child CLIs to UTF-8.
+
+    The Windows portable runtime can otherwise inherit a legacy console encoding
+    such as cp1252.  Some third-party model CLIs print Unicode status symbols
+    (for example ``✓``), which can crash the child before inference even starts.
+    """
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
 
 
 def last_progress_percent(raw: bytes) -> float | None:
@@ -62,18 +117,23 @@ def run_progress_process(
     progress: Callable[[float], None],
     *,
     log_progress_lines: bool = True,
+    cancellation: CancellationToken | None = None,
 ) -> int:
-    """Run a model CLI while forwarding CR/LF progress output."""
+    """Run a model CLI while forwarding progress and honoring cancellation."""
+    if cancellation:
+        cancellation.raise_if_cancelled()
+
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         bufsize=0,
+        env=child_process_env(),
     )
     assert process.stdout is not None
 
     last_reported = -1
-    encoding = locale.getpreferredencoding(False) or "utf-8"
+    encoding = "utf-8"
 
     def consume_segment(raw: bytes) -> None:
         nonlocal last_reported
@@ -92,5 +152,42 @@ def run_progress_process(
         if text and (log_progress_lines or percent is None):
             log(text)
 
-    drain_cr_lf_stream(process.stdout, consume_segment)
-    return process.wait()
+    segments: queue.Queue[bytes | None] = queue.Queue()
+
+    def read_output() -> None:
+        try:
+            drain_cr_lf_stream(process.stdout, segments.put)
+        finally:
+            segments.put(None)
+
+    reader = threading.Thread(target=read_output, name="FI-STEM process output", daemon=True)
+    reader.start()
+
+    try:
+        reader_finished = False
+        while not reader_finished or process.poll() is None:
+            if cancellation and cancellation.requested:
+                process.terminate()
+                try:
+                    process.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2.0)
+                raise JobCancelled("FI-STEM job cancelled")
+
+            try:
+                segment = segments.get(timeout=0.10)
+            except queue.Empty:
+                continue
+
+            if segment is None:
+                reader_finished = True
+            else:
+                consume_segment(segment)
+
+        reader.join(timeout=1.0)
+        return process.wait()
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=2.0)

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 from .device import resolve_torch_device
-from .runtime import run_progress_process
+from .runtime import CancellationToken, run_progress_process
 
 DEFAULT_MODEL = "roformer-model-bs-roformer-sw-by-jarredou"
 
@@ -28,6 +28,7 @@ def _normalise_input_for_backend(
     input_path: Path,
     staging_dir: Path,
     log: Callable[[str], None],
+    cancellation: CancellationToken | None = None,
 ) -> Path:
     """Return a WAV/FLAC the separator can decode, converting via ffmpeg if needed."""
     extension = input_path.suffix.lower()
@@ -39,37 +40,34 @@ def _normalise_input_for_backend(
     ffmpeg = _find_ffmpeg()
     if ffmpeg is None:
         raise RuntimeError(
-            f"StemLab needs FFmpeg to open {extension or 'this audio format'}, "
+            f"FI-STEM needs FFmpeg to open {extension or 'this audio format'}, "
             "but ffmpeg was not found on PATH."
         )
 
     staged = staging_dir / f"{input_path.stem}_stemlab_input.wav"
     log(f"Converting {extension or 'input audio'} to WAV for the separator...")
-    completed = subprocess.run(
-        [
-            ffmpeg,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-i",
-            str(input_path),
-            "-vn",
-            "-ac",
-            "2",
-            "-c:a",
-            "pcm_s24le",
-            str(staged),
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        errors="replace",
+    command = [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(input_path),
+        "-vn",
+        "-ac",
+        "2",
+        "-c:a",
+        "pcm_s24le",
+        str(staged),
+    ]
+    exit_code = run_progress_process(
+        command,
+        log,
+        lambda _percent: None,
+        cancellation=cancellation,
     )
-    if completed.returncode != 0 or not staged.exists():
-        details = (completed.stdout or "").strip()
-        if details:
-            raise RuntimeError("FFmpeg could not convert the input audio: " + details)
+    if exit_code != 0 or not staged.exists():
         raise RuntimeError("FFmpeg could not convert the input audio.")
     return staged
 
@@ -83,12 +81,14 @@ class RoFormerBackend:
         device: str = "cuda",
         log_callback: Callable[[str], None] | None = None,
         progress_callback: Callable[[float], None] | None = None,
+        cancellation: CancellationToken | None = None,
     ) -> None:
         """Configure the model, device, logging, and progress callbacks."""
         self.model = model
         self.device = device
         self.log_callback = log_callback
         self.progress_callback = progress_callback
+        self.cancellation = cancellation
 
     def _log(self, message: str) -> None:
         if self.log_callback:
@@ -117,6 +117,7 @@ class RoFormerBackend:
                 input_path=input_path,
                 staging_dir=staging,
                 log=self._log,
+                cancellation=self.cancellation,
             )
             command = [
                 sys.executable,
@@ -142,6 +143,7 @@ class RoFormerBackend:
                 self._log,
                 self._progress,
                 log_progress_lines=False,
+                cancellation=self.cancellation,
             )
             if return_code != 0:
                 raise subprocess.CalledProcessError(return_code, command)
@@ -154,6 +156,6 @@ class RoFormerBackend:
         )
         if not files:
             raise RuntimeError(
-                "The pretrained separator finished but StemLab found no output audio."
+                "The pretrained separator finished but FI-STEM found no output audio."
             )
         return files

@@ -16,7 +16,7 @@ from .refinement.pipeline import refine_stem_folder
 def separate_main() -> None:
     """CLI entry: ``stemlab-separate``."""
     parser = argparse.ArgumentParser(
-        description="StemLab multi-engine separation + adaptive refinement"
+        description="FI-STEM multi-engine separation + adaptive refinement"
     )
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
@@ -45,7 +45,7 @@ def separate_main() -> None:
 def refine_main() -> None:
     """CLI entry: ``stemlab-refine``."""
     parser = argparse.ArgumentParser(
-        description="Run StemLab adaptive refinement on existing stems"
+        description="Run FI-STEM adaptive refinement on existing stems"
     )
     parser.add_argument("--stems", required=True)
     parser.add_argument("--output", required=True)
@@ -71,7 +71,7 @@ def models_main() -> None:
     exe = str(local) if local.exists() else shutil.which("bs-roformer-download")
     if exe is None:
         raise SystemExit(
-            "bs-roformer-download was not found. Install StemLab with: python -m pip install -e ."
+            "bs-roformer-download was not found. Install FI-STEM with: python -m pip install -e ."
         )
     subprocess.run([exe, "--list-models"], check=True)
 

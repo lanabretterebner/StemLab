@@ -1,19 +1,19 @@
-StemLabRemote 0.9.9
+FIStemRemote 0.9.9
 ====================
 
-Invisible Ableton Live background integration for StemLab.
+Invisible Ableton Live background integration for FI-STEM.
 
 Responsibilities:
-- return the selected/current Arrangement audio clip source file to StemLab,
+- return the selected/current Arrangement audio clip source file to FI-STEM,
 - import selected completed stems as Arrangement tracks/clips,
 - report import progress and completion back to the VST.
 
-StemLabRemote owns no MIDI controls and requires no MIDI Input/Output.
+FIStemRemote owns no MIDI controls and requires no MIDI Input/Output.
 
 One-time setup:
 
 Settings > Link, Tempo & MIDI
-Control Surface = StemLabRemote
+Control Surface = FIStemRemote
 Input = None
 Output = None
 

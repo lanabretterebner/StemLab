@@ -1,4 +1,4 @@
-"""Adaptive source analysis used by StemLab recursive separation.
+"""Adaptive source analysis used by FI-STEM recursive separation.
 
 Keep this package free of UI/DAW code.  It is deliberately small so the
 separation policy can evolve without touching the JUCE plugin.

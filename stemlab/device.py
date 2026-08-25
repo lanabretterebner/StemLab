@@ -12,7 +12,7 @@ def resolve_torch_device(
 ) -> str:
     """Return a PyTorch device that this environment can actually use.
 
-    StemLab prefers CUDA when it is available, but Windows development installs
+    FI-STEM prefers CUDA when it is available, but Windows development installs
     often use CPU-only PyTorch. In that case, falling back to CPU is slower but
     lets the separation finish instead of crashing during model loading.
     """

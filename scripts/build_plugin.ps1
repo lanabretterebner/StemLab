@@ -122,7 +122,7 @@ if (-not (Test-Path (Join-Path $JuceSource "CMakeLists.txt") -PathType Leaf)) {
 Assert-Exists (Join-Path $JuceSource "CMakeLists.txt") "JUCE source extraction failed."
 
 Write-Host ""
-Write-Host "Configuring StemLab VST3 + Standalone..."
+Write-Host "Configuring FI-STEM VST3 + Standalone..."
 Write-Host "Source: $PluginRoot"
 Write-Host "Build:  $BuildDir"
 Write-Host "JUCE:   $JuceSource"
@@ -151,8 +151,15 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host ""
+Write-Host "Running C++ grid tests..."
+ctest --test-dir $BuildDir -C Release --output-on-failure
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
+Write-Host ""
 Write-Host "Build complete."
 Write-Host "Standalone:"
-Write-Host "  $(Join-Path $BuildDir 'StemLabPlugin_artefacts\Release\Standalone\StemLab.exe')"
+Write-Host "  $(Join-Path $BuildDir 'FIStemPlugin_artefacts\Release\Standalone\FI-STEM.exe')"
 Write-Host "VST3:"
-Write-Host "  $(Join-Path $BuildDir 'StemLabPlugin_artefacts\Release\VST3\StemLab.vst3')"
+Write-Host "  $(Join-Path $BuildDir 'FIStemPlugin_artefacts\Release\VST3\FI-STEM.vst3')"

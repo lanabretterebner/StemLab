@@ -118,7 +118,7 @@ def split_foreground(
     This is a role-oriented DSP backend, not a semantic instrument classifier.
     It works best when a lead is spectrally prominent and/or more centred than
     the accompaniment.  A learned backend can replace this function later
-    without changing the StemLab tree/manifest contract.
+    without changing the FI-STEM tree/manifest contract.
     """
     input_path = Path(input_path)
     output_dir = Path(output_dir)

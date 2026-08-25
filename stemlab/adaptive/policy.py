@@ -16,7 +16,7 @@ def should_offer_split(
     """Return whether the UI should expose another recursive split.
 
     This is intentionally conservative.  A fixed neural separator is allowed
-    to live underneath a variable tree, but StemLab does not keep recursing
+    to live underneath a variable tree, but FI-STEM does not keep recursing
     simply because a model can always manufacture another pair of files.
     """
     if depth >= MAX_ADAPTIVE_DEPTH:

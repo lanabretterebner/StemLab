@@ -25,7 +25,7 @@ cmake_install.cmake
 *.vcxproj
 *.vcxproj.filters
 
-# StemLab runtime/output
+# FI-STEM runtime/output
 outputs/
 Jobs/
 Recordings/
@@ -58,6 +58,12 @@ Thumbs.db
 
 # Assembled Windows payloads belong in GitHub Releases, not git history.
 /Engine/
+/FI-STEM.exe
+/FI-STEM.vst3/
+/FIStemRemote/
+/FI-STEM-Setup-*.exe
+/FI-STEM-Setup-*.bin
+# Legacy pre-rebrand payload names.
 /StemLab.exe
 /StemLab.vst3/
 /StemLabRemote/

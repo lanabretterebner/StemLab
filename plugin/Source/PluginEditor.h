@@ -5,6 +5,39 @@
 #include <functional>
 #include "PluginProcessor.h"
 
+
+/** Toggle used for export selection. Right-click invokes a separate solo callback. */
+class StemSelectToggleButton final : public juce::ToggleButton
+{
+public:
+    std::function<void()> onRightClick;
+
+    void mouseDown(const juce::MouseEvent& event) override
+    {
+        suppressRightMouseUp = event.mods.isRightButtonDown();
+        if (suppressRightMouseUp)
+        {
+            if (onRightClick)
+                onRightClick();
+            return;
+        }
+        juce::ToggleButton::mouseDown(event);
+    }
+
+    void mouseUp(const juce::MouseEvent& event) override
+    {
+        if (suppressRightMouseUp || event.mods.isRightButtonDown())
+        {
+            suppressRightMouseUp = false;
+            return;
+        }
+        juce::ToggleButton::mouseUp(event);
+    }
+
+private:
+    bool suppressRightMouseUp = false;
+};
+
 /** Draws one source/stem waveform and converts mouse clicks into preview seeks. */
 class StemWaveformComponent final : public juce::Component
 {
@@ -18,8 +51,12 @@ public:
                           juce::AudioThumbnailCache& thumbnailCache);
 
     void setFile(const juce::File& file);
+    void setResizeCallback(std::function<void(int, bool)> callback);
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
+    void mouseDrag(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override;
+    void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
 private:
     StemLabAudioProcessor& processor;
@@ -28,6 +65,22 @@ private:
     juce::String recursiveId;
     juce::AudioThumbnail thumbnail;
     juce::File currentFile;
+    double viewStart = 0.0;
+    double viewEnd = 1.0;
+    double panStart = 0.0;
+    float panMouseX = 0.0f;
+    bool panning = false;
+    bool selecting = false;
+    bool selectionMoved = false;
+    double selectionAnchor = 0.0;
+    float selectionMouseX = 0.0f;
+    bool resizing = false;
+    float resizeMouseY = 0.0f;
+    int resizeStartHeight = 58;
+    std::function<void(int, bool)> resizeCallback;
+
+    juce::String selectionId() const;
+    double normalisedPositionForX(float x) const;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StemWaveformComponent)
 };
@@ -41,7 +94,8 @@ public:
                               juce::AudioFormatManager& formatManager,
                               juce::AudioThumbnailCache& thumbnailCache,
                               std::function<void(const juce::String&)> toggleExpanded,
-                              std::function<bool(const juce::String&)> isExpanded);
+                              std::function<bool(const juce::String&)> isExpanded,
+                              std::function<void()> laneResized);
 
     void setInfo(const StemLabRecursiveStemInfo& info);
     void refresh(bool engineRunning, bool previewPlaying);
@@ -55,22 +109,23 @@ private:
 
     StemLabAudioProcessor& processor;
     StemLabRecursiveStemInfo item;
-    juce::ToggleButton selectButton;
+    StemSelectToggleButton selectButton;
     juce::TextButton expandButton{">"};
     juce::TextButton playButton{"Play"};
     juce::TextButton actionButton{"..."};
     std::function<void(const juce::String&)> toggleExpandedCallback;
     std::function<bool(const juce::String&)> isExpandedCallback;
+    std::function<void()> laneResizedCallback;
     std::unique_ptr<StemWaveformComponent> waveform;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(RecursiveStemRowComponent)
 };
 
 /**
- * StemLab's complete JUCE interface.
+ * FI-STEM's complete JUCE interface.
  *
  * This class owns controls and layout only. Audio state and background jobs live
- * in StemLabAudioProcessor; separation algorithms live in the Python package.
+ * in the audio processor; separation algorithms live in the Python package.
  */
 class StemLabAudioProcessorEditor final : public juce::AudioProcessorEditor,
                                           public juce::FileDragAndDropTarget,
@@ -88,6 +143,7 @@ public:
     void filesDropped(const juce::StringArray& files, int x, int y) override;
     void fileDragEnter(const juce::StringArray& files, int x, int y) override;
     void fileDragExit(const juce::StringArray& files) override;
+    bool keyPressed(const juce::KeyPress&) override;
 
 private:
     void timerCallback() override;
@@ -98,6 +154,8 @@ private:
     void chooseSaveFolder();
     void chooseJobRootFolder();
     void showSettingsMenu();
+    void showManualGridDialog();
+    void showAnalysisCorrectionDialog();
     void showStandaloneAudioSettings();
     void showFirstRunWelcome();
     void launchAbletonSetup();
@@ -126,9 +184,11 @@ private:
     juce::TextButton playButton{"Play"};
     juce::Label captureTimeLabel;
 
-    juce::ToggleButton refinementButton{"StemLab refinement"};
+    juce::ToggleButton refinementButton{"FI-STEM refinement"};
+    juce::ToggleButton beatThisButton{"Beat This! analysis"};
 
     juce::TextButton separateButton{"Separate"};
+    juce::TextButton cancelButton{"Cancel"};
 
     double progressValue = 0.0;
     juce::ProgressBar progressBar{progressValue};
@@ -136,7 +196,8 @@ private:
     juce::Label timingLabel;
 
     juce::Label stemsLabel;
-    std::array<juce::ToggleButton, StemLabAudioProcessor::stemCount> stemButtons;
+    std::array<juce::TextButton, 3> gridModeButtons;
+    std::array<StemSelectToggleButton, StemLabAudioProcessor::stemCount> stemButtons;
     std::array<juce::TextButton, StemLabAudioProcessor::stemCount> stemExpandButtons;
     std::array<juce::TextButton, StemLabAudioProcessor::stemCount> stemPlayButtons;
     std::array<juce::TextButton, StemLabAudioProcessor::stemCount> stemRecursiveButtons;

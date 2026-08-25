@@ -4,11 +4,13 @@
 #include <array>
 #include <atomic>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 class StemLabEngineThread;
 class StemLabRecursiveThread;
 class StemLabSystemLoopbackThread;
+class StemLabUtilityThread;
 
 /** One node in the adaptive stem tree returned by Python's schema-2 manifest. */
 struct StemLabRecursiveStemInfo
@@ -28,8 +30,56 @@ struct StemLabRecursiveStemInfo
     double confidence = 0.0;
 };
 
+struct StemLabKeyCandidate
+{
+    juce::String key;
+    double probability = 0.0;
+};
+
+struct StemLabMidiNoteInfo
+{
+    double start = 0.0;
+    double end = 0.0;
+    int pitch = 60;
+    int velocity = 100;
+    double confidence = 1.0;
+};
+
+struct StemLabMidiInfo
+{
+    juce::String id;
+    juce::String sourceStem;
+    juce::File midiFile;
+    juce::File dragFile;
+    std::vector<StemLabMidiNoteInfo> notes;
+    double sourceTempo = 120.0;
+    double barOne = 0.0;
+    bool drums = false;
+};
+
+struct StemLabGridInfo
+{
+    int mode = 1;
+    double bpm = 120.0;
+    int numerator = 4;
+    int denominator = 4;
+    double barOne = 0.0;
+    double captureStartPpq = 0.0;
+    std::vector<double> beats;
+    std::vector<double> downbeats;
+};
+
+struct StemLabSelectionRange
+{
+    double start = 0.0;
+    double end = 1.0;
+    bool active = false;
+
+    double length() const noexcept { return juce::jmax(0.0, end - start); }
+};
+
 /**
- * Owns StemLab's audio capture, preview player, Python jobs, and Ableton bridge.
+ * Owns FI-STEM's audio capture, preview player, Python jobs, and Ableton bridge.
  *
  * JUCE calls the AudioProcessor overrides on audio/host threads. The editor calls
  * the remaining public methods from the message thread. Expensive separation is
@@ -45,6 +95,26 @@ public:
         recordingNone = 0,
         recordingInput = 1,
         recordingSystem = 2
+    };
+
+    enum SourceAnalysisMode
+    {
+        analysisAccurate = 0,
+        analysisFast = 1
+    };
+
+    enum TempoInterpretation
+    {
+        tempoHalf = 0,
+        tempoDetected = 1,
+        tempoDouble = 2
+    };
+
+    enum WaveformGridMode
+    {
+        gridHost = 0,
+        gridSource = 1,
+        gridManual = 2
     };
 
     StemLabAudioProcessor();
@@ -63,7 +133,7 @@ public:
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
 
-    const juce::String getName() const override { return "StemLab"; }
+    const juce::String getName() const override { return "FI-STEM"; }
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
@@ -92,7 +162,7 @@ public:
     bool setStandaloneInputFile(const juce::File& file);
     bool isStandaloneApp() const noexcept;
 
-    /** Ask StemLabRemote for Ableton's selected Arrangement audio clip. */
+    /** Ask FI-STEM Remote for Ableton's selected Arrangement audio clip. */
     bool requestAbletonSourceClip();
     void refreshAbletonSourceClipFromDisk();
 
@@ -130,6 +200,8 @@ public:
 
     /** Launch the main six-stem Python job for the currently loaded source. */
     bool launchSeparationAndExport();
+    bool cancelRunningJob();
+    bool isCancelRequested() const noexcept { return engineCancelRequested.load(); }
 
     /** Launch the default adaptive action for one completed root stem. */
     bool launchRecursiveStemSplit(int rootStemIndex);
@@ -157,16 +229,70 @@ public:
     juce::String getEngineLog() const;
     juce::File getLastJobDirectory() const;
 
+    /** Compact key/BPM text for the currently loaded original source. */
+    juce::String getSourceAnalysisText() const;
+    juce::String getSourceAnalysisDetails() const;
+    juce::String getSourceKey() const;
+    double getSourceBpm() const noexcept { return sourceBpm.load(); }
+    double getDetectedSourceBpm() const noexcept { return sourceDetectedBpm.load(); }
+    double getHalfTimeSourceBpm() const noexcept { return sourceHalfBpm.load(); }
+    double getDoubleTimeSourceBpm() const noexcept { return sourceDoubleBpm.load(); }
+    double getSourceBarOne() const noexcept { return sourceBarOne.load(); }
+    int getSourceMeterNumerator() const noexcept { return sourceMeterNumerator.load(); }
+    int getSourceMeterDenominator() const noexcept { return sourceMeterDenominator.load(); }
+    void setBeatThisEnabled(bool enabled);
+    bool isBeatThisEnabled() const noexcept { return beatThisEnabled.load(); }
+    void setSourceAnalysisMode(int mode);
+    int getSourceAnalysisMode() const noexcept { return sourceAnalysisMode.load(); }
+    void setTempoInterpretation(int interpretation);
+    int getTempoInterpretation() const noexcept { return tempoInterpretation.load(); }
+    bool saveSourceCorrection(double bpm, const juce::String& key, int numerator, int denominator,
+                              double barOne);
+    bool forgetSourceCorrection();
+    bool clearAnalysisCache();
+
+    void setWaveformGridMode(int mode) noexcept;
+    int getWaveformGridMode() const noexcept { return waveformGridMode.load(); }
+    void setManualGrid(double bpm, int numerator, int denominator, double barOne) noexcept;
+    StemLabGridInfo getWaveformGridInfo() const;
+
+    int getWaveformLaneHeight(const juce::String& id) const;
+    void setWaveformLaneHeight(const juce::String& id, int height);
+
+    /** One highlighted time range per stem. Dragging a waveform sets it. */
+    StemLabSelectionRange getStemSelectionRange(const juce::String& id) const;
+    void setStemSelectionRange(const juce::String& id, double start, double end);
+    void clearStemSelectionRange(const juce::String& id);
+    void clearAllStemSelectionRanges();
+
+    /** Right-click export selection: solo this stem; right-click the same solo again to restore the previous export selection. */
+    void soloStemForExport(int index);
+    void soloRecursiveStemForExport(const juce::String& itemId);
+
+    bool launchStemMidiConversion(int stemIndex);
+    bool launchRecursiveMidiConversion(const juce::String& itemId);
+    bool isMidiConversionRunning() const noexcept;
+    StemLabMidiInfo getMidiInfo(const juce::String& id) const;
+    bool hasMidiInfo(const juce::String& id) const;
+    bool auditionMidi(const juce::String& id);
+    bool isMidiAuditioning(const juce::String& id) const;
+    void stopMidiAudition();
+    bool sendMidiToAbleton(const juce::String& id);
+
+    /** Toggle the host transport through JUCE or FI-STEM Remote when supported. */
+    bool toggleHostTransport();
+
     void setJobRootDirectory(const juce::File& directory);
     juce::File getJobRootDirectory() const;
 
-    /** Poll StemLabRemote's status/acknowledgement files. */
+    /** Poll FI-STEM Remote's status/acknowledgement files. */
     void refreshAbletonBridgeStatusFromDisk();
 
-    /** Ask StemLabRemote to import all currently selected completed stems. */
+    /** Ask FI-STEM Remote to import all currently selected completed stems. */
     bool sendSelectedStemsToAbleton();
     bool retryAbletonImport();
     juce::String getAbletonBridgeStatus() const;
+    bool isAbletonBridgeActive() const noexcept { return abletonBridgeActive.load(); }
     /** Publish a short status message from a UI callback. */
     void postUiStatus(const juce::String& message);
 
@@ -217,6 +343,7 @@ private:
     friend class StemLabEngineThread;
     friend class StemLabRecursiveThread;
     friend class StemLabSystemLoopbackThread;
+    friend class StemLabUtilityThread;
 
     void stopCapture();
     void setStatus(const juce::String&);
@@ -224,7 +351,20 @@ private:
     void handleEngineOutputLine(const juce::String& line);
     juce::StringArray makePythonModuleCommand(const juce::String& moduleName) const;
     void finishRecursiveJob(const juce::File& manifestFile);
+    void finishCancelledJob(const juce::File& cleanupDirectory, bool mainJob);
     void clearRecursiveResults();
+    void startSourceAnalysis(const juce::File& source);
+    void finishSourceAnalysis(const juce::File& source, const juce::File& result, int exitCode);
+    bool launchAnalysisMaintenance(const juce::StringArray& arguments, const juce::String& label);
+    void finishAnalysisMaintenance(const juce::File& source, const juce::String& label,
+                                   int exitCode);
+    bool launchMidiConversion(const juce::File& source, const juce::String& stemType,
+                              const juce::String& label, const juce::String& outputName,
+                              const juce::String& resultId);
+    void finishMidiConversion(const juce::String& label, const juce::File& output, int exitCode,
+                              const juce::String& resultId);
+    bool loadMidiInfo(const juce::String& id, const juce::File& midiFile);
+    bool renderMidiAudition(juce::AudioBuffer<float>& buffer, int startSample, int numSamples);
     juce::String discoverEngineCommand() const;
     void appendEngineLog(const juce::String&);
     bool sendAbletonBridgeNotification(const juce::File& manifestFile);
@@ -233,8 +373,14 @@ private:
     juce::File createRecordingFile(const juce::String& prefix) const;
     juce::File createJobDirectory() const;
     bool loadPreviewFile(const juce::File& file, int previewStem);
+    void renderPreviewAudioBlock(const juce::AudioSourceChannelInfo& info);
+    void updatePreviewLoopForId(const juce::String& id);
+    juce::String getCurrentPreviewSelectionId() const;
+    juce::File exportSelectedRegion(const juce::File& source, const juce::File& destination,
+                                    const juce::String& selectionId, double* startSeconds = nullptr,
+                                    double* endSeconds = nullptr);
 
-    juce::TimeSliceThread diskWriterThread{"StemLab capture writer"};
+    juce::TimeSliceThread diskWriterThread{"FI-STEM capture writer"};
     std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> threadedWriter;
     std::atomic<juce::AudioFormatWriter::ThreadedWriter*> activeWriter{nullptr};
 
@@ -243,6 +389,10 @@ private:
     std::atomic<juce::int64> capturedSamples{0};
     std::atomic<double> captureStartPpq{-1.0};
     std::atomic<double> lastKnownHostPpq{0.0};
+    std::atomic<bool> lastHostPlaying{false};
+    std::atomic<double> lastHostBpm{120.0};
+    std::atomic<int> lastHostNumerator{4};
+    std::atomic<int> lastHostDenominator{4};
 
     std::atomic<bool> abletonClipRequestPending{false};
     std::atomic<double> abletonClipRequestStartMs{0.0};
@@ -259,6 +409,44 @@ private:
     juce::File abletonLegacyClipReplyFile;
     juce::String inputSourceLabel;
     juce::String abletonClipRequestId;
+    juce::String sourceKey;
+    juce::String sourceHash;
+    juce::String sourceAnalysisDevice;
+    juce::String sourceBeatModel;
+    std::vector<StemLabKeyCandidate> sourceKeyCandidates;
+    std::vector<double> sourceBeats;
+    std::vector<double> sourceDownbeats;
+    std::atomic<double> sourceBpm{-1.0};
+    std::atomic<double> sourceDetectedBpm{-1.0};
+    std::atomic<double> sourceHalfBpm{-1.0};
+    std::atomic<double> sourceDoubleBpm{-1.0};
+    std::atomic<double> sourceBarOne{0.0};
+    std::atomic<int> sourceMeterNumerator{4};
+    std::atomic<int> sourceMeterDenominator{4};
+    std::atomic<bool> sourceAnalysisCorrected{false};
+    std::atomic<bool> sourceAnalysisRunning{false};
+    std::atomic<bool> beatThisEnabled{false};
+    std::atomic<int> sourceAnalysisMode{analysisFast};
+    std::atomic<int> tempoInterpretation{tempoDetected};
+    std::atomic<int> waveformGridMode{gridSource};
+    std::atomic<double> manualGridBpm{120.0};
+    std::atomic<int> manualGridNumerator{4};
+    std::atomic<int> manualGridDenominator{4};
+    std::atomic<double> manualGridBarOne{0.0};
+
+    mutable juce::CriticalSection laneHeightLock;
+    std::unordered_map<std::string, int> waveformLaneHeights;
+
+    mutable juce::CriticalSection midiInfoLock;
+    std::unordered_map<std::string, StemLabMidiInfo> midiInfos;
+
+    juce::Synthesiser midiAuditionSynth;
+    mutable juce::CriticalSection midiAuditionLock;
+    std::vector<StemLabMidiNoteInfo> midiAuditionNotes;
+    juce::String midiAuditionId;
+    double midiAuditionPosition = 0.0;
+    double midiAuditionDuration = 0.0;
+    std::atomic<bool> midiAuditionActive{false};
 
     juce::String engineCommand{"stemlab-plugin-job"};
     juce::String status{"Ready"};
@@ -274,18 +462,40 @@ private:
     std::atomic<double> engineProgressUpdateMs{0.0};
     std::atomic<double> lastEngineDurationSeconds{0.0};
     std::atomic<bool> engineCompletedSuccessfully{false};
+    std::atomic<bool> engineCancelRequested{false};
 
     mutable juce::CriticalSection abletonBridgeLock;
     juce::String abletonBridgeStatus{"Bridge not confirmed yet"};
     std::atomic<double> abletonBridgeWaitStartMs{0.0};
+    std::atomic<bool> abletonBridgeActive{false};
 
     std::unique_ptr<StemLabEngineThread> engineThread;
     std::unique_ptr<StemLabRecursiveThread> recursiveThread;
     std::unique_ptr<StemLabSystemLoopbackThread> systemLoopbackThread;
+    std::unique_ptr<StemLabUtilityThread> analysisThread;
+    std::unique_ptr<StemLabUtilityThread> midiThread;
 
     mutable juce::CriticalSection recursiveLock;
     std::vector<StemLabRecursiveStemInfo> recursiveItems;
     juce::String previewRecursiveId;
+
+    // Export-solo is a reversible UI mode: the first right-click snapshots the
+    // current root/recursive export selections, and a second right-click on the
+    // same stem restores that snapshot. Switching the solo target keeps the
+    // original snapshot so the user can still exit solo cleanly.
+    mutable juce::CriticalSection exportSoloLock;
+    bool exportSoloActive = false;
+    bool exportSoloRecursive = false;
+    int exportSoloStemIndex = -1;
+    juce::String exportSoloRecursiveId;
+    std::array<bool, stemCount> exportSoloStemSnapshot{};
+    std::unordered_map<std::string, bool> exportSoloRecursiveSnapshot;
+
+    mutable juce::CriticalSection selectionLock;
+    std::unordered_map<std::string, StemLabSelectionRange> stemSelections;
+    std::atomic<bool> previewLoopEnabled{false};
+    std::atomic<double> previewLoopStart{0.0};
+    std::atomic<double> previewLoopEnd{0.0};
 
     juce::AudioFormatManager previewFormats;
     std::unique_ptr<juce::AudioFormatReaderSource> previewReaderSource;

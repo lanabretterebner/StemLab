@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(StemLabPlugin VERSION 0.9.9 LANGUAGES C CXX)
+project(FIStemPlugin VERSION 0.9.9 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -32,15 +32,15 @@ else()
     FetchContent_MakeAvailable(JUCE)
 endif()
 
-juce_add_plugin(StemLabPlugin
-    ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/Resources/StemLabIcon.png"
-    ICON_SMALL "${CMAKE_CURRENT_SOURCE_DIR}/Resources/StemLabIcon.png"
-    COMPANY_NAME "StemLab"
-    BUNDLE_ID "org.stemlab.audio"
+juce_add_plugin(FIStemPlugin
+    ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/Resources/FIStemIcon.png"
+    ICON_SMALL "${CMAKE_CURRENT_SOURCE_DIR}/Resources/FIStemIcon.png"
+    COMPANY_NAME "FI-STEM"
+    BUNDLE_ID "org.fistem.audio"
     PLUGIN_MANUFACTURER_CODE StLb
     PLUGIN_CODE SlA1
     FORMATS VST3 Standalone
-    PRODUCT_NAME "StemLab"
+    PRODUCT_NAME "FI-STEM"
     DESCRIPTION "Capture, separate, and export stems to Ableton Live"
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
@@ -50,31 +50,38 @@ juce_add_plugin(StemLabPlugin
     COPY_PLUGIN_AFTER_BUILD FALSE
 )
 
-juce_add_binary_data(StemLabAssets
+juce_add_binary_data(FIStemAssets
     SOURCES
-        Resources/StemLabIcon.png
+        Resources/FIStemIcon.png
 )
 
-target_sources(StemLabPlugin
+target_sources(FIStemPlugin
     PRIVATE
         Source/PluginProcessor.cpp
         Source/PluginProcessor.h
         Source/PluginEditor.cpp
         Source/PluginEditor.h
+        Source/WaveformGrid.h
 )
 
-target_compile_definitions(StemLabPlugin
+include(CTest)
+if (BUILD_TESTING)
+    add_executable(FIStemWaveformGridTests Tests/WaveformGridTests.cpp Source/WaveformGrid.h)
+    target_include_directories(FIStemWaveformGridTests PRIVATE Source)
+    target_compile_features(FIStemWaveformGridTests PRIVATE cxx_std_20)
+    add_test(NAME FIStemWaveformGridTests COMMAND FIStemWaveformGridTests)
+endif()
+
+target_compile_definitions(FIStemPlugin
     PUBLIC
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
-    PRIVATE
-        STEMLAB_DEV_REPO_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 
-target_link_libraries(StemLabPlugin
+target_link_libraries(FIStemPlugin
     PRIVATE
-        StemLabAssets
+        FIStemAssets
         juce::juce_audio_utils
         juce::juce_audio_formats
         juce::juce_gui_extra
@@ -85,11 +92,11 @@ target_link_libraries(StemLabPlugin
 )
 
 if (WIN32)
-    target_link_libraries(StemLabPlugin
+    target_link_libraries(FIStemPlugin
         PRIVATE
             ole32
             uuid
     )
 endif()
 
-juce_generate_juce_header(StemLabPlugin)
+juce_generate_juce_header(FIStemPlugin)

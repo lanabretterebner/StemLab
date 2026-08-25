@@ -1,6 +1,6 @@
-# StemLab Developer Guide
+# FI-STEM Developer Guide
 
-This guide maps the moving parts of StemLab so changes can stay focused and
+This guide maps the moving parts of FI-STEM so changes can stay focused and
 easy to verify.
 
 ## Setup
@@ -10,7 +10,7 @@ From the repository root:
 ```powershell
 .\scripts\setup_dev.ps1
 .\scripts\build_plugin.ps1
-& ".\plugin\build\StemLabPlugin_artefacts\Release\Standalone\StemLab.exe"
+& ".\plugin\build\FIStemPlugin_artefacts\Release\Standalone\FI-STEM.exe"
 ```
 
 Run the Python tests with:
@@ -45,9 +45,9 @@ When **Send Selected** is used in Ableton:
 
 ```text
 PluginProcessor sends manifest path over localhost UDP
-    -> StemLabRemote validates the manifest
+    -> FIStemRemote validates the manifest
     -> Ableton creates tracks and audio clips on its main thread
-    -> StemLabRemote writes progress/ack JSON
+    -> FIStemRemote writes progress/ack JSON
     -> PluginProcessor polls that JSON and updates the UI
 ```
 
@@ -73,7 +73,7 @@ Owns application state and external work:
 - launches and monitors Python jobs;
 - reads manifests/progress files;
 - previews completed audio;
-- communicates with `StemLabRemote`.
+- communicates with `FIStemRemote`.
 
 JUCE callbacks such as `processBlock`, `prepareToPlay`, and
 `getStateInformation` are framework entry points. Keep their real-time and
@@ -90,6 +90,10 @@ threading constraints in mind when editing them.
 | `hybrid.py` | Spectral fusion of model estimates |
 | `plugin_job.py` | JUCE command arguments, progress files, Ableton manifest |
 | `runtime.py` | Child-process output and progress handling |
+| `analysis_cache.py` | Local SQLite analysis/MIDI cache and corrections |
+| `beat_tracking.py` | Offline Beat This! inference and beat interpretation |
+| `source_analysis.py` | Optional source key/BPM analysis |
+| `midi.py` | Stem-specific transcription and MIDI output |
 | `recursive.py` | Adaptive operation router and tree-manifest writer |
 | `adaptive/analysis.py` | Source-complexity estimates |
 | `adaptive/policy.py` | Rules for offering another recursive split |
@@ -103,7 +107,7 @@ threading constraints in mind when editing them.
 
 Two JSON files connect otherwise separate pieces of the system:
 
-- `stemlab_ableton_manifest.json` connects Python output to `StemLabRemote`.
+- `stemlab_ableton_manifest.json` connects Python output to `FIStemRemote`.
 - `recursive_manifest.json` schema 2 connects Python adaptive jobs to the JUCE
   recursive stem tree.
 
@@ -156,14 +160,15 @@ plugin/build/
 ```
 
 Edit source files under `stemlab/`, `plugin/Source/`,
-`integrations/ableton/StemLabRemote/`, or `tests/`. Do not edit generated
+`integrations/ableton/FIStemRemote/`, or `tests/`. Do not edit generated
 copies under `plugin/build`.
 
 ## Current Limits
 
-- Recursive vocal/drum splitting requires `audio-separator` model downloads.
+- Release-model downloads happen during deliberate staging, never during normal
+  installed runtime operation.
 - Guitar/piano/other adaptive splitting is DSP-based and experimental.
 - Source-count estimates are recursion heuristics, not literal musician counts.
 - `PluginProcessor.cpp`, `PluginEditor.cpp`, and
-  `integrations/ableton/StemLabRemote/__init__.py`
+  `integrations/ableton/FIStemRemote/__init__.py`
   remain the largest modules and should be split one responsibility at a time.

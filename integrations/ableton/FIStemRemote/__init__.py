@@ -8,6 +8,11 @@ import time
 import traceback
 
 try:
+    import Live
+except ImportError:
+    Live = None
+
+try:
     from _Framework.ControlSurface import ControlSurface
 except ImportError:
     # Some Live builds expose the same framework from ableton.v2.
@@ -21,18 +26,36 @@ BUFFER_SIZE = 65535
 PROTOCOL = "stemlab-ableton-bridge"
 ACK_PROTOCOL = "stemlab-ableton-ack"
 
-STEMLAB_DEVICE_TOKEN = "stemlab"
+FI_STEM_DEVICE_TOKENS = ("fi-stem", "fistem", "stemlab")
+
+
+def _normalise_midi_notes(items):
+    """Validate the small JSON note contract before touching Live's API."""
+    notes = []
+    for item in items or ():
+        try:
+            notes.append(
+                {
+                    "pitch": max(0, min(127, int(item["pitch"]))),
+                    "start": max(0.0, float(item["start"])),
+                    "duration": max(0.0001, float(item["duration"])),
+                    "velocity": max(1, min(127, int(item["velocity"]))),
+                }
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return notes
 
 
 def create_instance(c_instance):
-    return StemLabRemote(c_instance)
+    return FIStemRemote(c_instance)
 
 
-class StemLabRemote(ControlSurface):
-    """Invisible Ableton integration for the StemLab VST3.
+class FIStemRemote(ControlSurface):
+    """Invisible Ableton integration for the FI-STEM VST3.
 
     The script owns no MIDI controls and requires no MIDI ports. Its only job
-    is to receive completed StemLab manifests over localhost and perform the
+    is to receive completed FI-STEM manifests over localhost and perform the
     Live Object Model operations that a VST3 cannot perform itself.
     """
 
@@ -43,6 +66,7 @@ class StemLabRemote(ControlSurface):
         self._socket = None
         self._listener_thread = None
         self._last_manifest = None
+        self._last_midi_manifest = None
 
         # Tracks recent Use Live Clip requests so the modern + legacy
         # compatibility messages do not trigger duplicate work.
@@ -50,17 +74,17 @@ class StemLabRemote(ControlSurface):
         # clip request to raise AttributeError in the UDP listener thread.
         self._recent_clip_requests = {}
 
-        self.log_message("StemLabRemote: initializing")
+        self.log_message("FIStemRemote: initializing")
 
         self._write_status(
             active=True,
-            message="StemLab Remote Script active",
+            message="FI-STEM Remote Script active",
         )
 
         self._start_udp_listener()
 
         try:
-            self.show_message("StemLab Remote Script active")
+            self.show_message("FI-STEM Remote Script active")
         except Exception:
             pass
 
@@ -80,10 +104,10 @@ class StemLabRemote(ControlSurface):
 
         self._write_status(
             active=False,
-            message="StemLab Remote Script stopped",
+            message="FI-STEM Remote Script stopped",
         )
 
-        self.log_message("StemLabRemote: disconnected")
+        self.log_message("FIStemRemote: disconnected")
         ControlSurface.disconnect(self)
 
     def _start_udp_listener(self):
@@ -98,18 +122,18 @@ class StemLabRemote(ControlSurface):
                 active=False,
                 message="Could not bind UDP port %d: %s" % (PORT, exc),
             )
-            self.log_message("StemLabRemote: UDP bind failed: %s" % exc)
+            self.log_message("FIStemRemote: UDP bind failed: %s" % exc)
             return
 
         thread = threading.Thread(
             target=self._listener_loop,
-            name="StemLabRemoteUDP",
+            name="FIStemRemoteUDP",
         )
         thread.daemon = True
         self._listener_thread = thread
         thread.start()
 
-        self.log_message("StemLabRemote: listening on %s:%d" % (HOST, PORT))
+        self.log_message("FIStemRemote: listening on %s:%d" % (HOST, PORT))
 
     def _listener_loop(self):
         while self._stemlab_running:
@@ -119,16 +143,39 @@ class StemLabRemote(ControlSurface):
                 continue
             except Exception:
                 if self._stemlab_running:
-                    self.log_message("StemLabRemote: socket error:\n%s" % traceback.format_exc())
+                    self.log_message("FIStemRemote: socket error:\n%s" % traceback.format_exc())
                 break
 
             try:
                 text = payload.decode("utf-8", errors="replace").strip()
                 self._handle_udp_message(text)
             except Exception:
-                self.log_message("StemLabRemote: UDP message error:\n%s" % traceback.format_exc())
+                self.log_message("FIStemRemote: UDP message error:\n%s" % traceback.format_exc())
 
     def _handle_udp_message(self, text):
+        if text == "stemlab_toggle_transport":
+            self.schedule_message(1, self._toggle_transport)
+            return
+
+        if text.startswith("stemlab_midi_ready "):
+            encoded_path = text[len("stemlab_midi_ready ") :].strip()
+
+            try:
+                manifest_path = bytes.fromhex(encoded_path).decode(
+                    "utf-8",
+                    errors="strict",
+                )
+            except Exception as exc:
+                self.log_message("FIStemRemote: invalid MIDI manifest path: %s" % exc)
+                return
+
+            self._last_midi_manifest = manifest_path
+            self.schedule_message(
+                1,
+                lambda path=manifest_path: self._import_midi_on_live_thread(path),
+            )
+            return
+
         if text.startswith("stemlab_ready "):
             encoded_path = text[len("stemlab_ready ") :].strip()
 
@@ -138,7 +185,7 @@ class StemLabRemote(ControlSurface):
                     errors="strict",
                 )
             except Exception as exc:
-                self.log_message("StemLabRemote: invalid manifest path: %s" % exc)
+                self.log_message("FIStemRemote: invalid manifest path: %s" % exc)
                 return
 
             self._last_manifest = manifest_path
@@ -164,7 +211,7 @@ class StemLabRemote(ControlSurface):
                         errors="strict",
                     )
                 except Exception as exc:
-                    self.log_message("StemLabRemote: invalid clip reply path: %s" % exc)
+                    self.log_message("FIStemRemote: invalid clip reply path: %s" % exc)
                     return
 
             if request_id:
@@ -193,6 +240,17 @@ class StemLabRemote(ControlSurface):
                     1,
                     lambda rid=request_id, rp=reply_path: self._reply_with_source_clip(rid, rp),
                 )
+
+    def _toggle_transport(self):
+        """Toggle Live on its main thread; VST3 has no reliable write API for this."""
+        try:
+            song = self.song()
+            if song.is_playing:
+                song.stop_playing()
+            else:
+                song.start_playing()
+        except Exception:
+            self.log_message("FIStemRemote: transport toggle failed:\n%s" % traceback.format_exc())
 
     # ------------------------------------------------------------------
     # Source clip lookup
@@ -225,7 +283,7 @@ class StemLabRemote(ControlSurface):
 
             source_name = self._safe_name(
                 source_track,
-                "StemLab Source",
+                "FI-STEM Source",
             )
 
             self._write_clip_reply(
@@ -239,7 +297,7 @@ class StemLabRemote(ControlSurface):
                 reply_path=reply_path,
             )
 
-            self.log_message("StemLabRemote: source clip -> %s" % file_path)
+            self.log_message("FIStemRemote: source clip -> %s" % file_path)
 
         except Exception as exc:
             message = str(exc)
@@ -252,7 +310,7 @@ class StemLabRemote(ControlSurface):
             )
 
             self.log_message(
-                "StemLabRemote: source clip lookup failed:\n%s" % traceback.format_exc()
+                "FIStemRemote: source clip lookup failed:\n%s" % traceback.format_exc()
             )
 
     def _resolve_selected_audio_clip(self, song):
@@ -331,7 +389,7 @@ class StemLabRemote(ControlSurface):
             clips = []
 
         if not clips:
-            raise RuntimeError("No Arrangement audio clips were found on the StemLab track")
+            raise RuntimeError("No Arrangement audio clips were found on the FI-STEM track")
 
         # Best case: the user has clicked the desired Arrangement clip and it
         # is the current Detail clip.
@@ -393,7 +451,7 @@ class StemLabRemote(ControlSurface):
 
             folder = os.path.join(
                 documents,
-                "StemLab",
+                "FI-STEM",
                 "Ableton",
             )
 
@@ -427,6 +485,149 @@ class StemLabRemote(ControlSurface):
     # Manifest / source-track resolution
     # ------------------------------------------------------------------
 
+    def _import_midi_on_live_thread(self, manifest_path):
+        """Create one editable Arrangement MIDI clip beside the source track."""
+        try:
+            manifest = self._load_json(manifest_path)
+            if manifest.get("protocol") != "stemlab-ableton-midi":
+                raise RuntimeError("Unsupported FI-STEM MIDI protocol")
+
+            notes = _normalise_midi_notes(manifest.get("notes"))
+            if not notes:
+                raise RuntimeError("FI-STEM MIDI manifest contains no valid notes")
+
+            song = self.song()
+            source_index, source_track = self._resolve_source_track(song)
+            target_name = str(manifest.get("target_track") or "").strip()
+            target_index = self._find_midi_track(song, target_name)
+
+            state = {
+                "manifest_path": manifest_path,
+                "notes": notes,
+                "start_beat": max(0.0, float(manifest.get("capture_start_ppq", 0.0))),
+                "stem": str(manifest.get("source_stem") or "stem"),
+                "source_name": self._safe_name(source_track, "FI-STEM Source"),
+            }
+
+            if target_index is None:
+                target_index = source_index + 1
+                song.create_midi_track(target_index)
+                self.schedule_message(
+                    1,
+                    lambda s=state, index=target_index: self._populate_midi_track(s, index, True),
+                )
+            else:
+                self._populate_midi_track(state, target_index, False)
+
+        except Exception as exc:
+            self._finish_midi_import(manifest_path, False, str(exc))
+
+    def _find_midi_track(self, song, target_name):
+        if not target_name:
+            return None
+        for index, track in enumerate(song.tracks):
+            try:
+                if str(track.name) == target_name and bool(track.has_midi_input):
+                    return index
+            except Exception:
+                pass
+        return None
+
+    def _populate_midi_track(self, state, track_index, rename_track):
+        try:
+            song = self.song()
+            tracks = list(song.tracks)
+            if track_index < 0 or track_index >= len(tracks):
+                raise RuntimeError("Live did not expose the MIDI track")
+
+            track = tracks[track_index]
+            pretty_stem = self._title_case(state["stem"])
+            if rename_track:
+                track.name = "%s - %s MIDI" % (state["source_name"], pretty_stem)
+
+            end_beat = max(note["start"] + note["duration"] for note in state["notes"])
+            clip_length = max(0.25, end_beat)
+            track.create_midi_clip(float(state["start_beat"]), float(clip_length))
+
+            self.schedule_message(
+                1,
+                lambda s=state, index=track_index: self._write_midi_notes(s, index),
+            )
+        except Exception as exc:
+            self._finish_midi_import(state["manifest_path"], False, str(exc))
+
+    def _write_midi_notes(self, state, track_index):
+        try:
+            track = list(self.song().tracks)[track_index]
+            clips = list(track.arrangement_clips)
+            if not clips:
+                raise RuntimeError("Live did not create the Arrangement MIDI clip")
+
+            start_beat = float(state["start_beat"])
+            clip = min(clips, key=lambda item: abs(float(item.start_time) - start_beat))
+            clip.name = "FI-STEM %s MIDI" % self._title_case(state["stem"])
+
+            if Live is not None and hasattr(Live.Clip, "MidiNoteSpecification"):
+                specifications = tuple(
+                    Live.Clip.MidiNoteSpecification(
+                        pitch=note["pitch"],
+                        start_time=note["start"],
+                        duration=note["duration"],
+                        velocity=note["velocity"],
+                        mute=False,
+                    )
+                    for note in state["notes"]
+                )
+                clip.add_new_notes(specifications)
+            else:
+                # Live 11's Remote Script API accepts the older tuple shape.
+                clip.set_notes(
+                    tuple(
+                        (
+                            note["pitch"],
+                            note["start"],
+                            note["duration"],
+                            note["velocity"],
+                            False,
+                        )
+                        for note in state["notes"]
+                    )
+                )
+
+            message = "Created %s MIDI clip with %d notes" % (
+                self._title_case(state["stem"]),
+                len(state["notes"]),
+            )
+            self._finish_midi_import(state["manifest_path"], True, message)
+        except Exception as exc:
+            self._finish_midi_import(state["manifest_path"], False, str(exc))
+
+    def _finish_midi_import(self, manifest_path, success, message):
+        try:
+            ack_path = os.path.join(
+                os.path.dirname(os.path.abspath(manifest_path)),
+                "stemlab_ableton_midi_ack.json",
+            )
+            self._atomic_write_json(
+                ack_path,
+                {
+                    "protocol": "stemlab-ableton-midi-ack",
+                    "version": 1,
+                    "success": bool(success),
+                    "message": str(message),
+                    "timestamp": time.time(),
+                },
+            )
+        except Exception:
+            pass
+
+        self._write_status(active=True, message=str(message))
+        self.log_message("FIStemRemote: " + str(message))
+        try:
+            self.show_message("FI-STEM: " + str(message))
+        except Exception:
+            pass
+
     def _import_manifest_on_live_thread(self, manifest_path):
         """Validate once, then mutate Live one small step per UI tick.
 
@@ -439,12 +640,12 @@ class StemLabRemote(ControlSurface):
             manifest = self._load_json(manifest_path)
 
             if manifest.get("protocol") != PROTOCOL:
-                raise RuntimeError("Unsupported StemLab manifest protocol")
+                raise RuntimeError("Unsupported FI-STEM manifest protocol")
 
             stems = manifest.get("stems") or []
 
             if not stems:
-                raise RuntimeError("StemLab manifest contains no stems")
+                raise RuntimeError("FI-STEM manifest contains no stems")
 
             start_beat = float(manifest.get("capture_start_ppq", 0.0))
 
@@ -457,7 +658,7 @@ class StemLabRemote(ControlSurface):
 
             source_name = self._safe_name(
                 source_track,
-                "StemLab Source",
+                "FI-STEM Source",
             )
 
             state = {
@@ -572,7 +773,7 @@ class StemLabRemote(ControlSurface):
 
             new_track.create_audio_clip(
                 audio_path,
-                float(state["start_beat"]),
+                float(stem.get("start_beat", state["start_beat"])),
             )
 
             # Clip creation and warping changes may be deferred by Live.
@@ -609,7 +810,7 @@ class StemLabRemote(ControlSurface):
                         clips[-1].warping = False
                 except Exception as exc:
                     self.log_message(
-                        "StemLabRemote: could not disable Warp for %s: %s" % (pretty_name, exc)
+                        "FIStemRemote: could not disable Warp for %s: %s" % (pretty_name, exc)
                     )
 
             state["imported"] = int(state["imported"]) + 1
@@ -663,10 +864,10 @@ class StemLabRemote(ControlSurface):
             message=message,
         )
 
-        self.log_message("StemLabRemote: " + message)
+        self.log_message("FIStemRemote: " + message)
 
         try:
-            self.show_message("StemLab: " + message)
+            self.show_message("FI-STEM: " + message)
         except Exception:
             pass
 
@@ -695,10 +896,10 @@ class StemLabRemote(ControlSurface):
             message="Import failed: " + message,
         )
 
-        self.log_message("StemLabRemote: import failed:\n%s" % traceback.format_exc())
+        self.log_message("FIStemRemote: import failed:\n%s" % traceback.format_exc())
 
         try:
-            self.show_message("StemLab import failed: " + message)
+            self.show_message("FI-STEM import failed: " + message)
         except Exception:
             pass
 
@@ -727,7 +928,7 @@ class StemLabRemote(ControlSurface):
             failed=True,
         )
 
-        self.log_message("StemLabRemote: import failed: %s" % message)
+        self.log_message("FIStemRemote: import failed: %s" % message)
 
     def _write_import_progress(
         self,
@@ -766,7 +967,7 @@ class StemLabRemote(ControlSurface):
 
         except Exception:
             self.log_message(
-                "StemLabRemote: could not write import progress:\n%s" % traceback.format_exc()
+                "FIStemRemote: could not write import progress:\n%s" % traceback.format_exc()
             )
 
     def _resolve_source_track(self, song):
@@ -795,12 +996,12 @@ class StemLabRemote(ControlSurface):
 
         if not candidates:
             raise RuntimeError(
-                "Could not find a track containing StemLab. "
-                "Keep the StemLab VST on the source audio track."
+                "Could not find a track containing FI-STEM. "
+                "Keep the FI-STEM VST on the source audio track."
             )
 
         raise RuntimeError(
-            "Multiple StemLab instances are loaded. "
+            "Multiple FI-STEM instances are loaded. "
             "Select the source track before pressing Separate/Retry Import."
         )
 
@@ -831,10 +1032,10 @@ class StemLabRemote(ControlSurface):
 
         searchable = " ".join(labels).lower()
 
-        if STEMLAB_DEVICE_TOKEN in searchable:
+        if any(token in searchable for token in FI_STEM_DEVICE_TOKENS):
             return True
 
-        # Also support StemLab placed inside an Audio Effect Rack.
+        # Also support FI-STEM placed inside an Audio Effect Rack.
         try:
             chains = list(device.chains)
         except Exception:
@@ -891,7 +1092,7 @@ class StemLabRemote(ControlSurface):
             )
 
         except Exception:
-            self.log_message("StemLabRemote: could not write ack:\n%s" % traceback.format_exc())
+            self.log_message("FIStemRemote: could not write ack:\n%s" % traceback.format_exc())
 
     def _write_status(self, active, message):
         try:
@@ -902,7 +1103,7 @@ class StemLabRemote(ControlSurface):
 
             status_dir = os.path.join(
                 documents,
-                "StemLab",
+                "FI-STEM",
                 "Ableton",
             )
 

@@ -13,7 +13,7 @@ from pathlib import Path
 from .audio import STEM_NAMES, find_stem_file
 from .pipeline import DEFAULT_ENGINE, ENGINE_CHOICES, separate
 from .pretrained import DEFAULT_MODEL
-from .runtime import configure_utf8_stdio
+from .runtime import CancellationToken, JobCancelled, configure_utf8_stdio
 
 BRIDGE_HOST = "127.0.0.1"
 BRIDGE_PORT = 39277
@@ -94,7 +94,7 @@ def build_manifest(
     refined: bool,
     engine: str = DEFAULT_ENGINE,
 ) -> dict:
-    """Build the stable JSON payload consumed by ``StemLabRemote``."""
+    """Build the stable JSON payload consumed by ``FI-STEMRemote``."""
     stems = []
 
     for stem in selected_stems:
@@ -105,7 +105,7 @@ def build_manifest(
         stems.append(
             {
                 "name": stem,
-                "label": f"StemLab - {stem.title()}",
+                "label": f"FI-STEM - {stem.title()}",
                 "path": manifest_audio_path(stem_file),
             }
         )
@@ -162,6 +162,7 @@ def run_plugin_job(
     engine: str = DEFAULT_ENGINE,
     refine: bool = True,
     notify: bool = True,
+    cancel_file: Path | None = None,
 ) -> Path:
     """Separate audio, write an Ableton manifest, and optionally notify Live."""
     selected = []
@@ -175,6 +176,8 @@ def run_plugin_job(
     if not selected:
         raise ValueError("At least one stem must be selected")
 
+    cancellation = CancellationToken(cancel_file)
+    cancellation.raise_if_cancelled()
     write_progress(output_dir, 3.0, "Starting")
 
     def on_progress(percent: float, stage: str):
@@ -188,6 +191,7 @@ def run_plugin_job(
         engine=engine,
         refine=refine,
         progress_callback=on_progress,
+        cancellation=cancellation,
     )
 
     write_progress(output_dir, 96.0, "Building stem list")
@@ -227,7 +231,7 @@ def main() -> None:
     configure_utf8_stdio()
 
     parser = argparse.ArgumentParser(
-        description="Run a StemLab VST capture through the separator and notify Ableton."
+        description="Run a FI-STEM VST capture through the separator and notify Ableton."
     )
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
@@ -247,6 +251,7 @@ def main() -> None:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--no-refine", action="store_true")
     parser.add_argument("--no-notify", action="store_true")
+    parser.add_argument("--cancel-file")
     args = parser.parse_args()
 
     run_plugin_job(
@@ -259,12 +264,16 @@ def main() -> None:
         engine=args.engine,
         refine=not args.no_refine,
         notify=not args.no_notify,
+        cancel_file=Path(args.cancel_file) if args.cancel_file else None,
     )
 
 
 if __name__ == "__main__":
     try:
         main()
+    except JobCancelled:
+        print("STEMLAB_CANCELLED", flush=True)
+        raise SystemExit(130) from None
     except Exception as exc:
         print(f"STEMLAB_ERROR {exc}", flush=True)
         raise

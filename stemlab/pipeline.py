@@ -11,6 +11,7 @@ from .hybrid import fuse_stem_folders
 from .pretrained import DEFAULT_MODEL, RoFormerBackend
 from .refinement.kick import KickRefinementConfig
 from .refinement.pipeline import refine_stem_folder
+from .runtime import CancellationToken
 
 ENGINE_ROFORMER = "roformer"
 ENGINE_DEMUCS = "demucs"
@@ -43,6 +44,7 @@ def separate(
     refinement_config: KickRefinementConfig | None = None,
     log_callback: Callable[[str], None] | None = None,
     progress_callback: Callable[[float, str], None] | None = None,
+    cancellation: CancellationToken | None = None,
 ) -> PipelineResult:
     """Run the selected model engine and optional kick-bleed refinement.
 
@@ -68,6 +70,9 @@ def separate(
             print(message, flush=True)
 
     def progress(percent: float, stage: str):
+        if cancellation:
+            cancellation.raise_if_cancelled()
+
         percent = max(0.0, min(100.0, float(percent)))
 
         if progress_callback:
@@ -95,6 +100,7 @@ def separate(
             device=device,
             log_callback=log,
             progress_callback=on_roformer_progress,
+            cancellation=cancellation,
         )
 
         backend.separate(
@@ -117,6 +123,7 @@ def separate(
             device=device,
             log_callback=log,
             progress_callback=on_demucs_progress,
+            cancellation=cancellation,
         )
 
         backend.separate(
@@ -142,6 +149,7 @@ def separate(
             device=device,
             log_callback=log,
             progress_callback=on_hybrid_roformer,
+            cancellation=cancellation,
         ).separate(
             input_path=input_path,
             output_dir=roformer_dir,
@@ -161,6 +169,7 @@ def separate(
             device=device,
             log_callback=log,
             progress_callback=on_hybrid_demucs,
+            cancellation=cancellation,
         ).separate(
             input_path=input_path,
             output_dir=demucs_dir,
@@ -168,7 +177,7 @@ def separate(
 
         progress(74.0, "Hybrid: fusing model estimates")
         log(
-            "Running StemLab hybrid spectral fusion. "
+            "Running FI-STEM hybrid spectral fusion. "
             "Models are executed sequentially to keep GPU memory usage lower."
         )
 
@@ -192,7 +201,7 @@ def separate(
 
     if refine:
         progress(82.0, "Preparing refinement")
-        log("Running StemLab adaptive refinement...")
+        log("Running FI-STEM adaptive refinement...")
 
         def on_refine_progress(index: int, total: int, stem: str):
             fraction = index / max(1, total)

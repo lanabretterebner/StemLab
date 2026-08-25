@@ -26,11 +26,11 @@ else:
     _AUDIO_SEPARATOR_IMPORT_ERROR = None
 
 
-# Models proven/selected for StemLab's first recursive pass.
+# Models proven/selected for FI-STEM's first recursive pass.
 VOCAL_MODEL = "UVR-BVE-4B_SN-44100-2.pth"
 DRUM_MODEL = "MDX23C-DrumSep-aufr33-jarredou.ckpt"
 DEVERB_MODEL = "dereverb_mel_band_roformer_less_aggressive_anvuew_sdr_18.8050.ckpt"
-FOREGROUND_MODEL = "StemLab Adaptive Foreground DSP v1"
+FOREGROUND_MODEL = "FI-STEM Adaptive Foreground DSP v1"
 
 # The analyzer is intentionally conservative. This is an upper bound, not a
 # promise that every composite stem will be expanded to this many children.
@@ -54,17 +54,20 @@ class RecursiveChild:
 
 def default_model_dir() -> Path:
     """Return the per-user cache directory for recursive model files."""
+    packaged = os.environ.get("STEMLAB_RECURSIVE_MODEL_DIR")
+    if packaged:
+        return Path(packaged)
     local = os.environ.get("LOCALAPPDATA")
     if local:
-        return Path(local) / "StemLab" / "Models" / "Recursive"
-    return Path.home() / ".stemlab" / "models" / "recursive"
+        return Path(local) / "FI-STEM" / "Models" / "Recursive"
+    return Path.home() / ".fi-stem" / "models" / "recursive"
 
 
 def _require_separator() -> None:
     if Separator is None:
         raise RuntimeError(
             "Recursive Stem Splitting requires audio-separator. "
-            "Run scripts/setup_dev.ps1, or install StemLab with the recursive extra."
+            "Run scripts/setup_dev.ps1, or install FI-STEM with the recursive extra."
         ) from _AUDIO_SEPARATOR_IMPORT_ERROR
 
 
