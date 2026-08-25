@@ -3,12 +3,15 @@
 #include <JuceHeader.h>
 #include <array>
 #include <atomic>
+#include <map>
 #include <memory>
 #include <vector>
 
 namespace stemlab::reaper
 {
 struct Api;
+struct MediaItem;
+class PeakBuilder;
 }
 
 class StemLabEngineThread;
@@ -35,6 +38,20 @@ struct StemLabRecursiveStemInfo
     int depth = 1;
     int estimatedSourceCount = 1;
     double confidence = 0.0;
+};
+
+/**
+ * Per-lane monitoring state, shared between the processor and the stem-mix
+ * source that reads it on the audio thread.
+ *
+ * Held by shared_ptr so the audio thread keeps reading valid flags through a
+ * mix it is still playing while the message thread rebuilds the lane map
+ * behind it - an adaptive split can land at any moment.
+ */
+struct StemLabLaneMonitorFlags
+{
+    std::atomic<bool> solo{false};
+    std::atomic<bool> mute{false};
 };
 
 /**
@@ -184,9 +201,12 @@ public:
     /**
      * The shared monitoring transport behind the Lanes interface: one clock
      * driving either the untouched source ("Original") or a live mix of the
-     * completed stems ("Stems") that honours per-stem solo/mute. A child of
-     * the adaptive tree can additionally be auditioned exclusively via its
-     * lane's solo button.
+     * completed stems ("Stems") that honours per-lane solo/mute.
+     *
+     * The mix plays the tree's leaves: a root stem that was split further
+     * is represented by its children rather than by itself, so nothing is
+     * ever heard twice, and every lane in the interface - root or adaptive
+     * child - has real solo and mute over what it contributes.
      *
      * All of these are message-thread calls; the audio thread only reads
      * the atomics they publish.
@@ -203,6 +223,16 @@ public:
     /** True once the completed job's stems can be mix-monitored. */
     bool isStemMonitorAvailable();
 
+    /**
+     * Rebuild the stem mix if the adaptive tree changed under it.
+     *
+     * A split finishing gives some lanes children, which take over their
+     * parent's place in the mix. The editor's refresh calls this so the
+     * change reaches the monitor without waiting for the user to touch the
+     * A/B control.
+     */
+    void refreshStemMixIfNeeded();
+
     void transportTogglePlay();
     void transportSeekNormalised(double normalisedPosition);
     bool isTransportPlaying() const noexcept;
@@ -214,9 +244,11 @@ public:
     void setStemMute(int index, bool mute);
     bool isStemMuted(int index) const;
 
-    /** Exclusive audition of one adaptive child stem (its lane's S button). */
-    void setAuditionRecursiveStem(const juce::String& itemId, bool on);
-    juce::String getAuditionRecursiveId() const;
+    /** The same solo/mute over one adaptive child stem's lane. */
+    void setRecursiveStemSolo(const juce::String& itemId, bool solo);
+    bool isRecursiveStemSoloed(const juce::String& itemId) const;
+    void setRecursiveStemMute(const juce::String& itemId, bool mute);
+    bool isRecursiveStemMuted(const juce::String& itemId) const;
 
     bool isCapturing() const noexcept { return capturing.load(); }
 
@@ -237,7 +269,6 @@ public:
     juce::File getRecursiveStemFile(const juce::String& itemId) const;
     void setRecursiveStemEnabled(const juce::String& itemId, bool enabled);
     bool isRecursiveStemEnabled(const juce::String& itemId) const;
-    juce::String getPreviewRecursiveId() const;
 
     bool isEngineRunning() const noexcept;
     bool hasSuccessfulJob() const noexcept { return engineCompletedSuccessfully.load(); }
@@ -311,7 +342,17 @@ public:
     void setWaveformColourIndex(int index);
     int getWaveformColourIndex() const noexcept { return waveformColourIndex.load(); }
 
+    /** Number of selectable lane waveform palettes; the index persists in
+        plugin state, so this must stay in step with the theme's palette. */
     static constexpr int waveformColourCount = 7;
+
+    /**
+     * The size the user last left the editor at, as a percentage of its
+     * design size. Lives here rather than in the editor so a reopened window
+     * comes back the way they left it.
+     */
+    void setEditorScalePercent(int percent);
+    int getEditorScalePercent() const noexcept { return editorScalePercent.load(); }
 
     static juce::String getStemName(int index);
     static constexpr int stemCount = 6;
@@ -331,6 +372,15 @@ private:
     juce::StringArray makePythonModuleCommand(const juce::String& moduleName) const;
     void finishRecursiveJob(const juce::File& manifestFile);
     void clearRecursiveResults();
+
+    using MonitorFlags = StemLabLaneMonitorFlags;
+
+    std::shared_ptr<MonitorFlags> monitorFlagsForStem(int index) const;
+    std::shared_ptr<MonitorFlags> monitorFlagsForRecursive(const juce::String& itemId) const;
+    void clearAllMonitorFlags();
+
+    /** Solo on a lane is only audible in the stem mix; switch to it. */
+    void followSoloIntoStemMix();
     juce::String discoverEngineCommand() const;
     void appendEngineLog(const juce::String&);
     bool sendAbletonBridgeNotification(const juce::File& manifestFile);
@@ -396,6 +446,12 @@ private:
     // any editor exists; read from the message thread afterwards.
     std::unique_ptr<stemlab::reaper::Api> reaperApi;
 
+    /*  Builds REAPER's peak cache for the stems Insert Stems just placed.
+        Declared after reaperApi so it is destroyed first - it holds a
+        reference to that Api.
+    */
+    std::unique_ptr<stemlab::reaper::PeakBuilder> reaperPeakBuilder;
+
     /**
      * Geometry of the last item pulled with Use Selected Item, echoed back by
      * Insert Stems so the new items match the original selection even when
@@ -405,6 +461,12 @@ private:
     struct ReaperSourceInfo
     {
         bool valid = false;
+
+        /*  The arrangement item itself, so Insert Stems can mute it. Never
+            dereferenced without asking REAPER whether it is still live.
+        */
+        stemlab::reaper::MediaItem* item = nullptr;
+
         double startSeconds = 0.0;
         double lengthSeconds = 0.0;
         double startOffsetSeconds = 0.0;
@@ -422,6 +484,7 @@ private:
     std::atomic<bool> refinementEnabled{true};
     std::atomic<int> separatorEngineIndex{separatorRoFormer};
     std::atomic<int> waveformColourIndex{0};
+    std::atomic<int> editorScalePercent{100};
 
     std::atomic<double> engineProgress{0.0};
     std::atomic<double> engineStartMs{0.0};
@@ -478,7 +541,10 @@ private:
 
     mutable juce::CriticalSection recursiveLock;
     std::vector<StemLabRecursiveStemInfo> recursiveItems;
-    juce::String previewRecursiveId;
+    // Mutable: a lane's flags are created the first time anything asks for
+    // them, including a const query from the editor's refresh.
+    mutable std::map<juce::String, std::shared_ptr<MonitorFlags>> recursiveMonitorFlags;
+    int recursiveTreeGeneration = 0;
 
     juce::AudioFormatManager previewFormats;
     std::unique_ptr<juce::AudioFormatReaderSource> previewReaderSource;
@@ -493,8 +559,12 @@ private:
     std::unique_ptr<StemLabStemMixSource> stemMixSource;
     juce::AudioTransportSource stemMixTransport;
     juce::File stemMixJobDirectory;
-    std::array<std::atomic<bool>, stemCount> stemSolo{};
-    std::array<std::atomic<bool>, stemCount> stemMute{};
+
+    // Which adaptive tree the loaded mix was built from; a split or a
+    // cleared tree changes the leaf set the mix has to play.
+    int stemMixTreeGeneration = -1;
+
+    std::array<std::shared_ptr<MonitorFlags>, stemCount> rootMonitorFlags;
     std::atomic<int> monitorMode{monitorOriginal};
     std::atomic<bool> audioMonitorIsMix{false};
 

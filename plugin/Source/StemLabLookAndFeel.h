@@ -40,6 +40,9 @@ public:
                        bool isVertical, int thumbStart, int thumbSize, bool mouseOver,
                        bool mouseDown) override;
 
+    void drawCornerResizer(juce::Graphics&, int width, int height, bool mouseOver,
+                           bool mouseDown) override;
+
     juce::Rectangle<int> getTooltipBounds(const juce::String& text, juce::Point<int> screenPos,
                                           juce::Rectangle<int> parentArea) override;
     void drawTooltip(juce::Graphics&, const juce::String& text, int width, int height) override;
@@ -56,13 +59,17 @@ namespace stemlab::icons
     /** Brand glyph: five vertical rounded waveform bars. */
     juce::Path waveformBars(juce::Rectangle<float> bounds);
 
-    /** Settings: three horizontal slider lines with offset knobs. */
+    /** Settings: three horizontal slider rails with offset knobs. Filled,
+        not stroked - a rail this thin outlines into a smudge. */
     juce::Path sliders(juce::Rectangle<float> bounds);
 
     juce::Path play(juce::Rectangle<float> bounds);
     juce::Path pause(juce::Rectangle<float> bounds);
     juce::Path folder(juce::Rectangle<float> bounds);
     juce::Path check(juce::Rectangle<float> bounds);
+
+    /** Disclosure chevron: down when a lane's children are expanded. */
+    juce::Path chevron(juce::Rectangle<float> bounds, bool pointingDown);
 
     /** Per-stem split: stacked layers (diamond top + two arcs below). */
     juce::Path layers(juce::Rectangle<float> bounds);

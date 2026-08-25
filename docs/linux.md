@@ -188,6 +188,23 @@ trim and rate, so the inserted stems play exactly in sync with the item you
 selected. In-project and section sources (glued/reversed items, project-in-
 project) need a render/glue first - the status line says so.
 
+### What Insert Stems does to the project
+
+- **Adaptive sub-stems come too.** A stem you split further is inserted as a
+  REAPER **folder track** holding its sub-stems, nested as deeply as you
+  split it. The folder's own item is the unsplit stem, inserted **muted** -
+  unmute it (and mute the folder's contents) to A/B the whole stem against
+  the parts it was split into.
+- **The source item is muted.** Otherwise the project would play the
+  original and its separation on top of each other. It is part of the same
+  undo block, so one Ctrl+Z puts everything back. If you deleted or replaced
+  the item since **Use Selected Item**, StemLab leaves the project alone.
+- **Peaks are built for the new files.** REAPER only builds a `.reapeaks`
+  cache for media it imported itself, so stems placed through the API would
+  otherwise draw as empty lanes. StemLab builds them right after the insert,
+  a slice at a time so the UI never stalls, and redraws the arrangement when
+  the last one lands.
+
 Requires REAPER 5.02 or later (the API handshake); tested against 7.42. If a
 future or heavily stripped REAPER stops exposing a function StemLab needs,
 the plugin falls back to the Select File / Save Selected workflow and lists

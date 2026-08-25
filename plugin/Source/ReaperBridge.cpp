@@ -50,14 +50,14 @@ namespace
         return juce::String::fromUTF8 (buffer.getData()).trim();
     }
 
-    juce::String prettyStemName (const juce::String& stem)
-    {
-        if (stem.isEmpty())
-            return "Stem";
-
-        return stem.substring (0, 1).toUpperCase()
-            + stem.substring (1).toLowerCase();
-    }
+    /*  Peak building is sliced across timer ticks: enough work per tick to
+        finish an ordinary stem in a couple of seconds, short enough that
+        REAPER's UI never stalls. The per-file cap is a safety valve for a
+        source that never reports itself done.
+    */
+    constexpr int peakTimerIntervalMs = 25;
+    constexpr int peakSlicesPerTick = 48;
+    constexpr int peakMaxSlicesPerFile = 40000;
 
     // Same palette the Ableton Remote Script uses, so a user moving between
     // hosts sees the same stem identity. The values live in StemLabTheme.
@@ -183,6 +183,7 @@ SourceItem querySelectedItem (const Api& api)
         result.label = file.getFileName();
 
     result.file = file;
+    result.item = item;
     result.ok = true;
     return result;
 }
@@ -190,8 +191,7 @@ SourceItem querySelectedItem (const Api& api)
 InsertResult insertStemTracks (
     const Api& api,
     const juce::Array<StemToInsert>& stems,
-    const InsertAnchor& anchor,
-    const juce::String& sourceLabel)
+    const InsertAnchor& anchor)
 {
     InsertResult result;
 
@@ -232,31 +232,51 @@ InsertResult insertStemTracks (
         api.CountTracks (nullptr),
         insertIndex);
 
-    const auto baseName =
-        sourceLabel.isNotEmpty() ? sourceLabel : "StemLab";
-
     api.Undo_BeginBlock2 (nullptr);
 
     juce::StringArray failures;
 
+    /*  Folder depths have to balance even when a track cannot be created,
+        or REAPER is left with a folder that never closes. A skipped entry
+        hands its close to the last track that was created and carries an
+        open forward to the next one.
+    */
+    MediaTrack* lastTrack = nullptr;
+    int lastTrackDepth = 0;
+    int carriedDepth = 0;
+
+    auto setFolderDepth = [&api] (MediaTrack* track, int depth)
+    {
+        api.SetMediaTrackInfo_Value (
+            track,
+            "I_FOLDERDEPTH",
+            static_cast<double> (depth));
+    };
+
     for (const auto& stem : stems)
     {
-        const auto pretty = prettyStemName (stem.name);
+        const auto displayName =
+            stem.name.isNotEmpty() ? stem.name : juce::String ("Stem");
 
-        if (! stem.file.existsAsFile())
+        // An empty file is deliberate: a group whose own audio is missing
+        // still has to exist as the folder holding its sub-stems.
+        PCM_source* source = nullptr;
+
+        if (stem.file != juce::File())
         {
-            failures.add (pretty + " (file missing)");
-            continue;
-        }
+            if (stem.file.existsAsFile())
+            {
+                source =
+                    api.PCM_Source_CreateFromFile (
+                        stem.file.getFullPathName().toRawUTF8());
 
-        auto* source =
-            api.PCM_Source_CreateFromFile (
-                stem.file.getFullPathName().toRawUTF8());
-
-        if (source == nullptr)
-        {
-            failures.add (pretty + " (could not open audio)");
-            continue;
+                if (source == nullptr)
+                    failures.add (displayName + " (could not open audio)");
+            }
+            else
+            {
+                failures.add (displayName + " (file missing)");
+            }
         }
 
         api.InsertTrackAtIndex (insertIndex, true);
@@ -265,22 +285,31 @@ InsertResult insertStemTracks (
 
         if (track == nullptr)
         {
-            if (api.PCM_Source_Destroy != nullptr)
+            if (source != nullptr && api.PCM_Source_Destroy != nullptr)
                 api.PCM_Source_Destroy (source);
 
-            failures.add (pretty + " (track creation failed)");
+            failures.add (displayName + " (track creation failed)");
+
+            if (stem.folderDepth < 0 && lastTrack != nullptr)
+            {
+                lastTrackDepth += stem.folderDepth;
+                setFolderDepth (lastTrack, lastTrackDepth);
+            }
+            else
+            {
+                carriedDepth += stem.folderDepth;
+            }
+
             continue;
         }
 
         ++insertIndex;
 
-        const auto trackName = baseName + " - " + pretty;
-
         {
             // GetSetMediaTrackInfo_String writes through the buffer on set.
             char buffer[512] = { 0 };
 
-            trackName.copyToUTF8 (
+            displayName.copyToUTF8 (
                 buffer,
                 sizeof (buffer));
 
@@ -295,7 +324,7 @@ InsertResult insertStemTracks (
         {
             int r = 0, g = 0, b = 0;
 
-            if (stemColour (stem.name, r, g, b))
+            if (stemColour (stem.colourStem, r, g, b))
             {
                 api.SetMediaTrackInfo_Value (
                     track,
@@ -304,6 +333,15 @@ InsertResult insertStemTracks (
                         api.ColorToNative (r, g, b) | 0x1000000));
             }
         }
+
+        lastTrackDepth = carriedDepth + stem.folderDepth;
+        carriedDepth = 0;
+        lastTrack = track;
+
+        setFolderDepth (track, lastTrackDepth);
+
+        if (source == nullptr)
+            continue;
 
         auto* item = api.AddMediaItemToTrack (track);
         auto* take = item != nullptr
@@ -315,7 +353,7 @@ InsertResult insertStemTracks (
             if (api.PCM_Source_Destroy != nullptr)
                 api.PCM_Source_Destroy (source);
 
-            failures.add (pretty + " (item creation failed)");
+            failures.add (displayName + " (item creation failed)");
             continue;
         }
 
@@ -325,7 +363,7 @@ InsertResult insertStemTracks (
         {
             char buffer[512] = { 0 };
 
-            trackName.copyToUTF8 (
+            displayName.copyToUTF8 (
                 buffer,
                 sizeof (buffer));
 
@@ -389,7 +427,47 @@ InsertResult insertStemTracks (
             "B_PPITCH",
             anchor.preservePitch ? 1.0 : 0.0);
 
+        /*  A group's own audio is the sum of its children, so it goes in
+            muted: unmute it (and mute the folder's contents) to hear the
+            unsplit stem instead.
+        */
+        if (stem.muted)
+        {
+            api.SetMediaItemInfo_Value (
+                item,
+                "B_MUTE",
+                1.0);
+        }
+
+        result.insertedFiles.addIfNotAlreadyThere (stem.file);
         ++result.inserted;
+    }
+
+    // Whatever folder depth the loop could not place belongs on the last
+    // track that exists, so the project structure still balances.
+    if (carriedDepth != 0 && lastTrack != nullptr)
+    {
+        lastTrackDepth += carriedDepth;
+        setFolderDepth (lastTrack, lastTrackDepth);
+    }
+
+    /*  Mute the item the stems came from. Without this the project plays
+        the original and its separation on top of each other, which is
+        never what Insert Stems is for. REAPER is asked to confirm the
+        pointer first - the user may have deleted or replaced the item
+        since Use Selected Item read it.
+    */
+    if (result.inserted > 0
+        && anchor.sourceItem != nullptr
+        && api.ValidatePtr2 != nullptr
+        && api.ValidatePtr2 (nullptr, anchor.sourceItem, "MediaItem*"))
+    {
+        api.SetMediaItemInfo_Value (
+            anchor.sourceItem,
+            "B_MUTE",
+            1.0);
+
+        result.mutedSourceItem = true;
     }
 
     api.TrackList_AdjustWindows (false);
@@ -407,26 +485,125 @@ InsertResult insertStemTracks (
             + (failures.isEmpty()
                    ? juce::String()
                    : " - " + failures.joinIntoString (", "));
-    }
-    else if (! failures.isEmpty())
-    {
-        result.message =
-            "Inserted "
-            + juce::String (result.inserted)
-            + (result.inserted == 1 ? " stem" : " stems")
-            + ", skipped "
-            + failures.joinIntoString (", ");
-    }
-    else
-    {
-        result.message =
-            "Inserted "
-            + juce::String (result.inserted)
-            + (result.inserted == 1
-                   ? " stem into REAPER"
-                   : " stems into REAPER");
+
+        return result;
     }
 
+    juce::String message =
+        "Inserted "
+        + juce::String (result.inserted)
+        + (result.inserted == 1 ? " stem" : " stems");
+
+    if (! failures.isEmpty())
+        message += ", skipped " + failures.joinIntoString (", ");
+    else if (result.mutedSourceItem)
+        message += " - source item muted";
+
+    result.message = message;
     return result;
+}
+
+// ================================================================== peaks
+
+PeakBuilder::PeakBuilder (const Api& apiIn, const juce::Array<juce::File>& files)
+    : api (apiIn)
+{
+    if (api.PCM_Source_CreateFromFile == nullptr
+        || api.PCM_Source_BuildPeaks == nullptr)
+    {
+        // An older REAPER simply keeps its existing behaviour: peaks appear
+        // whenever something else asks REAPER to build them.
+        finished = true;
+        return;
+    }
+
+    for (const auto& file : files)
+        if (file.existsAsFile())
+            pending.addIfNotAlreadyThere (file);
+
+    if (pending.isEmpty())
+    {
+        finished = true;
+        return;
+    }
+
+    startTimer (peakTimerIntervalMs);
+}
+
+PeakBuilder::~PeakBuilder()
+{
+    stopTimer();
+    closeCurrentSource();
+}
+
+void PeakBuilder::closeCurrentSource()
+{
+    if (current == nullptr)
+        return;
+
+    api.PCM_Source_BuildPeaks (current, 2);
+
+    if (api.PCM_Source_Destroy != nullptr)
+        api.PCM_Source_Destroy (current);
+
+    current = nullptr;
+    slicesOnCurrent = 0;
+}
+
+bool PeakBuilder::startNextFile()
+{
+    while (! pending.isEmpty())
+    {
+        const auto file = pending.removeAndReturn (0);
+
+        current =
+            api.PCM_Source_CreateFromFile (
+                file.getFullPathName().toRawUTF8());
+
+        if (current == nullptr)
+            continue;
+
+        slicesOnCurrent = 0;
+
+        // The start call is not gated on its return value: a source that
+        // needs nothing simply reports done on the first slice below.
+        api.PCM_Source_BuildPeaks (current, 0);
+        return true;
+    }
+
+    return false;
+}
+
+void PeakBuilder::timerCallback()
+{
+    if (current == nullptr && ! startNextFile())
+    {
+        stopTimer();
+        finished = true;
+
+        // The items were drawn before their peaks existed; this is what
+        // turns the empty lanes into waveforms.
+        if (api.UpdateArrange != nullptr)
+            api.UpdateArrange();
+
+        return;
+    }
+
+    for (int slice = 0; slice < peakSlicesPerTick; ++slice)
+    {
+        if (api.PCM_Source_BuildPeaks (current, 1) == 0)
+        {
+            closeCurrentSource();
+            return;
+        }
+
+        if (++slicesOnCurrent >= peakMaxSlicesPerFile)
+        {
+            // A source that never reports itself done must not spin here
+            // for the rest of the session.
+            closeCurrentSource();
+            return;
+        }
+    }
 }
 }
