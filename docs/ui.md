@@ -72,7 +72,9 @@ ground margin, height fitting the content stack). Top to bottom:
   record button(s) (neutral outline with a pulsing accent dot while
   recording), and the **Separate split control**: a Refine toggle segment
   (accent-900 with a pill switch) fused to the primary Separate action
-  (accent-700 shell, accent-400 border, outer glow).
+  (accent-700 shell, accent-400 border, outer glow). While a job runs the
+  action segment reads Cancel ("Cancelling..." once requested) and aborts
+  the whole job through the engine's cancel watchdog.
 - **Stem lanes** — per lane: include checkbox (15px, accent fill), name
   (13.5/500), waveform well (2px rounded bars from the real peaks; played
   portion left of the shared playhead in accent, unplayed neutral-700,

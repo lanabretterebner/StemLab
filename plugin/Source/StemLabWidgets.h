@@ -101,6 +101,10 @@ namespace stemlab::widgets
         void setSeparateEnabled(bool enabled);
         bool isSeparateActionEnabled() const noexcept { return separateEnabled; }
 
+        /** The action segment's label: "Separate" normally, "Cancel" /
+            "Cancelling..." while a job runs (the editor decides). */
+        void setActionText(const juce::String& text);
+
         void paint(juce::Graphics&) override;
         void resized() override {}
         void mouseMove(const juce::MouseEvent&) override;
@@ -113,6 +117,7 @@ namespace stemlab::widgets
         bool refineOn = true;
         bool separateEnabled = false;
         bool hoverRefine = false, hoverSeparate = false;
+        juce::String actionText{"Separate"};
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SeparateSplitControl)
     };

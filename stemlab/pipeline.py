@@ -97,6 +97,21 @@ def separate(
 
         log(f"STEMLAB_PROGRESS {percent:.1f} {stage}")
 
+    def eta(seconds: float):
+        # Estimated seconds left in the current model stage, straight from
+        # the backend. The plugin counts it down between reports.
+        log(f"STEMLAB_ETA {max(0.0, float(seconds)):.0f}")
+
+    def make_download_progress(base_percent: float, stage_name: str):
+        # A one-time model download is its own stage: it creeps the bar
+        # through a narrow band instead of impersonating separation progress
+        # (which follows and would otherwise start from a bar stuck at 80%).
+        def on_download(percent: float):
+            mapped = base_percent + 4.0 * (max(0.0, min(100.0, percent)) / 100.0)
+            progress(mapped, f"Downloading {stage_name} model ({percent:.0f}%)")
+
+        return on_download
+
     requested_device = str(device or "").strip().lower()
     device = resolve_device(device)
 
@@ -127,6 +142,8 @@ def separate(
             device=device,
             log_callback=log,
             progress_callback=on_roformer_progress,
+            eta_callback=eta,
+            download_callback=make_download_progress(10.0, "BS-RoFormer"),
         )
 
         backend.separate(
@@ -149,6 +166,8 @@ def separate(
             device=device,
             log_callback=log,
             progress_callback=on_demucs_progress,
+            eta_callback=eta,
+            download_callback=make_download_progress(10.0, "Demucs"),
         )
 
         backend.separate(
@@ -174,6 +193,8 @@ def separate(
             device=device,
             log_callback=log,
             progress_callback=on_hybrid_roformer,
+            eta_callback=eta,
+            download_callback=make_download_progress(10.0, "BS-RoFormer"),
         ).separate(
             input_path=input_path,
             output_dir=roformer_dir,
@@ -193,6 +214,8 @@ def separate(
             device=device,
             log_callback=log,
             progress_callback=on_hybrid_demucs,
+            eta_callback=eta,
+            download_callback=make_download_progress(42.0, "Demucs"),
         ).separate(
             input_path=input_path,
             output_dir=demucs_dir,

@@ -247,6 +247,15 @@ public:
     double getEngineEstimatedRemainingSeconds() const noexcept;
     void refreshEngineProgressFromDisk();
 
+    /**
+     * Ask the running separation (main or adaptive) to stop. Writes the
+     * cancel sentinel the engine's watchdog honors - the engine shuts down
+     * its own model subprocesses, which a direct kill would orphan. Engines
+     * without the watchdog are killed after a short grace period.
+     */
+    void cancelSeparation();
+    bool isCancelRequested() const noexcept { return engineCancelRequested.load(); }
+
     juce::String getStatus() const;
     juce::String getEngineLog() const;
     juce::File getLastJobDirectory() const;
@@ -356,6 +365,10 @@ private:
     std::atomic<double> systemCaptureSampleRate{0.0};
 
     mutable juce::CriticalSection stateLock;
+
+    // Sentinel file for the running job's cancel watchdog. Guarded by
+    // stateLock; set at launch, used by cancelSeparation().
+    juce::File activeCancelFile;
     juce::File captureFile;
     juce::File lastJobDirectory;
     juce::File jobRootDirectory;
@@ -404,6 +417,16 @@ private:
     std::atomic<double> engineProgressUpdateMs{0.0};
     std::atomic<double> lastEngineDurationSeconds{0.0};
     std::atomic<bool> engineCompletedSuccessfully{false};
+
+    // Engine-reported seconds remaining (STEMLAB_ETA lines) and when the
+    // report arrived; -1 when the engine has not reported one this job.
+    std::atomic<double> engineEtaSeconds{-1.0};
+    std::atomic<double> engineEtaUpdateMs{0.0};
+
+    // Smoothed progress rate (fraction per second) for the fallback ETA.
+    std::atomic<double> engineProgressRate{0.0};
+
+    std::atomic<bool> engineCancelRequested{false};
 
     mutable juce::CriticalSection abletonBridgeLock;
     juce::String abletonBridgeStatus{"Bridge not confirmed yet"};

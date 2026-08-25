@@ -218,6 +218,14 @@ children — can be dragged straight out of the plugin into any application
 that accepts audio files: a DAW arrangement, a file manager, an editor. Click
 still seeks; drag exports.
 
+**Progress, ETA, and Cancel.** During a job the status line, the bar, and
+the ETA all update live — a one-time model download shows as its own stage,
+and BS-RoFormer's per-chunk time estimates feed the ETA directly. While a
+job runs, **Separate All Stems** becomes **Cancel**: the engine shuts down
+its own model workers, so nothing keeps burning CPU. The same watchdog fires
+if the plugin or the whole host disappears mid-job — closing REAPER cannot
+leave a separation running in the background.
+
 ## Wayland
 
 JUCE renders through X11. Under a Wayland session the plugin and standalone app

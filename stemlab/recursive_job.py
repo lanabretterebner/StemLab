@@ -6,7 +6,7 @@ import argparse
 from pathlib import Path
 
 from .recursive import default_model_dir, run_recursive
-from .runtime import configure_utf8_stdio
+from .runtime import configure_utf8_stdio, start_cancel_watchdog
 
 
 def main() -> None:
@@ -31,6 +31,9 @@ def main() -> None:
     def progress(percent: float, stage: str) -> None:
         bounded = int(max(0, min(100, percent)))
         print(f"STEMLAB_PROGRESS {bounded} {stage}", flush=True)
+
+    # The plugin's Cancel button writes a sentinel into the output directory.
+    start_cancel_watchdog(Path(args.output))
 
     progress(1.0, "Starting adaptive stem split")
     manifest = run_recursive(

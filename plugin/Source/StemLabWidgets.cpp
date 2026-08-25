@@ -239,6 +239,15 @@ namespace stemlab::widgets
         }
     }
 
+    void SeparateSplitControl::setActionText(const juce::String& text)
+    {
+        if (actionText != text)
+        {
+            actionText = text;
+            repaint();
+        }
+    }
+
     juce::Rectangle<int> SeparateSplitControl::refineArea() const
     {
         namespace source = theme::metrics::source;
@@ -328,7 +337,7 @@ namespace stemlab::widgets
             g.fillEllipse(knobX, knobY, knob, knob);
         }
 
-        // Separate label.
+        // Action label ("Separate", or "Cancel" / "Cancelling..." mid-job).
         {
             auto separate = getLocalBounds().withTrimmedLeft(refine.getRight() + 1);
 
@@ -339,7 +348,7 @@ namespace stemlab::widgets
 
             g.setColour(textColour);
             g.setFont(theme::fonts::separateLabel());
-            g.drawText("Separate", separate, juce::Justification::centred, false);
+            g.drawText(actionText, separate, juce::Justification::centred, false);
         }
 
         g.setColour(theme::colours::primaryEdge());

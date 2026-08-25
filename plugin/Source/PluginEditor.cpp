@@ -604,7 +604,12 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
     separateControl.onSeparate = [this]
     {
-        processor.launchSeparationAndExport();
+        // While a job runs the action segment is the abort switch.
+        if (processor.isEngineRunning())
+            processor.cancelSeparation();
+        else
+            processor.launchSeparationAndExport();
+
         refreshFromProcessor();
     };
 
@@ -1434,8 +1439,16 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     recordInputButton.setButtonText(inputRecording ? "Stop In" : "Record In");
     recordInputButton.setRecordingActive(inputRecording && capturing);
 
-    separateControl.setSeparateEnabled(!capturing && !processor.isAwaitingAbletonSourceClip() &&
-                                       !engineRunning && captureExists);
+    // The action segment doubles as Cancel while a job runs.
+    const bool cancelPending = processor.isCancelRequested();
+
+    separateControl.setActionText(engineRunning ? (cancelPending ? "Cancelling..." : "Cancel")
+                                                : "Separate");
+
+    separateControl.setSeparateEnabled(
+        engineRunning ? !cancelPending
+                      : (!capturing && !processor.isAwaitingAbletonSourceClip() &&
+                         captureExists));
 
     separateControl.setRefineOn(processor.isRefinementEnabled());
 
@@ -1568,8 +1581,21 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     const bool showSummary =
         jobDone && !engineRunning && nowMs - lastStatusChangeMs > 5000;
 
-    statusLabel.setText(showSummary ? jobSummaryLine() : rawStatus,
-                        juce::dontSendNotification);
+    auto statusText = showSummary ? jobSummaryLine() : rawStatus;
+
+    // Animated dots make long silent model phases (imports, first-run
+    // downloads, big CPU chunks) visibly alive instead of frozen.
+    if (engineRunning)
+    {
+        statusText = statusText.trimCharactersAtEnd(".");
+
+        const auto phase =
+            1 + (static_cast<int>(processor.getEngineElapsedSeconds() * 2.0) % 3);
+
+        statusText += juce::String::repeatedString(".", phase);
+    }
+
+    statusLabel.setText(statusText, juce::dontSendNotification);
 
     // The status check icon is painted by the editor, not a child, so state
     // flips need an explicit repaint of its little region.

@@ -30,12 +30,16 @@ class DemucsBackend:
         device: str = "cuda",
         log_callback: Callable[[str], None] | None = None,
         progress_callback: Callable[[float], None] | None = None,
+        eta_callback: Callable[[float], None] | None = None,
+        download_callback: Callable[[float], None] | None = None,
     ) -> None:
         """Configure the model, device, logging, and progress callbacks."""
         self.model = model
         self.device = device
         self.log_callback = log_callback
         self.progress_callback = progress_callback
+        self.eta_callback = eta_callback
+        self.download_callback = download_callback
 
     def _log(self, message: str) -> None:
         if self.log_callback:
@@ -102,7 +106,13 @@ class DemucsBackend:
             self._log(f"Device: {device}")
             self._progress(0.0)
 
-            exit_code = run_progress_process(command, self._log, self._progress)
+            exit_code = run_progress_process(
+                command,
+                self._log,
+                self._progress,
+                eta=self.eta_callback,
+                download=self.download_callback,
+            )
             if exit_code != 0:
                 raise RuntimeError(f"Demucs failed with exit code {exit_code}")
 
