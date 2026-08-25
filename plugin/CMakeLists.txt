@@ -84,6 +84,8 @@ target_sources(StemLabPlugin
         Source/PluginProcessor.h
         Source/PluginEditor.cpp
         Source/PluginEditor.h
+        Source/StemLabTheme.h
+        Source/StemLabLookAndFeel.h
         Source/StemLabPaths.cpp
         Source/StemLabPaths.h
         Source/ReaperHost.cpp

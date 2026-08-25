@@ -4,6 +4,7 @@
 #include <vector>
 #include <functional>
 #include "PluginProcessor.h"
+#include "StemLabLookAndFeel.h"
 
 /** Draws one source/stem waveform and converts mouse clicks into preview seeks. */
 class StemWaveformComponent final : public juce::Component
@@ -119,6 +120,11 @@ private:
 
     StemLabAudioProcessor& processor;
 
+    // Installed over JUCE's default so the redesign has one restyling hook;
+    // see StemLabLookAndFeel.h. The destructor detaches it before members
+    // are torn down.
+    StemLabLookAndFeel lookAndFeel;
+
     juce::Label titleLabel;
     juce::Label subtitleLabel;
     juce::TextButton settingsButton{"Settings"};
@@ -147,7 +153,8 @@ private:
     std::array<bool, StemLabAudioProcessor::stemCount> rootExpanded{};
 
     juce::AudioFormatManager waveformFormats;
-    juce::AudioThumbnailCache waveformCache{24};
+    juce::AudioThumbnailCache waveformCache{
+        stemlab::theme::metrics::waveform::thumbnailCacheSize};
 
     std::array<std::unique_ptr<StemWaveformComponent>, StemLabAudioProcessor::stemCount>
         waveformComponents;

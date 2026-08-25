@@ -1,21 +1,16 @@
 #include "PluginEditor.h"
 #include "StemLabPaths.h"
+#include "StemLabTheme.h"
 #include "BinaryData.h"
 
 #if defined(JucePlugin_Build_Standalone) && JucePlugin_Build_Standalone
 #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
 #endif
 
+namespace theme = stemlab::theme;
+
 namespace
 {
-juce::Colour background() { return juce::Colour::fromRGB(14, 17, 22); }
-
-juce::Colour panel() { return juce::Colour::fromRGB(22, 27, 34); }
-
-juce::Colour accent() { return juce::Colour::fromRGB(113, 93, 255); }
-
-juce::Colour textMuted() { return juce::Colour::fromRGB(145, 154, 168); }
-
 juce::File stemLabSettingsDirectory()
 {
     return stemlab::paths::configDirectory();
@@ -66,109 +61,13 @@ juce::String formatSeconds(double seconds)
     return juce::String::formatted("%02d:%02d", minutes, secs);
 }
 
-juce::Colour solidWaveformColour(int index)
-{
-    switch (index)
-    {
-    case 1:
-        return juce::Colour::fromRGB(132, 102, 255);
-
-    case 2:
-        return juce::Colour::fromRGB(52, 210, 255);
-
-    case 3:
-        return juce::Colour::fromRGB(66, 225, 154);
-
-    case 4:
-        return juce::Colour::fromRGB(255, 179, 66);
-
-    case 5:
-        return juce::Colour::fromRGB(255, 91, 176);
-
-    case 6:
-        return juce::Colour::fromRGB(224, 234, 244);
-
-    default:
-        return juce::Colour::fromRGB(132, 102, 255);
-    }
-}
-
-juce::Colour interpolateRamp(const juce::Colour& first, const juce::Colour& second, float amount)
-{
-    return first.interpolatedWith(second, juce::jlimit(0.0f, 1.0f, amount));
-}
-
-juce::Colour spectrumColourForLevel(float level)
-{
-    // Level is a perceptual 0..1 value derived from local dBFS.
-    // Quiet material starts violet/blue, medium material moves through
-    // cyan/green, and strong peaks reach yellow/orange.
-    const auto value = juce::jlimit(0.0f, 1.0f, level);
-
-    const juce::Colour violet = juce::Colour::fromRGB(119, 92, 255);
-
-    const juce::Colour blue = juce::Colour::fromRGB(61, 124, 255);
-
-    const juce::Colour cyan = juce::Colour::fromRGB(46, 220, 255);
-
-    const juce::Colour green = juce::Colour::fromRGB(70, 231, 151);
-
-    const juce::Colour yellow = juce::Colour::fromRGB(245, 235, 89);
-
-    const juce::Colour orange = juce::Colour::fromRGB(255, 154, 66);
-
-    if (value < 0.18f)
-        return interpolateRamp(violet, blue, value / 0.18f);
-
-    if (value < 0.38f)
-        return interpolateRamp(blue, cyan, (value - 0.18f) / 0.20f);
-
-    if (value < 0.62f)
-        return interpolateRamp(cyan, green, (value - 0.38f) / 0.24f);
-
-    if (value < 0.84f)
-        return interpolateRamp(green, yellow, (value - 0.62f) / 0.22f);
-
-    return interpolateRamp(yellow, orange, (value - 0.84f) / 0.16f);
-}
-
-juce::Colour waveformColourForLevel(int paletteIndex, float level)
-{
-    const auto value = juce::jlimit(0.0f, 1.0f, level);
-
-    if (paletteIndex == 0)
-        return spectrumColourForLevel(value).withAlpha(0.96f);
-
-    // Solid palettes remain the selected hue, but still react to volume:
-    // quieter sections are darker/desaturated and peaks become brighter.
-    auto base = solidWaveformColour(paletteIndex);
-
-    const auto muted = base.withSaturation(juce::jlimit(0.20f, 1.0f, base.getSaturation() * 0.58f))
-                           .withMultipliedBrightness(0.50f);
-
-    const auto hot = base.withSaturation(juce::jlimit(0.0f, 1.0f, base.getSaturation() * 1.10f))
-                         .withMultipliedBrightness(1.18f);
-
-    return muted.interpolatedWith(hot, value).withAlpha(0.94f);
-}
-
-float perceptualWaveformLevel(float peak)
-{
-    const auto safePeak = juce::jlimit(0.0f, 1.0f, peak);
-
-    // dB mapping makes the colour changes useful across real musical
-    // dynamics instead of bunching almost everything near "quiet".
-    const auto decibels = juce::Decibels::gainToDecibels(safePeak, -54.0f);
-
-    return juce::jlimit(0.0f, 1.0f, juce::jmap(decibels, -48.0f, 0.0f, 0.0f, 1.0f));
-}
-
 } // namespace
 
 StemWaveformComponent::StemWaveformComponent(StemLabAudioProcessor& processorIn, int stemIndexIn,
                                              juce::AudioFormatManager& formatManager,
                                              juce::AudioThumbnailCache& thumbnailCache)
-    : processor(processorIn), stemIndex(stemIndexIn), thumbnail(512, formatManager, thumbnailCache)
+    : processor(processorIn), stemIndex(stemIndexIn),
+      thumbnail(theme::metrics::waveform::thumbnailResolution, formatManager, thumbnailCache)
 {
     setMouseCursor(juce::MouseCursor::PointingHandCursor);
     setInterceptsMouseClicks(true, false);
@@ -179,7 +78,7 @@ StemWaveformComponent::StemWaveformComponent(StemLabAudioProcessor& processorIn,
                                              juce::AudioFormatManager& formatManager,
                                              juce::AudioThumbnailCache& thumbnailCache)
     : processor(processorIn), stemIndex(-3), recursive(true), recursiveId(std::move(recursiveIdIn)),
-      thumbnail(512, formatManager, thumbnailCache)
+      thumbnail(theme::metrics::waveform::thumbnailResolution, formatManager, thumbnailCache)
 {
     setMouseCursor(juce::MouseCursor::PointingHandCursor);
     setInterceptsMouseClicks(true, false);
@@ -203,28 +102,30 @@ void StemWaveformComponent::setFile(const juce::File& file)
 
 void StemWaveformComponent::paint(juce::Graphics& g)
 {
+    namespace waveform = theme::metrics::waveform;
+
     const auto full = getLocalBounds().toFloat();
 
-    g.setColour(juce::Colour::fromRGB(12, 15, 20));
-    g.fillRoundedRectangle(full, 6.0f);
+    g.setColour(theme::colours::waveformBackground());
+    g.fillRoundedRectangle(full, waveform::cornerRadius);
 
-    const auto bounds = getLocalBounds().reduced(4);
+    const auto bounds = getLocalBounds().reduced(waveform::inset);
 
     if (bounds.isEmpty())
         return;
 
     // Mini-meter-style faint timing grid.
-    g.setColour(juce::Colour::fromRGB(44, 51, 62));
+    g.setColour(theme::colours::waveformGrid());
 
-    for (int division = 1; division < 8; ++division)
+    for (int division = 1; division < waveform::gridDivisions; ++division)
     {
-        const auto x = bounds.getX() + bounds.getWidth() * division / 8;
+        const auto x = bounds.getX() + bounds.getWidth() * division / waveform::gridDivisions;
 
         g.drawVerticalLine(x, static_cast<float>(bounds.getY()),
                            static_cast<float>(bounds.getBottom()));
     }
 
-    g.setColour(juce::Colour::fromRGB(56, 63, 74));
+    g.setColour(theme::colours::waveformCentreLine());
     g.drawHorizontalLine(bounds.getCentreY(), static_cast<float>(bounds.getX()),
                          static_cast<float>(bounds.getRight()));
 
@@ -232,11 +133,13 @@ void StemWaveformComponent::paint(juce::Graphics& g)
 
     if (length > 0.0 && thumbnail.getNumChannels() > 0)
     {
-        const int channelCount = juce::jlimit(1, 2, thumbnail.getNumChannels());
+        const int channelCount =
+            juce::jlimit(1, waveform::maxChannelLanes, thumbnail.getNumChannels());
 
-        // Two-pixel slices retain plenty of visual detail while keeping the
-        // six simultaneous waveform previews cheap to repaint at 20 Hz.
-        constexpr int sliceWidth = 2;
+        // Slice width is chosen to keep the six simultaneous waveform
+        // previews cheap to repaint at the UI refresh rate; see the token's
+        // note in StemLabTheme.h.
+        constexpr int sliceWidth = waveform::sliceWidth;
 
         for (int channel = 0; channel < channelCount; ++channel)
         {
@@ -250,7 +153,8 @@ void StemWaveformComponent::paint(juce::Graphics& g)
             const auto centreY =
                 static_cast<float>(channelTop) + static_cast<float>(channelHeight) * 0.5f;
 
-            const auto halfHeight = static_cast<float>(channelHeight) * 0.46f;
+            const auto halfHeight =
+                static_cast<float>(channelHeight) * waveform::channelHalfHeightRatio;
 
             // The waveform colour is calculated per horizontal time slice,
             // so local volume determines the colour at that point in time.
@@ -275,10 +179,10 @@ void StemWaveformComponent::paint(juce::Graphics& g)
 
                 const auto localPeak = juce::jmax(std::abs(minimum), std::abs(maximum));
 
-                const auto level = perceptualWaveformLevel(localPeak);
+                const auto level = theme::palette::perceptualWaveformLevel(localPeak);
 
-                const auto colour =
-                    waveformColourForLevel(processor.getWaveformColourIndex(), level);
+                const auto colour = theme::palette::waveformColourForLevel(
+                    processor.getWaveformColourIndex(), level);
 
                 const auto yTop = centreY - juce::jlimit(0.0f, 1.0f, maximum) * halfHeight;
 
@@ -287,21 +191,23 @@ void StemWaveformComponent::paint(juce::Graphics& g)
                 // Keep extremely quiet material visible without pretending it
                 // is loud. This matches the dense, thin low-level trace style
                 // used by meter-oriented waveform displays.
-                const auto visibleTop = juce::jmin(yTop, centreY - 0.55f);
+                const auto visibleTop =
+                    juce::jmin(yTop, centreY - waveform::minVisibleHalfHeight);
 
-                const auto visibleBottom = juce::jmax(yBottom, centreY + 0.55f);
+                const auto visibleBottom =
+                    juce::jmax(yBottom, centreY + waveform::minVisibleHalfHeight);
 
                 g.setColour(colour);
 
                 g.drawLine(static_cast<float>(x), visibleTop, static_cast<float>(x), visibleBottom,
-                           1.45f);
+                           waveform::traceThickness);
             }
         }
     }
     else
     {
-        g.setColour(textMuted().withAlpha(0.65f));
-        g.setFont(juce::FontOptions(11.0f));
+        g.setColour(theme::colours::waveformPlaceholderText());
+        g.setFont(theme::fonts::waveformPlaceholder());
 
         g.drawText("waveform", bounds, juce::Justification::centred);
     }
@@ -324,32 +230,34 @@ void StemWaveformComponent::paint(juce::Graphics& g)
             const auto x = static_cast<float>(bounds.getX()) +
                            static_cast<float>(normalised) * static_cast<float>(bounds.getWidth());
 
-            g.setColour(juce::Colours::white.withAlpha(0.95f));
+            g.setColour(theme::colours::waveformPlayhead());
             g.drawLine(x, static_cast<float>(bounds.getY()), x,
-                       static_cast<float>(bounds.getBottom()), 1.5f);
+                       static_cast<float>(bounds.getBottom()), waveform::playheadThickness);
 
             const auto timeText =
                 formatSeconds(previewPosition) + " / " + formatSeconds(previewLength);
 
             auto badgeArea = bounds;
-            auto badgeRow = badgeArea.removeFromTop(17);
+            auto badgeRow = badgeArea.removeFromTop(waveform::badgeRowHeight);
 
-            auto badge = badgeRow.removeFromRight(82);
+            auto badge = badgeRow.removeFromRight(waveform::badgeWidth);
 
-            g.setColour(juce::Colour::fromRGB(9, 11, 16).withAlpha(0.78f));
+            g.setColour(theme::colours::badgeFill());
 
-            g.fillRoundedRectangle(badge.toFloat(), 4.0f);
+            g.fillRoundedRectangle(badge.toFloat(), waveform::badgeCornerRadius);
 
-            g.setColour(juce::Colours::white.withAlpha(0.9f));
-            g.setFont(juce::FontOptions(10.5f));
+            g.setColour(theme::colours::badgeText());
+            g.setFont(theme::fonts::badge());
 
-            g.drawText(timeText, badge.reduced(4, 0), juce::Justification::centredRight);
+            g.drawText(timeText, badge.reduced(waveform::badgeTextInsetX, 0),
+                       juce::Justification::centredRight);
         }
     }
 
-    g.setColour(juce::Colour::fromRGB(54, 61, 73));
+    g.setColour(theme::colours::waveformOutline());
 
-    g.drawRoundedRectangle(full.reduced(0.5f), 6.0f, 1.0f);
+    g.drawRoundedRectangle(full.reduced(waveform::outlineInset), waveform::cornerRadius,
+                           waveform::outlineThickness);
 }
 
 void StemWaveformComponent::mouseDown(const juce::MouseEvent&)
@@ -365,7 +273,7 @@ void StemWaveformComponent::mouseUp(const juce::MouseEvent& event)
     if (externalDragStarted || !currentFile.existsAsFile() || getWidth() <= 0)
         return;
 
-    if (event.getDistanceFromDragStart() >= 8)
+    if (event.getDistanceFromDragStart() >= theme::metrics::waveform::clickVersusDragThreshold)
         return;
 
     const auto normalised = juce::jlimit(
@@ -394,7 +302,7 @@ void StemWaveformComponent::mouseDrag(const juce::MouseEvent& event)
     if (externalDragStarted || !currentFile.existsAsFile())
         return;
 
-    if (event.getDistanceFromDragStart() < 8)
+    if (event.getDistanceFromDragStart() < theme::metrics::waveform::clickVersusDragThreshold)
         return;
 
     // Keep the return value: a false start (e.g. the previous drag's XDND
@@ -497,43 +405,50 @@ void RecursiveStemRowComponent::refresh(bool engineRunning, bool previewPlaying)
 
 void RecursiveStemRowComponent::resized()
 {
+    namespace adaptive = theme::metrics::adaptiveRow;
+
     auto row = getLocalBounds();
 
-    const int indent = juce::jlimit(12, 54, item.depth * 14);
+    const int indent = juce::jlimit(adaptive::indentMin, adaptive::indentMax,
+                                    item.depth * adaptive::indentPerDepth);
     row.removeFromLeft(indent);
 
     if (item.hasChildren)
     {
-        expandButton.setBounds(row.removeFromLeft(22).reduced(1, 3));
-        row.removeFromLeft(2);
+        expandButton.setBounds(row.removeFromLeft(adaptive::expandWidth)
+                                   .reduced(adaptive::expandPadX, adaptive::expandPadY));
+        row.removeFromLeft(adaptive::expandGap);
     }
     else
     {
         expandButton.setBounds(0, 0, 0, 0);
-        row.removeFromLeft(24);
+        row.removeFromLeft(adaptive::noExpandIndent);
     }
 
-    const int actionWidth = item.actions.isEmpty() ? 0 : 30;
+    const int actionWidth = item.actions.isEmpty() ? 0 : adaptive::menuWidth;
 
     if (actionWidth > 0)
     {
-        actionButton.setBounds(row.removeFromRight(actionWidth).reduced(1, 2));
-        row.removeFromRight(3);
+        actionButton.setBounds(row.removeFromRight(actionWidth)
+                                   .reduced(adaptive::buttonPadX, adaptive::buttonPadY));
+        row.removeFromRight(adaptive::menuGap);
     }
     else
     {
         actionButton.setBounds(0, 0, 0, 0);
     }
 
-    playButton.setBounds(row.removeFromRight(50).reduced(1, 2));
-    row.removeFromRight(4);
+    playButton.setBounds(row.removeFromRight(adaptive::playWidth)
+                             .reduced(adaptive::buttonPadX, adaptive::buttonPadY));
+    row.removeFromRight(adaptive::playGap);
 
-    const int labelWidth = juce::jlimit(96, 160, getWidth() / 4);
-    selectButton.setBounds(row.removeFromLeft(labelWidth).reduced(0, 1));
-    row.removeFromLeft(4);
+    const int labelWidth = juce::jlimit(adaptive::labelMinWidth, adaptive::labelMaxWidth,
+                                        getWidth() / adaptive::labelWidthDivisor);
+    selectButton.setBounds(row.removeFromLeft(labelWidth).reduced(0, adaptive::contentPadY));
+    row.removeFromLeft(adaptive::labelGap);
 
     if (waveform != nullptr)
-        waveform->setBounds(row.reduced(0, 1));
+        waveform->setBounds(row.reduced(0, adaptive::contentPadY));
 }
 
 void RecursiveStemRowComponent::showActionMenu()
@@ -579,13 +494,17 @@ void RecursiveStemRowComponent::showActionMenu()
 StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& processorIn)
     : AudioProcessorEditor(&processorIn), processor(processorIn)
 {
-    setSize(680, 680);
+    namespace window = theme::metrics::window;
+
+    setLookAndFeel(&lookAndFeel);
+
+    setSize(window::defaultWidth, window::defaultHeight);
     setResizable(true, true);
 
     // The UI is intentionally fluid. At the minimum size the waveform rows
     // collapse to compact strips; extra vertical space is given directly to
     // the six waveform rows instead of becoming dead space.
-    setResizeLimits(540, 540, 1400, 1200);
+    setResizeLimits(window::minWidth, window::minHeight, window::maxWidth, window::maxHeight);
 
     if (processor.isStandaloneApp())
     {
@@ -613,11 +532,11 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
     titleLabel.setText("StemLab", juce::dontSendNotification);
 
-    titleLabel.setFont(juce::FontOptions(24.0f, juce::Font::bold));
+    titleLabel.setFont(theme::fonts::title());
 
     addAndMakeVisible(titleLabel);
 
-    subtitleLabel.setColour(juce::Label::textColourId, textMuted());
+    subtitleLabel.setColour(juce::Label::textColourId, theme::colours::textMuted());
 
     subtitleLabel.setText(
         [this]() -> juce::String
@@ -645,7 +564,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     settingsButton.onClick = [this] { showSettingsMenu(); };
     addAndMakeVisible(settingsButton);
 
-    captureButton.setColour(juce::TextButton::buttonColourId, accent());
+    captureButton.setColour(juce::TextButton::buttonColourId, theme::colours::accent());
 
     if (processor.isStandaloneApp())
     {
@@ -664,7 +583,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
         recordSystemButton.setButtonText("Record System");
         recordSystemButton.setColour(juce::TextButton::buttonColourId,
-                                     juce::Colour::fromRGB(194, 66, 94));
+                                     theme::colours::recordSystem());
 
         recordSystemButton.onClick = [this]
         {
@@ -684,7 +603,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
         recordInputButton.setButtonText("Record Input");
         recordInputButton.setColour(juce::TextButton::buttonColourId,
-                                    juce::Colour::fromRGB(87, 102, 126));
+                                    theme::colours::recordInput());
 
         recordInputButton.onClick = [this]
         {
@@ -742,7 +661,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
         recordSystemButton.setButtonText("Record PC");
         recordSystemButton.setColour(juce::TextButton::buttonColourId,
-                                     juce::Colour::fromRGB(194, 66, 94));
+                                     theme::colours::recordSystem());
 
         recordSystemButton.onClick = [this]
         {
@@ -768,7 +687,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
     captureTimeLabel.setJustificationType(juce::Justification::centredLeft);
 
-    captureTimeLabel.setColour(juce::Label::textColourId, textMuted());
+    captureTimeLabel.setColour(juce::Label::textColourId, theme::colours::textMuted());
 
     addAndMakeVisible(captureTimeLabel);
 
@@ -782,7 +701,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
     addAndMakeVisible(refinementButton);
 
-    separateButton.setColour(juce::TextButton::buttonColourId, accent());
+    separateButton.setColour(juce::TextButton::buttonColourId, theme::colours::accent());
 
     separateButton.setButtonText("Separate All Stems");
 
@@ -794,22 +713,22 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
     addAndMakeVisible(separateButton);
 
-    progressBar.setColour(juce::ProgressBar::foregroundColourId, accent());
+    progressBar.setColour(juce::ProgressBar::foregroundColourId, theme::colours::accent());
 
-    progressBar.setColour(juce::ProgressBar::backgroundColourId, juce::Colour::fromRGB(35, 42, 52));
+    progressBar.setColour(juce::ProgressBar::backgroundColourId, theme::colours::progressTrack());
 
     progressBar.setPercentageDisplay(true);
     addAndMakeVisible(progressBar);
 
-    statusLabel.setFont(juce::FontOptions(14.0f, juce::Font::bold));
+    statusLabel.setFont(theme::fonts::status());
 
     addAndMakeVisible(statusLabel);
 
-    timingLabel.setColour(juce::Label::textColourId, textMuted());
+    timingLabel.setColour(juce::Label::textColourId, theme::colours::textMuted());
 
     addAndMakeVisible(timingLabel);
 
-    stemsLabel.setFont(juce::FontOptions(15.0f, juce::Font::bold));
+    stemsLabel.setFont(theme::fonts::sectionHeading());
 
     stemsLabel.setText(
         [this]() -> juce::String
@@ -837,7 +756,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     rootExpanded.fill(true);
     stemViewport.setViewedComponent(&stemTreeContent, false);
     stemViewport.setScrollBarsShown(true, false);
-    stemViewport.setScrollBarThickness(10);
+    stemViewport.setScrollBarThickness(theme::metrics::stemTree::scrollbarThickness);
     addAndMakeVisible(stemViewport);
 
     waveformFormats.registerBasicFormats();
@@ -904,7 +823,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
                                          ? "Insert Stems"
                                          : "Send Selected");
 
-    sendSelectedButton.setColour(juce::TextButton::buttonColourId, accent());
+    sendSelectedButton.setColour(juce::TextButton::buttonColourId, theme::colours::accent());
 
     sendSelectedButton.onClick = [this]
     {
@@ -939,7 +858,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
     processor.addChangeListener(this);
 
-    startTimerHz(20);
+    startTimerHz(theme::metrics::uiRefreshHz);
     refreshFromProcessor();
 
     if (processor.isStandaloneApp())
@@ -957,6 +876,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
 StemLabAudioProcessorEditor::~StemLabAudioProcessorEditor()
 {
+    setLookAndFeel(nullptr);
     processor.removeChangeListener(this);
     stopTimer();
 }
@@ -1038,30 +958,33 @@ void StemLabAudioProcessorEditor::fileDragExit(const juce::StringArray&)
 
 void StemLabAudioProcessorEditor::paint(juce::Graphics& g)
 {
-    g.fillAll(background());
+    namespace panel = theme::metrics::panel;
 
-    auto area = getLocalBounds().toFloat().reduced(18.0f);
+    g.fillAll(theme::colours::windowBackground());
 
-    auto panelArea = area.withTrimmedTop(78.0f);
+    auto area = getLocalBounds().toFloat().reduced(panel::paintMargin);
 
-    g.setColour(panel());
-    g.fillRoundedRectangle(panelArea, 12.0f);
+    auto panelArea = area.withTrimmedTop(panel::headerReserve);
 
-    g.setColour(dragActive ? accent() : juce::Colour::fromRGB(43, 50, 61));
+    g.setColour(theme::colours::panel());
+    g.fillRoundedRectangle(panelArea, panel::cornerRadius);
 
-    g.drawRoundedRectangle(panelArea, 12.0f, dragActive ? 2.5f : 1.0f);
+    g.setColour(dragActive ? theme::colours::dragBorder() : theme::colours::panelOutline());
+
+    g.drawRoundedRectangle(panelArea, panel::cornerRadius,
+                           dragActive ? panel::dragOutlineThickness : panel::outlineThickness);
 
     if (dragActive)
     {
-        g.setColour(accent().withAlpha(0.08f));
+        g.setColour(theme::colours::dragOverlay());
 
-        g.fillRoundedRectangle(panelArea, 12.0f);
+        g.fillRoundedRectangle(panelArea, panel::cornerRadius);
 
-        g.setColour(juce::Colours::white);
+        g.setColour(theme::colours::dragPromptText());
 
-        g.setFont(juce::FontOptions(18.0f, juce::Font::bold));
+        g.setFont(theme::fonts::dragPrompt());
 
-        g.drawFittedText("Drop audio to load", getLocalBounds().reduced(60),
+        g.drawFittedText("Drop audio to load", getLocalBounds().reduced(panel::dragPromptInset),
                          juce::Justification::centred, 1);
     }
 }
@@ -1240,126 +1163,125 @@ void StemLabAudioProcessorEditor::syncRecursiveRows()
 
 void StemLabAudioProcessorEditor::resized()
 {
+    namespace metrics = theme::metrics;
+    namespace controls = metrics::controls;
+    namespace stemTree = metrics::stemTree;
+
     const int width = getWidth();
 
     const int height = getHeight();
 
+    const bool narrow = width < metrics::compactWidth;
+
+    const bool shallow = height < metrics::compactHeight;
+
     // Slightly smaller outside padding at compact sizes.
-    const int outerPadding = width < 620 || height < 620 ? 12 : 18;
+    auto area = getLocalBounds().reduced(metrics::window::outerPadding(narrow || shallow));
 
-    auto area = getLocalBounds().reduced(outerPadding);
+    auto header = area.removeFromTop(metrics::header::height(shallow));
 
-    const int headerHeight = height < 620 ? 46 : 56;
+    auto titleRow = header.removeFromTop(metrics::header::titleRowHeight(shallow));
 
-    auto header = area.removeFromTop(headerHeight);
+    settingsButton.setBounds(titleRow.removeFromRight(metrics::header::settingsButtonWidth(narrow)));
 
-    auto titleRow = header.removeFromTop(height < 620 ? 27 : 32);
-
-    settingsButton.setBounds(titleRow.removeFromRight(width < 620 ? 74 : 82));
-
-    titleRow.removeFromRight(6);
+    titleRow.removeFromRight(metrics::header::settingsButtonGap);
     titleLabel.setBounds(titleRow);
     subtitleLabel.setBounds(header);
 
-    area.removeFromTop(height < 620 ? 4 : 8);
+    area.removeFromTop(metrics::header::gapBelow(shallow));
 
-    const int panelInset = width < 620 ? 7 : 12;
+    area.reduce(metrics::panel::insetX(narrow), metrics::panel::insetY(shallow));
 
-    area.reduce(panelInset, height < 620 ? 5 : 8);
+    auto inputRow = area.removeFromTop(controls::inputRowHeight(shallow));
 
-    const int compact = height < 620 ? 1 : 0;
-
-    const int inputHeight = compact ? 30 : 34;
-
-    auto inputRow = area.removeFromTop(inputHeight);
-
-    const int useClipWidth =
-        processor.isStandaloneApp() ? (width < 620 ? 92 : 102) : (width < 620 ? 98 : 108);
+    const int useClipWidth = processor.isStandaloneApp()
+                                 ? controls::captureButtonWidthStandalone(narrow)
+                                 : controls::captureButtonWidthHosted(narrow);
 
     captureButton.setBounds(inputRow.removeFromLeft(useClipWidth));
 
-    inputRow.removeFromLeft(5);
+    inputRow.removeFromLeft(controls::buttonGap);
 
-    playButton.setBounds(inputRow.removeFromLeft(width < 620 ? 52 : 58));
+    playButton.setBounds(inputRow.removeFromLeft(controls::playButtonWidth(narrow)));
 
-    inputRow.removeFromLeft(5);
+    inputRow.removeFromLeft(controls::buttonGap);
 
     if (!processor.isStandaloneApp() && StemLabAudioProcessor::isSystemAudioCaptureSupported())
     {
-        recordSystemButton.setBounds(inputRow.removeFromLeft(width < 620 ? 82 : 92));
+        recordSystemButton.setBounds(
+            inputRow.removeFromLeft(controls::recordSystemWidthHosted(narrow)));
 
-        inputRow.removeFromLeft(6);
+        inputRow.removeFromLeft(controls::buttonGapWide);
     }
 
     captureTimeLabel.setBounds(inputRow);
 
     if (processor.isStandaloneApp())
     {
-        area.removeFromTop(compact ? 2 : 4);
+        area.removeFromTop(controls::tightRowGap(shallow));
 
-        auto recordingRow = area.removeFromTop(compact ? 28 : 32);
+        auto recordingRow = area.removeFromTop(controls::recordingRowHeight(shallow));
 
         if (StemLabAudioProcessor::isSystemAudioCaptureSupported())
         {
-            recordSystemButton.setBounds(recordingRow.removeFromLeft(width < 620 ? 104 : 116));
+            recordSystemButton.setBounds(
+                recordingRow.removeFromLeft(controls::recordSystemWidthStandalone(narrow)));
 
-            recordingRow.removeFromLeft(5);
+            recordingRow.removeFromLeft(controls::buttonGap);
         }
 
-        recordInputButton.setBounds(recordingRow.removeFromLeft(width < 620 ? 96 : 108));
+        recordInputButton.setBounds(
+            recordingRow.removeFromLeft(controls::recordInputWidth(narrow)));
     }
 
-    area.removeFromTop(compact ? 3 : 5);
+    area.removeFromTop(controls::rowGap(shallow));
 
-    refinementButton.setBounds(area.removeFromTop(compact ? 22 : 25));
+    refinementButton.setBounds(area.removeFromTop(controls::refinementHeight(shallow)));
 
-    area.removeFromTop(compact ? 3 : 5);
+    area.removeFromTop(controls::rowGap(shallow));
 
-    separateButton.setBounds(area.removeFromTop(compact ? 31 : 36));
+    separateButton.setBounds(area.removeFromTop(controls::separateButtonHeight(shallow)));
 
-    area.removeFromTop(compact ? 3 : 5);
+    area.removeFromTop(controls::rowGap(shallow));
 
-    statusLabel.setBounds(area.removeFromTop(compact ? 18 : 20));
+    statusLabel.setBounds(area.removeFromTop(controls::statusHeight(shallow)));
 
-    progressBar.setBounds(area.removeFromTop(compact ? 15 : 18));
+    progressBar.setBounds(area.removeFromTop(controls::progressHeight(shallow)));
 
-    timingLabel.setBounds(area.removeFromTop(compact ? 17 : 20));
+    timingLabel.setBounds(area.removeFromTop(controls::timingHeight(shallow)));
 
-    area.removeFromTop(compact ? 2 : 4);
+    area.removeFromTop(controls::tightRowGap(shallow));
 
-    stemsLabel.setBounds(area.removeFromTop(compact ? 19 : 22));
+    stemsLabel.setBounds(area.removeFromTop(controls::stemsHeadingHeight(shallow)));
 
     // Reserve the bottom action row first. Everything between the stem label
     // and that row becomes waveform space.
-    const int bottomGap = compact ? 3 : 5;
+    auto actionRow = area.removeFromBottom(metrics::actionRow::height(shallow));
 
-    const int actionHeight = compact ? 30 : 34;
-
-    auto actionRow = area.removeFromBottom(actionHeight);
-
-    area.removeFromBottom(bottomGap);
+    area.removeFromBottom(metrics::actionRow::gapAbove(shallow));
 
     const int totalStemRows =
         StemLabAudioProcessor::stemCount + static_cast<int>(recursiveRows.size());
-    const int minimumRowHeight = compact ? 36 : 42;
     const int preferredRowHeight =
-        juce::jlimit(minimumRowHeight, 72, area.getHeight() / juce::jmax(1, totalStemRows));
+        juce::jlimit(stemTree::minRowHeight(shallow), stemTree::maxRowHeight,
+                     area.getHeight() / juce::jmax(1, totalStemRows));
     const int contentHeight = juce::jmax(area.getHeight(), preferredRowHeight * totalStemRows);
 
     stemViewport.setBounds(area);
-    const int contentWidth = juce::jmax(320, stemViewport.getWidth() - 12);
+    const int contentWidth = juce::jmax(stemTree::contentMinWidth,
+                                        stemViewport.getWidth() - stemTree::viewportWidthInset);
     stemTreeContent.setSize(contentWidth, contentHeight);
-    auto treeArea = stemTreeContent.getLocalBounds().reduced(2, 0);
+    auto treeArea = stemTreeContent.getLocalBounds().reduced(stemTree::treeInsetX, 0);
 
-    const int checkboxWidth = width < 620 ? 88 : 116;
-    const int playWidth = width < 620 ? 48 : 55;
-    const int actionWidth = width < 620 ? 28 : 32;
-    const int expandWidth = 24;
+    const int checkboxWidth = stemTree::checkboxWidth(narrow);
+    const int playWidth = stemTree::playWidth(narrow);
+    const int actionWidth = stemTree::menuWidth(narrow);
+    const int expandWidth = stemTree::expandWidth;
 
     for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
     {
         auto row = treeArea.removeFromTop(preferredRowHeight);
-        const int rowPad = preferredRowHeight < 42 ? 2 : 4;
+        const int rowPad = stemTree::rowPad(preferredRowHeight < stemTree::rowPadThreshold);
 
         auto& expandButton = stemExpandButtons[static_cast<size_t>(i)];
         const bool hasChildren = rootHasChildren(i);
@@ -1375,20 +1297,20 @@ void StemLabAudioProcessorEditor::resized()
 
         auto checkboxArea = row.removeFromLeft(checkboxWidth).reduced(0, rowPad);
         stemButtons[static_cast<size_t>(i)].setBounds(checkboxArea);
-        row.removeFromLeft(4);
+        row.removeFromLeft(stemTree::checkboxGap);
 
         auto& recursiveButton = stemRecursiveButtons[static_cast<size_t>(i)];
         if (rootSupportsAdaptiveSplit(i) || hasChildren)
         {
             recursiveButton.setBounds(row.removeFromRight(actionWidth).reduced(0, rowPad));
-            row.removeFromRight(3);
+            row.removeFromRight(stemTree::menuGap);
         }
         else
             recursiveButton.setBounds(0, 0, 0, 0);
 
         stemPlayButtons[static_cast<size_t>(i)].setBounds(
             row.removeFromRight(playWidth).reduced(0, rowPad));
-        row.removeFromRight(5);
+        row.removeFromRight(stemTree::playGap);
 
         if (auto* waveform = waveformComponents[static_cast<size_t>(i)].get())
             waveform->setBounds(row.reduced(0, juce::jmax(1, rowPad - 1)));
@@ -1407,34 +1329,40 @@ void StemLabAudioProcessorEditor::resized()
                                         : processor.getHostIntegration())
     {
     case StemLabAudioProcessor::hostIntegrationAbletonLive:
-        sendSelectedButton.setBounds(actionRow.removeFromLeft(width < 620 ? 108 : 126));
+        sendSelectedButton.setBounds(
+            actionRow.removeFromLeft(metrics::actionRow::sendWidthAbleton(narrow)));
 
-        actionRow.removeFromLeft(5);
+        actionRow.removeFromLeft(controls::buttonGap);
 
-        retryImportButton.setBounds(actionRow.removeFromLeft(width < 620 ? 60 : 70));
+        retryImportButton.setBounds(
+            actionRow.removeFromLeft(metrics::actionRow::retryWidth(narrow)));
 
-        actionRow.removeFromLeft(5);
+        actionRow.removeFromLeft(controls::buttonGap);
         break;
 
     case StemLabAudioProcessor::hostIntegrationReaper:
-        sendSelectedButton.setBounds(actionRow.removeFromLeft(width < 620 ? 104 : 118));
+        sendSelectedButton.setBounds(
+            actionRow.removeFromLeft(metrics::actionRow::sendWidthReaper(narrow)));
 
-        actionRow.removeFromLeft(5);
+        actionRow.removeFromLeft(controls::buttonGap);
 
-        saveSelectedButton.setBounds(actionRow.removeFromLeft(width < 620 ? 112 : 128));
+        saveSelectedButton.setBounds(
+            actionRow.removeFromLeft(metrics::actionRow::saveWidth(narrow)));
 
-        actionRow.removeFromLeft(5);
+        actionRow.removeFromLeft(controls::buttonGap);
         break;
 
     case StemLabAudioProcessor::hostIntegrationNone:
     default:
-        saveSelectedButton.setBounds(actionRow.removeFromLeft(width < 620 ? 112 : 128));
+        saveSelectedButton.setBounds(
+            actionRow.removeFromLeft(metrics::actionRow::saveWidth(narrow)));
 
-        actionRow.removeFromLeft(5);
+        actionRow.removeFromLeft(controls::buttonGap);
         break;
     }
 
-    const int locationWidth = juce::jmin(width < 620 ? 132 : 150, actionRow.getWidth());
+    const int locationWidth =
+        juce::jmin(metrics::actionRow::locationWidth(narrow), actionRow.getWidth());
 
     openJobButton.setBounds(actionRow.removeFromLeft(juce::jmax(0, locationWidth)));
 }

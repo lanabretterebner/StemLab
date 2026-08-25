@@ -62,7 +62,10 @@ Owns the visible UI:
 - `StemLabAudioProcessorEditor` creates controls, lays them out, and turns
   button clicks into processor calls.
 
-Use this area for labels, colors, row sizing, menus, and layout. Keep file
+Use this area for labels, menus, and layout. Colors, fonts, and dimensions
+live as named tokens in `plugin/Source/StemLabTheme.h`, and widget restyling
+belongs in `plugin/Source/StemLabLookAndFeel.h` - see
+[docs/ui.md](ui.md) for the full UI map and the redesign guide. Keep file
 processing and model-selection logic in the processor/Python layer.
 
 ### `plugin/Source/PluginProcessor.h/.cpp`
