@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -105,9 +106,17 @@ def analyse_audio(path: Path) -> AudioProfile:
     if audio.ndim != 2:
         audio = np.atleast_2d(audio).T
 
+    if audio.size == 0:
+        # np.mean over an empty array is NaN, and NaN spreads from rms into
+        # the confidence written to the manifest - where it serialises as
+        # the bare token NaN, which is not valid JSON and makes the plugin
+        # reject an otherwise complete split.
+        return AudioProfile(rms=0.0, estimated_source_count=1, confidence=0.0)
+
     mono = np.mean(audio, axis=1, dtype=np.float64)
+    mono = np.nan_to_num(mono, nan=0.0, posinf=0.0, neginf=0.0)
     rms = float(np.sqrt(np.mean(np.square(mono), dtype=np.float64) + _EPS))
-    peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+    peak = float(np.max(np.abs(np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0))))
 
     frames = _frame_rms(mono)
     active_threshold = max(1.0e-5, rms * 0.18)
@@ -155,6 +164,15 @@ def analyse_audio(path: Path) -> AudioProfile:
     # descriptors become less meaningful.
     loudness_confidence = float(np.clip(rms / 0.02, 0.0, 1.0))
     confidence = float(np.clip(0.35 + 0.65 * loudness_confidence, 0.0, 1.0))
+
+    # Degenerate input must never reach the manifest as NaN/inf: the split
+    # policy compares confidences with '<', where every NaN comparison is
+    # False and silently inverts the conservative gates.
+    if not math.isfinite(confidence):
+        confidence = 0.0
+
+    if not math.isfinite(rms):
+        rms = 0.0
 
     return AudioProfile(
         rms=rms,

@@ -11,7 +11,7 @@ from typing import Callable
 
 from .audio import STEM_NAMES
 from .device import resolve_torch_device
-from .pretrained import _normalise_input_for_backend
+from .pretrained import _clear_audio_files, _normalise_input_for_backend
 from .runtime import run_progress_process
 
 DEFAULT_DEMUCS_MODEL = "htdemucs_6s"
@@ -61,6 +61,10 @@ class DemucsBackend:
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
         device = resolve_torch_device(self.device, self._log)
+
+        # Demucs writes canonical names and would overwrite its own output,
+        # but a reused directory can still hold another backend's leftovers.
+        _clear_audio_files(output_dir)
 
         probe = subprocess.run(
             [

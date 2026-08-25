@@ -15,19 +15,47 @@ AUDIO_EXTENSIONS = {".wav", ".flac"}
 
 
 def find_stem_file(folder: str | Path, stem: str) -> Path | None:
-    """Find the shortest matching WAV/FLAC name under a backend output folder."""
-    matches = [
+    """Find the file holding ``stem`` under a backend output folder.
+
+    Backends name their outputs differently: Demucs writes exact
+    ``{stem}.wav`` names, while separators that embed the track name write
+    ``{track}_{stem}.wav``. A bare substring test cannot tell those apart
+    from a track that merely *contains* a stem word - separating
+    "guitar_take.wav" would make every output match "guitar", and the
+    shortest of them (the bass stem) would be handed back as the guitar.
+
+    So the name is matched from most to least specific: an exact stem name,
+    then the ``{track}_{stem}`` suffix convention, and only then a loose
+    substring, which still rescues unusual backend naming. Ties inside one
+    tier keep the previous shortest-name rule.
+    """
+    wanted = stem.lower()
+
+    candidates = [
         path
         for path in Path(folder).rglob("*")
-        if path.is_file()
-        and path.suffix.lower() in AUDIO_EXTENSIONS
-        and stem.lower() in path.stem.lower()
+        if path.is_file() and path.suffix.lower() in AUDIO_EXTENSIONS
     ]
-    return min(
-        matches,
-        key=lambda path: (len(path.name), str(path).lower()),
-        default=None,
-    )
+
+    def tier(path: Path) -> int | None:
+        name = path.stem.lower()
+
+        if name == wanted:
+            return 0
+        if name.endswith(f"_{wanted}") or name.endswith(f"-{wanted}"):
+            return 1
+        if wanted in name:
+            return 2
+        return None
+
+    ranked = [(tier(path), path) for path in candidates]
+
+    matches = [(rank, path) for rank, path in ranked if rank is not None]
+
+    if not matches:
+        return None
+
+    return min(matches, key=lambda item: (item[0], len(item[1].name), str(item[1]).lower()))[1]
 
 
 def load_audio(

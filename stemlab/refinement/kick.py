@@ -155,6 +155,8 @@ def refine_kick_bleed(
     target: np.ndarray,
     sr: int,
     cfg: KickRefinementConfig | None = None,
+    events: list | None = None,
+    reference: np.ndarray | None = None,
 ) -> tuple[np.ndarray, KickRefinementStats]:
     """Remove kick leakage without hard edits.
 
@@ -168,13 +170,20 @@ def refine_kick_bleed(
     """
     cfg = cfg or KickRefinementConfig()
 
-    events = detect_kick_events(drums, sr=sr)
-    reference = build_kick_reference(
-        drums,
-        events,
-        sr,
-        cfg,
-    )
+    # Detection and the reference prototype depend only on the drums, so a
+    # caller refining several target stems can compute them once and pass
+    # them in - otherwise every stem repeats a full-song zero-phase filter
+    # and envelope convolution for byte-identical results.
+    if events is None:
+        events = detect_kick_events(drums, sr=sr)
+
+    if reference is None:
+        reference = build_kick_reference(
+            drums,
+            events,
+            sr,
+            cfg,
+        )
 
     if reference is None:
         return target.copy(), KickRefinementStats(

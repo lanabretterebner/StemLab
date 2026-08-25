@@ -71,16 +71,30 @@ def _shift(x: np.ndarray, samples: int) -> np.ndarray:
     return out
 
 
+def _frame_parameters(length: int, cfg: CancelConfig) -> tuple[int, int]:
+    """Frame size and overlap that ``length`` samples can actually support.
+
+    The analysed region is a fixed number of milliseconds, so at low sample
+    rates it is shorter than the configured overlap - scipy then shrinks
+    nperseg to the region but keeps noverlap and refuses the call.
+    """
+    nperseg = min(cfg.n_fft, max(1, int(length)))
+    noverlap = min(cfg.n_fft - cfg.hop_length, max(0, nperseg - 1))
+    return nperseg, noverlap
+
+
 def _stft_multichannel(x: np.ndarray, sr: int, cfg: CancelConfig) -> np.ndarray:
+    nperseg, noverlap = _frame_parameters(x.shape[-1], cfg)
+
     specs = []
     for ch in range(x.shape[0]):
         _, _, z = signal.stft(
             x[ch],
             fs=sr,
             window="hann",
-            nperseg=cfg.n_fft,
-            noverlap=cfg.n_fft - cfg.hop_length,
-            nfft=cfg.n_fft,
+            nperseg=nperseg,
+            noverlap=noverlap,
+            nfft=nperseg,
             boundary="zeros",
             padded=True,
         )
@@ -94,15 +108,17 @@ def _istft_multichannel(
     cfg: CancelConfig,
     length: int,
 ):
+    nperseg, noverlap = _frame_parameters(length, cfg)
+
     channels = []
     for ch in range(spec.shape[0]):
         _, x = signal.istft(
             spec[ch],
             fs=sr,
             window="hann",
-            nperseg=cfg.n_fft,
-            noverlap=cfg.n_fft - cfg.hop_length,
-            nfft=cfg.n_fft,
+            nperseg=nperseg,
+            noverlap=noverlap,
+            nfft=nperseg,
             input_onesided=True,
             boundary=True,
         )

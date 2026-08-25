@@ -22,8 +22,17 @@ class ForegroundSplit:
 
 
 def _mask_channel(mid: np.ndarray, side: np.ndarray | None) -> np.ndarray:
-    nperseg = 2048
-    noverlap = 1536
+    # scipy reduces nperseg to the signal length for short input but keeps
+    # noverlap, then rejects the call. Clamp both so a short block (or a
+    # short file) is analysed with a smaller frame instead of raising.
+    frames = int(mid.shape[0])
+    nperseg = min(2048, frames)
+    noverlap = min(1536, max(0, nperseg - 1))
+
+    if nperseg < 2:
+        # Nothing meaningful to separate in a sub-frame remainder.
+        return np.zeros_like(mid, dtype=np.float32)
+
     _, _, mid_spec = signal.stft(
         mid,
         nperseg=nperseg,
@@ -142,7 +151,18 @@ def split_foreground(
     weights = np.zeros((frame_count, 1), dtype=np.float32)
     confidences: list[float] = []
 
-    starts = list(range(0, frame_count, hop))
+    # Pull a sub-frame tail back into the previous block: the analysis needs
+    # a full frame, and the overlap weighting below already normalises the
+    # extra overlap this produces.
+    starts = []
+
+    for start in range(0, frame_count, hop):
+        if start > 0 and frame_count - start < 4096:
+            starts.append(max(0, frame_count - chunk))
+            break
+
+        starts.append(start)
+
     for block_index, start in enumerate(starts):
         end = min(frame_count, start + chunk)
         block = audio[start:end]
