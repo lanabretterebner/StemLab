@@ -133,8 +133,8 @@ private:
 };
 
 /**
- * StemLab's complete JUCE interface: the Nocturne 1a "Lanes" panel
- * (docs/redesign/README.md). This class owns controls and layout only.
+ * StemLab's complete JUCE interface: the Nocturne 1a "Lanes" panel.
+ * This class owns controls and layout only.
  * Audio state and background jobs live in StemLabAudioProcessor;
  * separation algorithms live in the Python package.
  */

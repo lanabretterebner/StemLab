@@ -6,8 +6,7 @@
 
 /*
     StemLab's LookAndFeel: JUCE's stock widgets drawn in the Nocturne
-    system (docs/redesign/README.md). Buttons pick their variant from the
-    component ID:
+    system. Buttons pick their variant from the component ID:
 
         "primary"        filled accent (Insert Stems)
         "accent-outline" accent text + border on an accent tint (Use ...)

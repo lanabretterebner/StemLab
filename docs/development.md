@@ -67,9 +67,8 @@ Use this area for labels, menus, and layout. Colors, fonts, and dimensions
 live as named tokens in `plugin/Source/StemLabTheme.h`; stock-widget drawing
 and icons live in `plugin/Source/StemLabLookAndFeel.*`, and the custom
 Nocturne widgets (checkbox, split control, scrubber, segmented control, ...)
-in `plugin/Source/StemLabWidgets.*` - see [docs/ui.md](ui.md) for the full
-UI map. Keep file processing and model-selection logic in the
-processor/Python layer.
+in `plugin/Source/StemLabWidgets.*`. Keep file processing and
+model-selection logic in the processor/Python layer.
 
 ### `plugin/Source/PluginProcessor.h/.cpp`
 

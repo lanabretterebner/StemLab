@@ -170,8 +170,6 @@ stemlab/                 Python separation and DSP engine
 tests/                   Fast unit tests using generated audio
 pyproject.toml           Python package, commands, and tool settings
 docs/linux.md            Linux build, install, and REAPER guide
-docs/ui.md               UI map, theme tokens, and redesign guide
-docs/redesign/           Approved UI overhaul design handoff (Nocturne 1a)
 ```
 
 Directories such as `.venv/`, `.portable-cache/`, `plugin/build/`, `dist/`,
