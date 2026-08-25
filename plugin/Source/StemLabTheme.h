@@ -6,8 +6,9 @@
 
 /*
     Every visual decision StemLab's interface makes, in one place: the
-    "Nocturne" design system, draft 1a "Lanes" (docs/redesign/README.md is
-    the spec, docs/redesign/styles.css the source token sheet).
+    "Nocturne" design system, draft 1a "Lanes". The design handoff this was
+    built from is no longer in the repository, so these values are the only
+    record of the tokens - treat this file as the spec, not as a copy of one.
 
     The editor deliberately contains no colour or font literals; layout
     values are tokens apart from a few small one-off trims at their call
@@ -22,7 +23,8 @@
         fonts     Inter-based type scale (weight 500 is expressed as
                   juce::Font::bold and resolved to Inter Medium by
                   StemLabLookAndFeel; nothing renders bolder than 500).
-        metrics   Layout dimensions of the fixed-width Lanes panel.
+        metrics   Layout dimensions of the Lanes panel, at the design
+                  size the whole panel is scaled from.
 */
 
 namespace stemlab::theme
