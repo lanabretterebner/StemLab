@@ -788,7 +788,12 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
     separateButton.onClick = [this]
     {
-        processor.launchSeparationAndExport();
+        // While a job runs this button is the abort switch.
+        if (processor.isEngineRunning())
+            processor.cancelSeparation();
+        else
+            processor.launchSeparationAndExport();
+
         refreshFromProcessor();
     };
 
@@ -1483,8 +1488,18 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
     stopButton.setEnabled(false);
 
-    separateButton.setEnabled(!capturing && !processor.isAwaitingAbletonSourceClip() &&
-                              !engineRunning && captureExists);
+    const bool cancelPending = processor.isCancelRequested();
+
+    separateButton.setButtonText(engineRunning ? (cancelPending ? "Cancelling..." : "Cancel")
+                                               : "Separate All Stems");
+
+    separateButton.setColour(juce::TextButton::buttonColourId,
+                             engineRunning ? juce::Colour::fromRGB(194, 66, 94) : accent());
+
+    separateButton.setEnabled(engineRunning
+                                  ? !cancelPending
+                                  : (!capturing && !processor.isAwaitingAbletonSourceClip() &&
+                                     captureExists));
 
     openJobButton.setEnabled(!engineRunning);
 
@@ -1708,7 +1723,23 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
     progressValue = processor.getEngineProgress();
 
-    statusLabel.setText(processor.getStatus(), juce::dontSendNotification);
+    {
+        auto statusText = processor.getStatus();
+
+        // Animated dots make long silent model phases (imports, first-run
+        // downloads, big CPU chunks) visibly alive instead of frozen.
+        if (engineRunning)
+        {
+            statusText = statusText.trimCharactersAtEnd(".");
+
+            const auto phase =
+                1 + (static_cast<int>(processor.getEngineElapsedSeconds() * 2.0) % 3);
+
+            statusText += juce::String::repeatedString(".", phase);
+        }
+
+        statusLabel.setText(statusText, juce::dontSendNotification);
+    }
 
     if (engineRunning)
     {

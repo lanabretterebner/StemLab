@@ -126,11 +126,41 @@ struct ComApartment
 #endif
 } // namespace
 
+namespace
+{
+// Exit code the engine's watchdog uses when it honors a cancel sentinel.
+constexpr juce::uint32 engineCancelExitCode = 75;
+
+/*
+    Stop a job process without orphaning its model subprocesses. The plugin
+    can only kill its direct child; the torch worker underneath would keep
+    burning CPU. Writing the cancel sentinel makes the engine's watchdog
+    (polling every 0.5 s) take the whole job down from the inside; engines
+    without the watchdog get the old direct kill once the grace period ends.
+*/
+void shutDownJobProcess(juce::ChildProcess& process, const juce::File& cancelFile)
+{
+    if (!process.isRunning())
+        return;
+
+    if (cancelFile != juce::File())
+        cancelFile.replaceWithText("cancel\n");
+
+    for (int i = 0; i < 30 && process.isRunning(); ++i)
+        juce::Thread::sleep(100);
+
+    if (process.isRunning())
+        process.kill();
+}
+} // namespace
+
 class StemLabEngineThread final : public juce::Thread
 {
 public:
-    StemLabEngineThread(StemLabAudioProcessor& ownerIn, juce::StringArray commandIn)
-        : juce::Thread("StemLab engine"), owner(ownerIn), command(std::move(commandIn))
+    StemLabEngineThread(StemLabAudioProcessor& ownerIn, juce::StringArray commandIn,
+                        juce::File cancelFileIn)
+        : juce::Thread("StemLab engine"), owner(ownerIn), command(std::move(commandIn)),
+          cancelFile(std::move(cancelFileIn))
     {
     }
 
@@ -138,10 +168,12 @@ public:
     {
         signalThreadShouldExit();
 
+        // run() shuts the process down gracefully (sentinel first, kill as
+        // fallback); the timeout must outlast that grace window.
+        stopThread(6000);
+
         if (process != nullptr && process->isRunning())
             process->kill();
-
-        stopThread(3000);
     }
 
     void run() override
@@ -179,6 +211,8 @@ public:
             }
         };
 
+        double cancelRequestedAtMs = 0.0;
+
         while (!threadShouldExit())
         {
             const auto bytes =
@@ -194,11 +228,21 @@ public:
             if (!process->isRunning())
                 break;
 
+            // On cancel, the engine's watchdog normally exits the job on
+            // its own; an engine without one is killed after a grace period.
+            if (owner.engineCancelRequested.load())
+            {
+                if (cancelRequestedAtMs <= 0.0)
+                    cancelRequestedAtMs = nowMs();
+                else if (nowMs() - cancelRequestedAtMs > 4000.0)
+                    process->kill();
+            }
+
             wait(35);
         }
 
         if (threadShouldExit() && process->isRunning())
-            process->kill();
+            shutDownJobProcess(*process, cancelFile);
 
         while (true)
         {
@@ -219,11 +263,23 @@ public:
         const auto exitCode = process->getExitCode();
         process.reset();
 
+        // Unloading mid-job: the processor is going away, nobody is left to
+        // read status, and the members it points at are about to die.
+        if (threadShouldExit())
+            return;
+
         const auto elapsed = juce::jmax(0.0, (nowMs() - owner.engineStartMs.load()) / 1000.0);
 
         owner.lastEngineDurationSeconds.store(elapsed);
 
-        if (exitCode == 0)
+        if (owner.engineCancelRequested.load() || exitCode == engineCancelExitCode)
+        {
+            owner.engineCompletedSuccessfully.store(false);
+            owner.engineProgress.store(0.0);
+            owner.appendEngineLog("Separation cancelled by user.\n");
+            owner.setStatus("Separation cancelled");
+        }
+        else if (exitCode == 0)
         {
             owner.engineCompletedSuccessfully.store(true);
             owner.setEngineProgress(1.0);
@@ -269,6 +325,7 @@ public:
 private:
     StemLabAudioProcessor& owner;
     juce::StringArray command;
+    juce::File cancelFile;
     std::unique_ptr<juce::ChildProcess> process;
 };
 
@@ -276,9 +333,9 @@ class StemLabRecursiveThread final : public juce::Thread
 {
 public:
     StemLabRecursiveThread(StemLabAudioProcessor& ownerIn, juce::StringArray commandIn,
-                           juce::File manifestFileIn)
+                           juce::File manifestFileIn, juce::File cancelFileIn)
         : juce::Thread("StemLab recursive engine"), owner(ownerIn), command(std::move(commandIn)),
-          manifestFile(std::move(manifestFileIn))
+          manifestFile(std::move(manifestFileIn)), cancelFile(std::move(cancelFileIn))
     {
     }
 
@@ -286,10 +343,12 @@ public:
     {
         signalThreadShouldExit();
 
+        // run() shuts the process down gracefully (sentinel first, kill as
+        // fallback); the timeout must outlast that grace window.
+        stopThread(6000);
+
         if (process != nullptr && process->isRunning())
             process->kill();
-
-        stopThread(3000);
     }
 
     void run() override
@@ -325,6 +384,8 @@ public:
             }
         };
 
+        double cancelRequestedAtMs = 0.0;
+
         while (!threadShouldExit())
         {
             const auto bytes =
@@ -340,11 +401,19 @@ public:
             if (!process->isRunning())
                 break;
 
+            if (owner.engineCancelRequested.load())
+            {
+                if (cancelRequestedAtMs <= 0.0)
+                    cancelRequestedAtMs = nowMs();
+                else if (nowMs() - cancelRequestedAtMs > 4000.0)
+                    process->kill();
+            }
+
             wait(35);
         }
 
         if (threadShouldExit() && process->isRunning())
-            process->kill();
+            shutDownJobProcess(*process, cancelFile);
 
         while (true)
         {
@@ -365,11 +434,22 @@ public:
         const auto exitCode = process->getExitCode();
         process.reset();
 
+        if (threadShouldExit())
+            return;
+
         const auto elapsed = juce::jmax(0.0, (nowMs() - owner.engineStartMs.load()) / 1000.0);
 
         owner.lastEngineDurationSeconds.store(elapsed);
 
-        if (exitCode == 0 && manifestFile.existsAsFile())
+        if (owner.engineCancelRequested.load() || exitCode == engineCancelExitCode)
+        {
+            // The main six-stem job is still complete - only this adaptive
+            // split was abandoned, so the bar returns to its finished state.
+            owner.engineProgress.store(1.0);
+            owner.appendEngineLog("Adaptive split cancelled by user.\n");
+            owner.setStatus("Adaptive split cancelled");
+        }
+        else if (exitCode == 0 && manifestFile.existsAsFile())
         {
             owner.finishRecursiveJob(manifestFile);
             owner.setEngineProgress(1.0);
@@ -388,6 +468,7 @@ private:
     StemLabAudioProcessor& owner;
     juce::StringArray command;
     juce::File manifestFile;
+    juce::File cancelFile;
     std::unique_ptr<juce::ChildProcess> process;
 };
 
@@ -1859,8 +1940,22 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
     engineStartMs.store(nowMs());
     engineProgressUpdateMs.store(engineStartMs.load());
     lastEngineDurationSeconds.store(0.0);
+    engineEtaSeconds.store(-1.0);
+    engineEtaUpdateMs.store(0.0);
+    engineProgressRate.store(0.0);
+    engineCancelRequested.store(false);
 
-    engineThread = std::make_unique<StemLabEngineThread>(*this, command);
+    // A leftover sentinel must not cancel the new job the moment its
+    // watchdog starts; the watchdog honors any sentinel it ever sees.
+    const auto cancelFile = job.getChildFile("stemlab_cancel.txt");
+    cancelFile.deleteFile();
+
+    {
+        const juce::ScopedLock lock(stateLock);
+        activeCancelFile = cancelFile;
+    }
+
+    engineThread = std::make_unique<StemLabEngineThread>(*this, command, cancelFile);
 
     engineThread->startThread();
     return true;
@@ -2274,6 +2369,17 @@ bool StemLabAudioProcessor::launchRecursiveStemSplit(int rootStemIndex)
     engineStartMs.store(nowMs());
     engineProgressUpdateMs.store(engineStartMs.load());
     lastEngineDurationSeconds.store(0.0);
+    engineEtaSeconds.store(-1.0);
+    engineEtaUpdateMs.store(0.0);
+    engineProgressRate.store(0.0);
+    engineCancelRequested.store(false);
+
+    const auto cancelFile = output.getChildFile("stemlab_cancel.txt");
+
+    {
+        const juce::ScopedLock lock(stateLock);
+        activeCancelFile = cancelFile;
+    }
 
     if (isVocals)
         setStatus("Adaptive vocals: separating lead and backing groups...");
@@ -2283,7 +2389,7 @@ bool StemLabAudioProcessor::launchRecursiveStemSplit(int rootStemIndex)
         setStatus("Adaptive lead: detecting foreground and backing layers...");
 
     recursiveThread = std::make_unique<StemLabRecursiveThread>(
-        *this, command, output.getChildFile("recursive_manifest.json"));
+        *this, command, output.getChildFile("recursive_manifest.json"), cancelFile);
 
     recursiveThread->startThread();
     return true;
@@ -2367,12 +2473,23 @@ bool StemLabAudioProcessor::launchRecursiveAction(const juce::String& itemId,
     engineStartMs.store(nowMs());
     engineProgressUpdateMs.store(engineStartMs.load());
     lastEngineDurationSeconds.store(0.0);
+    engineEtaSeconds.store(-1.0);
+    engineEtaUpdateMs.store(0.0);
+    engineProgressRate.store(0.0);
+    engineCancelRequested.store(false);
+
+    const auto cancelFile = output.getChildFile("stemlab_cancel.txt");
+
+    {
+        const juce::ScopedLock lock(stateLock);
+        activeCancelFile = cancelFile;
+    }
 
     setStatus(isDeverb ? "De-reverb: processing isolated lead vocal..."
                        : "Adaptive split: analysing how many useful layers remain...");
 
     recursiveThread = std::make_unique<StemLabRecursiveThread>(
-        *this, command, output.getChildFile("recursive_manifest.json"));
+        *this, command, output.getChildFile("recursive_manifest.json"), cancelFile);
 
     recursiveThread->startThread();
     return true;
@@ -2407,22 +2524,63 @@ double StemLabAudioProcessor::getEngineEstimatedRemainingSeconds() const noexcep
     if (!isEngineRunning())
         return 0.0;
 
+    const auto now = nowMs();
+
+    // Prefer the engine's own estimate (BS-RoFormer reports one per model
+    // chunk, tqdm bars carry one) and count it down locally between reports
+    // so the display keeps moving even when the engine is quiet for a while.
+    const auto reportedEta = engineEtaSeconds.load();
+    const auto reportedAtMs = engineEtaUpdateMs.load();
+
+    if (reportedEta >= 0.0 && reportedAtMs > 0.0 && now - reportedAtMs < 120000.0)
+    {
+        const auto countdown = reportedEta - (now - reportedAtMs) / 1000.0;
+
+        // A countdown that ran out means that stage finished and a later
+        // stage is running without reports - fall through to the rate model.
+        if (countdown > 0.0)
+            return juce::jlimit(0.0, 24.0 * 60.0 * 60.0, countdown);
+    }
+
+    // Project from the smoothed progress rate. CPU jobs can go minutes
+    // between updates, so this also counts down from the last update
+    // instead of going blank a few seconds after each one.
     const auto progress = engineProgress.load();
-
-    if (progress < 0.12 || progress >= 0.995)
-        return -1.0;
-
+    const auto rate = engineProgressRate.load();
     const auto updated = engineProgressUpdateMs.load();
-    const auto start = engineStartMs.load();
 
-    // Model calls can sit on one progress marker for minutes. In that case an
-    // elapsed-time projection grows forever, so report an unknown ETA instead.
-    if (updated <= start || nowMs() - updated > 5000.0)
+    if (progress <= 0.02 || progress >= 0.995 || rate <= 1.0e-6 || updated <= 0.0 ||
+        now - updated > 300000.0)
+    {
         return -1.0;
+    }
 
-    const auto elapsedAtUpdate = (updated - start) / 1000.0;
-    const auto estimate = elapsedAtUpdate * (1.0 - progress) / progress;
-    return juce::jlimit(0.0, 60.0 * 60.0, estimate);
+    const auto estimateAtUpdate = (1.0 - progress) / rate;
+    const auto estimate = estimateAtUpdate - (now - updated) / 1000.0;
+    return juce::jlimit(0.0, 24.0 * 60.0 * 60.0, estimate);
+}
+
+void StemLabAudioProcessor::cancelSeparation()
+{
+    if (!isEngineRunning())
+        return;
+
+    juce::File cancelFile;
+
+    {
+        const juce::ScopedLock lock(stateLock);
+        cancelFile = activeCancelFile;
+    }
+
+    engineCancelRequested.store(true);
+
+    // The engine's watchdog shuts the job down from the inside, taking its
+    // model subprocesses with it. The engine thread hard-kills engines that
+    // never pick the sentinel up (releases without the watchdog).
+    if (cancelFile != juce::File())
+        cancelFile.replaceWithText("cancel\n");
+
+    setStatus("Cancelling...");
 }
 
 void StemLabAudioProcessor::refreshEngineProgressFromDisk()
@@ -2503,7 +2661,22 @@ void StemLabAudioProcessor::setEngineProgress(double progress)
     const auto next = juce::jmax(current, juce::jlimit(0.0, 1.0, progress));
 
     if (next > current)
-        engineProgressUpdateMs.store(nowMs());
+    {
+        const auto now = nowMs();
+        const auto previousUpdate = engineProgressUpdateMs.load();
+
+        // Keep a smoothed progress-per-second rate for the fallback ETA.
+        if (previousUpdate > 0.0 && now > previousUpdate)
+        {
+            const auto instantRate = (next - current) / ((now - previousUpdate) / 1000.0);
+            const auto smoothed = engineProgressRate.load();
+
+            engineProgressRate.store(smoothed <= 0.0 ? instantRate
+                                                     : 0.3 * instantRate + 0.7 * smoothed);
+        }
+
+        engineProgressUpdateMs.store(now);
+    }
 
     engineProgress.store(next);
 
@@ -2512,6 +2685,19 @@ void StemLabAudioProcessor::setEngineProgress(double progress)
 
 void StemLabAudioProcessor::handleEngineOutputLine(const juce::String& line)
 {
+    if (line.startsWithIgnoreCase("STEMLAB_ETA "))
+    {
+        // One report per model chunk - useful for the display, noise in the
+        // diagnostics log, so it is consumed before the log append.
+        const auto seconds =
+            line.fromFirstOccurrenceOf("STEMLAB_ETA ", false, false).trim().getDoubleValue();
+
+        engineEtaSeconds.store(juce::jmax(0.0, seconds));
+        engineEtaUpdateMs.store(nowMs());
+        sendChangeMessage();
+        return;
+    }
+
     appendEngineLog(line + "\n");
 
     if (line.startsWithIgnoreCase("STEMLAB_ERROR "))

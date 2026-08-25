@@ -25,6 +25,8 @@ packaging.
 - In-process REAPER integration on Linux - no scripts or extensions to install
 - Drag-and-drop stem export into any DAW or file manager
 - NVIDIA CUDA, AMD ROCm, and Intel XPU offload with runtime CPU fallback
+- Live progress and ETA during separation, with a Cancel button that stops
+  the whole job - closing the host mid-job cannot leave workers running
 
 ## Set Up Development
 
