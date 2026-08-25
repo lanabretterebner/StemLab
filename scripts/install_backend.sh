@@ -85,7 +85,7 @@ FLAVOR_FILE="$DEST/.stemlab-torch-flavor"
 
 # ------------------------------------------------------------------ preflight
 
-for tool in curl tar; do
+for tool in curl tar sha256sum; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "Missing tool: $tool. Install it with your package manager." >&2
         exit 1
@@ -170,6 +170,38 @@ if [[ $engine_ready -eq 0 ]]; then
         echo "Download failed. Retrying in ${delay}s..." >&2
         sleep "$delay"
     done
+
+    # Verify against the release's published checksums before anything is
+    # extracted - this archive becomes the interpreter that runs every job.
+    # A truncated or tampered download is caught here rather than as a
+    # baffling failure later. If the checksum list itself cannot be fetched
+    # (an offline mirror, a proxy that blocks it) the install continues with
+    # a warning rather than becoming unusable.
+    PBS_SUMS_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_RELEASE}/SHA256SUMS"
+    TMP_SUMS="$(mktemp)"
+    trap 'rm -f "$TMP_TAR" "$TMP_SUMS"' EXIT
+
+    if curl -fsSL --retry 2 -o "$TMP_SUMS" "$PBS_SUMS_URL"; then
+        EXPECTED_SHA="$(awk -v want="$PBS_FILE" '$2 == want { print $1 }' "$TMP_SUMS" | head -1)"
+
+        if [[ -z "$EXPECTED_SHA" ]]; then
+            echo "WARNING: $PBS_FILE is not listed in SHA256SUMS; skipping verification." >&2
+        else
+            ACTUAL_SHA="$(sha256sum "$TMP_TAR" | awk '{ print $1 }')"
+
+            if [[ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]]; then
+                echo "Checksum mismatch for $PBS_FILE." >&2
+                echo "  expected: $EXPECTED_SHA" >&2
+                echo "  actual:   $ACTUAL_SHA" >&2
+                echo "Refusing to install. The existing Engine (if any) was left untouched." >&2
+                exit 1
+            fi
+
+            echo "Checksum verified (sha256)."
+        fi
+    else
+        echo "WARNING: could not fetch SHA256SUMS; installing without verification." >&2
+    fi
 
     if [[ -d "$DEST" ]]; then
         if [[ -f "$OWNER_MARKER" ]]; then

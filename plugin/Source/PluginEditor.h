@@ -213,5 +213,9 @@ private:
 
     bool dragActive = false;
 
+    /** What the action segment last rendered as, so a click acts on the
+        state the user actually saw. */
+    bool separateControlShowsCancel = false;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StemLabAudioProcessorEditor)
 };

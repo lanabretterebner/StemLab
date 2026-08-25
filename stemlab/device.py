@@ -42,7 +42,10 @@ def resolve_torch_device(
         return "cpu"
 
     if device not in {"cuda", "gpu"}:
-        return requested
+        # The normalised spelling, not the raw request: torch device strings
+        # are case- and whitespace-sensitive, so "CPU" or " cpu" would reach
+        # the model child verbatim and crash it during loading.
+        return device
 
     try:
         torch = importlib.import_module("torch")
