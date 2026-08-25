@@ -45,6 +45,14 @@ pretrained model.
 Demucs code and model artifacts remain third-party components and retain their
 upstream licensing/terms.
 
+## Inter font
+
+The plugin interface embeds the Inter typeface (static Regular and Medium
+instances under `plugin/Resources/fonts/`), copyright The Inter Project
+Authors, licensed under the SIL Open Font License 1.1. The full license text
+ships beside the font files as `plugin/Resources/fonts/OFL.txt` and must
+accompany any redistribution of the font files.
+
 ## Python / ML runtime
 
 StemLab's development environment contains third-party components including

@@ -55,15 +55,21 @@ PluginProcessor sends manifest path over localhost UDP
 
 ### `plugin/Source/PluginEditor.h/.cpp`
 
-Owns the visible UI:
+Owns the visible UI (the Nocturne 1a "Lanes" panel):
 
-- `StemWaveformComponent` draws and seeks waveforms.
-- `RecursiveStemRowComponent` renders one adaptive-tree child.
+- `StemLaneWaveform` draws one lane's bar waveform and seeks the shared
+  transport; dragging it exports the stem file.
+- `StemLaneComponent` renders one stem lane (root or adaptive child).
 - `StemLabAudioProcessorEditor` creates controls, lays them out, and turns
   button clicks into processor calls.
 
-Use this area for labels, colors, row sizing, menus, and layout. Keep file
-processing and model-selection logic in the processor/Python layer.
+Use this area for labels, menus, and layout. Colors, fonts, and dimensions
+live as named tokens in `plugin/Source/StemLabTheme.h`; stock-widget drawing
+and icons live in `plugin/Source/StemLabLookAndFeel.*`, and the custom
+Nocturne widgets (checkbox, split control, scrubber, segmented control, ...)
+in `plugin/Source/StemLabWidgets.*` - see [docs/ui.md](ui.md) for the full
+UI map. Keep file processing and model-selection logic in the
+processor/Python layer.
 
 ### `plugin/Source/PluginProcessor.h/.cpp`
 

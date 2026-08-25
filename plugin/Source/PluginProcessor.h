@@ -13,6 +13,7 @@ struct Api;
 
 class StemLabEngineThread;
 class StemLabRecursiveThread;
+class StemLabStemMixSource;
 
 #if JUCE_WINDOWS || JUCE_LINUX
 class StemLabSystemLoopbackThread;
@@ -178,16 +179,44 @@ public:
     int getStandaloneRecordingMode() const noexcept { return standaloneRecordingMode.load(); }
 
     void toggleStandalonePlayback();
-    bool playCompletedStem(int index);
-    bool seekCompletedStem(int index, double normalisedPosition);
     void stopStandalonePlayback();
 
-    bool isStandalonePlaying() const noexcept;
+    /**
+     * The shared monitoring transport behind the Lanes interface: one clock
+     * driving either the untouched source ("Original") or a live mix of the
+     * completed stems ("Stems") that honours per-stem solo/mute. A child of
+     * the adaptive tree can additionally be auditioned exclusively via its
+     * lane's solo button.
+     *
+     * All of these are message-thread calls; the audio thread only reads
+     * the atomics they publish.
+     */
+    enum MonitorMode
+    {
+        monitorOriginal = 0,
+        monitorStems = 1
+    };
 
-    int getPreviewStemIndex() const noexcept { return previewStemIndex.load(); }
+    void setMonitorMode(int mode);
+    int getMonitorMode() const noexcept { return monitorMode.load(); }
 
-    double getPreviewPositionSeconds() const noexcept;
-    double getPreviewLengthSeconds() const noexcept;
+    /** True once the completed job's stems can be mix-monitored. */
+    bool isStemMonitorAvailable();
+
+    void transportTogglePlay();
+    void transportSeekNormalised(double normalisedPosition);
+    bool isTransportPlaying() const noexcept;
+    double getTransportPositionSeconds() const noexcept;
+    double getTransportLengthSeconds() const noexcept;
+
+    void setStemSolo(int index, bool solo);
+    bool isStemSoloed(int index) const;
+    void setStemMute(int index, bool mute);
+    bool isStemMuted(int index) const;
+
+    /** Exclusive audition of one adaptive child stem (its lane's S button). */
+    void setAuditionRecursiveStem(const juce::String& itemId, bool on);
+    juce::String getAuditionRecursiveId() const;
 
     bool isCapturing() const noexcept { return capturing.load(); }
 
@@ -208,8 +237,6 @@ public:
     juce::File getRecursiveStemFile(const juce::String& itemId) const;
     void setRecursiveStemEnabled(const juce::String& itemId, bool enabled);
     bool isRecursiveStemEnabled(const juce::String& itemId) const;
-    bool playRecursiveStem(const juce::String& itemId);
-    bool seekRecursiveStem(const juce::String& itemId, double normalisedPosition);
     juce::String getPreviewRecursiveId() const;
 
     bool isEngineRunning() const noexcept;
@@ -421,6 +448,24 @@ private:
     juce::AudioTransportSource previewTransport;
     juce::AudioSourcePlayer previewPlayer;
     juce::AudioBuffer<float> previewScratch;
+
+    // The stem-mix monitor. stemMixSource owns one reader per completed
+    // stem and sums them with per-stem solo/mute gains; stemMixTransport
+    // wraps it for start/stop/seek/resampling. Which transport the audio
+    // thread pulls is published through audioMonitorIsMix.
+    std::unique_ptr<StemLabStemMixSource> stemMixSource;
+    juce::AudioTransportSource stemMixTransport;
+    juce::File stemMixJobDirectory;
+    std::array<std::atomic<bool>, stemCount> stemSolo{};
+    std::array<std::atomic<bool>, stemCount> stemMute{};
+    std::atomic<int> monitorMode{monitorOriginal};
+    std::atomic<bool> audioMonitorIsMix{false};
+
+    bool ensureStemMixLoaded();
+    void unloadStemMix();
+    juce::AudioTransportSource& activeTransport() noexcept;
+    const juce::AudioTransportSource& activeTransport() const noexcept;
+    void switchAudioMonitor(bool useMix);
 
     // In Standalone mode this points at JUCE's real wrapper device manager,
     // so preview, physical-input recording, and the native Audio/MIDI Settings

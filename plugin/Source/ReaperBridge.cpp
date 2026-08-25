@@ -1,4 +1,5 @@
 #include "ReaperBridge.h"
+#include "StemLabTheme.h"
 
 namespace stemlab::reaper
 {
@@ -59,33 +60,18 @@ namespace
     }
 
     // Same palette the Ableton Remote Script uses, so a user moving between
-    // hosts sees the same stem identity.
+    // hosts sees the same stem identity. The values live in StemLabTheme.
     bool stemColour (const juce::String& stem, int& r, int& g, int& b)
     {
-        struct Entry { const char* name; juce::uint32 rgb; };
+        const auto colour = stemlab::theme::palette::stemIdentityColour (stem);
 
-        static constexpr Entry entries[] =
-        {
-            { "vocals", 0xF15BAA },
-            { "drums",  0xFF9A42 },
-            { "bass",   0x34D2FF },
-            { "guitar", 0x46E797 },
-            { "piano",  0x8466FF },
-            { "other",  0xDCEAF4 },
-        };
+        if (! colour.has_value())
+            return false;
 
-        for (const auto& entry : entries)
-        {
-            if (stem.equalsIgnoreCase (entry.name))
-            {
-                r = static_cast<int> ((entry.rgb >> 16) & 0xff);
-                g = static_cast<int> ((entry.rgb >> 8) & 0xff);
-                b = static_cast<int> (entry.rgb & 0xff);
-                return true;
-            }
-        }
-
-        return false;
+        r = colour->getRed();
+        g = colour->getGreen();
+        b = colour->getBlue();
+        return true;
     }
 }
 

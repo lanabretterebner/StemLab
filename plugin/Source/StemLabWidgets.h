@@ -1,0 +1,182 @@
+#pragma once
+
+#include <JuceHeader.h>
+#include <functional>
+
+#include "StemLabTheme.h"
+#include "StemLabLookAndFeel.h"
+
+/*
+    Nocturne widgets that have no stock JUCE equivalent. All of them draw
+    exclusively from stemlab::theme and stemlab::icons; none of them talk to
+    the processor - the editor wires callbacks.
+*/
+namespace stemlab::widgets
+{
+    /** 15px rounded include checkbox: accent fill + dark check when on. */
+    class IncludeCheckbox final : public juce::Button
+    {
+    public:
+        IncludeCheckbox();
+
+        void paintButton(juce::Graphics&, bool highlighted, bool down) override;
+
+    private:
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(IncludeCheckbox)
+    };
+
+    /**
+     * Square icon button. Default: 45% icon turning accent on hover (lane
+     * controls). textColoured: full text-colour icon that stays
+     * text-coloured on hover with only the hover fill (header settings).
+     */
+    class IconButton final : public juce::Button
+    {
+    public:
+        using PathFactory = std::function<juce::Path(juce::Rectangle<float>)>;
+
+        IconButton(const juce::String& name, PathFactory factory, float iconSize,
+                   bool strokedIcon, float cornerRadius, bool outlined,
+                   bool textColoured = false);
+
+        void paintButton(juce::Graphics&, bool highlighted, bool down) override;
+
+    private:
+        PathFactory makePath;
+        float iconSize;
+        bool stroked;
+        float radius;
+        bool outlined;
+        bool textColoured;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(IconButton)
+    };
+
+    /** 34px circular play/pause with accent border and glyph. */
+    class PlayCircleButton final : public juce::Button
+    {
+    public:
+        PlayCircleButton();
+
+        void setShowPause(bool shouldShowPause);
+        void paintButton(juce::Graphics&, bool highlighted, bool down) override;
+
+    private:
+        bool showPause = false;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PlayCircleButton)
+    };
+
+    /** Neutral-outline record button with the accent dot; pulses while armed. */
+    class RecordButton final : public juce::Button
+    {
+    public:
+        explicit RecordButton(const juce::String& label);
+
+        void setRecordingActive(bool active);
+        void paintButton(juce::Graphics&, bool highlighted, bool down) override;
+
+    private:
+        bool recording = false;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(RecordButton)
+    };
+
+    /**
+     * The Separate split control: a Refine toggle segment and the primary
+     * Separate action in one accent-filled shell with an outer glow.
+     */
+    class SeparateSplitControl final : public juce::Component,
+                                       public juce::SettableTooltipClient
+    {
+    public:
+        SeparateSplitControl();
+
+        std::function<void()> onSeparate;
+        std::function<void(bool)> onRefineChanged;
+
+        void setRefineOn(bool on);
+        bool isRefineOn() const noexcept { return refineOn; }
+
+        void setSeparateEnabled(bool enabled);
+        bool isSeparateActionEnabled() const noexcept { return separateEnabled; }
+
+        /** The action segment's label: "Separate" normally, "Cancel" /
+            "Cancelling..." while a job runs (the editor decides). */
+        void setActionText(const juce::String& text);
+
+        void paint(juce::Graphics&) override;
+        void resized() override {}
+        void mouseMove(const juce::MouseEvent&) override;
+        void mouseExit(const juce::MouseEvent&) override;
+        void mouseUp(const juce::MouseEvent&) override;
+
+    private:
+        juce::Rectangle<int> refineArea() const;
+
+        bool refineOn = true;
+        bool separateEnabled = false;
+        bool hoverRefine = false, hoverSeparate = false;
+        juce::String actionText{"Separate"};
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SeparateSplitControl)
+    };
+
+    /** 3px seek bar; reports normalised position on click/drag. */
+    class Scrubber final : public juce::Component
+    {
+    public:
+        Scrubber();
+
+        std::function<void(double)> onSeek;
+
+        void setPosition(double normalised);
+
+        void paint(juce::Graphics&) override;
+        void mouseDown(const juce::MouseEvent&) override;
+        void mouseDrag(const juce::MouseEvent&) override;
+
+    private:
+        void applySeek(const juce::MouseEvent&);
+
+        double position = 0.0;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(Scrubber)
+    };
+
+    /** Two-option segmented control (Original | Stems). */
+    class SegmentedControl final : public juce::Component
+    {
+    public:
+        SegmentedControl(const juce::String& first, const juce::String& second);
+
+        std::function<void(int)> onSelected;
+
+        void setSelectedIndex(int index);
+        int getSelectedIndex() const noexcept { return selected; }
+
+        void paint(juce::Graphics&) override;
+        void mouseMove(const juce::MouseEvent&) override;
+        void mouseExit(const juce::MouseEvent&) override;
+        void mouseUp(const juce::MouseEvent&) override;
+
+    private:
+        juce::String labels[2];
+        int selected = 1;
+        int hovered = -1;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SegmentedControl)
+    };
+
+    /** 1px divider that fades to transparent over 48px at each end. */
+    class FadingDivider final : public juce::Component
+    {
+    public:
+        FadingDivider() { setInterceptsMouseClicks(false, false); }
+
+        void paint(juce::Graphics&) override;
+
+    private:
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(FadingDivider)
+    };
+}
