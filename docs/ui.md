@@ -12,8 +12,9 @@ plugin/Source/StemLabTheme.h        Every colour (the Nocturne ground /
                                     surface / accent + neutral ramps), font,
                                     and layout metric, as named tokens. No
                                     colour or font literal exists outside
-                                    it; layout keeps only hairline 0-1 px
-                                    trims inline.
+                                    it; layout values are tokens apart from
+                                    a few small one-off trims at their call
+                                    sites.
 plugin/Source/StemLabLookAndFeel.*  Inter typefaces (bundled), stock-widget
                                     drawing (buttons by component-ID
                                     variant, progress bar, scrollbars,
@@ -162,3 +163,6 @@ tree changes. Lanes repaint every tick to advance the playhead.
   within the lanes region instead of growing the panel.
 - Tooltips work now (the editor owns a `TooltipWindow`); the vestigial
   `stopButton`/`bridgeLabel` from the old layout are gone.
+- The spec's keyboard-focus ring is intentionally not implemented: the
+  plugin editor is built with `EDITOR_WANTS_KEYBOARD_FOCUS FALSE`, so
+  there is no keyboard traversal to indicate. Revisit if that changes.

@@ -66,7 +66,4 @@ namespace stemlab::icons
 
     /** Per-stem split: stacked layers (diamond top + two arcs below). */
     juce::Path layers(juce::Rectangle<float> bounds);
-
-    /** Expand/collapse chevron for adaptive child lanes; pointsDown when open. */
-    juce::Path chevron(juce::Rectangle<float> bounds, bool pointsDown);
 }

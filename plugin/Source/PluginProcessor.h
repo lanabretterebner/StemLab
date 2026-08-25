@@ -179,16 +179,7 @@ public:
     int getStandaloneRecordingMode() const noexcept { return standaloneRecordingMode.load(); }
 
     void toggleStandalonePlayback();
-    bool playCompletedStem(int index);
-    bool seekCompletedStem(int index, double normalisedPosition);
     void stopStandalonePlayback();
-
-    bool isStandalonePlaying() const noexcept;
-
-    int getPreviewStemIndex() const noexcept { return previewStemIndex.load(); }
-
-    double getPreviewPositionSeconds() const noexcept;
-    double getPreviewLengthSeconds() const noexcept;
 
     /**
      * The shared monitoring transport behind the Lanes interface: one clock
@@ -246,8 +237,6 @@ public:
     juce::File getRecursiveStemFile(const juce::String& itemId) const;
     void setRecursiveStemEnabled(const juce::String& itemId, bool enabled);
     bool isRecursiveStemEnabled(const juce::String& itemId) const;
-    bool playRecursiveStem(const juce::String& itemId);
-    bool seekRecursiveStem(const juce::String& itemId, double normalisedPosition);
     juce::String getPreviewRecursiveId() const;
 
     bool isEngineRunning() const noexcept;

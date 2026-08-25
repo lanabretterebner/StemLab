@@ -22,6 +22,15 @@ StemLabLookAndFeel::StemLabLookAndFeel()
     interMedium = juce::Typeface::createSystemTypefaceFor(BinaryData::InterMedium_ttf,
                                                           BinaryData::InterMedium_ttfSize);
 
+    // Publish the faces to the theme's font tokens: JUCE 9 resolves fonts
+    // without consulting getTypefaceForFont, so every FontOptions must
+    // carry its typeface explicitly (see theme::fonts::make).
+    theme::fonts::regularTypeface() = interRegular;
+    theme::fonts::mediumTypeface() = interMedium;
+
+    if (interRegular != nullptr)
+        setDefaultSansSerifTypeface(interRegular);
+
     setColour(juce::ResizableWindow::backgroundColourId, theme::colours::ground());
 
     setColour(juce::Label::textColourId, theme::colours::text());
@@ -63,32 +72,32 @@ void StemLabLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& b
 
     auto bounds = button.getLocalBounds().toFloat().reduced(0.5f);
 
-    const bool hover = highlighted || down;
+    const bool hover = (highlighted || down) && button.isEnabled();
+
+    // Disabled controls drop to 45% as a whole - fill and border included,
+    // matching the text dim in drawButtonText.
+    const float dim = button.isEnabled() ? 1.0f : theme::metrics::disabledOpacity;
 
     if (variant == "primary")
     {
-        // Filled accent with an outer glow (approximates Nocturne's
-        // accent-glow shadow with a soft drawn halo).
-        if (button.isEnabled())
-        {
-            juce::DropShadow(theme::colours::accentGlow(), 11, {}).drawForRectangle(
-                g, button.getLocalBounds());
-        }
-
-        g.setColour(hover ? theme::colours::primaryFillHover() : theme::colours::primaryFill());
+        // The accent glow behind primary actions is painted by the editor
+        // (a shadow drawn inside the component would be clipped away).
+        g.setColour((hover ? theme::colours::primaryFillHover() : theme::colours::primaryFill())
+                        .withMultipliedAlpha(dim));
         g.fillRoundedRectangle(bounds, radius);
 
-        g.setColour(theme::colours::primaryEdge());
+        g.setColour(theme::colours::primaryEdge().withMultipliedAlpha(dim));
         g.drawRoundedRectangle(bounds, radius, 1.0f);
         return;
     }
 
     if (variant == "accent-outline")
     {
-        g.setColour(hover ? theme::colours::accentTint13() : theme::colours::accentTint10());
+        g.setColour((hover ? theme::colours::accentTint13() : theme::colours::accentTint10())
+                        .withMultipliedAlpha(dim));
         g.fillRoundedRectangle(bounds, radius);
 
-        g.setColour(theme::colours::accent());
+        g.setColour(theme::colours::accent().withMultipliedAlpha(dim));
         g.drawRoundedRectangle(bounds, radius, 1.0f);
         return;
     }
@@ -97,7 +106,7 @@ void StemLabLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& b
     {
         if (hover)
         {
-            g.setColour(theme::colours::hoverFill());
+            g.setColour(theme::colours::accentTint10());
             g.fillRoundedRectangle(bounds, radius);
         }
         return;
@@ -110,7 +119,8 @@ void StemLabLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& b
     {
         const bool solo = variant == "solo";
 
-        g.setColour(solo ? theme::colours::soloActiveFill() : theme::colours::muteActiveFill());
+        g.setColour((solo ? theme::colours::soloActiveFill() : theme::colours::muteActiveFill())
+                        .withMultipliedAlpha(dim));
         g.fillRoundedRectangle(bounds, radius);
         return;
     }
@@ -121,7 +131,7 @@ void StemLabLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& b
         g.fillRoundedRectangle(bounds, radius);
     }
 
-    g.setColour(theme::colours::outline());
+    g.setColour(theme::colours::outline().withMultipliedAlpha(dim));
     g.drawRoundedRectangle(bounds, radius, 1.0f);
 }
 
@@ -165,8 +175,11 @@ void StemLabLookAndFeel::drawProgressBar(juce::Graphics& g, juce::ProgressBar& b
 {
     // Slim Nocturne bar: 3px track with an accent fill and a soft glow.
     // The percentage/ETA label is a separate component in the footer.
-    auto track = juce::Rectangle<float>(0.0f, (static_cast<float>(height) - 3.0f) * 0.5f,
-                                        static_cast<float>(width), 3.0f);
+    const auto barHeight = theme::metrics::footer::progressHeight;
+
+    auto track =
+        juce::Rectangle<float>(0.0f, (static_cast<float>(height) - barHeight) * 0.5f,
+                               static_cast<float>(width), barHeight);
 
     juce::ignoreUnused(bar);
 
@@ -341,26 +354,6 @@ namespace stemlab::icons
             p.startNewSubPath(b.getX(), y);
             p.lineTo(cx, y + b.getHeight() * 0.16f);
             p.lineTo(b.getRight(), y);
-        }
-
-        return p;
-    }
-
-    juce::Path chevron(juce::Rectangle<float> b, bool pointsDown)
-    {
-        juce::Path p;
-
-        if (pointsDown)
-        {
-            p.startNewSubPath(b.getX(), b.getY() + b.getHeight() * 0.32f);
-            p.lineTo(b.getCentreX(), b.getBottom() - b.getHeight() * 0.28f);
-            p.lineTo(b.getRight(), b.getY() + b.getHeight() * 0.32f);
-        }
-        else
-        {
-            p.startNewSubPath(b.getX() + b.getWidth() * 0.32f, b.getY());
-            p.lineTo(b.getRight() - b.getWidth() * 0.28f, b.getCentreY());
-            p.lineTo(b.getX() + b.getWidth() * 0.32f, b.getBottom());
         }
 
         return p;

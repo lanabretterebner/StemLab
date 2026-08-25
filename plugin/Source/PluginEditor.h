@@ -56,6 +56,10 @@ public:
 
     void refresh();
 
+    /** Root lanes: whether the layers menu has anything to offer (adaptive
+        split supported, or children exist). Hidden otherwise (e.g. Bass). */
+    void setLayersAvailable(bool available);
+
     bool isChildLane() const noexcept { return childId.isNotEmpty(); }
     juce::String getChildId() const { return childId; }
     juce::String getRootStem() const { return childInfo.rootStem; }
@@ -78,6 +82,7 @@ private:
     juce::TextButton soloButton{"S"};
     juce::TextButton muteButton{"M"};
     std::unique_ptr<stemlab::widgets::IconButton> layersButton;
+    bool layersAvailable = true;
 
     std::function<void()> refreshEditor;
     std::function<void(int)> showRootMenu;
@@ -132,7 +137,7 @@ private:
     std::vector<StemLabRecursiveStemInfo> getVisibleRecursiveItems() const;
     void syncLanes();
 
-    juce::String composeStatusLine() const;
+    juce::String jobSummaryLine() const;
     juce::String displayPath(const juce::File& directory) const;
 
     static bool isSupportedAudioFile(const juce::File& file);
@@ -172,6 +177,15 @@ private:
     stemlab::widgets::Scrubber scrubber;
     stemlab::widgets::SegmentedControl abControl{"Original", "Stems"};
     bool sawSuccessfulJob = false;
+
+    // Keeps transient status messages visible for a few seconds after a
+    // job is done, before the summary line takes back over.
+    juce::String lastRawStatus;
+    juce::uint32 lastStatusChangeMs = 0;
+
+    int lastSeparatorEngine = -1;
+    bool lastSeparateGlow = false;
+    bool lastPrimaryGlow = false;
 
     // Footer.
     stemlab::widgets::FadingDivider footerDivider;

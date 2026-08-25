@@ -198,7 +198,8 @@ void StemLaneWaveform::mouseDown(const juce::MouseEvent&)
 
 void StemLaneWaveform::mouseUp(const juce::MouseEvent& event)
 {
-    if (externalDragStarted || getWidth() <= 0)
+    // Plain Components still receive mouse events while disabled.
+    if (!isEnabled() || externalDragStarted || getWidth() <= 0)
         return;
 
     if (event.getDistanceFromDragStart() >= theme::metrics::waveform::clickVersusDragThreshold)
@@ -328,6 +329,15 @@ StemLaneComponent::StemLaneComponent(StemLabAudioProcessor& processorIn, int ste
     addAndMakeVisible(*layersButton);
 }
 
+void StemLaneComponent::setLayersAvailable(bool available)
+{
+    if (layersAvailable != available)
+    {
+        layersAvailable = available;
+        refresh();
+    }
+}
+
 void StemLaneComponent::setChildInfo(const StemLabRecursiveStemInfo& info)
 {
     childInfo = info;
@@ -398,8 +408,8 @@ void StemLaneComponent::refresh()
     muteButton.setEnabled(ready);
     muteButton.setToggleState(muted, juce::dontSendNotification);
 
-    layersButton->setEnabled(ready);
-    layersButton->setVisible(true);
+    layersButton->setEnabled(ready && layersAvailable);
+    layersButton->setVisible(layersAvailable);
 
     if (waveform != nullptr)
         waveform->setMutedAppearance(muted && !soloed);
@@ -499,14 +509,15 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     // ------------------------------------------------------------- header
 
     titleLabel.setText("StemLab", juce::dontSendNotification);
-    titleLabel.setFont(theme::fonts::title());
+    titleLabel.setFont(
+        juce::Font(theme::fonts::title()).withExtraKerningFactor(theme::fonts::titleKerning));
     titleLabel.setColour(juce::Label::textColourId, theme::colours::text());
     addAndMakeVisible(titleLabel);
 
     settingsButton = std::make_unique<widgets::IconButton>(
         "settings", [](juce::Rectangle<float> b) { return stemlab::icons::sliders(b); },
         static_cast<float>(theme::metrics::header::settingsIcon), true,
-        theme::metrics::header::settingsRadius, true);
+        theme::metrics::header::settingsRadius, true, true);
 
     settingsButton->setTooltip("Settings");
     settingsButton->onClick = [this] { showSettingsMenu(); };
@@ -588,9 +599,6 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     recordInputButton.setVisible(processor.isStandaloneApp());
 
     separateControl.setRefineOn(processor.isRefinementEnabled());
-
-    separateControl.setTooltip("Runs after " + processor.getSeparatorEngineDisplayName() +
-                               " separation");
 
     separateControl.onRefineChanged = [this](bool on) { processor.setRefinementEnabled(on); };
 
@@ -727,6 +735,10 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
     processor.addChangeListener(this);
 
+    // A reopened editor must not re-trigger the switch-to-Stems that runs
+    // when a job is first observed finishing: seed from processor state.
+    sawSuccessfulJob = processor.hasSuccessfulJob();
+
     // Sized last: setSize() fires resized(), which needs every child above.
     setSize(theme::metrics::window::width, theme::metrics::window::height);
 
@@ -851,6 +863,23 @@ void StemLabAudioProcessorEditor::paint(juce::Graphics& g)
     // Recessed source strip.
     g.setColour(theme::colours::ground());
     g.fillRoundedRectangle(sourceStripBounds.toFloat(), theme::metrics::source::radius);
+
+    // Accent glows behind the enabled primary actions. Drawn here, in the
+    // parent, because a shadow painted inside a component is clipped to its
+    // own bounds.
+    if (separateControl.isVisible() && separateControl.isSeparateActionEnabled())
+        juce::DropShadow(theme::colours::accentGlow(), 11, {})
+            .drawForRectangle(g, separateControl.getBounds());
+
+    for (auto* primary : {&insertButton, &saveButton})
+    {
+        if (primary->isVisible() && primary->isEnabled() &&
+            primary->getComponentID() == "primary")
+        {
+            juce::DropShadow(theme::colours::accentGlow(), 11, {})
+                .drawForRectangle(g, primary->getBounds());
+        }
+    }
 
     // Footer status check icon.
     if (!statusIconBounds.isEmpty() && processor.hasSuccessfulJob() &&
@@ -980,8 +1009,9 @@ void StemLabAudioProcessorEditor::resized()
 
         if (retryButton.isVisible())
         {
-            retryButton.setBounds(row.removeFromRight(60).withSizeKeepingCentre(
-                60, footer::buttonHeight));
+            retryButton.setBounds(
+                row.removeFromRight(footer::retryWidth)
+                    .withSizeKeepingCentre(footer::retryWidth, footer::buttonHeight));
             row.removeFromRight(footer::gap);
         }
 
@@ -997,8 +1027,8 @@ void StemLabAudioProcessorEditor::resized()
                                          .withSizeKeepingCentre(footer::changeWidth,
                                                                 footer::buttonHeight));
 
-        pathLabel.setBounds(row.removeFromRight(170));
-        row.removeFromRight(6);
+        pathLabel.setBounds(row.removeFromRight(footer::pathWidth));
+        row.removeFromRight(footer::folderIconGap);
 
         folderIconBounds = row.removeFromRight(footer::folderIcon)
                                .withSizeKeepingCentre(footer::folderIcon, footer::folderIcon);
@@ -1008,16 +1038,16 @@ void StemLabAudioProcessorEditor::resized()
         // Left block: status line above, progress row below.
         auto statusArea = row;
 
-        auto statusLine = statusArea.removeFromTop(14);
-        statusIconBounds = statusLine.removeFromLeft(14);
+        auto statusLine = statusArea.removeFromTop(footer::statusLineHeight);
+        statusIconBounds = statusLine.removeFromLeft(footer::statusLineHeight);
         statusLine.removeFromLeft(4);
         statusLabel.setBounds(statusLine);
 
         statusArea.removeFromTop(footer::statusLineGap);
 
-        auto progressRow = statusArea.removeFromTop(12);
+        auto progressRow = statusArea.removeFromTop(footer::progressRowHeight);
         progressLabel.setBounds(progressRow.removeFromRight(footer::progressLabelWidth));
-        progressRow.removeFromRight(8);
+        progressRow.removeFromRight(footer::progressLabelGap);
         progressBar.setBounds(progressRow);
     }
 
@@ -1051,33 +1081,42 @@ void StemLabAudioProcessorEditor::layoutLanes()
 
     const int laneHeight = lanes::wellHeight + 2 * lanes::rowPadY;
 
-    const int contentWidth = juce::jmax(320, laneViewport.getMaximumVisibleWidth());
-
-    int y = 0;
-
-    for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
+    // Setting the content size can flip the vertical scrollbar on or off,
+    // which changes the visible width; run again once so lanes always fit
+    // the final width.
+    for (int pass = 0; pass < 2; ++pass)
     {
-        auto* root = rootLanes[static_cast<size_t>(i)].get();
+        const int contentWidth = juce::jmax(320, laneViewport.getMaximumVisibleWidth());
 
-        if (root == nullptr)
-            continue;
+        int y = 0;
 
-        root->setBounds(0, y, contentWidth, laneHeight);
-        y += laneHeight;
-
-        const auto rootName = StemLabAudioProcessor::getStemName(i);
-
-        for (auto& child : childLanes)
+        for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
         {
-            if (child != nullptr && child->getRootStem().equalsIgnoreCase(rootName))
+            auto* root = rootLanes[static_cast<size_t>(i)].get();
+
+            if (root == nullptr)
+                continue;
+
+            root->setBounds(0, y, contentWidth, laneHeight);
+            y += laneHeight;
+
+            const auto rootName = StemLabAudioProcessor::getStemName(i);
+
+            for (auto& child : childLanes)
             {
-                child->setBounds(0, y, contentWidth, laneHeight);
-                y += laneHeight;
+                if (child != nullptr && child->getRootStem().equalsIgnoreCase(rootName))
+                {
+                    child->setBounds(0, y, contentWidth, laneHeight);
+                    y += laneHeight;
+                }
             }
         }
-    }
 
-    laneContent.setSize(contentWidth, juce::jmax(y, laneViewport.getHeight()));
+        laneContent.setSize(contentWidth, juce::jmax(y, laneViewport.getHeight()));
+
+        if (laneViewport.getMaximumVisibleWidth() == contentWidth)
+            break;
+    }
 }
 
 std::vector<StemLabRecursiveStemInfo> StemLabAudioProcessorEditor::getVisibleRecursiveItems() const
@@ -1315,6 +1354,14 @@ void StemLabAudioProcessorEditor::timerCallback()
     for (auto& lane : childLanes)
         if (lane != nullptr)
             lane->repaint();
+
+    // The record dot's pulse is a function of the clock at paint time; keep
+    // it animating while a recording is running.
+    if (processor.isCapturing())
+    {
+        recordSystemButton.repaint();
+        recordInputButton.repaint();
+    }
 }
 
 void StemLabAudioProcessorEditor::changeListenerCallback(juce::ChangeBroadcaster*)
@@ -1322,25 +1369,17 @@ void StemLabAudioProcessorEditor::changeListenerCallback(juce::ChangeBroadcaster
     refreshFromProcessor();
 }
 
-juce::String StemLabAudioProcessorEditor::composeStatusLine() const
+juce::String StemLabAudioProcessorEditor::jobSummaryLine() const
 {
-    if (processor.isEngineRunning())
-        return processor.getStatus();
+    int readyCount = 0;
 
-    if (processor.hasSuccessfulJob())
-    {
-        int readyCount = 0;
+    for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
+        if (processor.getCompletedStemFile(i).existsAsFile())
+            ++readyCount;
 
-        for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
-            if (processor.getCompletedStemFile(i).existsAsFile())
-                ++readyCount;
-
-        return "Separated " + juce::String(readyCount) + " stems in " +
-               formatSeconds(processor.getEngineElapsedSeconds()) + " · refinement " +
-               (processor.isRefinementEnabled() ? "on" : "off");
-    }
-
-    return processor.getStatus();
+    return "Separated " + juce::String(readyCount) + " stems in " +
+           formatSeconds(processor.getEngineElapsedSeconds()) + " · refinement " +
+           (processor.isRefinementEnabled() ? "on" : "off");
 }
 
 juce::String StemLabAudioProcessorEditor::displayPath(const juce::File& directory) const
@@ -1499,9 +1538,14 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
     // --------------------------------------------------------------- lanes
 
-    for (auto& lane : rootLanes)
-        if (lane != nullptr)
+    for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
+    {
+        if (auto* lane = rootLanes[static_cast<size_t>(i)].get())
+        {
+            lane->setLayersAvailable(rootSupportsAdaptiveSplit(i) || rootHasChildren(i));
             lane->refresh();
+        }
+    }
 
     for (auto& lane : childLanes)
         if (lane != nullptr)
@@ -1509,11 +1553,42 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
     // -------------------------------------------------------------- footer
 
-    statusLabel.setText(composeStatusLine(), juce::dontSendNotification);
+    // Status line: while separating, stream the engine status. Once a job
+    // is done, transient action feedback (send/save/rejection notices)
+    // stays visible for a few seconds before the summary takes back over.
+    const auto rawStatus = processor.getStatus();
+    const auto nowMs = juce::Time::getMillisecondCounter();
+
+    if (rawStatus != lastRawStatus)
+    {
+        lastRawStatus = rawStatus;
+        lastStatusChangeMs = nowMs;
+    }
+
+    const bool showSummary =
+        jobDone && !engineRunning && nowMs - lastStatusChangeMs > 5000;
+
+    statusLabel.setText(showSummary ? jobSummaryLine() : rawStatus,
+                        juce::dontSendNotification);
 
     // The status check icon is painted by the editor, not a child, so state
     // flips need an explicit repaint of its little region.
     repaint(statusIconBounds);
+
+    // Same for the accent glows painted behind the primary actions.
+    if (separateControl.isSeparateActionEnabled() != lastSeparateGlow)
+    {
+        lastSeparateGlow = separateControl.isSeparateActionEnabled();
+        repaint(separateControl.getBounds().expanded(14));
+    }
+
+    // Tooltip tracks the engine chosen in the settings menu.
+    if (processor.getSeparatorEngineIndex() != lastSeparatorEngine)
+    {
+        lastSeparatorEngine = processor.getSeparatorEngineIndex();
+        separateControl.setTooltip("Runs after " + processor.getSeparatorEngineDisplayName() +
+                                   " separation");
+    }
 
     progressValue = processor.getEngineProgress();
 
@@ -1546,6 +1621,17 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     saveButton.setEnabled(jobDone && !engineRunning && !capturing);
     insertButton.setEnabled(jobDone && !engineRunning && !capturing && selectedCount > 0);
     retryButton.setEnabled(jobDone && !engineRunning);
+
+    const bool primaryGlow =
+        (insertButton.isVisible() && insertButton.isEnabled()) ||
+        (saveButton.isVisible() && saveButton.isEnabled() &&
+         saveButton.getComponentID() == "primary");
+
+    if (primaryGlow != lastPrimaryGlow)
+    {
+        lastPrimaryGlow = primaryGlow;
+        repaint(insertButton.getBounds().getUnion(saveButton.getBounds()).expanded(14));
+    }
 }
 
 void StemLabAudioProcessorEditor::chooseStandaloneAudioFile()

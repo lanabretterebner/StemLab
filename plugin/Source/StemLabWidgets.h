@@ -25,14 +25,19 @@ namespace stemlab::widgets
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(IncludeCheckbox)
     };
 
-    /** Square icon button: 45% icon, accent + tint on hover or when active. */
+    /**
+     * Square icon button. Default: 45% icon turning accent on hover (lane
+     * controls). textColoured: full text-colour icon that stays
+     * text-coloured on hover with only the hover fill (header settings).
+     */
     class IconButton final : public juce::Button
     {
     public:
         using PathFactory = std::function<juce::Path(juce::Rectangle<float>)>;
 
         IconButton(const juce::String& name, PathFactory factory, float iconSize,
-                   bool strokedIcon, float cornerRadius, bool outlined);
+                   bool strokedIcon, float cornerRadius, bool outlined,
+                   bool textColoured = false);
 
         void paintButton(juce::Graphics&, bool highlighted, bool down) override;
 
@@ -42,6 +47,7 @@ namespace stemlab::widgets
         bool stroked;
         float radius;
         bool outlined;
+        bool textColoured;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(IconButton)
     };
@@ -93,6 +99,7 @@ namespace stemlab::widgets
         bool isRefineOn() const noexcept { return refineOn; }
 
         void setSeparateEnabled(bool enabled);
+        bool isSeparateActionEnabled() const noexcept { return separateEnabled; }
 
         void paint(juce::Graphics&) override;
         void resized() override {}

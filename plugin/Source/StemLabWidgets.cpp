@@ -19,25 +19,27 @@ namespace stemlab::widgets
                              .withSizeKeepingCentre(lanes::checkbox, lanes::checkbox)
                              .toFloat();
 
+        const float dim = isEnabled() ? 1.0f : theme::metrics::disabledOpacity;
+
         if (getToggleState())
         {
-            g.setColour(theme::colours::checkboxFill());
+            g.setColour(theme::colours::checkboxFill().withMultipliedAlpha(dim));
             g.fillRoundedRectangle(box, lanes::checkboxRadius);
 
-            g.setColour(theme::colours::checkboxCheck());
+            g.setColour(theme::colours::checkboxCheck().withMultipliedAlpha(dim));
             g.strokePath(stemlab::icons::check(box.reduced(3.5f)),
                          juce::PathStrokeType(1.8f, juce::PathStrokeType::curved,
                                               juce::PathStrokeType::rounded));
         }
         else
         {
-            if (highlighted)
+            if (highlighted && isEnabled())
             {
                 g.setColour(theme::colours::hoverFill());
                 g.fillRoundedRectangle(box, lanes::checkboxRadius);
             }
 
-            g.setColour(theme::colours::checkboxBorder());
+            g.setColour(theme::colours::checkboxBorder().withMultipliedAlpha(dim));
             g.drawRoundedRectangle(box.reduced(lanes::checkboxBorder * 0.5f),
                                    lanes::checkboxRadius, lanes::checkboxBorder);
         }
@@ -46,9 +48,11 @@ namespace stemlab::widgets
     // ---------------------------------------------------------- icon button
 
     IconButton::IconButton(const juce::String& name, PathFactory factory, float iconSizeIn,
-                           bool strokedIcon, float cornerRadius, bool outlinedIn)
+                           bool strokedIcon, float cornerRadius, bool outlinedIn,
+                           bool textColouredIn)
         : juce::Button(name), makePath(std::move(factory)), iconSize(iconSizeIn),
-          stroked(strokedIcon), radius(cornerRadius), outlined(outlinedIn)
+          stroked(strokedIcon), radius(cornerRadius), outlined(outlinedIn),
+          textColoured(textColouredIn)
     {
     }
 
@@ -58,9 +62,11 @@ namespace stemlab::widgets
 
         const bool hover = (highlighted || down) && isEnabled();
 
+        const float dim = isEnabled() ? 1.0f : theme::metrics::disabledOpacity;
+
         if (hover)
         {
-            g.setColour(getToggleState() || getName() == "layers"
+            g.setColour(!textColoured && (getToggleState() || getName() == "layers")
                             ? theme::colours::accentTint10()
                             : theme::colours::hoverFill());
             g.fillRoundedRectangle(bounds, radius);
@@ -68,14 +74,15 @@ namespace stemlab::widgets
 
         if (outlined)
         {
-            g.setColour(theme::colours::outline());
+            g.setColour(theme::colours::outline().withMultipliedAlpha(dim));
             g.drawRoundedRectangle(bounds, radius, 1.0f);
         }
 
-        auto iconColour = hover ? theme::colours::accent() : theme::colours::text45();
+        auto iconColour = textColoured
+                              ? theme::colours::text()
+                              : (hover ? theme::colours::accent() : theme::colours::text45());
 
-        if (!isEnabled())
-            iconColour = iconColour.withMultipliedAlpha(theme::metrics::disabledOpacity);
+        iconColour = iconColour.withMultipliedAlpha(dim);
 
         g.setColour(iconColour);
 
@@ -158,13 +165,15 @@ namespace stemlab::widgets
 
         const bool hover = (highlighted || down) && isEnabled();
 
+        const float dim = isEnabled() ? 1.0f : theme::metrics::disabledOpacity;
+
         if (hover)
         {
             g.setColour(theme::colours::hoverFill());
             g.fillRoundedRectangle(bounds, theme::metrics::buttons::radius);
         }
 
-        g.setColour(theme::colours::outline());
+        g.setColour(theme::colours::outline().withMultipliedAlpha(dim));
         g.drawRoundedRectangle(bounds, theme::metrics::buttons::radius, 1.0f);
 
         // The accent dot doubles as the recording indicator: solid when
@@ -254,11 +263,8 @@ namespace stemlab::widgets
         const auto bounds = getLocalBounds().toFloat().reduced(0.5f);
         const auto radius = source::separateRadius;
 
-        // Outer glow + accent-700 shell + accent-400 border.
-        if (separateEnabled)
-            juce::DropShadow(theme::colours::accentGlow(), 11, {}).drawForRectangle(
-                g, getLocalBounds());
-
+        // The outer glow is painted by the editor behind this control - a
+        // shadow drawn in here would be clipped to the component bounds.
         g.setColour(theme::colours::primaryFill());
         g.fillRoundedRectangle(bounds, radius);
 
@@ -410,7 +416,8 @@ namespace stemlab::widgets
 
     void Scrubber::applySeek(const juce::MouseEvent& event)
     {
-        if (getWidth() <= 0)
+        // Plain Components still receive mouse events while disabled.
+        if (!isEnabled() || getWidth() <= 0)
             return;
 
         const auto normalised = juce::jlimit(
@@ -452,7 +459,9 @@ namespace stemlab::widgets
 
         const auto bounds = getLocalBounds().toFloat().reduced(0.5f);
 
-        g.setColour(theme::colours::outline());
+        const float dim = isEnabled() ? 1.0f : theme::metrics::disabledOpacity;
+
+        g.setColour(theme::colours::outline().withMultipliedAlpha(dim));
         g.drawRoundedRectangle(bounds, transport::abRadius, 1.0f);
 
         const int half = getWidth() / 2;
@@ -499,10 +508,20 @@ namespace stemlab::widgets
 
     void SegmentedControl::mouseMove(const juce::MouseEvent& event)
     {
-        hovered = event.position.x < static_cast<float>(getWidth()) * 0.5f ? 0 : 1;
+        const int next = event.position.x < static_cast<float>(getWidth()) * 0.5f ? 0 : 1;
+
+        if (hovered != next)
+        {
+            hovered = next;
+            repaint();
+        }
     }
 
-    void SegmentedControl::mouseExit(const juce::MouseEvent&) { hovered = -1; }
+    void SegmentedControl::mouseExit(const juce::MouseEvent&)
+    {
+        hovered = -1;
+        repaint();
+    }
 
     void SegmentedControl::mouseUp(const juce::MouseEvent& event)
     {

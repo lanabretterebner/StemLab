@@ -9,11 +9,11 @@
     "Nocturne" design system, draft 1a "Lanes" (docs/redesign/README.md is
     the spec, docs/redesign/styles.css the source token sheet).
 
-    The editor deliberately contains no colour or font literals, and its
-    layout keeps only hairline 0-1 px trims inline: everything else it asks
-    this header for. Restyle by changing values here and drawing in
-    StemLabLookAndFeel; only re-arrangements of the interface itself touch
-    the editor.
+    The editor deliberately contains no colour or font literals; layout
+    values are tokens apart from a few small one-off trims at their call
+    sites. Restyle by changing values here and in the drawing code of
+    StemLabLookAndFeel / StemLabWidgets; only re-arrangements of the
+    interface itself touch the editor.
 
         colours   Ground/surface/text, the accent and neutral ramps, and
                   per-component colour roles.
@@ -73,7 +73,6 @@ namespace stemlab::theme
         inline juce::Colour accentTint10() { return accent().withAlpha(0.10f); }
         inline juce::Colour accentTint13() { return accent().withAlpha(0.13f); }
         inline juce::Colour accentHover18() { return accent400().withAlpha(0.18f); }
-        inline juce::Colour focusRing() { return accent(); }
 
         // Panel edge + shadow (approximates Nocturne's shadow-md).
         inline juce::Colour panelEdge() { return neutral700(); }
@@ -163,28 +162,57 @@ namespace stemlab::theme
 
     namespace fonts
     {
-        // Weight 500 is expressed as juce::Font::bold; the LookAndFeel maps
-        // "bold" to the bundled Inter Medium, so nothing exceeds 500.
-        inline juce::FontOptions title() { return juce::FontOptions(17.0f, juce::Font::bold); }
+        /*
+            The bundled Inter faces, registered once by StemLabLookAndFeel's
+            constructor. Every token below carries the typeface explicitly:
+            JUCE 9's font resolution does not consult
+            LookAndFeel::getTypefaceForFont, so a FontOptions without a
+            typeface would silently render in the platform fallback.
 
-        inline juce::FontOptions body() { return juce::FontOptions(13.0f); }
-        inline juce::FontOptions bodyMedium() { return juce::FontOptions(13.0f, juce::Font::bold); }
-
-        inline juce::FontOptions laneName() { return juce::FontOptions(13.5f, juce::Font::bold); }
-
-        inline juce::FontOptions separateLabel()
+            Weight 500 ("medium: true") uses Inter Medium - per Nocturne,
+            nothing renders bolder than 500.
+        */
+        inline juce::Typeface::Ptr& regularTypeface()
         {
-            return juce::FontOptions(13.5f, juce::Font::bold);
+            static juce::Typeface::Ptr typeface;
+            return typeface;
         }
 
-        inline juce::FontOptions refineLabel() { return juce::FontOptions(11.0f); }
+        inline juce::Typeface::Ptr& mediumTypeface()
+        {
+            static juce::Typeface::Ptr typeface;
+            return typeface;
+        }
 
-        inline juce::FontOptions meta() { return juce::FontOptions(11.0f); }
-        inline juce::FontOptions status() { return juce::FontOptions(11.5f); }
-        inline juce::FontOptions time() { return juce::FontOptions(12.0f); }
-        inline juce::FontOptions footerPath() { return juce::FontOptions(12.0f); }
-        inline juce::FontOptions smallButton() { return juce::FontOptions(10.0f); }
-        inline juce::FontOptions tooltip() { return juce::FontOptions(12.0f); }
+        inline juce::FontOptions make(float size, bool medium)
+        {
+            auto& typeface = medium ? mediumTypeface() : regularTypeface();
+
+            if (typeface != nullptr)
+                return juce::FontOptions(typeface).withHeight(size);
+
+            return juce::FontOptions(size, medium ? juce::Font::bold : juce::Font::plain);
+        }
+
+        // "StemLab" wordmark: 17/500 with -0.015em letter-spacing.
+        constexpr float titleKerning = -0.015f;
+        inline juce::FontOptions title() { return make(17.0f, true); }
+
+        inline juce::FontOptions body() { return make(13.0f, false); }
+        inline juce::FontOptions bodyMedium() { return make(13.0f, true); }
+
+        inline juce::FontOptions laneName() { return make(13.5f, true); }
+
+        inline juce::FontOptions separateLabel() { return make(13.5f, true); }
+
+        inline juce::FontOptions refineLabel() { return make(11.0f, false); }
+
+        inline juce::FontOptions meta() { return make(11.0f, false); }
+        inline juce::FontOptions status() { return make(11.5f, false); }
+        inline juce::FontOptions time() { return make(12.0f, false); }
+        inline juce::FontOptions footerPath() { return make(12.0f, false); }
+        inline juce::FontOptions smallButton() { return make(10.0f, false); }
+        inline juce::FontOptions tooltip() { return make(12.0f, false); }
     }
 
     namespace metrics
@@ -302,12 +330,18 @@ namespace stemlab::theme
             constexpr int dividerGap = 12;
             constexpr int height = 34;
             constexpr int gap = 10;
+            constexpr int statusLineHeight = 14;
             constexpr int statusLineGap = 6;
             constexpr int statusRightMargin = 28;
-            constexpr int progressHeight = 3;
+            constexpr float progressHeight = 3.0f;
+            constexpr int progressRowHeight = 12;
             constexpr int progressLabelWidth = 110;
+            constexpr int progressLabelGap = 8;
             constexpr int folderIcon = 14;
+            constexpr int folderIconGap = 6;
+            constexpr int pathWidth = 170;
             constexpr int changeWidth = 56;
+            constexpr int retryWidth = 60;
             constexpr int saveWidth = 96;
             constexpr int insertWidth = 108;
             constexpr int buttonHeight = 30;
@@ -318,12 +352,6 @@ namespace stemlab::theme
             constexpr float radius = 8.0f;
             constexpr int height = 30;
             constexpr int padX = 12;
-        }
-
-        namespace focus
-        {
-            constexpr float ringWidth = 2.0f;
-            constexpr float ringOffset = 2.0f;
         }
 
         namespace waveform

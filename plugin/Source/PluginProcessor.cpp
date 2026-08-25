@@ -28,8 +28,10 @@
  *
  * Built on the message thread by ensureStemMixLoaded() and handed to
  * stemMixTransport; afterwards the audio thread drives it through the
- * transport. The solo/mute atomics live in the processor and are only read
- * here. Gain changes ramp across one block so toggling S/M never clicks.
+ * transport's resampler. The solo/mute atomics live in the processor and
+ * are only read here. Gain changes glide at a fixed ~10 ms rate that is
+ * independent of block size, so toggling S/M never clicks even when the
+ * resampler splits a transport block into tiny ring-buffer chunks.
  */
 class StemLabStemMixSource final : public juce::PositionableAudioSource
 {
@@ -45,7 +47,7 @@ public:
                          const std::array<std::atomic<bool>, StemLabAudioProcessor::stemCount>& muteIn)
         : entries(std::move(entriesIn)), solo(soloIn), mute(muteIn)
     {
-        lastGains.resize(entries.size(), 0.0f);
+        currentGains.resize(entries.size(), 0.0f);
     }
 
     void prepareToPlay(int samplesPerBlockExpected, double sampleRate) override
@@ -53,10 +55,15 @@ public:
         for (auto& entry : entries)
             entry.source->prepareToPlay(samplesPerBlockExpected, sampleRate);
 
-        // Generous headroom: hosts occasionally deliver larger blocks than
-        // announced, and growing the scratch inside getNextAudioBlock would
-        // allocate on the audio thread.
-        scratch.setSize(2, juce::jmax(4096, samplesPerBlockExpected), false, false, true);
+        // The wrapping ResamplingAudioSource asks for up to its ring-buffer
+        // size (our expected block + 32) in one call, and hosts occasionally
+        // deliver larger blocks than announced; growing the scratch inside
+        // getNextAudioBlock would allocate on the audio thread.
+        scratch.setSize(2, juce::jmax(4096, 2 * samplesPerBlockExpected + 64), false, false,
+                        true);
+
+        gainStepPerSample =
+            sampleRate > 0.0 ? static_cast<float>(1.0 / (0.010 * sampleRate)) : 0.1f;
     }
 
     void releaseResources() override
@@ -74,13 +81,20 @@ public:
         if (info.numSamples <= 0)
             return;
 
+        // One consistent read position for every stem this call; a
+        // concurrent seek from the message thread wins the final exchange
+        // and simply takes effect next call.
+        const auto blockStart = position.load(std::memory_order_acquire);
+
         bool anySolo = false;
 
         for (const auto& state : solo)
             anySolo = anySolo || state.load(std::memory_order_relaxed);
 
         if (scratch.getNumSamples() < info.numSamples)
-            scratch.setSize(2, info.numSamples, false, false, true);
+            scratch.setSize(2, info.numSamples, false, false, true); // last-resort fallback
+
+        const float maxDelta = gainStepPerSample * static_cast<float>(info.numSamples);
 
         for (size_t i = 0; i < entries.size(); ++i)
         {
@@ -92,17 +106,16 @@ public:
                                          : !mute[stem].load(std::memory_order_relaxed);
 
             const float target = audible ? 1.0f : 0.0f;
-            const float previous = lastGains[i];
+            const float previous = currentGains[i];
 
-            if (target <= 0.0f && previous <= 0.0f)
-            {
-                // Keep silent stems advancing so they stay sample-aligned.
-                entry.source->setNextReadPosition(position);
-                continue;
-            }
+            const float next =
+                previous + juce::jlimit(-maxDelta, maxDelta, target - previous);
+
+            if (next <= 0.0f && previous <= 0.0f)
+                continue; // fully silent; position is re-seeded from blockStart anyway
 
             juce::AudioSourceChannelInfo scratchInfo(&scratch, 0, info.numSamples);
-            entry.source->setNextReadPosition(position);
+            entry.source->setNextReadPosition(blockStart);
             entry.source->getNextAudioBlock(scratchInfo);
 
             const auto channels = juce::jmin(info.buffer->getNumChannels(),
@@ -112,24 +125,23 @@ public:
             {
                 info.buffer->addFromWithRamp(channel, info.startSample,
                                              scratch.getReadPointer(channel), info.numSamples,
-                                             previous, target);
+                                             previous, next);
             }
 
-            lastGains[i] = target;
+            currentGains[i] = next;
         }
 
-        position += info.numSamples;
+        auto expected = blockStart;
+        position.compare_exchange_strong(expected, blockStart + info.numSamples);
     }
 
     void setNextReadPosition(juce::int64 newPosition) override
     {
-        position = juce::jmax(static_cast<juce::int64>(0), newPosition);
-
-        for (auto& entry : entries)
-            entry.source->setNextReadPosition(position);
+        position.store(juce::jmax(static_cast<juce::int64>(0), newPosition),
+                       std::memory_order_release);
     }
 
-    juce::int64 getNextReadPosition() const override { return position; }
+    juce::int64 getNextReadPosition() const override { return position.load(); }
 
     juce::int64 getTotalLength() const override
     {
@@ -148,9 +160,10 @@ private:
     std::vector<Entry> entries;
     const std::array<std::atomic<bool>, StemLabAudioProcessor::stemCount>& solo;
     const std::array<std::atomic<bool>, StemLabAudioProcessor::stemCount>& mute;
-    std::vector<float> lastGains;
+    std::vector<float> currentGains;
+    float gainStepPerSample = 0.1f;
     juce::AudioBuffer<float> scratch;
-    juce::int64 position = 0;
+    std::atomic<juce::int64> position{0};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StemLabStemMixSource)
 };
@@ -1063,9 +1076,17 @@ void StemLabAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
     // the source-track audio while its transport is playing. That makes the
     // transport behave like an actual audition/solo rather than layering
     // stems on top of the original song.
+    //
+    // The transport is pulled even while stopped: AudioTransportSource's
+    // stop() spin-waits for its render callback to acknowledge the stop, so
+    // gating this pull on isPlaying() would leave the message thread
+    // blocked for the full ~1s timeout on every pause or A/B switch. A
+    // stopped transport just clears the scratch and returns.
     auto& monitorSource = activeTransport();
 
-    if (!isStandaloneApp() && monitorSource.isPlaying() && previewScratch.getNumChannels() > 0)
+    const bool monitorAudible = monitorSource.isPlaying();
+
+    if (!isStandaloneApp() && previewScratch.getNumChannels() > 0)
     {
         const auto requiredSamples = buffer.getNumSamples();
 
@@ -1081,13 +1102,17 @@ void StemLabAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
 
         monitorSource.getNextAudioBlock(info);
 
-        buffer.clear();
-
-        const auto channels = juce::jmin(buffer.getNumChannels(), previewScratch.getNumChannels());
-
-        for (int channel = 0; channel < channels; ++channel)
+        if (monitorAudible)
         {
-            buffer.addFrom(channel, 0, previewScratch, channel, 0, requiredSamples);
+            buffer.clear();
+
+            const auto channels =
+                juce::jmin(buffer.getNumChannels(), previewScratch.getNumChannels());
+
+            for (int channel = 0; channel < channels; ++channel)
+            {
+                buffer.addFrom(channel, 0, previewScratch, channel, 0, requiredSamples);
+            }
         }
     }
 
@@ -1310,101 +1335,10 @@ juce::File StemLabAudioProcessor::getCompletedStemFile(int index) const
     return {};
 }
 
-bool StemLabAudioProcessor::playCompletedStem(int index)
-{
-    if (capturing.load() || !hasSuccessfulJob() || !juce::isPositiveAndBelow(index, stemCount))
-    {
-        return false;
-    }
-
-    const auto stemFile = getCompletedStemFile(index);
-
-    if (!stemFile.existsAsFile())
-    {
-        setStatus("Stem preview file was not found");
-        return false;
-    }
-
-    if (previewStemIndex.load() == index)
-    {
-        if (previewTransport.isPlaying())
-        {
-            previewTransport.stop();
-            setStatus(getStemName(index).toUpperCase() + " paused");
-            return true;
-        }
-    }
-    else
-    {
-        if (!loadPreviewFile(stemFile, index))
-        {
-            setStatus("Could not load stem preview");
-            return false;
-        }
-    }
-
-    if (previewTransport.getCurrentPosition() >= previewTransport.getLengthInSeconds() - 0.01)
-    {
-        previewTransport.setPosition(0.0);
-    }
-
-    previewTransport.start();
-    setStatus("Playing " + getStemName(index));
-    return true;
-}
-
-bool StemLabAudioProcessor::seekCompletedStem(int index, double normalisedPosition)
-{
-    if (capturing.load() || !hasSuccessfulJob() || !juce::isPositiveAndBelow(index, stemCount))
-    {
-        return false;
-    }
-
-    const auto stemFile = getCompletedStemFile(index);
-
-    if (!stemFile.existsAsFile())
-        return false;
-
-    const bool keepPlaying = previewStemIndex.load() == index && previewTransport.isPlaying();
-
-    if (previewStemIndex.load() != index)
-    {
-        if (!loadPreviewFile(stemFile, index))
-            return false;
-    }
-
-    const auto length = previewTransport.getLengthInSeconds();
-
-    if (length <= 0.0)
-        return false;
-
-    previewTransport.setPosition(juce::jlimit(0.0, 1.0, normalisedPosition) * length);
-
-    if (keepPlaying)
-        previewTransport.start();
-
-    return true;
-}
-
 void StemLabAudioProcessor::stopStandalonePlayback()
 {
     previewTransport.stop();
     stemMixTransport.stop();
-}
-
-bool StemLabAudioProcessor::isStandalonePlaying() const noexcept
-{
-    return activeTransport().isPlaying();
-}
-
-double StemLabAudioProcessor::getPreviewPositionSeconds() const noexcept
-{
-    return activeTransport().getCurrentPosition();
-}
-
-double StemLabAudioProcessor::getPreviewLengthSeconds() const noexcept
-{
-    return activeTransport().getLengthInSeconds();
 }
 
 juce::AudioTransportSource& StemLabAudioProcessor::activeTransport() noexcept
@@ -2480,93 +2414,6 @@ juce::String StemLabAudioProcessor::getPreviewRecursiveId() const
 {
     const juce::ScopedLock lock(recursiveLock);
     return previewRecursiveId;
-}
-
-bool StemLabAudioProcessor::playRecursiveStem(const juce::String& itemId)
-{
-    if (capturing.load() || isEngineRunning() || !hasSuccessfulJob())
-        return false;
-
-    const auto stemFile = getRecursiveStemFile(itemId);
-
-    if (!stemFile.existsAsFile())
-    {
-        setStatus("Recursive stem preview file was not found");
-        return false;
-    }
-
-    const auto currentId = getPreviewRecursiveId();
-
-    if (currentId == itemId && previewTransport.isPlaying())
-    {
-        previewTransport.stop();
-        setStatus("Recursive stem paused");
-        return true;
-    }
-
-    if (currentId != itemId)
-    {
-        if (!loadPreviewFile(stemFile, -3))
-        {
-            setStatus("Could not load recursive stem preview");
-            return false;
-        }
-
-        const juce::ScopedLock lock(recursiveLock);
-        previewRecursiveId = itemId;
-    }
-
-    if (previewTransport.getCurrentPosition() >= previewTransport.getLengthInSeconds() - 0.01)
-    {
-        previewTransport.setPosition(0.0);
-    }
-
-    previewTransport.start();
-
-    for (const auto& item : getRecursiveStemItems())
-    {
-        if (item.id == itemId)
-        {
-            setStatus("Playing " + item.label);
-            break;
-        }
-    }
-
-    return true;
-}
-
-bool StemLabAudioProcessor::seekRecursiveStem(const juce::String& itemId, double normalisedPosition)
-{
-    if (capturing.load() || isEngineRunning() || !hasSuccessfulJob())
-        return false;
-
-    const auto stemFile = getRecursiveStemFile(itemId);
-    if (!stemFile.existsAsFile())
-        return false;
-
-    const auto currentId = getPreviewRecursiveId();
-    const bool keepPlaying = currentId == itemId && previewTransport.isPlaying();
-
-    if (currentId != itemId)
-    {
-        if (!loadPreviewFile(stemFile, -3))
-            return false;
-
-        const juce::ScopedLock lock(recursiveLock);
-        previewRecursiveId = itemId;
-    }
-
-    const auto length = previewTransport.getLengthInSeconds();
-    if (length <= 0.0)
-        return false;
-
-    previewTransport.setPosition(juce::jlimit(0.0, 1.0, normalisedPosition) * length);
-
-    if (keepPlaying)
-        previewTransport.start();
-
-    sendChangeMessage();
-    return true;
 }
 
 void StemLabAudioProcessor::finishRecursiveJob(const juce::File& manifestFile)
