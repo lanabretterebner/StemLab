@@ -13,7 +13,7 @@ from pathlib import Path
 from .audio import STEM_NAMES, find_stem_file
 from .pipeline import DEFAULT_ENGINE, ENGINE_CHOICES, separate
 from .pretrained import DEFAULT_MODEL
-from .runtime import configure_utf8_stdio
+from .runtime import configure_utf8_stdio, start_cancel_watchdog
 
 BRIDGE_HOST = "127.0.0.1"
 BRIDGE_PORT = 39277
@@ -174,6 +174,10 @@ def run_plugin_job(
 
     if not selected:
         raise ValueError("At least one stem must be selected")
+
+    # The plugin's Cancel button writes a sentinel into the job directory;
+    # the watchdog takes this process and its model children down together.
+    start_cancel_watchdog(output_dir)
 
     write_progress(output_dir, 3.0, "Starting")
 
