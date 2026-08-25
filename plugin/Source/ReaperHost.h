@@ -95,6 +95,8 @@ namespace stemlab::reaper
         bool (*SetMediaItemLength) (MediaItem*, double, bool) = nullptr;
         bool (*SetMediaItemTakeInfo_Value) (
             MediaItem_Take*, const char*, double) = nullptr;
+        bool (*SetMediaItemInfo_Value) (
+            MediaItem*, const char*, double) = nullptr;
 
         // Housekeeping ----------------------------------------------------
         void (*Undo_BeginBlock2) (ReaProject*) = nullptr;
@@ -107,6 +109,23 @@ namespace stemlab::reaper
         void (*PCM_Source_Destroy) (PCM_source*) = nullptr;
         const char* (*GetAppVersion) () = nullptr;
         bool (*TakeIsMIDI) (MediaItem_Take*) = nullptr;
+
+        /*  Muting the source item needs a pointer REAPER still knows about:
+            the user may have deleted or re-recorded it between Use Selected
+            Item and Insert Stems. Without ValidatePtr2 the mute is skipped
+            rather than risking a stale pointer.
+        */
+        bool (*ValidatePtr2) (ReaProject*, void*, const char*) = nullptr;
+
+        /*  Peak building for files REAPER has never seen. Items created
+            through PCM_Source_CreateFromFile do not get the peak pass that
+            REAPER's own import runs, so a freshly written stem draws as an
+            empty lane until something asks for its .reapeaks.
+
+            mode 0 starts a build, 1 runs a slice (non-zero = call again),
+            2 finishes.
+        */
+        int (*PCM_Source_BuildPeaks) (PCM_source*, int) = nullptr;
 
     private:
         Api() = default;

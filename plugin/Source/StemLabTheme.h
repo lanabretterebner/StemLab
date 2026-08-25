@@ -74,8 +74,9 @@ namespace stemlab::theme
         inline juce::Colour accentTint13() { return accent().withAlpha(0.13f); }
         inline juce::Colour accentHover18() { return accent400().withAlpha(0.18f); }
 
-        // Panel edge + shadow (approximates Nocturne's shadow-md).
-        inline juce::Colour panelEdge() { return neutral700(); }
+        // Panel shadow (approximates Nocturne's shadow-md). The panel has no
+        // resting outline: the shadow is what lifts it off the ground, and a
+        // permanent 1px edge only boxed the window in.
         inline juce::Colour panelShadow() { return juce::Colours::black.withAlpha(0.55f); }
         inline juce::Colour accentGlow() { return accent().withAlpha(0.40f); }
 
@@ -160,6 +161,81 @@ namespace stemlab::theme
         }
     }
 
+    namespace waveform
+    {
+        /*
+            User-selectable lane waveform colours.
+
+            The redesign shipped with a single accent waveform, which lost
+            the one thing colour was carrying: which lane you are looking at
+            in a tall adaptive tree. Index 0 is that accent look, unchanged;
+            the rest colour the whole lane, dimming the unplayed portion of
+            their own hue instead of falling back to neutral.
+
+            The index persists in plugin state, so the order of these must
+            stay stable.
+        */
+        constexpr int paletteCount = 7;
+
+        inline juce::String paletteName(int index)
+        {
+            static const char* const names[paletteCount] = {
+                "Nocturne Accent", "Stem Colours", "Spectrum",
+                "Solid Blue",      "Solid Green",  "Solid Amber",
+                "Solid Magenta"};
+
+            return names[juce::jlimit(0, paletteCount - 1, index)];
+        }
+
+        /**
+         * The played-portion colour of one waveform bar.
+         *
+         * @param index          selected palette
+         * @param stemName       identity key ("vocals"...) for Stem Colours
+         * @param positionAcross 0..1 across the lane, for the spectrum sweep
+         */
+        inline juce::Colour playedColour(int index, const juce::String& stemName,
+                                         float positionAcross)
+        {
+            switch (juce::jlimit(0, paletteCount - 1, index))
+            {
+            case 1:
+                return palette::stemIdentityColour(stemName).value_or(colours::accent());
+
+            case 2:
+                // One sweep from violet to amber, so a lane reads left to
+                // right without any bar dropping to an unreadable value.
+                return juce::Colour::fromHSV(
+                    0.72f - 0.62f * juce::jlimit(0.0f, 1.0f, positionAcross), 0.55f, 0.98f,
+                    1.0f);
+
+            case 3:
+                return juce::Colour(0xff4ea8ff);
+            case 4:
+                return juce::Colour(0xff46e797);
+            case 5:
+                return juce::Colour(0xffffb454);
+            case 6:
+                return juce::Colour(0xffef6bb4);
+
+            case 0:
+            default:
+                return colours::wavePlayed();
+            }
+        }
+
+        inline juce::Colour unplayedColour(int index, const juce::String& stemName,
+                                           float positionAcross)
+        {
+            if (juce::jlimit(0, paletteCount - 1, index) == 0)
+                return colours::waveUnplayed();
+
+            return playedColour(index, stemName, positionAcross)
+                .withMultipliedSaturation(0.55f)
+                .withMultipliedBrightness(0.45f);
+        }
+    }
+
     namespace fonts
     {
         /*
@@ -226,6 +302,15 @@ namespace stemlab::theme
             constexpr int groundMargin = 12;
             constexpr int width = 880 + 2 * groundMargin;
             constexpr int height = 588;
+
+            /*
+                The window resizes, but the layout does not reflow: the whole
+                panel is drawn at the size above and scaled by one transform,
+                between these bounds. The aspect ratio is fixed, so a lane's
+                proportions are identical at every size.
+            */
+            constexpr double minScale = 0.70;
+            constexpr double maxScale = 2.50;
         }
 
         namespace panel
@@ -245,7 +330,7 @@ namespace stemlab::theme
             constexpr int glyphGap = 10;
             constexpr int settingsButton = 32;
             constexpr float settingsRadius = 8.0f;
-            constexpr int settingsIcon = 15;
+            constexpr int settingsIcon = 16;
         }
 
         namespace source
@@ -275,7 +360,9 @@ namespace stemlab::theme
 
         namespace lanes
         {
-            // Grid per row: include | name | waveform | controls.
+            // Grid per row: twisty | include | name | waveform | controls.
+            constexpr int twistyColumn = 14;
+            constexpr int twistyIcon = 9;
             constexpr int includeColumn = 18;
             constexpr int nameColumn = 92;
             constexpr int controlsColumn = 78;
@@ -322,6 +409,9 @@ namespace stemlab::theme
             constexpr int abWidth = 150;
             constexpr int abHeight = 28;
             constexpr float abRadius = 8.0f;
+
+            // The selected option is a closed pill inset inside the shell.
+            constexpr float abInset = 3.0f;
         }
 
         namespace footer

@@ -52,6 +52,28 @@ namespace stemlab::widgets
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(IconButton)
     };
 
+    /**
+     * Lane disclosure twisty: a chevron that points down while a lane's
+     * children are shown and right while they are collapsed. Lanes with no
+     * children keep the column but hide the button, so every checkbox and
+     * name stays on the same grid.
+     */
+    class DisclosureButton final : public juce::Button
+    {
+    public:
+        DisclosureButton();
+
+        void setExpanded(bool shouldBeExpanded);
+        bool isExpanded() const noexcept { return expanded; }
+
+        void paintButton(juce::Graphics&, bool highlighted, bool down) override;
+
+    private:
+        bool expanded = true;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DisclosureButton)
+    };
+
     /** 34px circular play/pause with accent border and glyph. */
     class PlayCircleButton final : public juce::Button
     {
