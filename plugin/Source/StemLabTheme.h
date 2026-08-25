@@ -76,10 +76,6 @@ namespace stemlab::theme
         inline juce::Colour accentTint13() { return accent().withAlpha(0.13f); }
         inline juce::Colour accentHover18() { return accent400().withAlpha(0.18f); }
 
-        // Panel shadow (approximates Nocturne's shadow-md). The panel has no
-        // resting outline: the shadow is what lifts it off the ground, and a
-        // permanent 1px edge only boxed the window in.
-        inline juce::Colour panelShadow() { return juce::Colours::black.withAlpha(0.55f); }
         inline juce::Colour accentGlow() { return accent().withAlpha(0.40f); }
 
         // Primary (filled) action: Separate control shell, Insert Stems.
@@ -297,13 +293,20 @@ namespace stemlab::theme
     {
         namespace window
         {
-            // Fixed-size panel per the 1a spec: an 880px-wide surface on a
-            // 12px ground margin, height fitting the content stack exactly
-            // (six lanes; adaptive child lanes scroll within the lanes
-            // region rather than growing the window).
-            constexpr int groundMargin = 12;
+            /*
+                The surface runs edge to edge: no ground margin, no rounded
+                corners, no shadow. Floating the panel on a ground inset made
+                sense in a mock; in a host's FX window it is a dead border
+                around the only thing on screen.
+
+                880x564 is the content stack exactly - panel::padY either
+                side of a header, source strip, six lanes, transport and
+                footer. Adaptive child lanes scroll within the lanes region
+                rather than growing the window.
+            */
+            constexpr int groundMargin = 0;
             constexpr int width = 880 + 2 * groundMargin;
-            constexpr int height = 588;
+            constexpr int height = 564 + 2 * groundMargin;
 
             /*
                 The window resizes, but the layout does not reflow: the whole
@@ -317,12 +320,9 @@ namespace stemlab::theme
 
         namespace panel
         {
-            constexpr float cornerRadius = 14.0f;
             constexpr int padX = 22;
             constexpr int padY = 20;
             constexpr int stackGap = 14;
-            constexpr int shadowRadius = 18;
-            constexpr int shadowOffsetY = 6;
         }
 
         namespace header
