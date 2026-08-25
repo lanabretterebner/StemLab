@@ -4,23 +4,49 @@
 #include <array>
 #include <atomic>
 #include <memory>
+#include <vector>
 
 namespace stemlab::reaper
 {
-    struct Api;
+struct Api;
 }
 
 class StemLabEngineThread;
+class StemLabRecursiveThread;
 
 #if JUCE_WINDOWS || JUCE_LINUX
 class StemLabSystemLoopbackThread;
 #endif
 
+/** One node in the adaptive stem tree returned by Python's schema-2 manifest. */
+struct StemLabRecursiveStemInfo
+{
+    // Mirrors each child entry in stemlab.recursive schema-2 manifests.
+    juce::String id;
+    juce::String label;
+    juce::String parentId;
+    juce::String rootStem;
+    juce::String category;
+    juce::File file;
+    juce::StringArray actions;
+    bool selected = true;
+    bool hasChildren = false;
+    int depth = 1;
+    int estimatedSourceCount = 1;
+    double confidence = 0.0;
+};
+
+/**
+ * Owns StemLab's audio capture, preview player, Python jobs, and Ableton bridge.
+ *
+ * JUCE calls the AudioProcessor overrides on audio/host threads. The editor calls
+ * the remaining public methods from the message thread. Expensive separation is
+ * always delegated to a child Python process.
+ */
 class StemLabAudioProcessor final : public juce::AudioProcessor,
                                     public juce::ChangeBroadcaster,
                                     public juce::AudioSource,
-                                    public juce::VST3ClientExtensions,
-                                    private juce::AsyncUpdater
+                                    public juce::VST3ClientExtensions
 {
 public:
     enum StandaloneRecordingMode
@@ -33,16 +59,15 @@ public:
     StemLabAudioProcessor();
     ~StemLabAudioProcessor() override;
 
-    void prepareToPlay (double sampleRate, int samplesPerBlock) override;
+    void prepareToPlay(double sampleRate, int samplesPerBlock) override;
     void releaseResources() override;
 
     // AudioSource callbacks used only by the Standalone preview player.
-    void prepareToPlay (int samplesPerBlockExpected, double sampleRate) override;
-    void releaseResourcesForAudioSource();
-    void getNextAudioBlock (const juce::AudioSourceChannelInfo& bufferToFill) override;
+    void prepareToPlay(int samplesPerBlockExpected, double sampleRate) override;
+    void getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill) override;
 
-    bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
-    void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    bool isBusesLayoutSupported(const BusesLayout& layouts) const override;
+    void processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
 
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
@@ -55,27 +80,37 @@ public:
 
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
-    void setCurrentProgram (int) override {}
-    const juce::String getProgramName (int) override { return {}; }
-    void changeProgramName (int, const juce::String&) override {}
+    void setCurrentProgram(int) override {}
+    const juce::String getProgramName(int) override { return {}; }
+    void changeProgramName(int, const juce::String&) override {}
 
-    void getStateInformation (juce::MemoryBlock&) override;
-    void setStateInformation (const void*, int) override;
+    void getStateInformation(juce::MemoryBlock&) override;
+    void setStateInformation(const void*, int) override;
 
-    // Capture / standalone input ------------------------------------------
-    bool startCapture();
-    void stopCapture();
+    /**
+     * Load the source used by the next separation job.
+     *
+     * @param file Audio file to load.
+     * @param startPpq Arrangement beat where Ableton should place output stems.
+     * @param sourceLabel Optional user-facing description of the source.
+     * @return true when JUCE can read the file.
+     */
+    bool setInputAudioFile(const juce::File& file, double startPpq = 0.0,
+                           const juce::String& sourceLabel = {});
 
-    /*  Which host-integration path this instance can use.
+    bool setStandaloneInputFile(const juce::File& file);
+    bool isStandaloneApp() const noexcept;
 
-        REAPER is detected at runtime: the VST3 wrapper hands over the host
-        context during initialisation, and if it answers to
-        IReaperHostApplication the whole ReaScript API is available
-        in-process. Ableton Live has no such API, so its path is the
-        Windows-only UDP + Remote Script bridge, assumed for any other
-        Windows host. Everywhere else the plugin offers the same local-file
-        workflow as the Standalone app.
-    */
+    /**
+     * Which host-integration path this instance can use.
+     *
+     * REAPER is detected at runtime: the VST3 wrapper hands over the host
+     * context during initialisation, and if it answers to
+     * IReaperHostApplication the whole ReaScript API is available in-process.
+     * Ableton Live has no such API, so its Windows-only UDP + Remote Script
+     * bridge stays the assumption for any other Windows host. Everywhere else
+     * the plugin offers the same local-file workflow as the Standalone app.
+     */
     enum HostIntegration
     {
         hostIntegrationNone = 0,
@@ -87,104 +122,90 @@ public:
 
     bool usesLocalFileWorkflow() const noexcept
     {
-        return isStandaloneApp()
-            || getHostIntegration() == hostIntegrationNone;
+        return isStandaloneApp() || getHostIntegration() == hostIntegrationNone;
     }
 
-    // juce::VST3ClientExtensions ------------------------------------------
-    juce::VST3ClientExtensions* getVST3ClientExtensions() override
-    {
-        return this;
-    }
+    // juce::VST3ClientExtensions
+    juce::VST3ClientExtensions* getVST3ClientExtensions() override { return this; }
+    void setIHostApplication(Steinberg::FUnknown* host) override;
 
-    void setIHostApplication (Steinberg::FUnknown* host) override;
-
-    // REAPER bridge. Both are message-thread only - the ReaScript API has no
-    // other home - and both no-op with a status update if REAPER stopped
-    // providing what they need.
+    /**
+     * REAPER bridge. Both are message-thread only - the ReaScript API has no
+     * other home - and both no-op with a status update if REAPER stopped
+     * providing what they need.
+     */
     bool requestReaperSourceItem();
     bool insertSelectedStemsIntoReaper();
 
-    // Generic source loading used by Standalone, Ableton clip retrieval, and
-    // Windows system-audio recording.
-    bool setInputAudioFile (
-        const juce::File& file,
-        double startPpq = 0.0,
-        const juce::String& sourceLabel = {});
-
-    bool setStandaloneInputFile (const juce::File& file);
-    bool isStandaloneApp() const noexcept;
-
-    // Ask the invisible StemLabRemote script for the selected/current
-    // Arrangement clip's real underlying audio file. Ableton mode only.
+    /** Ask StemLabRemote for Ableton's selected Arrangement audio clip. */
     bool requestAbletonSourceClip();
     void refreshAbletonSourceClipFromDisk();
 
-    bool isAwaitingAbletonSourceClip() const noexcept
-    {
-        return abletonClipRequestPending.load();
-    }
+    bool isAwaitingAbletonSourceClip() const noexcept { return abletonClipRequestPending.load(); }
 
     juce::String getInputSourceLabel() const;
 
-    // Physical/interface input recording uses the JUCE standalone input.
+    /** Start/stop recording the Standalone app's selected physical input. */
     bool startStandaloneRecording();
     void stopStandaloneRecording();
 
-    // System recording captures the default output: WASAPI loopback on
-    // Windows, the PulseAudio/PipeWire monitor source on Linux. Platforms
-    // without a backend hide the control instead of offering a button that
-    // always fails.
+    /**
+     * Start/stop system-audio recording of the default output: WASAPI
+     * loopback on Windows, the PulseAudio/PipeWire monitor source on Linux.
+     * Platforms without a backend hide the control instead of offering a
+     * button that always fails.
+     */
     static constexpr bool isSystemAudioCaptureSupported() noexcept
     {
-       #if JUCE_WINDOWS || JUCE_LINUX
+#if JUCE_WINDOWS || JUCE_LINUX
         return true;
-       #else
+#else
         return false;
-       #endif
+#endif
     }
 
     bool startSystemAudioRecording();
     void stopSystemAudioRecording();
 
-    int getStandaloneRecordingMode() const noexcept
-    {
-        return standaloneRecordingMode.load();
-    }
+    int getStandaloneRecordingMode() const noexcept { return standaloneRecordingMode.load(); }
 
     void toggleStandalonePlayback();
-    bool playCompletedStem (int index);
-    bool seekCompletedStem (int index, double normalisedPosition);
+    bool playCompletedStem(int index);
+    bool seekCompletedStem(int index, double normalisedPosition);
     void stopStandalonePlayback();
 
     bool isStandalonePlaying() const noexcept;
 
-    int getPreviewStemIndex() const noexcept
-    {
-        return previewStemIndex.load();
-    }
+    int getPreviewStemIndex() const noexcept { return previewStemIndex.load(); }
 
     double getPreviewPositionSeconds() const noexcept;
     double getPreviewLengthSeconds() const noexcept;
 
     bool isCapturing() const noexcept { return capturing.load(); }
-    bool isCaptureArmed() const noexcept { return captureArmed.load(); }
-    bool isCaptureFinalizing() const noexcept
-    {
-        return captureFinalizeRequested.load();
-    }
 
     double getCapturedSeconds() const noexcept;
     juce::File getCaptureFile() const;
     double getCaptureStartPpq() const noexcept { return captureStartPpq.load(); }
 
-    // Separation -----------------------------------------------------------
+    /** Launch the main six-stem Python job for the currently loaded source. */
     bool launchSeparationAndExport();
+
+    /** Launch the default adaptive action for one completed root stem. */
+    bool launchRecursiveStemSplit(int rootStemIndex);
+
+    /** Launch an action advertised by an existing adaptive-tree node. */
+    bool launchRecursiveAction(const juce::String& itemId, const juce::String& action);
+    bool isRecursiveEngineRunning() const noexcept;
+    std::vector<StemLabRecursiveStemInfo> getRecursiveStemItems() const;
+    juce::File getRecursiveStemFile(const juce::String& itemId) const;
+    void setRecursiveStemEnabled(const juce::String& itemId, bool enabled);
+    bool isRecursiveStemEnabled(const juce::String& itemId) const;
+    bool playRecursiveStem(const juce::String& itemId);
+    bool seekRecursiveStem(const juce::String& itemId, double normalisedPosition);
+    juce::String getPreviewRecursiveId() const;
+
     bool isEngineRunning() const noexcept;
-    bool hasSuccessfulJob() const noexcept
-    {
-        return engineCompletedSuccessfully.load();
-    }
+    bool hasSuccessfulJob() const noexcept { return engineCompletedSuccessfully.load(); }
 
     double getEngineProgress() const noexcept { return engineProgress.load(); }
     double getEngineElapsedSeconds() const noexcept;
@@ -195,42 +216,31 @@ public:
     juce::String getEngineLog() const;
     juce::File getLastJobDirectory() const;
 
-    void setJobRootDirectory (const juce::File& directory);
+    void setJobRootDirectory(const juce::File& directory);
     juce::File getJobRootDirectory() const;
 
-    // Ableton bridge -------------------------------------------------------
+    /** Poll StemLabRemote's status/acknowledgement files. */
     void refreshAbletonBridgeStatusFromDisk();
+
+    /** Ask StemLabRemote to import all currently selected completed stems. */
     bool sendSelectedStemsToAbleton();
     bool retryAbletonImport();
     juce::String getAbletonBridgeStatus() const;
-    int getAbletonImportedStemCount() const noexcept
-    {
-        return abletonImportedStemCount.load();
-    }
+    /** Publish a short status message from a UI callback. */
+    void postUiStatus(const juce::String& message);
 
-    // UI-safe wrapper. Keeps the internal status implementation private while
-    // allowing the editor to surface small user-facing confirmations.
-    void postUiStatus (const juce::String& message);
+    /** Copy selected completed stems to a Standalone export directory. */
+    int saveSelectedStemsTo(const juce::File& destination);
+    juce::File getCompletedStemFile(int index) const;
 
-    // Standalone export: split all stems internally, then choose which
-    // completed files to copy out.
-    int saveSelectedStemsTo (const juce::File& destination);
-    juce::File getCompletedStemFile (int index) const;
-
-    // Settings -------------------------------------------------------------
-    void setEngineCommand (const juce::String&);
+    /** Override or query the executable used for the main Python worker. */
+    void setEngineCommand(const juce::String&);
     juce::String getEngineCommand() const;
     void resetEngineCommandToAutoDiscover();
 
-    void setRefinementEnabled (bool enabled) noexcept
-    {
-        refinementEnabled.store (enabled);
-    }
+    void setRefinementEnabled(bool enabled) noexcept { refinementEnabled.store(enabled); }
 
-    bool isRefinementEnabled() const noexcept
-    {
-        return refinementEnabled.load();
-    }
+    bool isRefinementEnabled() const noexcept { return refinementEnabled.load(); }
 
     enum SeparatorEngine
     {
@@ -239,81 +249,66 @@ public:
         separatorHybrid = 2
     };
 
-    void setSeparatorEngineIndex (int index) noexcept
+    void setSeparatorEngineIndex(int index) noexcept
     {
-        separatorEngineIndex.store (
-            juce::jlimit (
-                0,
-                separatorEngineCount - 1,
-                index));
+        separatorEngineIndex.store(juce::jlimit(0, separatorEngineCount - 1, index));
     }
 
-    int getSeparatorEngineIndex() const noexcept
-    {
-        return separatorEngineIndex.load();
-    }
+    int getSeparatorEngineIndex() const noexcept { return separatorEngineIndex.load(); }
 
     juce::String getSeparatorEngineId() const;
     juce::String getSeparatorEngineDisplayName() const;
 
     static constexpr int separatorEngineCount = 3;
 
-    void setStemEnabled (int index, bool enabled);
-    bool isStemEnabled (int index) const;
+    void setStemEnabled(int index, bool enabled);
+    bool isStemEnabled(int index) const;
 
-    void setWaveformColourIndex (int index);
-    int getWaveformColourIndex() const noexcept
-    {
-        return waveformColourIndex.load();
-    }
+    void setWaveformColourIndex(int index);
+    int getWaveformColourIndex() const noexcept { return waveformColourIndex.load(); }
 
     static constexpr int waveformColourCount = 7;
 
-    static juce::String getStemName (int index);
+    static juce::String getStemName(int index);
     static constexpr int stemCount = 6;
 
 private:
     friend class StemLabEngineThread;
+    friend class StemLabRecursiveThread;
 
-   #if JUCE_WINDOWS || JUCE_LINUX
+#if JUCE_WINDOWS || JUCE_LINUX
     friend class StemLabSystemLoopbackThread;
-   #endif
+#endif
 
-    void handleAsyncUpdate() override;
-    void setStatus (const juce::String&);
-    void setEngineProgress (double progress);
-    void handleEngineOutputLine (const juce::String& line);
+    void stopCapture();
+    void setStatus(const juce::String&);
+    void setEngineProgress(double progress);
+    void handleEngineOutputLine(const juce::String& line);
+    juce::StringArray makePythonModuleCommand(const juce::String& moduleName) const;
+    void finishRecursiveJob(const juce::File& manifestFile);
+    void clearRecursiveResults();
     juce::String discoverEngineCommand() const;
-    void appendEngineLog (const juce::String&);
-    void finalizeHostCapture();
-    bool sendAbletonBridgeNotification (const juce::File& manifestFile);
-    bool sendAbletonControlMessage (const juce::String& message);
-    juce::File getAbletonClipReplyFile() const;
+    void appendEngineLog(const juce::String&);
+    bool sendAbletonBridgeNotification(const juce::File& manifestFile);
+    bool sendAbletonControlMessage(const juce::String& message);
 
-    juce::File createCaptureFile() const;
-    juce::File createRecordingFile() const;
-    juce::File createSystemRecordingFile() const;
+    juce::File createRecordingFile(const juce::String& prefix) const;
     juce::File createJobDirectory() const;
-    bool loadPreviewFile (const juce::File& file, int previewStem);
+    bool loadPreviewFile(const juce::File& file, int previewStem);
 
-    juce::TimeSliceThread diskWriterThread { "StemLab capture writer" };
+    juce::TimeSliceThread diskWriterThread{"StemLab capture writer"};
     std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> threadedWriter;
-    std::atomic<juce::AudioFormatWriter::ThreadedWriter*> activeWriter { nullptr };
+    std::atomic<juce::AudioFormatWriter::ThreadedWriter*> activeWriter{nullptr};
 
-    std::atomic<bool> capturing { false };
-    std::atomic<bool> captureArmed { false };
-    std::atomic<bool> captureFinalizeRequested { false };
-    std::atomic<bool> hostWasPlayingDuringCapture { false };
-    std::atomic<int> standaloneRecordingMode { recordingNone };
-    std::atomic<juce::int64> capturedSamples { 0 };
-    std::atomic<double> captureStartPpq { -1.0 };
-    std::atomic<juce::int64> captureStartTimelineSample { -1 };
-    std::atomic<double> lastKnownHostPpq { 0.0 };
-    std::atomic<juce::int64> lastKnownHostTimelineSample { 0 };
+    std::atomic<bool> capturing{false};
+    std::atomic<int> standaloneRecordingMode{recordingNone};
+    std::atomic<juce::int64> capturedSamples{0};
+    std::atomic<double> captureStartPpq{-1.0};
+    std::atomic<double> lastKnownHostPpq{0.0};
 
-    std::atomic<bool> abletonClipRequestPending { false };
-    std::atomic<double> abletonClipRequestStartMs { 0.0 };
-    std::atomic<double> inputDurationSeconds { 0.0 };
+    std::atomic<bool> abletonClipRequestPending{false};
+    std::atomic<double> abletonClipRequestStartMs{0.0};
+    std::atomic<double> inputDurationSeconds{0.0};
 
     double currentSampleRate = 44100.0;
     int currentInputChannels = 2;
@@ -321,9 +316,9 @@ private:
     // Rate of the WAV a system-capture thread is writing. Atomic because the
     // capture thread stores it while the editor timer reads it through
     // getCapturedSeconds(); the host can concurrently rewrite
-    // currentSampleRate in prepareToPlay, so that field cannot be trusted
-    // for the recording-time readout.
-    std::atomic<double> systemCaptureSampleRate { 0.0 };
+    // currentSampleRate in prepareToPlay, so that field cannot be trusted for
+    // the recording-time readout.
+    std::atomic<double> systemCaptureSampleRate{0.0};
 
     mutable juce::CriticalSection stateLock;
     juce::File captureFile;
@@ -334,19 +329,20 @@ private:
     juce::String inputSourceLabel;
     juce::String abletonClipRequestId;
 
-    juce::String engineCommand { "stemlab-plugin-job" };
-    juce::String status { "Ready" };
+    juce::String engineCommand{"stemlab-plugin-job"};
+    juce::String status{"Ready"};
     juce::String engineLog;
 
     // Resolved once when the VST3 wrapper delivers the host context, before
     // any editor exists; read from the message thread afterwards.
     std::unique_ptr<stemlab::reaper::Api> reaperApi;
 
-    /*  Geometry of the last item pulled with Use Selected Item, echoed back
-        by Insert Stems so the new items match the original selection even
-        when the take was trimmed or rate-shifted. Guarded by stateLock;
-        cleared whenever a different source is loaded.
-    */
+    /**
+     * Geometry of the last item pulled with Use Selected Item, echoed back by
+     * Insert Stems so the new items match the original selection even when
+     * the take was trimmed or rate-shifted. Guarded by stateLock; cleared
+     * whenever a different source is loaded.
+     */
     struct ReaperSourceInfo
     {
         bool valid = false;
@@ -361,30 +357,33 @@ private:
     ReaperSourceInfo reaperSourceInfo;
 
     void runReaperSelfTestIfRequested();
-    void runReaperSelfTestAction (
-        const juce::String& action,
-        const juce::File& report);
+    void runReaperSelfTestAction(const juce::String& action, const juce::File& report);
 
     std::array<std::atomic<bool>, stemCount> stemEnabled;
-    std::atomic<bool> refinementEnabled { true };
-    std::atomic<int> separatorEngineIndex { separatorRoFormer };
-    std::atomic<int> waveformColourIndex { 0 };
+    std::atomic<bool> refinementEnabled{true};
+    std::atomic<int> separatorEngineIndex{separatorRoFormer};
+    std::atomic<int> waveformColourIndex{0};
 
-    std::atomic<double> engineProgress { 0.0 };
-    std::atomic<double> engineStartMs { 0.0 };
-    std::atomic<double> lastEngineDurationSeconds { 0.0 };
-    std::atomic<bool> engineCompletedSuccessfully { false };
+    std::atomic<double> engineProgress{0.0};
+    std::atomic<double> engineStartMs{0.0};
+    std::atomic<double> engineProgressUpdateMs{0.0};
+    std::atomic<double> lastEngineDurationSeconds{0.0};
+    std::atomic<bool> engineCompletedSuccessfully{false};
 
     mutable juce::CriticalSection abletonBridgeLock;
-    juce::String abletonBridgeStatus { "Bridge not confirmed yet" };
-    std::atomic<int> abletonImportedStemCount { 0 };
-    std::atomic<double> abletonBridgeWaitStartMs { 0.0 };
+    juce::String abletonBridgeStatus{"Bridge not confirmed yet"};
+    std::atomic<double> abletonBridgeWaitStartMs{0.0};
 
     std::unique_ptr<StemLabEngineThread> engineThread;
+    std::unique_ptr<StemLabRecursiveThread> recursiveThread;
 
-   #if JUCE_WINDOWS || JUCE_LINUX
+#if JUCE_WINDOWS || JUCE_LINUX
     std::unique_ptr<StemLabSystemLoopbackThread> systemLoopbackThread;
-   #endif
+#endif
+
+    mutable juce::CriticalSection recursiveLock;
+    std::vector<StemLabRecursiveStemInfo> recursiveItems;
+    juce::String previewRecursiveId;
 
     juce::AudioFormatManager previewFormats;
     std::unique_ptr<juce::AudioFormatReaderSource> previewReaderSource;
@@ -397,8 +396,8 @@ private:
     // dialog all refer to the same selected device.
     juce::AudioDeviceManager* standaloneDeviceManager = nullptr;
 
-    std::atomic<int> previewStemIndex { -2 }; // -2 none, -1 source, 0..5 stem
+    std::atomic<int> previewStemIndex{-2}; // -2 none, -1 source, 0..5 stem
 
-    JUCE_DECLARE_WEAK_REFERENCEABLE (StemLabAudioProcessor)
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (StemLabAudioProcessor)
+    JUCE_DECLARE_WEAK_REFERENCEABLE(StemLabAudioProcessor)
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StemLabAudioProcessor)
 };

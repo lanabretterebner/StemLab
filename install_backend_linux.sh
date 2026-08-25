@@ -214,6 +214,15 @@ PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install --upgrade pip --quiet
 PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install \
     ${TORCH_ARGS[@]+"${TORCH_ARGS[@]}"} "torch>=2.4"
 
+# Recursive/adaptive stem splitting needs audio-separator. The project's own
+# "recursive" extra pins the GPU build unconditionally, so install the
+# flavor-matched build here instead of through the extra.
+if [[ "$TORCH_FLAVOR" == "cuda" ]]; then
+    PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install "audio-separator[gpu]==0.44.5"
+else
+    PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install "audio-separator[cpu]==0.44.5"
+fi
+
 PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install "$SCRIPT_DIR"
 
 printf '%s\n' "$TORCH_FLAVOR" > "$FLAVOR_FILE"
@@ -224,9 +233,11 @@ echo "Verifying the Engine..."
 
 PYTHONNOUSERSITE=1 "$PYTHON" -s - <<'PYCHECK'
 import stemlab
+import stemlab.recursive
 import torch
 
 print(f"  stemlab import: ok")
+print(f"  recursive splitting available: {stemlab.recursive.Separator is not None}")
 print(f"  torch {torch.__version__}, CUDA available: {torch.cuda.is_available()}")
 PYCHECK
 

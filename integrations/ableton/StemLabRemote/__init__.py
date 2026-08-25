@@ -98,9 +98,7 @@ class StemLabRemote(ControlSurface):
                 active=False,
                 message="Could not bind UDP port %d: %s" % (PORT, exc),
             )
-            self.log_message(
-                "StemLabRemote: UDP bind failed: %s" % exc
-            )
+            self.log_message("StemLabRemote: UDP bind failed: %s" % exc)
             return
 
         thread = threading.Thread(
@@ -111,9 +109,7 @@ class StemLabRemote(ControlSurface):
         self._listener_thread = thread
         thread.start()
 
-        self.log_message(
-            "StemLabRemote: listening on %s:%d" % (HOST, PORT)
-        )
+        self.log_message("StemLabRemote: listening on %s:%d" % (HOST, PORT))
 
     def _listener_loop(self):
         while self._stemlab_running:
@@ -123,36 +119,26 @@ class StemLabRemote(ControlSurface):
                 continue
             except Exception:
                 if self._stemlab_running:
-                    self.log_message(
-                        "StemLabRemote: socket error:\n%s"
-                        % traceback.format_exc()
-                    )
+                    self.log_message("StemLabRemote: socket error:\n%s" % traceback.format_exc())
                 break
 
             try:
                 text = payload.decode("utf-8", errors="replace").strip()
                 self._handle_udp_message(text)
             except Exception:
-                self.log_message(
-                    "StemLabRemote: UDP message error:\n%s"
-                    % traceback.format_exc()
-                )
+                self.log_message("StemLabRemote: UDP message error:\n%s" % traceback.format_exc())
 
     def _handle_udp_message(self, text):
         if text.startswith("stemlab_ready "):
-            encoded_path = text[len("stemlab_ready "):].strip()
+            encoded_path = text[len("stemlab_ready ") :].strip()
 
             try:
-                manifest_path = bytes.fromhex(
-                    encoded_path
-                ).decode(
+                manifest_path = bytes.fromhex(encoded_path).decode(
                     "utf-8",
                     errors="strict",
                 )
             except Exception as exc:
-                self.log_message(
-                    "StemLabRemote: invalid manifest path: %s" % exc
-                )
+                self.log_message("StemLabRemote: invalid manifest path: %s" % exc)
                 return
 
             self._last_manifest = manifest_path
@@ -160,13 +146,12 @@ class StemLabRemote(ControlSurface):
             # Live's Song/Track API must only be touched on Live's main thread.
             self.schedule_message(
                 1,
-                lambda path=manifest_path:
-                    self._import_manifest_on_live_thread(path),
+                lambda path=manifest_path: self._import_manifest_on_live_thread(path),
             )
             return
 
         if text.startswith("stemlab_get_clip "):
-            payload = text[len("stemlab_get_clip "):].strip()
+            payload = text[len("stemlab_get_clip ") :].strip()
             parts = payload.split(" ", 1)
 
             request_id = parts[0].strip() if parts else ""
@@ -174,16 +159,12 @@ class StemLabRemote(ControlSurface):
 
             if len(parts) > 1 and parts[1].strip():
                 try:
-                    reply_path = bytes.fromhex(
-                        parts[1].strip()
-                    ).decode(
+                    reply_path = bytes.fromhex(parts[1].strip()).decode(
                         "utf-8",
                         errors="strict",
                     )
                 except Exception as exc:
-                    self.log_message(
-                        "StemLabRemote: invalid clip reply path: %s" % exc
-                    )
+                    self.log_message("StemLabRemote: invalid clip reply path: %s" % exc)
                     return
 
             if request_id:
@@ -210,8 +191,7 @@ class StemLabRemote(ControlSurface):
 
                 self.schedule_message(
                     1,
-                    lambda rid=request_id, rp=reply_path:
-                        self._reply_with_source_clip(rid, rp),
+                    lambda rid=request_id, rp=reply_path: self._reply_with_source_clip(rid, rp),
                 )
 
     # ------------------------------------------------------------------
@@ -223,22 +203,15 @@ class StemLabRemote(ControlSurface):
             song = self.song()
             source_track, clip = self._resolve_selected_audio_clip(song)
 
-            file_path = str(
-                getattr(clip, "file_path", "") or ""
-            )
+            file_path = str(getattr(clip, "file_path", "") or "")
 
             if not file_path:
-                raise RuntimeError(
-                    "The selected Live clip does not expose an audio file path"
-                )
+                raise RuntimeError("The selected Live clip does not expose an audio file path")
 
             file_path = os.path.abspath(file_path)
 
             if not os.path.isfile(file_path):
-                raise RuntimeError(
-                    "Live's source audio file was not found: %s"
-                    % file_path
-                )
+                raise RuntimeError("Live's source audio file was not found: %s" % file_path)
 
             try:
                 start_beat = float(clip.start_time)
@@ -266,10 +239,7 @@ class StemLabRemote(ControlSurface):
                 reply_path=reply_path,
             )
 
-            self.log_message(
-                "StemLabRemote: source clip -> %s"
-                % file_path
-            )
+            self.log_message("StemLabRemote: source clip -> %s" % file_path)
 
         except Exception as exc:
             message = str(exc)
@@ -282,8 +252,7 @@ class StemLabRemote(ControlSurface):
             )
 
             self.log_message(
-                "StemLabRemote: source clip lookup failed:\n%s"
-                % traceback.format_exc()
+                "StemLabRemote: source clip lookup failed:\n%s" % traceback.format_exc()
             )
 
     def _resolve_selected_audio_clip(self, song):
@@ -299,9 +268,7 @@ class StemLabRemote(ControlSurface):
             selected_track = None
 
         if detail_clip is not None:
-            file_path = str(
-                getattr(detail_clip, "file_path", "") or ""
-            )
+            file_path = str(getattr(detail_clip, "file_path", "") or "")
 
             if file_path:
                 if selected_track is not None:
@@ -341,11 +308,7 @@ class StemLabRemote(ControlSurface):
                 if song_time >= 0.0:
                     for clip in clips:
                         try:
-                            if (
-                                float(clip.start_time)
-                                <= song_time
-                                < float(clip.end_time)
-                            ):
+                            if float(clip.start_time) <= song_time < float(clip.end_time):
                                 return selected_track, clip
                         except Exception:
                             pass
@@ -368,9 +331,7 @@ class StemLabRemote(ControlSurface):
             clips = []
 
         if not clips:
-            raise RuntimeError(
-                "No Arrangement audio clips were found on the StemLab track"
-            )
+            raise RuntimeError("No Arrangement audio clips were found on the StemLab track")
 
         # Best case: the user has clicked the desired Arrangement clip and it
         # is the current Detail clip.
@@ -397,11 +358,7 @@ class StemLabRemote(ControlSurface):
         if song_time >= 0.0:
             for clip in clips:
                 try:
-                    if (
-                        float(clip.start_time)
-                        <= song_time
-                        < float(clip.end_time)
-                    ):
+                    if float(clip.start_time) <= song_time < float(clip.end_time):
                         return clip
                 except Exception:
                     pass
@@ -482,29 +439,21 @@ class StemLabRemote(ControlSurface):
             manifest = self._load_json(manifest_path)
 
             if manifest.get("protocol") != PROTOCOL:
-                raise RuntimeError(
-                    "Unsupported StemLab manifest protocol"
-                )
+                raise RuntimeError("Unsupported StemLab manifest protocol")
 
             stems = manifest.get("stems") or []
 
             if not stems:
-                raise RuntimeError(
-                    "StemLab manifest contains no stems"
-                )
+                raise RuntimeError("StemLab manifest contains no stems")
 
-            start_beat = float(
-                manifest.get("capture_start_ppq", 0.0)
-            )
+            start_beat = float(manifest.get("capture_start_ppq", 0.0))
 
             if start_beat < 0.0:
                 start_beat = 0.0
 
             song = self.song()
 
-            source_index, source_track = (
-                self._resolve_source_track(song)
-            )
+            source_index, source_track = self._resolve_source_track(song)
 
             source_name = self._safe_name(
                 source_track,
@@ -528,8 +477,7 @@ class StemLabRemote(ControlSurface):
 
             self.schedule_message(
                 1,
-                lambda s=state:
-                    self._create_next_stem_track(s),
+                lambda s=state: self._create_next_stem_track(s),
             )
 
         except Exception as exc:
@@ -549,29 +497,18 @@ class StemLabRemote(ControlSurface):
                 return
 
             stem = stems[next_index]
-            stem_name = str(
-                stem.get("name") or "stem"
-            )
+            stem_name = str(stem.get("name") or "stem")
 
-            audio_path = os.path.abspath(
-                str(stem.get("path") or "")
-            )
+            audio_path = os.path.abspath(str(stem.get("path") or ""))
 
             if not audio_path or not os.path.isfile(audio_path):
-                raise RuntimeError(
-                    "Missing stem file: %s" % audio_path
-                )
+                raise RuntimeError("Missing stem file: %s" % audio_path)
 
-            insert_index = (
-                int(state["source_index"])
-                + 1
-                + int(state["imported"])
-            )
+            insert_index = int(state["source_index"]) + 1 + int(state["imported"])
 
             self._write_import_progress(
                 state,
-                "Creating %s track"
-                % self._title_case(stem_name),
+                "Creating %s track" % self._title_case(stem_name),
             )
 
             song = self.song()
@@ -581,14 +518,11 @@ class StemLabRemote(ControlSurface):
             # it or asking it to create an Arrangement clip.
             self.schedule_message(
                 1,
-                lambda s=state,
-                       idx=insert_index,
-                       item=stem:
-                    self._populate_stem_track(
-                        s,
-                        idx,
-                        item,
-                    ),
+                lambda s=state, idx=insert_index, item=stem: self._populate_stem_track(
+                    s,
+                    idx,
+                    item,
+                ),
             )
 
         except Exception as exc:
@@ -607,32 +541,20 @@ class StemLabRemote(ControlSurface):
             song = self.song()
             tracks = list(song.tracks)
 
-            if (
-                insert_index < 0
-                or insert_index >= len(tracks)
-            ):
-                raise RuntimeError(
-                    "Live did not expose the new audio track"
-                )
+            if insert_index < 0 or insert_index >= len(tracks):
+                raise RuntimeError("Live did not expose the new audio track")
 
             new_track = tracks[insert_index]
 
-            stem_name = str(
-                stem.get("name") or "stem"
-            )
+            stem_name = str(stem.get("name") or "stem")
 
             pretty_name = self._title_case(stem_name)
 
-            audio_path = os.path.abspath(
-                str(stem.get("path") or "")
-            )
+            audio_path = os.path.abspath(str(stem.get("path") or ""))
 
-            new_track.name = (
-                "%s - %s"
-                % (
-                    state["source_name"],
-                    pretty_name,
-                )
+            new_track.name = "%s - %s" % (
+                state["source_name"],
+                pretty_name,
             )
 
             color = self._stem_color(stem_name)
@@ -645,8 +567,7 @@ class StemLabRemote(ControlSurface):
 
             self._write_import_progress(
                 state,
-                "Placing %s audio"
-                % pretty_name,
+                "Placing %s audio" % pretty_name,
             )
 
             new_track.create_audio_clip(
@@ -657,14 +578,11 @@ class StemLabRemote(ControlSurface):
             # Clip creation and warping changes may be deferred by Live.
             self.schedule_message(
                 1,
-                lambda s=state,
-                       idx=insert_index,
-                       name=pretty_name:
-                    self._finish_stem_clip(
-                        s,
-                        idx,
-                        name,
-                    ),
+                lambda s=state, idx=insert_index, name=pretty_name: self._finish_stem_clip(
+                    s,
+                    idx,
+                    name,
+                ),
             )
 
         except Exception as exc:
@@ -683,42 +601,28 @@ class StemLabRemote(ControlSurface):
             song = self.song()
             tracks = list(song.tracks)
 
-            if (
-                insert_index >= 0
-                and insert_index < len(tracks)
-            ):
+            if insert_index >= 0 and insert_index < len(tracks):
                 try:
-                    clips = list(
-                        tracks[
-                            insert_index
-                        ].arrangement_clips
-                    )
+                    clips = list(tracks[insert_index].arrangement_clips)
 
                     if clips:
                         clips[-1].warping = False
                 except Exception as exc:
                     self.log_message(
-                        "StemLabRemote: could not disable Warp for %s: %s"
-                        % (pretty_name, exc)
+                        "StemLabRemote: could not disable Warp for %s: %s" % (pretty_name, exc)
                     )
 
-            state["imported"] = (
-                int(state["imported"]) + 1
-            )
-            state["next_index"] = (
-                int(state["next_index"]) + 1
-            )
+            state["imported"] = int(state["imported"]) + 1
+            state["next_index"] = int(state["next_index"]) + 1
 
             self._write_import_progress(
                 state,
-                "Imported %s"
-                % pretty_name,
+                "Imported %s" % pretty_name,
             )
 
             self.schedule_message(
                 1,
-                lambda s=state:
-                    self._create_next_stem_track(s),
+                lambda s=state: self._create_next_stem_track(s),
             )
 
         except Exception as exc:
@@ -732,14 +636,11 @@ class StemLabRemote(ControlSurface):
         source_name = str(state["source_name"])
         start_beat = float(state["start_beat"])
 
-        message = (
-            "Imported %d stem%s under %s at beat %.3f"
-            % (
-                imported,
-                "" if imported == 1 else "s",
-                source_name,
-                start_beat,
-            )
+        message = "Imported %d stem%s under %s at beat %.3f" % (
+            imported,
+            "" if imported == 1 else "s",
+            source_name,
+            start_beat,
         )
 
         self._write_ack(
@@ -762,14 +663,10 @@ class StemLabRemote(ControlSurface):
             message=message,
         )
 
-        self.log_message(
-            "StemLabRemote: " + message
-        )
+        self.log_message("StemLabRemote: " + message)
 
         try:
-            self.show_message(
-                "StemLab: " + message
-            )
+            self.show_message("StemLab: " + message)
         except Exception:
             pass
 
@@ -783,12 +680,8 @@ class StemLabRemote(ControlSurface):
             success=False,
             imported=int(state.get("imported", 0)),
             message=message,
-            source_track=str(
-                state.get("source_name", "")
-            ),
-            start_beat=float(
-                state.get("start_beat", 0.0)
-            ),
+            source_track=str(state.get("source_name", "")),
+            start_beat=float(state.get("start_beat", 0.0)),
         )
 
         self._write_import_progress(
@@ -802,15 +695,10 @@ class StemLabRemote(ControlSurface):
             message="Import failed: " + message,
         )
 
-        self.log_message(
-            "StemLabRemote: import failed:\n%s"
-            % traceback.format_exc()
-        )
+        self.log_message("StemLabRemote: import failed:\n%s" % traceback.format_exc())
 
         try:
-            self.show_message(
-                "StemLab import failed: " + message
-            )
+            self.show_message("StemLab import failed: " + message)
         except Exception:
             pass
 
@@ -839,10 +727,7 @@ class StemLabRemote(ControlSurface):
             failed=True,
         )
 
-        self.log_message(
-            "StemLabRemote: import failed: %s"
-            % message
-        )
+        self.log_message("StemLabRemote: import failed: %s" % message)
 
     def _write_import_progress(
         self,
@@ -852,13 +737,9 @@ class StemLabRemote(ControlSurface):
         failed=False,
     ):
         try:
-            manifest_path = os.path.abspath(
-                state["manifest_path"]
-            )
+            manifest_path = os.path.abspath(state["manifest_path"])
 
-            job_dir = os.path.dirname(
-                manifest_path
-            )
+            job_dir = os.path.dirname(manifest_path)
 
             path = os.path.join(
                 job_dir,
@@ -871,9 +752,7 @@ class StemLabRemote(ControlSurface):
                 "protocol": "stemlab-ableton-import-progress",
                 "version": 1,
                 "message": str(message),
-                "imported": int(
-                    state.get("imported", 0)
-                ),
+                "imported": int(state.get("imported", 0)),
                 "total": int(len(stems)),
                 "complete": bool(complete),
                 "failed": bool(failed),
@@ -887,10 +766,8 @@ class StemLabRemote(ControlSurface):
 
         except Exception:
             self.log_message(
-                "StemLabRemote: could not write import progress:\n%s"
-                % traceback.format_exc()
+                "StemLabRemote: could not write import progress:\n%s" % traceback.format_exc()
             )
-
 
     def _resolve_source_track(self, song):
         tracks = list(song.tracks)
@@ -948,9 +825,7 @@ class StemLabRemote(ControlSurface):
             "class_display_name",
         ):
             try:
-                labels.append(
-                    str(getattr(device, attribute))
-                )
+                labels.append(str(getattr(device, attribute)))
             except Exception:
                 pass
 
@@ -991,9 +866,7 @@ class StemLabRemote(ControlSurface):
         start_beat=0.0,
     ):
         try:
-            job_dir = os.path.dirname(
-                os.path.abspath(manifest_path)
-            )
+            job_dir = os.path.dirname(os.path.abspath(manifest_path))
 
             ack_path = os.path.join(
                 job_dir,
@@ -1018,10 +891,7 @@ class StemLabRemote(ControlSurface):
             )
 
         except Exception:
-            self.log_message(
-                "StemLabRemote: could not write ack:\n%s"
-                % traceback.format_exc()
-            )
+            self.log_message("StemLabRemote: could not write ack:\n%s" % traceback.format_exc())
 
     def _write_status(self, active, message):
         try:
@@ -1070,10 +940,7 @@ class StemLabRemote(ControlSurface):
             os.path.expanduser("~"),
         )
 
-        one_drive = (
-            os.environ.get("OneDriveCommercial")
-            or os.environ.get("OneDrive")
-        )
+        one_drive = os.environ.get("OneDriveCommercial") or os.environ.get("OneDrive")
 
         if one_drive:
             redirected = os.path.join(
@@ -1146,6 +1013,4 @@ class StemLabRemote(ControlSurface):
             "other": 0xDCEAF4,
         }
 
-        return colors.get(
-            str(name or "").lower()
-        )
+        return colors.get(str(name or "").lower())

@@ -1,14 +1,17 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
-#include "StemLabPaths.h"
 #include "ReaperBridge.h"
+#include "StemLabPaths.h"
 
-#if defined(JucePlugin_Build_Standalone) && JucePlugin_Build_Standalone
-#include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
-#endif
+#include <algorithm>
+#include <functional>
 
 #if JUCE_LINUX
 #include "LinuxSystemCapture.h"
+#endif
+
+#if defined(JucePlugin_Build_Standalone) && JucePlugin_Build_Standalone
+#include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
 #endif
 
 #if JUCE_WINDOWS
@@ -21,133 +24,113 @@
 
 namespace
 {
-    juce::String timestampForFilename()
-    {
-        return juce::Time::getCurrentTime().formatted ("%Y%m%d_%H%M%S");
-    }
-
-    double nowMs()
-    {
-        return juce::Time::getMillisecondCounterHiRes();
-    }
-
-    /*  Matches python, pythonw, python3 and versioned names such as
-        python3.11, on either platform, without also matching neighbours like
-        python-config that share the prefix.
-    */
-    bool looksLikePythonInterpreter (const juce::File& file)
-    {
-        const auto name =
-            file.getFileNameWithoutExtension()
-                .toLowerCase();
-
-        return name == "python"
-            || name == "pythonw"
-            || name.startsWith ("python3");
-    }
-
-    /*  True for the relocatable interpreter shipped inside a portable
-        release, as opposed to a development venv or a system Python.
-
-            Windows   Engine\python.exe
-            Linux     Engine/bin/python3
-    */
-    bool isPortableEngineRuntime (const juce::File& file)
-    {
-        if (! looksLikePythonInterpreter (file))
-            return false;
-
-        const auto parent = file.getParentDirectory();
-
-       #if JUCE_WINDOWS
-        return parent.getFileName()
-            .equalsIgnoreCase ("Engine");
-       #else
-        return parent.getFileName()
-                   .equalsIgnoreCase ("bin")
-            && parent.getParentDirectory()
-                   .getFileName()
-                   .equalsIgnoreCase ("Engine");
-       #endif
-    }
-
-    juce::String utf8ToHex (const juce::String& text)
-    {
-        const auto utf8 = text.toUTF8();
-        juce::String hex;
-
-        for (int i = 0; i < utf8.sizeInBytes() - 1; ++i)
-        {
-            hex += juce::String::toHexString (
-                       static_cast<int> (
-                           static_cast<unsigned char> (
-                               utf8.getAddress()[i])))
-                       .paddedLeft ('0', 2)
-                       .toUpperCase();
-        }
-
-        return hex;
-    }
-
-   #if JUCE_WINDOWS
-    juce::String hresultText (HRESULT result)
-    {
-        return "0x"
-            + juce::String::toHexString (
-                static_cast<juce::int64> (
-                    static_cast<unsigned long> (result)));
-    }
-
-    struct CoTaskMemWaveFormatDeleter
-    {
-        void operator() (WAVEFORMATEX* value) const noexcept
-        {
-            if (value != nullptr)
-                CoTaskMemFree (value);
-        }
-    };
-
-    struct EventHandle
-    {
-        HANDLE value = nullptr;
-
-        ~EventHandle()
-        {
-            if (value != nullptr)
-                CloseHandle (value);
-        }
-    };
-
-    struct ComApartment
-    {
-        explicit ComApartment (HRESULT resultIn)
-            : result (resultIn),
-              shouldUninitialise (SUCCEEDED (resultIn))
-        {
-        }
-
-        ~ComApartment()
-        {
-            if (shouldUninitialise)
-                CoUninitialize();
-        }
-
-        HRESULT result = E_FAIL;
-        bool shouldUninitialise = false;
-    };
-   #endif
+juce::String timestampForFilename()
+{
+    return juce::Time::getCurrentTime().formatted("%Y%m%d_%H%M%S");
 }
+
+double nowMs() { return juce::Time::getMillisecondCounterHiRes(); }
+
+/**
+ * Matches python, pythonw, python3 and versioned names such as python3.11, on
+ * either platform, without also matching neighbours like python-config.
+ */
+bool looksLikePythonInterpreter(const juce::File& file)
+{
+    const auto name = file.getFileNameWithoutExtension().toLowerCase();
+
+    return name == "python" || name == "pythonw" || name.startsWith("python3");
+}
+
+/**
+ * True for the relocatable interpreter shipped inside a portable release, as
+ * opposed to a development venv or a system Python.
+ *
+ *     Windows   Engine\python.exe
+ *     Linux     Engine/bin/python3
+ */
+bool isPortableEngineRuntime(const juce::File& file)
+{
+    if (!looksLikePythonInterpreter(file))
+        return false;
+
+    const auto parent = file.getParentDirectory();
+
+#if JUCE_WINDOWS
+    return parent.getFileName().equalsIgnoreCase("Engine");
+#else
+    return parent.getFileName().equalsIgnoreCase("bin") &&
+           parent.getParentDirectory().getFileName().equalsIgnoreCase("Engine");
+#endif
+}
+
+juce::String utf8ToHex(const juce::String& text)
+{
+    const auto utf8 = text.toUTF8();
+    juce::String hex;
+
+    for (int i = 0; i < utf8.sizeInBytes() - 1; ++i)
+    {
+        hex += juce::String::toHexString(
+                   static_cast<int>(static_cast<unsigned char>(utf8.getAddress()[i])))
+                   .paddedLeft('0', 2)
+                   .toUpperCase();
+    }
+
+    return hex;
+}
+
+#if JUCE_WINDOWS
+juce::String hresultText(HRESULT result)
+{
+    return "0x" +
+           juce::String::toHexString(static_cast<juce::int64>(static_cast<unsigned long>(result)));
+}
+
+struct CoTaskMemWaveFormatDeleter
+{
+    void operator()(WAVEFORMATEX* value) const noexcept
+    {
+        if (value != nullptr)
+            CoTaskMemFree(value);
+    }
+};
+
+struct EventHandle
+{
+    HANDLE value = nullptr;
+
+    ~EventHandle()
+    {
+        if (value != nullptr)
+            CloseHandle(value);
+    }
+};
+
+struct ComApartment
+{
+    explicit ComApartment(HRESULT resultIn)
+        : result(resultIn), shouldUninitialise(SUCCEEDED(resultIn))
+    {
+    }
+
+    ~ComApartment()
+    {
+        if (shouldUninitialise)
+            CoUninitialize();
+    }
+
+    HRESULT result = E_FAIL;
+    bool shouldUninitialise = false;
+};
+#endif
+} // namespace
 
 class StemLabEngineThread final : public juce::Thread
 {
 public:
-    StemLabEngineThread (StemLabAudioProcessor& ownerIn,
-                         juce::StringArray commandIn,
-                         juce::File jobDirectoryIn)
-        : juce::Thread ("StemLab engine"),
-          owner (ownerIn),
-          command (std::move (commandIn)),
-          jobDirectory (std::move (jobDirectoryIn))
+    StemLabEngineThread(StemLabAudioProcessor& ownerIn, juce::StringArray commandIn)
+        : juce::Thread("StemLab engine"), owner(ownerIn), command(std::move(commandIn))
     {
     }
 
@@ -158,62 +141,60 @@ public:
         if (process != nullptr && process->isRunning())
             process->kill();
 
-        stopThread (3000);
+        stopThread(3000);
     }
 
     void run() override
     {
-        owner.setStatus ("Starting...");
-        owner.setEngineProgress (0.02);
+        owner.setStatus("Starting...");
+        owner.setEngineProgress(0.02);
 
         process = std::make_unique<juce::ChildProcess>();
 
-        if (! process->start (command,
-                              juce::ChildProcess::wantStdOut
-                                | juce::ChildProcess::wantStdErr))
+        if (!process->start(command,
+                            juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
         {
-            owner.setStatus ("Could not start StemLab engine");
-            owner.appendEngineLog ("Failed to launch engine process.\n");
+            owner.setStatus("Could not start StemLab engine");
+            owner.appendEngineLog("Failed to launch engine process.\n");
             process.reset();
             return;
         }
 
-        std::array<char, 4096> buffer {};
+        std::array<char, 4096> buffer{};
         juce::String pendingOutput;
 
         auto consumeLines = [&owner = owner, &pendingOutput]
         {
             while (true)
             {
-                const auto newline = pendingOutput.indexOfChar ('\n');
+                const auto newline = pendingOutput.indexOfChar('\n');
                 if (newline < 0)
                     break;
 
-                auto line = pendingOutput.substring (0, newline).trimEnd();
-                pendingOutput = pendingOutput.substring (newline + 1);
+                auto line = pendingOutput.substring(0, newline).trimEnd();
+                pendingOutput = pendingOutput.substring(newline + 1);
 
                 if (line.isNotEmpty())
-                    owner.handleEngineOutputLine (line);
+                    owner.handleEngineOutputLine(line);
             }
         };
 
-        while (! threadShouldExit())
+        while (!threadShouldExit())
         {
-            const auto bytes = process->readProcessOutput (
-                buffer.data(),
-                static_cast<int> (buffer.size() - 1));
+            const auto bytes =
+                process->readProcessOutput(buffer.data(), static_cast<int>(buffer.size() - 1));
 
             if (bytes > 0)
             {
-                buffer[static_cast<size_t> (bytes)] = '\0';
-                pendingOutput += juce::String::fromUTF8 (buffer.data(), bytes);
+                buffer[static_cast<size_t>(bytes)] = '\0';
+                pendingOutput += juce::String::fromUTF8(buffer.data(), bytes);
                 consumeLines();
             }
 
-            if (! process->isRunning())
+            if (!process->isRunning())
                 break;
 
-            wait (35);
+            wait(35);
         }
 
         if (threadShouldExit() && process->isRunning())
@@ -221,82 +202,192 @@ public:
 
         while (true)
         {
-            const auto bytes = process->readProcessOutput (
-                buffer.data(),
-                static_cast<int> (buffer.size() - 1));
+            const auto bytes =
+                process->readProcessOutput(buffer.data(), static_cast<int>(buffer.size() - 1));
 
             if (bytes <= 0)
                 break;
 
-            buffer[static_cast<size_t> (bytes)] = '\0';
-            pendingOutput += juce::String::fromUTF8 (buffer.data(), bytes);
+            buffer[static_cast<size_t>(bytes)] = '\0';
+            pendingOutput += juce::String::fromUTF8(buffer.data(), bytes);
             consumeLines();
         }
 
         if (pendingOutput.trim().isNotEmpty())
-            owner.handleEngineOutputLine (pendingOutput.trim());
+            owner.handleEngineOutputLine(pendingOutput.trim());
 
         const auto exitCode = process->getExitCode();
         process.reset();
 
-        const auto elapsed =
-            juce::jmax (0.0, (nowMs() - owner.engineStartMs.load()) / 1000.0);
+        const auto elapsed = juce::jmax(0.0, (nowMs() - owner.engineStartMs.load()) / 1000.0);
 
-        owner.lastEngineDurationSeconds.store (elapsed);
+        owner.lastEngineDurationSeconds.store(elapsed);
 
         if (exitCode == 0)
         {
-            owner.engineCompletedSuccessfully.store (true);
-            owner.setEngineProgress (1.0);
+            owner.engineCompletedSuccessfully.store(true);
+            owner.setEngineProgress(1.0);
 
             switch (owner.getHostIntegration())
             {
-                case StemLabAudioProcessor::hostIntegrationAbletonLive:
+            case StemLabAudioProcessor::hostIntegrationAbletonLive:
+            {
                 {
-                    {
-                        const juce::ScopedLock lock (
-                            owner.abletonBridgeLock);
+                    const juce::ScopedLock lock(owner.abletonBridgeLock);
 
-                        owner.abletonBridgeStatus =
-                            "Stems ready - audition them, choose what you want, then Send Selected";
-                    }
-
-                    owner.abletonImportedStemCount.store (0);
-                    owner.abletonBridgeWaitStartMs.store (0.0);
-
-                    owner.setStatus (
-                        "Done - audition stems, then Send Selected");
-                    break;
+                    owner.abletonBridgeStatus =
+                        "Stems ready - audition them, choose what you want, then Send Selected";
                 }
 
-                case StemLabAudioProcessor::hostIntegrationReaper:
-                    owner.setStatus (
-                        "Done - audition stems, then Insert Stems");
-                    break;
+                owner.abletonBridgeWaitStartMs.store(0.0);
 
-                case StemLabAudioProcessor::hostIntegrationNone:
-                default:
-                    owner.setStatus (
-                        "Done - audition stems, then choose what to save");
-                    break;
+                owner.setStatus("Done - audition stems, then Send Selected");
+                break;
+            }
+
+            case StemLabAudioProcessor::hostIntegrationReaper:
+                owner.setStatus("Done - audition stems, then Insert Stems");
+                break;
+
+            case StemLabAudioProcessor::hostIntegrationNone:
+            default:
+                owner.setStatus("Done - audition stems, then choose what to save");
+                break;
             }
         }
         else
         {
-            owner.engineCompletedSuccessfully.store (false);
+            owner.engineCompletedSuccessfully.store(false);
 
-            if (! owner.getStatus().startsWithIgnoreCase ("Failed - "))
-                owner.setStatus ("StemLab engine failed - see Settings > Copy diagnostics");
+            if (!owner.getStatus().startsWithIgnoreCase("Failed - "))
+                owner.setStatus("StemLab engine failed - see Settings > Copy diagnostics");
 
-            owner.appendEngineLog (
-                "Engine exit code: " + juce::String (exitCode) + "\n");
+            owner.appendEngineLog("Engine exit code: " + juce::String(exitCode) + "\n");
         }
     }
 
 private:
     StemLabAudioProcessor& owner;
     juce::StringArray command;
-    juce::File jobDirectory;
+    std::unique_ptr<juce::ChildProcess> process;
+};
+
+class StemLabRecursiveThread final : public juce::Thread
+{
+public:
+    StemLabRecursiveThread(StemLabAudioProcessor& ownerIn, juce::StringArray commandIn,
+                           juce::File manifestFileIn)
+        : juce::Thread("StemLab recursive engine"), owner(ownerIn), command(std::move(commandIn)),
+          manifestFile(std::move(manifestFileIn))
+    {
+    }
+
+    ~StemLabRecursiveThread() override
+    {
+        signalThreadShouldExit();
+
+        if (process != nullptr && process->isRunning())
+            process->kill();
+
+        stopThread(3000);
+    }
+
+    void run() override
+    {
+        owner.setEngineProgress(0.01);
+        process = std::make_unique<juce::ChildProcess>();
+
+        if (!process->start(command,
+                            juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+        {
+            owner.setStatus("Could not start Recursive Stem Splitting");
+            owner.appendEngineLog("Failed to launch recursive engine process.\n");
+            process.reset();
+            return;
+        }
+
+        std::array<char, 4096> buffer{};
+        juce::String pendingOutput;
+
+        auto consumeLines = [&owner = owner, &pendingOutput]
+        {
+            while (true)
+            {
+                const auto newline = pendingOutput.indexOfChar('\n');
+                if (newline < 0)
+                    break;
+
+                auto line = pendingOutput.substring(0, newline).trimEnd();
+                pendingOutput = pendingOutput.substring(newline + 1);
+
+                if (line.isNotEmpty())
+                    owner.handleEngineOutputLine(line);
+            }
+        };
+
+        while (!threadShouldExit())
+        {
+            const auto bytes =
+                process->readProcessOutput(buffer.data(), static_cast<int>(buffer.size() - 1));
+
+            if (bytes > 0)
+            {
+                buffer[static_cast<size_t>(bytes)] = '\0';
+                pendingOutput += juce::String::fromUTF8(buffer.data(), bytes);
+                consumeLines();
+            }
+
+            if (!process->isRunning())
+                break;
+
+            wait(35);
+        }
+
+        if (threadShouldExit() && process->isRunning())
+            process->kill();
+
+        while (true)
+        {
+            const auto bytes =
+                process->readProcessOutput(buffer.data(), static_cast<int>(buffer.size() - 1));
+
+            if (bytes <= 0)
+                break;
+
+            buffer[static_cast<size_t>(bytes)] = '\0';
+            pendingOutput += juce::String::fromUTF8(buffer.data(), bytes);
+            consumeLines();
+        }
+
+        if (pendingOutput.trim().isNotEmpty())
+            owner.handleEngineOutputLine(pendingOutput.trim());
+
+        const auto exitCode = process->getExitCode();
+        process.reset();
+
+        const auto elapsed = juce::jmax(0.0, (nowMs() - owner.engineStartMs.load()) / 1000.0);
+
+        owner.lastEngineDurationSeconds.store(elapsed);
+
+        if (exitCode == 0 && manifestFile.existsAsFile())
+        {
+            owner.finishRecursiveJob(manifestFile);
+            owner.setEngineProgress(1.0);
+            owner.setStatus("Recursive Stem Splitting complete");
+        }
+        else
+        {
+            if (!owner.getStatus().startsWithIgnoreCase("Failed - "))
+                owner.setStatus("Recursive Stem Splitting failed - see diagnostics");
+
+            owner.appendEngineLog("Recursive engine exit code: " + juce::String(exitCode) + "\n");
+        }
+    }
+
+private:
+    StemLabAudioProcessor& owner;
+    juce::StringArray command;
+    juce::File manifestFile;
     std::unique_ptr<juce::ChildProcess> process;
 };
 
@@ -304,53 +395,42 @@ private:
 class StemLabSystemLoopbackThread final : public juce::Thread
 {
 public:
-    StemLabSystemLoopbackThread (
-        StemLabAudioProcessor& ownerIn,
-        juce::File outputFileIn)
-        : juce::Thread ("StemLab WASAPI loopback"),
-          owner (ownerIn),
-          outputFile (std::move (outputFileIn))
+    StemLabSystemLoopbackThread(StemLabAudioProcessor& ownerIn, juce::File outputFileIn)
+        : juce::Thread("StemLab WASAPI loopback"), owner(ownerIn),
+          outputFile(std::move(outputFileIn))
     {
     }
 
     ~StemLabSystemLoopbackThread() override
     {
         signalThreadShouldExit();
-        stopThread (4000);
+        stopThread(4000);
     }
 
-    bool wasSuccessful() const noexcept
-    {
-        return successful.load();
-    }
+    bool wasSuccessful() const noexcept { return successful.load(); }
 
     void run() override
     {
         using Microsoft::WRL::ComPtr;
 
-        const auto comResult =
-            CoInitializeEx (nullptr, COINIT_MULTITHREADED);
+        const auto comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
-        ComApartment comApartment (comResult);
+        ComApartment comApartment(comResult);
 
-        if (FAILED (comResult) && comResult != RPC_E_CHANGED_MODE)
+        if (FAILED(comResult) && comResult != RPC_E_CHANGED_MODE)
         {
-            fail ("Could not initialise Windows audio COM: "
-                  + hresultText (comResult));
+            fail("Could not initialise Windows audio COM: " + hresultText(comResult));
             return;
         }
 
         ComPtr<IMMDeviceEnumerator> enumerator;
 
-        auto hr = CoCreateInstance (
-            __uuidof (MMDeviceEnumerator),
-            nullptr,
-            CLSCTX_ALL,
-            IID_PPV_ARGS (&enumerator));
+        auto hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                                   IID_PPV_ARGS(&enumerator));
 
-        if (FAILED (hr))
+        if (FAILED(hr))
         {
-            fail ("Could not open Windows audio devices: " + hresultText (hr));
+            fail("Could not open Windows audio devices: " + hresultText(hr));
             return;
         }
 
@@ -359,43 +439,33 @@ public:
         // Capture the current Windows default playback endpoint. For the
         // user's current setup, if Windows is playing through the Focusrite,
         // this captures that Focusrite-bound system mix directly.
-        hr = enumerator->GetDefaultAudioEndpoint (
-            eRender,
-            eConsole,
-            &renderDevice);
+        hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &renderDevice);
 
-        if (FAILED (hr))
+        if (FAILED(hr))
         {
-            fail ("Could not find the default Windows output: "
-                  + hresultText (hr));
+            fail("Could not find the default Windows output: " + hresultText(hr));
             return;
         }
 
         ComPtr<IAudioClient> audioClient;
 
-        hr = renderDevice->Activate (
-            __uuidof (IAudioClient),
-            CLSCTX_ALL,
-            nullptr,
-            reinterpret_cast<void**> (audioClient.GetAddressOf()));
+        hr = renderDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
+                                    reinterpret_cast<void**>(audioClient.GetAddressOf()));
 
-        if (FAILED (hr))
+        if (FAILED(hr))
         {
-            fail ("Could not open the Windows output for loopback: "
-                  + hresultText (hr));
+            fail("Could not open the Windows output for loopback: " + hresultText(hr));
             return;
         }
 
         WAVEFORMATEX* rawMixFormat = nullptr;
-        hr = audioClient->GetMixFormat (&rawMixFormat);
+        hr = audioClient->GetMixFormat(&rawMixFormat);
 
-        std::unique_ptr<WAVEFORMATEX, CoTaskMemWaveFormatDeleter>
-            mixFormat (rawMixFormat);
+        std::unique_ptr<WAVEFORMATEX, CoTaskMemWaveFormatDeleter> mixFormat(rawMixFormat);
 
-        if (FAILED (hr) || mixFormat == nullptr)
+        if (FAILED(hr) || mixFormat == nullptr)
         {
-            fail ("Could not read the Windows output mix format: "
-                  + hresultText (hr));
+            fail("Could not read the Windows output mix format: " + hresultText(hr));
             return;
         }
 
@@ -413,22 +483,15 @@ public:
         bool isFloat = mixFormat->wFormatTag == WAVE_FORMAT_IEEE_FLOAT;
         bool isPcm = mixFormat->wFormatTag == WAVE_FORMAT_PCM;
 
-        if (mixFormat->wFormatTag == WAVE_FORMAT_EXTENSIBLE
-            && mixFormat->cbSize
-                >= static_cast<WORD> (
-                    sizeof (WAVEFORMATEXTENSIBLE) - sizeof (WAVEFORMATEX)))
+        if (mixFormat->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
+            mixFormat->cbSize >=
+                static_cast<WORD>(sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX)))
         {
-            const auto* extensible =
-                reinterpret_cast<const WAVEFORMATEXTENSIBLE*> (
-                    mixFormat.get());
+            const auto* extensible = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(mixFormat.get());
 
-            isFloat = IsEqualGUID (
-                extensible->SubFormat,
-                KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
+            isFloat = IsEqualGUID(extensible->SubFormat, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
 
-            isPcm = IsEqualGUID (
-                extensible->SubFormat,
-                KSDATAFORMAT_SUBTYPE_PCM);
+            isPcm = IsEqualGUID(extensible->SubFormat, KSDATAFORMAT_SUBTYPE_PCM);
         }
 
         if (isFloat && mixFormat->wBitsPerSample == 32)
@@ -442,25 +505,20 @@ public:
 
         if (sourceFormat == SourceFormat::unsupported)
         {
-            fail (
-                "Unsupported Windows loopback format: "
-                + juce::String (mixFormat->wBitsPerSample)
-                + "-bit");
+            fail("Unsupported Windows loopback format: " + juce::String(mixFormat->wBitsPerSample) +
+                 "-bit");
             return;
         }
 
-        const int sourceChannels =
-            juce::jmax (1, static_cast<int> (mixFormat->nChannels));
+        const int sourceChannels = juce::jmax(1, static_cast<int>(mixFormat->nChannels));
 
-        const int outputChannels =
-            juce::jlimit (1, 2, sourceChannels);
+        const int outputChannels = juce::jlimit(1, 2, sourceChannels);
 
-        const double sampleRate =
-            static_cast<double> (mixFormat->nSamplesPerSec);
+        const double sampleRate = static_cast<double>(mixFormat->nSamplesPerSec);
 
         if (sampleRate <= 0.0)
         {
-            fail ("Windows loopback returned an invalid sample rate");
+            fail("Windows loopback returned an invalid sample rate");
             return;
         }
 
@@ -468,103 +526,85 @@ public:
         // endpoints reject LOOPBACK | EVENTCALLBACK with
         // AUDCLNT_E_INVALID_STREAM_FLAG (0x88890021), even though ordinary
         // shared-mode loopback works correctly.
-        hr = audioClient->Initialize (
-            AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_LOOPBACK,
-            0,
-            0,
-            mixFormat.get(),
-            nullptr);
+        hr = audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, 0, 0,
+                                     mixFormat.get(), nullptr);
 
-        if (FAILED (hr))
+        if (FAILED(hr))
         {
-            fail ("Could not start WASAPI loopback mode: "
-                  + hresultText (hr));
+            fail("Could not start WASAPI loopback mode: " + hresultText(hr));
             return;
         }
 
         ComPtr<IAudioCaptureClient> captureClient;
 
-        hr = audioClient->GetService (
-            __uuidof (IAudioCaptureClient),
-            reinterpret_cast<void**> (captureClient.GetAddressOf()));
+        hr = audioClient->GetService(__uuidof(IAudioCaptureClient),
+                                     reinterpret_cast<void**>(captureClient.GetAddressOf()));
 
-        if (FAILED (hr))
+        if (FAILED(hr))
         {
-            fail ("Could not open the WASAPI capture client: "
-                  + hresultText (hr));
+            fail("Could not open the WASAPI capture client: " + hresultText(hr));
             return;
         }
 
-        auto stream =
-            std::make_unique<juce::FileOutputStream> (outputFile);
+        auto fileStream = std::make_unique<juce::FileOutputStream>(outputFile);
 
-        if (! stream->openedOk())
+        if (!fileStream->openedOk())
         {
-            fail ("Could not create the system-audio recording file");
+            fail("Could not create the system-audio recording file");
             return;
         }
 
         juce::WavAudioFormat wav;
+        std::unique_ptr<juce::OutputStream> stream = std::move(fileStream);
+        const auto options = juce::AudioFormatWriter::Options{}
+                                 .withSampleRate(sampleRate)
+                                 .withNumChannels(outputChannels)
+                                 .withBitsPerSample(24);
+        auto formatWriter = wav.createWriterFor(stream, options);
 
-        auto* rawWriter = wav.createWriterFor (
-            stream.get(),
-            sampleRate,
-            static_cast<unsigned int> (outputChannels),
-            24,
-            {},
-            0);
-
-        if (rawWriter == nullptr)
+        if (formatWriter == nullptr)
         {
-            fail ("Could not create the system-audio WAV writer");
+            fail("Could not create the system-audio WAV writer");
             return;
         }
 
-        stream.release();
-
-        auto writer =
-            std::make_unique<juce::AudioFormatWriter::ThreadedWriter> (
-                rawWriter,
-                owner.diskWriterThread,
-                65536);
+        auto writer = std::make_unique<juce::AudioFormatWriter::ThreadedWriter>(
+            formatWriter.release(), owner.diskWriterThread, 65536);
 
         owner.currentSampleRate = sampleRate;
         owner.currentInputChannels = outputChannels;
-        owner.systemCaptureSampleRate.store (sampleRate);
-        owner.capturedSamples.store (0);
+        owner.systemCaptureSampleRate.store(sampleRate);
+        owner.capturedSamples.store(0);
 
         hr = audioClient->Start();
 
-        if (FAILED (hr))
+        if (FAILED(hr))
         {
-            fail ("Could not start Windows loopback capture: "
-                  + hresultText (hr));
+            fail("Could not start Windows loopback capture: " + hresultText(hr));
             return;
         }
 
         bool captureFailed = false;
 
-        while (! threadShouldExit())
+        while (!threadShouldExit())
         {
             // Timer-driven loopback is intentionally conservative. A 5 ms
             // poll interval is tiny compared with stem-separation workloads
             // and avoids endpoint-specific event-callback incompatibilities.
-            wait (5);
+            wait(5);
 
             UINT32 nextPacketFrames = 0;
 
-            hr = captureClient->GetNextPacketSize (&nextPacketFrames);
+            hr = captureClient->GetNextPacketSize(&nextPacketFrames);
 
-            if (FAILED (hr))
+            if (FAILED(hr))
             {
-                fail ("Could not read Windows loopback packet size: "
-                      + hresultText (hr));
+                fail("Could not read Windows loopback packet size: " + hresultText(hr));
                 captureFailed = true;
                 break;
             }
 
-            while (nextPacketFrames > 0 && ! threadShouldExit())
+            while (nextPacketFrames > 0 && !threadShouldExit())
             {
                 BYTE* data = nullptr;
                 UINT32 frames = 0;
@@ -572,141 +612,107 @@ public:
                 UINT64 devicePosition = 0;
                 UINT64 qpcPosition = 0;
 
-                hr = captureClient->GetBuffer (
-                    &data,
-                    &frames,
-                    &flags,
-                    &devicePosition,
-                    &qpcPosition);
+                hr =
+                    captureClient->GetBuffer(&data, &frames, &flags, &devicePosition, &qpcPosition);
 
-                if (FAILED (hr))
+                if (FAILED(hr))
                 {
-                    fail ("Could not read Windows loopback audio: "
-                          + hresultText (hr));
+                    fail("Could not read Windows loopback audio: " + hresultText(hr));
                     captureFailed = true;
                     break;
                 }
 
-                juce::AudioBuffer<float> converted (
-                    outputChannels,
-                    static_cast<int> (frames));
+                juce::AudioBuffer<float> converted(outputChannels, static_cast<int>(frames));
 
-                if ((flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0
-                    || data == nullptr)
+                if ((flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0 || data == nullptr)
                 {
                     converted.clear();
                 }
                 else
                 {
-                    const auto bytesPerSample =
-                        static_cast<int> (
-                            mixFormat->wBitsPerSample / 8);
+                    const auto bytesPerSample = static_cast<int>(mixFormat->wBitsPerSample / 8);
 
-                    const auto blockAlign =
-                        static_cast<int> (mixFormat->nBlockAlign);
+                    const auto blockAlign = static_cast<int>(mixFormat->nBlockAlign);
 
-                    for (int channel = 0;
-                         channel < outputChannels;
-                         ++channel)
+                    for (int channel = 0; channel < outputChannels; ++channel)
                     {
-                        auto* destination =
-                            converted.getWritePointer (channel);
+                        auto* destination = converted.getWritePointer(channel);
 
                         for (UINT32 frame = 0; frame < frames; ++frame)
                         {
                             const auto* sample =
-                                data
-                                + static_cast<size_t> (frame)
-                                    * static_cast<size_t> (blockAlign)
-                                + static_cast<size_t> (channel)
-                                    * static_cast<size_t> (bytesPerSample);
+                                data +
+                                static_cast<size_t>(frame) * static_cast<size_t>(blockAlign) +
+                                static_cast<size_t>(channel) * static_cast<size_t>(bytesPerSample);
 
                             float value = 0.0f;
 
                             switch (sourceFormat)
                             {
-                                case SourceFormat::float32:
-                                {
-                                    float input = 0.0f;
-                                    std::memcpy (&input, sample, sizeof (float));
-                                    value = input;
-                                    break;
-                                }
-
-                                case SourceFormat::pcm16:
-                                {
-                                    int16_t input = 0;
-                                    std::memcpy (
-                                        &input,
-                                        sample,
-                                        sizeof (int16_t));
-
-                                    value =
-                                        static_cast<float> (input)
-                                        / 32768.0f;
-                                    break;
-                                }
-
-                                case SourceFormat::pcm24:
-                                {
-                                    int32_t input =
-                                        static_cast<int32_t> (sample[0])
-                                        | (static_cast<int32_t> (sample[1]) << 8)
-                                        | (static_cast<int32_t> (sample[2]) << 16);
-
-                                    if ((input & 0x00800000) != 0)
-                                        input |= static_cast<int32_t> (0xff000000);
-
-                                    value =
-                                        static_cast<float> (input)
-                                        / 8388608.0f;
-                                    break;
-                                }
-
-                                case SourceFormat::pcm32:
-                                {
-                                    int32_t input = 0;
-                                    std::memcpy (
-                                        &input,
-                                        sample,
-                                        sizeof (int32_t));
-
-                                    value =
-                                        static_cast<float> (
-                                            static_cast<double> (input)
-                                            / 2147483648.0);
-                                    break;
-                                }
-
-                                case SourceFormat::unsupported:
-                                    break;
+                            case SourceFormat::float32:
+                            {
+                                float input = 0.0f;
+                                std::memcpy(&input, sample, sizeof(float));
+                                value = input;
+                                break;
                             }
 
-                            destination[frame] =
-                                juce::jlimit (-1.0f, 1.0f, value);
+                            case SourceFormat::pcm16:
+                            {
+                                int16_t input = 0;
+                                std::memcpy(&input, sample, sizeof(int16_t));
+
+                                value = static_cast<float>(input) / 32768.0f;
+                                break;
+                            }
+
+                            case SourceFormat::pcm24:
+                            {
+                                int32_t input = static_cast<int32_t>(sample[0]) |
+                                                (static_cast<int32_t>(sample[1]) << 8) |
+                                                (static_cast<int32_t>(sample[2]) << 16);
+
+                                if ((input & 0x00800000) != 0)
+                                    input |= static_cast<int32_t>(0xff000000);
+
+                                value = static_cast<float>(input) / 8388608.0f;
+                                break;
+                            }
+
+                            case SourceFormat::pcm32:
+                            {
+                                int32_t input = 0;
+                                std::memcpy(&input, sample, sizeof(int32_t));
+
+                                value =
+                                    static_cast<float>(static_cast<double>(input) / 2147483648.0);
+                                break;
+                            }
+
+                            case SourceFormat::unsupported:
+                                break;
+                            }
+
+                            destination[frame] = juce::jlimit(-1.0f, 1.0f, value);
                         }
                     }
                 }
 
-                writer->write (
-                    converted.getArrayOfReadPointers(),
-                    static_cast<int> (frames));
+                writer->write(converted.getArrayOfReadPointers(), static_cast<int>(frames));
 
-                owner.capturedSamples.fetch_add (
-                    static_cast<juce::int64> (frames));
+                owner.capturedSamples.fetch_add(static_cast<juce::int64>(frames));
 
-                captureClient->ReleaseBuffer (frames);
+                captureClient->ReleaseBuffer(frames);
 
                 if (captureFailed)
                     break;
 
                 nextPacketFrames = 0;
-                hr = captureClient->GetNextPacketSize (&nextPacketFrames);
+                hr = captureClient->GetNextPacketSize(&nextPacketFrames);
 
-                if (FAILED (hr))
+                if (FAILED(hr))
                 {
-                    fail ("Could not continue Windows loopback capture: "
-                          + hresultText (hr));
+                    fail("Could not continue Windows loopback capture: " + hresultText(hr));
                     captureFailed = true;
                     break;
                 }
@@ -719,42 +725,35 @@ public:
         audioClient->Stop();
         writer.reset();
 
-        if (! captureFailed)
-            successful.store (true);
+        if (!captureFailed)
+            successful.store(true);
     }
 
 private:
-    void fail (const juce::String& message)
+    void fail(const juce::String& message)
     {
-        successful.store (false);
-        owner.capturing.store (false);
-        owner.standaloneRecordingMode.store (
-            StemLabAudioProcessor::recordingNone);
+        successful.store(false);
+        owner.capturing.store(false);
+        owner.standaloneRecordingMode.store(StemLabAudioProcessor::recordingNone);
 
-        owner.appendEngineLog (
-            "System audio recording: "
-            + message
-            + "\n");
+        owner.appendEngineLog("System audio recording: " + message + "\n");
 
-        owner.setStatus (
-            "System audio recording failed - "
-            + message);
+        owner.setStatus("System audio recording failed - " + message);
     }
 
     StemLabAudioProcessor& owner;
     juce::File outputFile;
-    std::atomic<bool> successful { false };
+    std::atomic<bool> successful{false};
 };
 #endif
 
 StemLabAudioProcessor::StemLabAudioProcessor()
-    : AudioProcessor (
-          BusesProperties()
-              .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
-              .withOutput ("Output", juce::AudioChannelSet::stereo(), true))
+    : AudioProcessor(BusesProperties()
+                         .withInput("Input", juce::AudioChannelSet::stereo(), true)
+                         .withOutput("Output", juce::AudioChannelSet::stereo(), true))
 {
     for (auto& value : stemEnabled)
-        value.store (true);
+        value.store(true);
 
     previewFormats.registerBasicFormats();
     diskWriterThread.startThread();
@@ -770,52 +769,48 @@ StemLabAudioProcessor::StemLabAudioProcessor()
         // sibling Engine path for the separately installed VST3. This keeps
         // the multi-gigabyte ML runtime portable instead of copying it into
         // the config directory a second time just to make the plugin work.
-        const juce::File discoveredFile (discoveredEngine);
+        const juce::File discoveredFile(discoveredEngine);
 
-        if (isPortableEngineRuntime (discoveredFile))
+        if (isPortableEngineRuntime(discoveredFile))
         {
-            auto settingsDirectory =
-                stemlab::paths::configDirectory();
+            auto settingsDirectory = stemlab::paths::configDirectory();
 
             if (settingsDirectory.createDirectory())
             {
-                settingsDirectory
-                    .getChildFile ("portable_engine_path.txt")
-                    .replaceWithText (
-                        discoveredFile.getFullPathName());
+                settingsDirectory.getChildFile("portable_engine_path.txt")
+                    .replaceWithText(discoveredFile.getFullPathName());
             }
         }
 
-        previewPlayer.setSource (&previewTransport);
+        previewPlayer.setSource(&previewTransport);
 
-       #if defined(JucePlugin_Build_Standalone) && JucePlugin_Build_Standalone
+#if defined(JucePlugin_Build_Standalone) && JucePlugin_Build_Standalone
         if (auto* holder = juce::StandalonePluginHolder::getInstance())
         {
             standaloneDeviceManager = &holder->deviceManager;
-            standaloneDeviceManager->addAudioCallback (&previewPlayer);
+            standaloneDeviceManager->addAudioCallback(&previewPlayer);
 
             // Physical input recording needs JUCE's standalone input enabled.
             // StemLab clears the standalone processor output below, so that
             // live input is never monitored back to the speakers.
-            holder->getMuteInputValue().setValue (false);
+            holder->getMuteInputValue().setValue(false);
         }
-       #endif
+#endif
     }
 }
 
 StemLabAudioProcessor::~StemLabAudioProcessor()
 {
-    cancelPendingUpdate();
     stopCapture();
     stopStandalonePlayback();
 
     if (standaloneDeviceManager != nullptr)
-        standaloneDeviceManager->removeAudioCallback (&previewPlayer);
+        standaloneDeviceManager->removeAudioCallback(&previewPlayer);
 
     standaloneDeviceManager = nullptr;
 
-    previewPlayer.setSource (nullptr);
-    previewTransport.setSource (nullptr);
+    previewPlayer.setSource(nullptr);
+    previewTransport.setSource(nullptr);
     previewReaderSource.reset();
 
     if (engineThread != nullptr)
@@ -824,32 +819,30 @@ StemLabAudioProcessor::~StemLabAudioProcessor()
         engineThread.reset();
     }
 
-   #if JUCE_WINDOWS || JUCE_LINUX
-    systemLoopbackThread.reset();
-   #endif
+    if (recursiveThread != nullptr)
+    {
+        recursiveThread->signalThreadShouldExit();
+        recursiveThread.reset();
+    }
 
-    diskWriterThread.stopThread (2000);
+#if JUCE_WINDOWS || JUCE_LINUX
+    systemLoopbackThread.reset();
+#endif
+
+    diskWriterThread.stopThread(2000);
 }
 
-void StemLabAudioProcessor::prepareToPlay (
-    double sampleRate,
-    int samplesPerBlock)
+void StemLabAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
     currentSampleRate = sampleRate;
-    currentInputChannels = juce::jmax (1, getTotalNumInputChannels());
+    currentInputChannels = juce::jmax(1, getTotalNumInputChannels());
 
-    if (! isStandaloneApp())
+    if (!isStandaloneApp())
     {
-        previewTransport.prepareToPlay (
-            samplesPerBlock,
-            sampleRate);
+        previewTransport.prepareToPlay(samplesPerBlock, sampleRate);
 
-        previewScratch.setSize (
-            juce::jmax (1, getTotalNumOutputChannels()),
-            juce::jmax (1, samplesPerBlock),
-            false,
-            false,
-            true);
+        previewScratch.setSize(juce::jmax(1, getTotalNumOutputChannels()),
+                               juce::jmax(1, samplesPerBlock), false, false, true);
     }
 }
 
@@ -860,150 +853,68 @@ void StemLabAudioProcessor::releaseResources()
     if (standaloneRecordingMode.load() != recordingSystem)
         stopCapture();
 
-    if (! isStandaloneApp())
+    if (!isStandaloneApp())
     {
         previewTransport.releaseResources();
-        previewScratch.setSize (0, 0);
+        previewScratch.setSize(0, 0);
     }
 }
 
-void StemLabAudioProcessor::prepareToPlay (int samplesPerBlockExpected,
-                                           double sampleRate)
+void StemLabAudioProcessor::prepareToPlay(int samplesPerBlockExpected, double sampleRate)
 {
-    previewTransport.prepareToPlay (samplesPerBlockExpected, sampleRate);
+    previewTransport.prepareToPlay(samplesPerBlockExpected, sampleRate);
 }
 
-void StemLabAudioProcessor::releaseResourcesForAudioSource()
+void StemLabAudioProcessor::getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill)
 {
-    previewTransport.releaseResources();
+    previewTransport.getNextAudioBlock(bufferToFill);
 }
 
-void StemLabAudioProcessor::getNextAudioBlock (
-    const juce::AudioSourceChannelInfo& bufferToFill)
+bool StemLabAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
 {
-    previewTransport.getNextAudioBlock (bufferToFill);
-}
-
-bool StemLabAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
-{
-    const auto input  = layouts.getMainInputChannelSet();
+    const auto input = layouts.getMainInputChannelSet();
     const auto output = layouts.getMainOutputChannelSet();
 
     if (input != output)
         return false;
 
-    return input == juce::AudioChannelSet::mono()
-        || input == juce::AudioChannelSet::stereo();
+    return input == juce::AudioChannelSet::mono() || input == juce::AudioChannelSet::stereo();
 }
 
-void StemLabAudioProcessor::processBlock (
-    juce::AudioBuffer<float>& buffer,
-    juce::MidiBuffer&)
+void StemLabAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
 
-    const auto inputChannels =
-        getTotalNumInputChannels();
+    const auto inputChannels = getTotalNumInputChannels();
 
-    const auto outputChannels =
-        getTotalNumOutputChannels();
+    const auto outputChannels = getTotalNumOutputChannels();
 
-    for (int channel = inputChannels;
-         channel < outputChannels;
-         ++channel)
+    for (int channel = inputChannels; channel < outputChannels; ++channel)
     {
-        buffer.clear (
-            channel,
-            0,
-            buffer.getNumSamples());
+        buffer.clear(channel, 0, buffer.getNumSamples());
     }
 
-    bool hostPlaying = false;
-    bool hasHostPosition = false;
-    double hostPpq = 0.0;
-    juce::int64 hostTimelineSample = 0;
-
-    if (! isStandaloneApp())
+    if (!isStandaloneApp())
     {
         if (auto* hostPlayHead = getPlayHead())
         {
             if (auto position = hostPlayHead->getPosition())
             {
-                hasHostPosition = true;
-                hostPlaying = position->getIsPlaying();
-
                 if (auto value = position->getPpqPosition())
-                    hostPpq = *value;
-
-                if (auto value = position->getTimeInSamples())
-                    hostTimelineSample = *value;
-
-                lastKnownHostPpq.store (
-                    juce::jmax (0.0, hostPpq));
-
-                lastKnownHostTimelineSample.store (
-                    juce::jmax<juce::int64> (
-                        0,
-                        hostTimelineSample));
+                    lastKnownHostPpq.store(juce::jmax(0.0, *value));
             }
-        }
-
-        // Arm Capture means "start on the first playing Live audio block".
-        // This avoids recording silence between pressing the button and
-        // starting Live's transport, and makes the captured PPQ unambiguous.
-        if (captureArmed.load()
-            && hasHostPosition
-            && hostPlaying
-            && threadedWriter != nullptr)
-        {
-            captureStartPpq.store (
-                juce::jmax (0.0, hostPpq));
-
-            captureStartTimelineSample.store (
-                hostTimelineSample);
-
-            capturedSamples.store (0);
-
-            activeWriter.store (
-                threadedWriter.get(),
-                std::memory_order_release);
-
-            captureArmed.store (false);
-            capturing.store (true);
-            hostWasPlayingDuringCapture.store (true);
-        }
-
-        // Once Live stops after capture actually started, close the writer on
-        // the message thread. We never destroy the writer from the audio thread.
-        if (capturing.load()
-            && hostWasPlayingDuringCapture.load()
-            && hasHostPosition
-            && ! hostPlaying)
-        {
-            activeWriter.store (
-                nullptr,
-                std::memory_order_release);
-
-            capturing.store (false);
-            captureFinalizeRequested.store (true);
-            triggerAsyncUpdate();
         }
     }
 
-    // Physical-input/VST capture uses audio arriving through this processor.
-    // System loopback is captured by a separate WASAPI thread.
+    // Standalone input recording uses audio arriving through this processor;
+    // system loopback is captured by a separate WASAPI thread.
     if (standaloneRecordingMode.load() != recordingSystem)
     {
-        if (auto* writer =
-                activeWriter.load (
-                    std::memory_order_acquire))
+        if (auto* writer = activeWriter.load(std::memory_order_acquire))
         {
-            writer->write (
-                buffer.getArrayOfReadPointers(),
-                buffer.getNumSamples());
+            writer->write(buffer.getArrayOfReadPointers(), buffer.getNumSamples());
 
-            capturedSamples.fetch_add (
-                buffer.getNumSamples());
+            capturedSamples.fetch_add(buffer.getNumSamples());
         }
     }
 
@@ -1011,52 +922,29 @@ void StemLabAudioProcessor::processBlock (
     // audio while previewTransport is playing. That makes a stem Play button
     // behave like an actual audition/solo rather than layering the stem on top
     // of the original song.
-    if (! isStandaloneApp()
-        && previewTransport.isPlaying()
-        && previewScratch.getNumChannels() > 0)
+    if (!isStandaloneApp() && previewTransport.isPlaying() && previewScratch.getNumChannels() > 0)
     {
-        const auto requiredSamples =
-            buffer.getNumSamples();
+        const auto requiredSamples = buffer.getNumSamples();
 
         if (previewScratch.getNumSamples() < requiredSamples)
         {
-            previewScratch.setSize (
-                juce::jmax (
-                    1,
-                    buffer.getNumChannels()),
-                requiredSamples,
-                false,
-                false,
-                true);
+            previewScratch.setSize(juce::jmax(1, buffer.getNumChannels()), requiredSamples, false,
+                                   false, true);
         }
 
         previewScratch.clear();
 
-        juce::AudioSourceChannelInfo info (
-            &previewScratch,
-            0,
-            requiredSamples);
+        juce::AudioSourceChannelInfo info(&previewScratch, 0, requiredSamples);
 
-        previewTransport.getNextAudioBlock (info);
+        previewTransport.getNextAudioBlock(info);
 
         buffer.clear();
 
-        const auto channels =
-            juce::jmin (
-                buffer.getNumChannels(),
-                previewScratch.getNumChannels());
+        const auto channels = juce::jmin(buffer.getNumChannels(), previewScratch.getNumChannels());
 
-        for (int channel = 0;
-             channel < channels;
-             ++channel)
+        for (int channel = 0; channel < channels; ++channel)
         {
-            buffer.addFrom (
-                channel,
-                0,
-                previewScratch,
-                channel,
-                0,
-                requiredSamples);
+            buffer.addFrom(channel, 0, previewScratch, channel, 0, requiredSamples);
         }
     }
 
@@ -1066,37 +954,12 @@ void StemLabAudioProcessor::processBlock (
         buffer.clear();
 }
 
-void StemLabAudioProcessor::handleAsyncUpdate()
-{
-    if (captureFinalizeRequested.exchange (false))
-        finalizeHostCapture();
-}
-
-void StemLabAudioProcessor::finalizeHostCapture()
-{
-    activeWriter.store (
-        nullptr,
-        std::memory_order_release);
-
-    threadedWriter.reset();
-    captureArmed.store (false);
-    capturing.store (false);
-    hostWasPlayingDuringCapture.store (false);
-
-    if (capturedSamples.load() > 0)
-        setStatus ("Capture ready - choose stems");
-    else
-        setStatus ("Capture stopped");
-}
-
 bool StemLabAudioProcessor::isStandaloneApp() const noexcept
 {
     return wrapperType == wrapperType_Standalone;
 }
 
-bool StemLabAudioProcessor::loadPreviewFile (
-    const juce::File& file,
-    int previewStem)
+bool StemLabAudioProcessor::loadPreviewFile(const juce::File& file, int previewStem)
 {
     // Previewing is supported by both wrappers:
     //
@@ -1106,11 +969,10 @@ bool StemLabAudioProcessor::loadPreviewFile (
     // This used to reject every non-Standalone call, which meant the Ableton
     // Play buttons could never load a source/stem even though the VST preview
     // audio path itself was already implemented.
-    if (! file.existsAsFile())
+    if (!file.existsAsFile())
         return false;
 
-    std::unique_ptr<juce::AudioFormatReader> reader (
-        previewFormats.createReaderFor (file));
+    std::unique_ptr<juce::AudioFormatReader> reader(previewFormats.createReaderFor(file));
 
     if (reader == nullptr)
         return false;
@@ -1118,67 +980,55 @@ bool StemLabAudioProcessor::loadPreviewFile (
     const auto sourceRate = reader->sampleRate;
 
     previewTransport.stop();
-    previewTransport.setSource (nullptr);
+    previewTransport.setSource(nullptr);
     previewReaderSource.reset();
 
     auto* readerPtr = reader.release();
 
-    previewReaderSource =
-        std::make_unique<juce::AudioFormatReaderSource> (
-            readerPtr,
-            true);
+    previewReaderSource = std::make_unique<juce::AudioFormatReaderSource>(readerPtr, true);
 
-    previewTransport.setSource (
-        previewReaderSource.get(),
-        0,
-        nullptr,
-        sourceRate);
+    previewTransport.setSource(previewReaderSource.get(), 0, nullptr, sourceRate);
 
-    previewTransport.setPosition (0.0);
-    previewStemIndex.store (previewStem);
+    previewTransport.setPosition(0.0);
+    previewStemIndex.store(previewStem);
+
+    if (previewStem != -3)
+    {
+        const juce::ScopedLock lock(recursiveLock);
+        previewRecursiveId.clear();
+    }
+
     return true;
 }
 
-bool StemLabAudioProcessor::setInputAudioFile (
-    const juce::File& file,
-    double startPpq,
-    const juce::String& sourceLabel)
+bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double startPpq,
+                                              const juce::String& sourceLabel)
 {
-    if (! file.existsAsFile())
+    if (!file.existsAsFile())
     {
-        setStatus ("Selected audio file does not exist");
+        setStatus("Selected audio file does not exist");
         return false;
     }
 
     double duration = 0.0;
     bool previewAvailable = false;
 
-    std::unique_ptr<juce::AudioFormatReader> infoReader (
-        previewFormats.createReaderFor (file));
+    std::unique_ptr<juce::AudioFormatReader> infoReader(previewFormats.createReaderFor(file));
 
     if (infoReader != nullptr)
     {
-        currentInputChannels =
-            static_cast<int> (
-                infoReader->numChannels);
+        currentInputChannels = static_cast<int>(infoReader->numChannels);
 
         if (infoReader->sampleRate > 0.0)
         {
-            duration =
-                static_cast<double> (
-                    infoReader->lengthInSamples)
-                / infoReader->sampleRate;
+            duration = static_cast<double>(infoReader->lengthInSamples) / infoReader->sampleRate;
         }
 
-        capturedSamples.store (
-            infoReader->lengthInSamples);
+        capturedSamples.store(infoReader->lengthInSamples);
 
         infoReader.reset();
 
-        previewAvailable =
-            loadPreviewFile (
-                file,
-                -1);
+        previewAvailable = loadPreviewFile(file, -1);
     }
     else
     {
@@ -1186,74 +1036,56 @@ bool StemLabAudioProcessor::setInputAudioFile (
         // compressed/container audio with FFmpeg before RoFormer, so a file
         // may be perfectly separable even when JUCE has no source-preview
         // decoder for that specific format.
-        capturedSamples.store (0);
-        inputDurationSeconds.store (0.0);
+        capturedSamples.store(0);
+        inputDurationSeconds.store(0.0);
 
         previewTransport.stop();
-        previewTransport.setSource (nullptr);
+        previewTransport.setSource(nullptr);
         previewReaderSource.reset();
-        previewStemIndex.store (-2);
+        previewStemIndex.store(-2);
     }
 
-    inputDurationSeconds.store (
-        juce::jmax (0.0, duration));
+    inputDurationSeconds.store(juce::jmax(0.0, duration));
 
     {
-        const juce::ScopedLock lock (stateLock);
+        const juce::ScopedLock lock(stateLock);
         captureFile = file;
         lastJobDirectory = juce::File();
         engineLog.clear();
         reaperSourceInfo = {};
 
-        inputSourceLabel =
-            sourceLabel.isNotEmpty()
-                ? sourceLabel
-                : file.getFileName();
+        inputSourceLabel = sourceLabel.isNotEmpty() ? sourceLabel : file.getFileName();
     }
 
-    captureStartPpq.store (
-        juce::jmax (0.0, startPpq));
+    captureStartPpq.store(juce::jmax(0.0, startPpq));
 
-    captureStartTimelineSample.store (0);
-
-    captureArmed.store (false);
-    captureFinalizeRequested.store (false);
-    hostWasPlayingDuringCapture.store (false);
-
-    engineCompletedSuccessfully.store (false);
-    engineProgress.store (0.0);
+    engineCompletedSuccessfully.store(false);
+    engineProgress.store(0.0);
+    clearRecursiveResults();
 
     {
-        const juce::ScopedLock lock (abletonBridgeLock);
+        const juce::ScopedLock lock(abletonBridgeLock);
         abletonBridgeStatus =
-            isStandaloneApp()
-                ? juce::String {}
-                : "Source ready - Separate All Stems";
+            isStandaloneApp() ? juce::String{} : "Source ready - Separate All Stems";
     }
 
-    setStatus (
-        previewAvailable
-            ? "Source ready"
-            : "Source ready - preview unavailable until stems are made");
+    setStatus(previewAvailable ? "Source ready"
+                               : "Source ready - preview unavailable until stems are made");
 
     return true;
 }
 
-bool StemLabAudioProcessor::setStandaloneInputFile (
-    const juce::File& file)
+bool StemLabAudioProcessor::setStandaloneInputFile(const juce::File& file)
 {
-    if (! isStandaloneApp())
+    if (!isStandaloneApp())
         return false;
 
-    return setInputAudioFile (
-        file,
-        0.0,
-        file.getFileName());
+    return setInputAudioFile(file, 0.0, file.getFileName());
 }
 
 juce::String StemLabAudioProcessor::getInputSourceLabel() const
 {
-    const juce::ScopedLock lock (stateLock);
+    const juce::ScopedLock lock(stateLock);
     return inputSourceLabel;
 }
 
@@ -1264,91 +1096,80 @@ void StemLabAudioProcessor::toggleStandalonePlayback()
 
     const auto source = getCaptureFile();
 
-    if (! source.existsAsFile())
+    if (!source.existsAsFile())
         return;
 
     if (previewStemIndex.load() != -1)
     {
-        if (! loadPreviewFile (source, -1))
+        if (!loadPreviewFile(source, -1))
             return;
     }
 
     if (previewTransport.isPlaying())
     {
         previewTransport.stop();
-        setStatus ("Source paused");
+        setStatus("Source paused");
         return;
     }
 
-    if (previewTransport.getCurrentPosition()
-        >= previewTransport.getLengthInSeconds() - 0.01)
+    if (previewTransport.getCurrentPosition() >= previewTransport.getLengthInSeconds() - 0.01)
     {
-        previewTransport.setPosition (0.0);
+        previewTransport.setPosition(0.0);
     }
 
     previewTransport.start();
-    setStatus ("Playing source");
+    setStatus("Playing source");
 }
 
-juce::File StemLabAudioProcessor::getCompletedStemFile (int index) const
+juce::File StemLabAudioProcessor::getCompletedStemFile(int index) const
 {
-    if (! juce::isPositiveAndBelow (index, stemCount))
+    if (!juce::isPositiveAndBelow(index, stemCount))
         return {};
 
     const auto job = getLastJobDirectory();
 
-    if (! job.isDirectory())
+    if (!job.isDirectory())
         return {};
 
-    auto sourceFolder = job.getChildFile ("refined");
+    auto sourceFolder = job.getChildFile("refined");
 
-    if (! sourceFolder.isDirectory())
-        sourceFolder = job.getChildFile ("baseline");
+    if (!sourceFolder.isDirectory())
+        sourceFolder = job.getChildFile("baseline");
 
-    if (! sourceFolder.isDirectory())
+    if (!sourceFolder.isDirectory())
         return {};
 
     juce::Array<juce::File> candidates;
-    sourceFolder.findChildFiles (
-        candidates,
-        juce::File::findFiles,
-        true,
-        "*.wav");
+    sourceFolder.findChildFiles(candidates, juce::File::findFiles, true, "*.wav");
 
     juce::Array<juce::File> flacs;
-    sourceFolder.findChildFiles (
-        flacs,
-        juce::File::findFiles,
-        true,
-        "*.flac");
+    sourceFolder.findChildFiles(flacs, juce::File::findFiles, true, "*.flac");
 
-    candidates.addArray (flacs);
+    candidates.addArray(flacs);
 
-    const auto stem = getStemName (index);
+    const auto stem = getStemName(index);
 
     for (const auto& candidate : candidates)
     {
-        if (candidate.getFileNameWithoutExtension().containsIgnoreCase (stem))
+        if (candidate.getFileNameWithoutExtension().containsIgnoreCase(stem))
             return candidate;
     }
 
     return {};
 }
 
-bool StemLabAudioProcessor::playCompletedStem (int index)
+bool StemLabAudioProcessor::playCompletedStem(int index)
 {
-    if (capturing.load()
-        || ! hasSuccessfulJob()
-        || ! juce::isPositiveAndBelow (index, stemCount))
+    if (capturing.load() || !hasSuccessfulJob() || !juce::isPositiveAndBelow(index, stemCount))
     {
         return false;
     }
 
-    const auto stemFile = getCompletedStemFile (index);
+    const auto stemFile = getCompletedStemFile(index);
 
-    if (! stemFile.existsAsFile())
+    if (!stemFile.existsAsFile())
     {
-        setStatus ("Stem preview file was not found");
+        setStatus("Stem preview file was not found");
         return false;
     }
 
@@ -1357,65 +1178,55 @@ bool StemLabAudioProcessor::playCompletedStem (int index)
         if (previewTransport.isPlaying())
         {
             previewTransport.stop();
-            setStatus (getStemName (index).toUpperCase() + " paused");
+            setStatus(getStemName(index).toUpperCase() + " paused");
             return true;
         }
     }
     else
     {
-        if (! loadPreviewFile (stemFile, index))
+        if (!loadPreviewFile(stemFile, index))
         {
-            setStatus ("Could not load stem preview");
+            setStatus("Could not load stem preview");
             return false;
         }
     }
 
-    if (previewTransport.getCurrentPosition()
-        >= previewTransport.getLengthInSeconds() - 0.01)
+    if (previewTransport.getCurrentPosition() >= previewTransport.getLengthInSeconds() - 0.01)
     {
-        previewTransport.setPosition (0.0);
+        previewTransport.setPosition(0.0);
     }
 
     previewTransport.start();
-    setStatus ("Playing " + getStemName (index));
+    setStatus("Playing " + getStemName(index));
     return true;
 }
 
-bool StemLabAudioProcessor::seekCompletedStem (
-    int index,
-    double normalisedPosition)
+bool StemLabAudioProcessor::seekCompletedStem(int index, double normalisedPosition)
 {
-    if (capturing.load()
-        || ! hasSuccessfulJob()
-        || ! juce::isPositiveAndBelow (index, stemCount))
+    if (capturing.load() || !hasSuccessfulJob() || !juce::isPositiveAndBelow(index, stemCount))
     {
         return false;
     }
 
-    const auto stemFile = getCompletedStemFile (index);
+    const auto stemFile = getCompletedStemFile(index);
 
-    if (! stemFile.existsAsFile())
+    if (!stemFile.existsAsFile())
         return false;
 
-    const bool keepPlaying =
-        previewStemIndex.load() == index
-        && previewTransport.isPlaying();
+    const bool keepPlaying = previewStemIndex.load() == index && previewTransport.isPlaying();
 
     if (previewStemIndex.load() != index)
     {
-        if (! loadPreviewFile (stemFile, index))
+        if (!loadPreviewFile(stemFile, index))
             return false;
     }
 
-    const auto length =
-        previewTransport.getLengthInSeconds();
+    const auto length = previewTransport.getLengthInSeconds();
 
     if (length <= 0.0)
         return false;
 
-    previewTransport.setPosition (
-        juce::jlimit (0.0, 1.0, normalisedPosition)
-        * length);
+    previewTransport.setPosition(juce::jlimit(0.0, 1.0, normalisedPosition) * length);
 
     if (keepPlaying)
         previewTransport.start();
@@ -1423,10 +1234,7 @@ bool StemLabAudioProcessor::seekCompletedStem (
     return true;
 }
 
-void StemLabAudioProcessor::stopStandalonePlayback()
-{
-    previewTransport.stop();
-}
+void StemLabAudioProcessor::stopStandalonePlayback() { previewTransport.stop(); }
 
 bool StemLabAudioProcessor::isStandalonePlaying() const noexcept
 {
@@ -1445,9 +1253,7 @@ double StemLabAudioProcessor::getPreviewLengthSeconds() const noexcept
 
 bool StemLabAudioProcessor::startStandaloneRecording()
 {
-    if (! isStandaloneApp()
-        || capturing.load()
-        || isEngineRunning())
+    if (!isStandaloneApp() || capturing.load() || isEngineRunning())
     {
         return false;
     }
@@ -1456,16 +1262,15 @@ bool StemLabAudioProcessor::startStandaloneRecording()
 
     if (standaloneDeviceManager == nullptr)
     {
-        setStatus ("Audio device is not ready");
+        setStatus("Audio device is not ready");
         return false;
     }
 
     auto* device = standaloneDeviceManager->getCurrentAudioDevice();
 
-    if (device == nullptr
-        || device->getActiveInputChannels().countNumberOfSetBits() == 0)
+    if (device == nullptr || device->getActiveInputChannels().countNumberOfSetBits() == 0)
     {
-        setStatus ("Choose a microphone/interface input in Settings");
+        setStatus("Choose a microphone/interface input in Settings");
         return false;
     }
 
@@ -1473,251 +1278,185 @@ bool StemLabAudioProcessor::startStandaloneRecording()
 
     if (sampleRate <= 0.0)
     {
-        setStatus ("Audio input sample rate is not ready");
+        setStatus("Audio input sample rate is not ready");
         return false;
     }
 
     currentSampleRate = sampleRate;
 
-    const int activeInputs =
-        device->getActiveInputChannels().countNumberOfSetBits();
+    const int activeInputs = device->getActiveInputChannels().countNumberOfSetBits();
 
-    currentInputChannels = juce::jlimit (1, 2, activeInputs);
+    currentInputChannels = juce::jlimit(1, 2, activeInputs);
 
-    const auto recordingFile = createRecordingFile();
+    const auto recordingFile = createRecordingFile("input");
 
-    auto stream =
-        std::make_unique<juce::FileOutputStream> (recordingFile);
+    auto fileStream = std::make_unique<juce::FileOutputStream>(recordingFile);
 
-    if (! stream->openedOk())
+    if (!fileStream->openedOk())
     {
-        setStatus ("Could not create recording WAV");
+        setStatus("Could not create recording WAV");
         return false;
     }
 
     juce::WavAudioFormat wav;
+    std::unique_ptr<juce::OutputStream> stream = std::move(fileStream);
+    const auto options = juce::AudioFormatWriter::Options{}
+                             .withSampleRate(currentSampleRate)
+                             .withNumChannels(currentInputChannels)
+                             .withBitsPerSample(24);
+    auto formatWriter = wav.createWriterFor(stream, options);
 
-    auto* rawWriter = wav.createWriterFor (
-        stream.get(),
-        currentSampleRate,
-        static_cast<unsigned int> (currentInputChannels),
-        24,
-        {},
-        0);
-
-    if (rawWriter == nullptr)
+    if (formatWriter == nullptr)
     {
-        setStatus ("Could not create recording writer");
+        setStatus("Could not create recording writer");
         return false;
     }
 
-    stream.release();
-
-    threadedWriter =
-        std::make_unique<juce::AudioFormatWriter::ThreadedWriter> (
-            rawWriter,
-            diskWriterThread,
-            32768);
+    threadedWriter = std::make_unique<juce::AudioFormatWriter::ThreadedWriter>(
+        formatWriter.release(), diskWriterThread, 32768);
 
     {
-        const juce::ScopedLock lock (stateLock);
+        const juce::ScopedLock lock(stateLock);
         captureFile = recordingFile;
         lastJobDirectory = juce::File();
         engineLog.clear();
     }
 
-    capturedSamples.store (0);
-    inputDurationSeconds.store (0.0);
-    captureStartPpq.store (0.0);
-    captureStartTimelineSample.store (0);
-    engineCompletedSuccessfully.store (false);
-    engineProgress.store (0.0);
+    capturedSamples.store(0);
+    inputDurationSeconds.store(0.0);
+    captureStartPpq.store(0.0);
+    engineCompletedSuccessfully.store(false);
+    engineProgress.store(0.0);
 
-    standaloneRecordingMode.store (recordingInput);
+    standaloneRecordingMode.store(recordingInput);
 
-    activeWriter.store (
-        threadedWriter.get(),
-        std::memory_order_release);
+    activeWriter.store(threadedWriter.get(), std::memory_order_release);
 
-    capturing.store (true);
-    setStatus ("Recording input...");
+    capturing.store(true);
+    setStatus("Recording input...");
     return true;
 }
 
 void StemLabAudioProcessor::stopStandaloneRecording()
 {
-    if (! isStandaloneApp()
-        || standaloneRecordingMode.load() != recordingInput
-        || ! capturing.exchange (false))
+    if (!isStandaloneApp() || standaloneRecordingMode.load() != recordingInput ||
+        !capturing.exchange(false))
     {
         return;
     }
 
-    activeWriter.store (nullptr, std::memory_order_release);
+    activeWriter.store(nullptr, std::memory_order_release);
     threadedWriter.reset();
-    standaloneRecordingMode.store (recordingNone);
+    standaloneRecordingMode.store(recordingNone);
 
     const auto recordingFile = getCaptureFile();
 
-    if (recordingFile.existsAsFile()
-        && setStandaloneInputFile (recordingFile))
+    if (recordingFile.existsAsFile() && setStandaloneInputFile(recordingFile))
     {
-        setStatus ("Input recording ready");
+        setStatus("Input recording ready");
     }
     else
     {
-        setStatus ("Input recording stopped");
+        setStatus("Input recording stopped");
     }
 }
 
 bool StemLabAudioProcessor::startSystemAudioRecording()
 {
-    if (capturing.load()
-        || isEngineRunning())
+    if (capturing.load() || isEngineRunning())
     {
         return false;
     }
 
     stopStandalonePlayback();
 
-   #if JUCE_WINDOWS || JUCE_LINUX
+#if JUCE_WINDOWS || JUCE_LINUX
     if (systemLoopbackThread != nullptr)
     {
         systemLoopbackThread->signalThreadShouldExit();
         systemLoopbackThread.reset();
     }
 
-    const auto recordingFile = createSystemRecordingFile();
+    const auto recordingFile = createRecordingFile("system");
 
     {
-        const juce::ScopedLock lock (stateLock);
+        const juce::ScopedLock lock(stateLock);
         captureFile = recordingFile;
         lastJobDirectory = juce::File();
         engineLog.clear();
     }
 
-    capturedSamples.store (0);
-    inputDurationSeconds.store (0.0);
+    capturedSamples.store(0);
+    inputDurationSeconds.store(0.0);
 
-    captureStartPpq.store (
-        isStandaloneApp()
-            ? 0.0
-            : juce::jmax (
-                0.0,
-                lastKnownHostPpq.load()));
+    captureStartPpq.store(isStandaloneApp() ? 0.0 : juce::jmax(0.0, lastKnownHostPpq.load()));
 
-    captureStartTimelineSample.store (
-        isStandaloneApp()
-            ? 0
-            : juce::jmax<juce::int64> (
-                0,
-                lastKnownHostTimelineSample.load()));
+    engineCompletedSuccessfully.store(false);
+    engineProgress.store(0.0);
 
-    engineCompletedSuccessfully.store (false);
-    engineProgress.store (0.0);
+    standaloneRecordingMode.store(recordingSystem);
+    capturing.store(true);
 
-    standaloneRecordingMode.store (recordingSystem);
-    capturing.store (true);
+    systemLoopbackThread = std::make_unique<StemLabSystemLoopbackThread>(*this, recordingFile);
 
-    systemLoopbackThread =
-        std::make_unique<StemLabSystemLoopbackThread> (
-            *this,
-            recordingFile);
-
-   #if JUCE_WINDOWS
-    setStatus ("Recording system audio - Windows default output");
-   #else
-    setStatus ("Recording system audio - default output monitor");
-   #endif
+#if JUCE_WINDOWS
+    setStatus("Recording system audio - Windows default output");
+#else
+    setStatus("Recording system audio - default output monitor");
+#endif
 
     systemLoopbackThread->startThread();
     return true;
-   #else
-    setStatus (
-        "System audio recording is not available on this platform - "
-        "record into the host instead");
-
+#else
+    setStatus("System audio recording is not available on this platform - "
+              "record into the host instead");
     return false;
-   #endif
+#endif
 }
 
 void StemLabAudioProcessor::stopSystemAudioRecording()
 {
-   #if JUCE_WINDOWS || JUCE_LINUX
-    if (standaloneRecordingMode.load() != recordingSystem
-        && systemLoopbackThread == nullptr)
+#if JUCE_WINDOWS || JUCE_LINUX
+    if (standaloneRecordingMode.load() != recordingSystem && systemLoopbackThread == nullptr)
     {
         return;
     }
 
-    capturing.store (false);
+    capturing.store(false);
 
     bool successful = false;
 
     if (systemLoopbackThread != nullptr)
     {
         systemLoopbackThread->signalThreadShouldExit();
-        systemLoopbackThread->stopThread (5000);
+        systemLoopbackThread->stopThread(5000);
         successful = systemLoopbackThread->wasSuccessful();
         systemLoopbackThread.reset();
     }
 
-    standaloneRecordingMode.store (recordingNone);
+    standaloneRecordingMode.store(recordingNone);
 
     const auto recordingFile = getCaptureFile();
 
-    if (successful
-        && recordingFile.existsAsFile()
-        && recordingFile.getSize() > 44
-        && setInputAudioFile (
-            recordingFile,
-            captureStartPpq.load(),
-            "System audio recording"))
+    if (successful && recordingFile.existsAsFile() && recordingFile.getSize() > 44 &&
+        setInputAudioFile(recordingFile, captureStartPpq.load(), "System audio recording"))
     {
-        setStatus ("System audio recording ready");
+        setStatus("System audio recording ready");
     }
-    else if (! getStatus().startsWithIgnoreCase (
-                 "System audio recording failed"))
+    else if (!getStatus().startsWithIgnoreCase("System audio recording failed"))
     {
-        setStatus ("System audio recording stopped");
+        setStatus("System audio recording stopped");
     }
-   #endif
+#endif
 }
 
-juce::File StemLabAudioProcessor::createCaptureFile() const
-{
-    auto folder = stemlab::paths::capturesDirectory();
-
-    folder.createDirectory();
-
-    return folder.getNonexistentChildFile (
-        "capture_" + timestampForFilename(),
-        ".wav",
-        false);
-}
-
-juce::File StemLabAudioProcessor::createRecordingFile() const
+juce::File StemLabAudioProcessor::createRecordingFile(const juce::String& prefix) const
 {
     auto folder = stemlab::paths::recordingsDirectory();
 
     folder.createDirectory();
 
-    return folder.getNonexistentChildFile (
-        "input_" + timestampForFilename(),
-        ".wav",
-        false);
-}
-
-juce::File StemLabAudioProcessor::createSystemRecordingFile() const
-{
-    auto folder = stemlab::paths::recordingsDirectory();
-
-    folder.createDirectory();
-
-    return folder.getNonexistentChildFile (
-        "system_" + timestampForFilename(),
-        ".wav",
-        false);
+    return folder.getNonexistentChildFile(prefix + "_" + timestampForFilename(), ".wav", false);
 }
 
 juce::File StemLabAudioProcessor::createJobDirectory() const
@@ -1725,42 +1464,37 @@ juce::File StemLabAudioProcessor::createJobDirectory() const
     juce::File root;
 
     {
-        const juce::ScopedLock lock (stateLock);
+        const juce::ScopedLock lock(stateLock);
         root = jobRootDirectory;
     }
 
-    if (! root.isDirectory())
+    if (!root.isDirectory())
         root = stemlab::paths::jobsDirectory();
 
     root.createDirectory();
 
-    auto folder =
-        root.getChildFile (
-            "job_" + timestampForFilename());
+    auto folder = root.getChildFile("job_" + timestampForFilename());
 
     folder.createDirectory();
     return folder;
 }
 
-void StemLabAudioProcessor::setJobRootDirectory (
-    const juce::File& directory)
+void StemLabAudioProcessor::setJobRootDirectory(const juce::File& directory)
 {
-    if (! directory.isDirectory())
+    if (!directory.isDirectory())
         return;
 
     {
-        const juce::ScopedLock lock (stateLock);
+        const juce::ScopedLock lock(stateLock);
         jobRootDirectory = directory;
     }
 
-    setStatus (
-        "File location set: "
-        + directory.getFullPathName());
+    setStatus("File location set: " + directory.getFullPathName());
 }
 
 juce::File StemLabAudioProcessor::getJobRootDirectory() const
 {
-    const juce::ScopedLock lock (stateLock);
+    const juce::ScopedLock lock(stateLock);
 
     if (jobRootDirectory.isDirectory())
         return jobRootDirectory;
@@ -1768,166 +1502,20 @@ juce::File StemLabAudioProcessor::getJobRootDirectory() const
     return stemlab::paths::jobsDirectory();
 }
 
-bool StemLabAudioProcessor::startCapture()
-{
-    if (isStandaloneApp())
-        return startStandaloneRecording();
-
-    if (capturing.load()
-        || captureArmed.load()
-        || captureFinalizeRequested.load()
-        || isEngineRunning())
-    {
-        return false;
-    }
-
-    if (currentSampleRate <= 0.0)
-    {
-        setStatus ("Audio device is not ready");
-        return false;
-    }
-
-    const auto newCaptureFile =
-        createCaptureFile();
-
-    auto stream =
-        std::make_unique<juce::FileOutputStream> (
-            newCaptureFile);
-
-    if (! stream->openedOk())
-    {
-        setStatus ("Could not create capture WAV");
-        return false;
-    }
-
-    juce::WavAudioFormat wav;
-
-    auto* rawWriter = wav.createWriterFor (
-        stream.get(),
-        currentSampleRate,
-        static_cast<unsigned int> (
-            juce::jlimit (
-                1,
-                2,
-                currentInputChannels)),
-        24,
-        {},
-        0);
-
-    if (rawWriter == nullptr)
-    {
-        setStatus ("Could not create WAV writer");
-        return false;
-    }
-
-    stream.release();
-
-    threadedWriter =
-        std::make_unique<
-            juce::AudioFormatWriter::ThreadedWriter> (
-                rawWriter,
-                diskWriterThread,
-                32768);
-
-    {
-        const juce::ScopedLock lock (stateLock);
-        captureFile = newCaptureFile;
-        lastJobDirectory = juce::File();
-        engineLog.clear();
-    }
-
-    capturedSamples.store (0);
-    inputDurationSeconds.store (0.0);
-    captureStartPpq.store (-1.0);
-    captureStartTimelineSample.store (-1);
-    hostWasPlayingDuringCapture.store (false);
-    captureFinalizeRequested.store (false);
-    captureArmed.store (true);
-    capturing.store (false);
-    engineCompletedSuccessfully.store (false);
-    engineProgress.store (0.0);
-
-    {
-        const juce::ScopedLock lock (abletonBridgeLock);
-        abletonBridgeStatus =
-            "StemLabRemote status will appear after separation";
-    }
-
-    abletonImportedStemCount.store (0);
-
-    setStatus ("Armed - press Play in Ableton");
-    return true;
-}
-
 void StemLabAudioProcessor::stopCapture()
 {
-    if (isStandaloneApp())
-    {
-        const auto mode =
-            standaloneRecordingMode.load();
-
-        if (mode == recordingSystem)
-            stopSystemAudioRecording();
-        else if (mode == recordingInput)
-            stopStandaloneRecording();
-
-        return;
-    }
-
-    const bool wasArmed =
-        captureArmed.exchange (false);
-
-    const bool wasCapturing =
-        capturing.exchange (false);
-
-    activeWriter.store (
-        nullptr,
-        std::memory_order_release);
-
-    captureFinalizeRequested.store (false);
-    cancelPendingUpdate();
-
-    threadedWriter.reset();
-    hostWasPlayingDuringCapture.store (false);
-
-    if (wasArmed
-        && ! wasCapturing
-        && capturedSamples.load() == 0)
-    {
-        const auto emptyCapture =
-            getCaptureFile();
-
-        if (emptyCapture.existsAsFile())
-            emptyCapture.deleteFile();
-
-        {
-            const juce::ScopedLock lock (stateLock);
-            captureFile = juce::File();
-        }
-
-        setStatus ("Capture cancelled");
-        return;
-    }
-
-    if (capturedSamples.load() > 0)
-    {
-        if (captureStartPpq.load() < 0.0)
-            captureStartPpq.store (0.0);
-
-        setStatus ("Capture ready - choose stems");
-    }
-    else
-    {
-        setStatus ("Capture stopped");
-    }
+    const auto mode = standaloneRecordingMode.load();
+    if (mode == recordingSystem)
+        stopSystemAudioRecording();
+    else if (mode == recordingInput)
+        stopStandaloneRecording();
 }
 
 double StemLabAudioProcessor::getCapturedSeconds() const noexcept
 {
-    if (! capturing.load())
+    if (!capturing.load())
     {
-        const auto duration =
-            inputDurationSeconds.load();
+        const auto duration = inputDurationSeconds.load();
 
         if (duration > 0.0)
             return duration;
@@ -1935,87 +1523,60 @@ double StemLabAudioProcessor::getCapturedSeconds() const noexcept
 
     if (standaloneRecordingMode.load() == recordingSystem)
     {
-        const auto captureRate =
-            systemCaptureSampleRate.load();
+        const auto captureRate = systemCaptureSampleRate.load();
 
         if (captureRate > 0.0)
-        {
-            return static_cast<double> (
-                       capturedSamples.load())
-                / captureRate;
-        }
+            return static_cast<double>(capturedSamples.load()) / captureRate;
     }
 
     if (currentSampleRate <= 0.0)
         return 0.0;
 
-    return static_cast<double> (
-               capturedSamples.load())
-        / currentSampleRate;
+    return static_cast<double>(capturedSamples.load()) / currentSampleRate;
 }
 
 juce::File StemLabAudioProcessor::getCaptureFile() const
 {
-    const juce::ScopedLock lock (stateLock);
+    const juce::ScopedLock lock(stateLock);
     return captureFile;
 }
 
-juce::File StemLabAudioProcessor::getAbletonClipReplyFile() const
+bool StemLabAudioProcessor::sendAbletonControlMessage(const juce::String& message)
 {
-    const juce::ScopedLock lock (stateLock);
-    return abletonClipReplyFile;
-}
+    juce::DatagramSocket socket(false);
 
-bool StemLabAudioProcessor::sendAbletonControlMessage (
-    const juce::String& message)
-{
-    juce::DatagramSocket socket (false);
+    const auto utf8 = message.toRawUTF8();
 
-    const auto utf8 =
-        message.toRawUTF8();
+    const auto length = static_cast<int>(std::strlen(utf8));
 
-    const auto length =
-        static_cast<int> (
-            std::strlen (utf8));
-
-    return socket.write (
-        "127.0.0.1",
-        39277,
-        utf8,
-        length) == length;
+    return socket.write("127.0.0.1", 39277, utf8, length) == length;
 }
 
 bool StemLabAudioProcessor::requestAbletonSourceClip()
 {
-    if (getHostIntegration() != hostIntegrationAbletonLive
-        || capturing.load()
-        || isEngineRunning())
+    if (getHostIntegration() != hostIntegrationAbletonLive)
+        return false;
+
+    if (isStandaloneApp() || capturing.load() || isEngineRunning())
     {
         return false;
     }
 
     stopStandalonePlayback();
 
-    const auto requestId =
-        juce::Uuid().toString();
+    const auto requestId = juce::Uuid().toString();
 
-    auto replyFolder =
-        stemlab::paths::bridgeTempDirectory();
+    auto replyFolder = stemlab::paths::bridgeTempDirectory();
 
     replyFolder.createDirectory();
 
-    const auto replyFile =
-        replyFolder.getChildFile (
-            "clip_" + requestId + ".json");
+    const auto replyFile = replyFolder.getChildFile("clip_" + requestId + ".json");
 
-    auto legacyFolder =
-        stemlab::paths::legacyBridgeDirectory();
+    auto legacyFolder = stemlab::paths::legacyBridgeDirectory();
 
     legacyFolder.createDirectory();
 
-    const auto legacyReply =
-        legacyFolder.getChildFile (
-            "stemlab_clip_reply.json");
+    const auto legacyReply = legacyFolder.getChildFile("stemlab_clip_reply.json");
 
     if (replyFile.existsAsFile())
         replyFile.deleteFile();
@@ -2024,27 +1585,21 @@ bool StemLabAudioProcessor::requestAbletonSourceClip()
         legacyReply.deleteFile();
 
     {
-        const juce::ScopedLock lock (stateLock);
+        const juce::ScopedLock lock(stateLock);
         abletonClipRequestId = requestId;
         abletonClipReplyFile = replyFile;
         abletonLegacyClipReplyFile = legacyReply;
     }
 
-    abletonClipRequestPending.store (true);
-    abletonClipRequestStartMs.store (nowMs());
+    abletonClipRequestPending.store(true);
+    abletonClipRequestStartMs.store(nowMs());
 
     // 0.9.4+ protocol: tell StemLabRemote exactly where to write the one-shot
     // reply. This avoids Documents/OneDrive latency.
     const auto modernPayload =
-        "stemlab_get_clip "
-        + requestId
-        + " "
-        + utf8ToHex (
-            replyFile.getFullPathName());
+        "stemlab_get_clip " + requestId + " " + utf8ToHex(replyFile.getFullPathName());
 
-    const bool modernSent =
-        sendAbletonControlMessage (
-            modernPayload);
+    const bool modernSent = sendAbletonControlMessage(modernPayload);
 
     // Compatibility fallback: 0.9.3 and earlier StemLabRemote versions only
     // understand the request-id form and write to
@@ -2053,26 +1608,26 @@ bool StemLabAudioProcessor::requestAbletonSourceClip()
     // Sending both is intentional. New Remote Scripts understand both forms;
     // old scripts will mishandle the first message but immediately receive the
     // second compatible one. The VST accepts whichever valid reply arrives.
-    const bool legacySent =
-        sendAbletonControlMessage (
-            "stemlab_get_clip " + requestId);
+    const bool legacySent = sendAbletonControlMessage("stemlab_get_clip " + requestId);
 
-    if (! modernSent && ! legacySent)
+    if (!modernSent && !legacySent)
     {
-        abletonClipRequestPending.store (false);
-        abletonClipRequestStartMs.store (0.0);
-        setStatus ("Could not contact StemLabRemote");
+        abletonClipRequestPending.store(false);
+        abletonClipRequestStartMs.store(0.0);
+        setStatus("Could not contact StemLabRemote");
         return false;
     }
 
-    setStatus ("Getting selected Live clip...");
+    setStatus("Getting selected Live clip...");
     return true;
 }
 
 void StemLabAudioProcessor::refreshAbletonSourceClipFromDisk()
 {
-    if (getHostIntegration() != hostIntegrationAbletonLive
-        || ! abletonClipRequestPending.load())
+    if (getHostIntegration() != hostIntegrationAbletonLive)
+        return;
+
+    if (isStandaloneApp() || !abletonClipRequestPending.load())
     {
         return;
     }
@@ -2082,7 +1637,7 @@ void StemLabAudioProcessor::refreshAbletonSourceClipFromDisk()
     juce::String requestId;
 
     {
-        const juce::ScopedLock lock (stateLock);
+        const juce::ScopedLock lock(stateLock);
         modernReply = abletonClipReplyFile;
         legacyReply = abletonLegacyClipReplyFile;
         requestId = abletonClipRequestId;
@@ -2096,44 +1651,34 @@ void StemLabAudioProcessor::refreshAbletonSourceClipFromDisk()
     else if (legacyReply.existsAsFile())
         reply = legacyReply;
 
-    if (! reply.existsAsFile())
+    if (!reply.existsAsFile())
     {
-        const auto started =
-            abletonClipRequestStartMs.load();
+        const auto started = abletonClipRequestStartMs.load();
 
-        if (started > 0.0
-            && nowMs() - started > 5000.0)
+        if (started > 0.0 && nowMs() - started > 5000.0)
         {
-            abletonClipRequestPending.store (false);
-            abletonClipRequestStartMs.store (0.0);
+            abletonClipRequestPending.store(false);
+            abletonClipRequestStartMs.store(0.0);
 
-            setStatus (
-                "StemLabRemote did not return the clip. Re-select StemLabRemote in Live Settings, select the Arrangement audio clip, and try again.");
+            setStatus("StemLabRemote did not return the clip. Re-select StemLabRemote in Live "
+                      "Settings, select the Arrangement audio clip, and try again.");
         }
 
         return;
     }
 
-    const auto parsed =
-        juce::JSON::parse (
-            reply.loadFileAsString());
+    const auto parsed = juce::JSON::parse(reply.loadFileAsString());
 
-    auto* object =
-        parsed.getDynamicObject();
+    auto* object = parsed.getDynamicObject();
 
-    if (object == nullptr
-        || object->getProperty (
-            "protocol").toString()
-            != "stemlab-clip-source")
+    if (object == nullptr || object->getProperty("protocol").toString() != "stemlab-clip-source")
     {
         // A partially-written/older reply should not permanently poison the
         // request. Leave the request pending and let the next timer tick retry.
         return;
     }
 
-    if (object->getProperty (
-            "request_id").toString()
-        != requestId)
+    if (object->getProperty("request_id").toString() != requestId)
     {
         // With an old Remote Script, the first modern-format request can be
         // interpreted as one long request id. The second compatibility request
@@ -2141,34 +1686,20 @@ void StemLabAudioProcessor::refreshAbletonSourceClipFromDisk()
         return;
     }
 
-    abletonClipRequestPending.store (false);
-    abletonClipRequestStartMs.store (0.0);
+    abletonClipRequestPending.store(false);
+    abletonClipRequestStartMs.store(0.0);
 
-    const bool success =
-        static_cast<bool> (
-            object->getProperty (
-                "success"));
+    const bool success = static_cast<bool>(object->getProperty("success"));
 
-    const auto message =
-        object->getProperty (
-            "message").toString();
+    const auto message = object->getProperty("message").toString();
 
-    const auto path =
-        object->getProperty (
-            "path").toString();
+    const auto path = object->getProperty("path").toString();
 
-    const auto startBeat =
-        static_cast<double> (
-            object->getProperty (
-                "start_beat"));
+    const auto startBeat = static_cast<double>(object->getProperty("start_beat"));
 
-    const auto trackName =
-        object->getProperty (
-            "source_track").toString();
+    const auto trackName = object->getProperty("source_track").toString();
 
-    const auto clipName =
-        object->getProperty (
-            "clip_name").toString();
+    const auto clipName = object->getProperty("clip_name").toString();
 
     // Clean both possible reply locations regardless of which one won.
     if (modernReply.existsAsFile())
@@ -2177,12 +1708,10 @@ void StemLabAudioProcessor::refreshAbletonSourceClipFromDisk()
     if (legacyReply.existsAsFile())
         legacyReply.deleteFile();
 
-    if (! success)
+    if (!success)
     {
-        setStatus (
-            message.isNotEmpty()
-                ? "Live clip: " + message
-                : "Could not get the selected Live clip");
+        setStatus(message.isNotEmpty() ? "Live clip: " + message
+                                       : "Could not get the selected Live clip");
 
         return;
     }
@@ -2201,28 +1730,1245 @@ void StemLabAudioProcessor::refreshAbletonSourceClipFromDisk()
     }
 
     if (label.isEmpty())
-        label = juce::File (path).getFileName();
+        label = juce::File(path).getFileName();
 
-    if (setInputAudioFile (
-            juce::File (path),
-            startBeat,
-            label))
+    if (setInputAudioFile(juce::File(path), startBeat, label))
     {
-        setStatus (
-            "Live clip ready");
+        setStatus("Live clip ready");
 
         {
-            const juce::ScopedLock lock (
-                abletonBridgeLock);
+            const juce::ScopedLock lock(abletonBridgeLock);
 
-            abletonBridgeStatus =
-                "Source ready";
+            abletonBridgeStatus = "Source ready";
         }
     }
 }
 
-StemLabAudioProcessor::HostIntegration
-StemLabAudioProcessor::getHostIntegration() const noexcept
+bool StemLabAudioProcessor::launchSeparationAndExport()
+{
+    stopStandalonePlayback();
+
+    if (capturing.load())
+    {
+        setStatus("Finish the capture before separating");
+        return false;
+    }
+
+    if (isEngineRunning())
+        return false;
+
+    const auto source = getCaptureFile();
+
+    if (!source.existsAsFile())
+    {
+        setStatus(isStandaloneApp() ? "Select or record audio first"
+                                    : "Use Live Clip or Record PC first");
+        return false;
+    }
+
+    const auto commandName = getEngineCommand().trim();
+
+    if (commandName.isEmpty())
+    {
+        setStatus("Choose the StemLab engine in Settings");
+        return false;
+    }
+
+    juce::StringArray command;
+    command.add(commandName);
+
+    // Portable releases ship a relocatable embedded Python runtime under
+    // Engine/ rather than requiring a system Python/venv. When auto-discovery
+    // resolves that interpreter, launch StemLab's worker as a module. The old
+    // stemlab-plugin-job development path still works.
+    {
+        const juce::File commandFile(commandName);
+
+        if (looksLikePythonInterpreter(commandFile))
+        {
+            // For the self-contained Engine, -s keeps the user's ~/.local
+            // site-packages from shadowing the Engine's own dependencies. A
+            // system or venv interpreter must NOT get it: a user-site
+            // "pip install --user -e ." setup depends on user site.
+            if (isPortableEngineRuntime(commandFile))
+                command.add("-s");
+
+            command.add("-m");
+            command.add("stemlab.plugin_job");
+        }
+    }
+
+    command.add("--input");
+    command.add(source.getFullPathName());
+
+    clearRecursiveResults();
+
+    const auto job = createJobDirectory();
+
+    {
+        const juce::ScopedLock lock(stateLock);
+        lastJobDirectory = job;
+        engineLog.clear();
+    }
+
+    if (getHostIntegration() == hostIntegrationAbletonLive)
+    {
+        const auto ack = job.getChildFile("stemlab_ableton_ack.json");
+
+        if (ack.existsAsFile())
+            ack.deleteFile();
+
+        {
+            const juce::ScopedLock lock(abletonBridgeLock);
+            abletonBridgeStatus = "Separating all six stems...";
+        }
+
+        abletonBridgeWaitStartMs.store(0.0);
+    }
+
+    command.add("--output");
+    command.add(job.getFullPathName());
+
+    command.add("--start-ppq");
+    command.add(juce::String(juce::jmax(0.0, captureStartPpq.load()), 8));
+
+    command.add("--device");
+    command.add("cuda");
+
+    command.add("--engine");
+    command.add(getSeparatorEngineId());
+
+    if (!refinementEnabled.load())
+        command.add("--no-refine");
+
+    // Separation always produces every stem first. Ableton selection is
+    // intentionally deferred until after the user can audition the results.
+    command.add("--no-notify");
+    command.add("--stems");
+
+    for (int i = 0; i < stemCount; ++i)
+        command.add(getStemName(i));
+
+    setStatus("Separating with " + getSeparatorEngineDisplayName() + "...");
+
+    engineCompletedSuccessfully.store(false);
+    engineProgress.store(0.01);
+    engineStartMs.store(nowMs());
+    engineProgressUpdateMs.store(engineStartMs.load());
+    lastEngineDurationSeconds.store(0.0);
+
+    engineThread = std::make_unique<StemLabEngineThread>(*this, command);
+
+    engineThread->startThread();
+    return true;
+}
+
+juce::StringArray
+StemLabAudioProcessor::makePythonModuleCommand(const juce::String& moduleName) const
+{
+    const auto commandName = getEngineCommand().trim();
+
+    if (commandName.isEmpty())
+        return {};
+
+    const juce::File commandFile(commandName);
+    const auto fileName = commandFile.getFileName();
+
+    juce::StringArray command;
+
+    if (looksLikePythonInterpreter(commandFile))
+    {
+        command.add(commandName);
+
+        if (isPortableEngineRuntime(commandFile))
+            command.add("-s");
+
+        command.add("-m");
+        command.add(moduleName);
+        return command;
+    }
+
+    if (fileName.containsIgnoreCase("stemlab-plugin-job"))
+    {
+        // Development installs place both workers in the same environment.
+        auto recursiveExecutable = commandFile.getSiblingFile(
+            fileName.replace("stemlab-plugin-job", "stemlab-recursive-job"));
+
+        if (recursiveExecutable.existsAsFile())
+        {
+            command.add(recursiveExecutable.getFullPathName());
+            return command;
+        }
+    }
+
+    if (commandName.equalsIgnoreCase("stemlab-plugin-job"))
+    {
+        command.add("stemlab-recursive-job");
+        return command;
+    }
+
+    return {};
+}
+
+void StemLabAudioProcessor::clearRecursiveResults()
+{
+    {
+        const juce::ScopedLock lock(recursiveLock);
+        recursiveItems.clear();
+        previewRecursiveId.clear();
+    }
+
+    // Recursive children replace their parent in the default selection for a
+    // completed job. Clearing the recursive tree restores the normal six
+    // top-level stems for the next source/separation.
+    for (auto& value : stemEnabled)
+        value.store(true);
+
+    sendChangeMessage();
+}
+
+std::vector<StemLabRecursiveStemInfo> StemLabAudioProcessor::getRecursiveStemItems() const
+{
+    std::vector<StemLabRecursiveStemInfo> snapshot;
+
+    {
+        const juce::ScopedLock lock(recursiveLock);
+        snapshot = recursiveItems;
+    }
+
+    std::vector<StemLabRecursiveStemInfo> ordered;
+    ordered.reserve(snapshot.size());
+
+    std::function<void(const juce::String&, int)> appendChildren;
+    appendChildren = [&](const juce::String& parentId, int depth)
+    {
+        for (const auto& item : snapshot)
+        {
+            if (item.parentId != parentId)
+                continue;
+
+            auto copy = item;
+            copy.depth = depth;
+            ordered.push_back(copy);
+            appendChildren(item.id, depth + 1);
+        }
+    };
+
+    for (int i = 0; i < stemCount; ++i)
+        appendChildren(getStemName(i), 1);
+
+    // Keep any future/experimental node visible even if a malformed parent
+    // relationship somehow slips into a manifest.
+    for (const auto& item : snapshot)
+    {
+        const auto alreadyPresent =
+            std::any_of(ordered.begin(), ordered.end(),
+                        [&item](const auto& existing) { return existing.id == item.id; });
+
+        if (!alreadyPresent)
+            ordered.push_back(item);
+    }
+
+    for (auto& item : ordered)
+    {
+        const auto prefix = item.id + "/";
+        item.hasChildren =
+            std::any_of(snapshot.begin(), snapshot.end(), [&prefix](const auto& candidate)
+                        { return candidate.id.startsWith(prefix); });
+    }
+
+    return ordered;
+}
+
+juce::File StemLabAudioProcessor::getRecursiveStemFile(const juce::String& itemId) const
+{
+    const juce::ScopedLock lock(recursiveLock);
+
+    for (const auto& item : recursiveItems)
+        if (item.id == itemId)
+            return item.file;
+
+    return {};
+}
+
+void StemLabAudioProcessor::setRecursiveStemEnabled(const juce::String& itemId, bool enabled)
+{
+    {
+        const juce::ScopedLock lock(recursiveLock);
+        for (auto& item : recursiveItems)
+        {
+            if (item.id == itemId)
+            {
+                item.selected = enabled;
+                break;
+            }
+        }
+    }
+
+    sendChangeMessage();
+}
+
+bool StemLabAudioProcessor::isRecursiveStemEnabled(const juce::String& itemId) const
+{
+    const juce::ScopedLock lock(recursiveLock);
+
+    for (const auto& item : recursiveItems)
+        if (item.id == itemId)
+            return item.selected;
+
+    return false;
+}
+
+juce::String StemLabAudioProcessor::getPreviewRecursiveId() const
+{
+    const juce::ScopedLock lock(recursiveLock);
+    return previewRecursiveId;
+}
+
+bool StemLabAudioProcessor::playRecursiveStem(const juce::String& itemId)
+{
+    if (capturing.load() || isEngineRunning() || !hasSuccessfulJob())
+        return false;
+
+    const auto stemFile = getRecursiveStemFile(itemId);
+
+    if (!stemFile.existsAsFile())
+    {
+        setStatus("Recursive stem preview file was not found");
+        return false;
+    }
+
+    const auto currentId = getPreviewRecursiveId();
+
+    if (currentId == itemId && previewTransport.isPlaying())
+    {
+        previewTransport.stop();
+        setStatus("Recursive stem paused");
+        return true;
+    }
+
+    if (currentId != itemId)
+    {
+        if (!loadPreviewFile(stemFile, -3))
+        {
+            setStatus("Could not load recursive stem preview");
+            return false;
+        }
+
+        const juce::ScopedLock lock(recursiveLock);
+        previewRecursiveId = itemId;
+    }
+
+    if (previewTransport.getCurrentPosition() >= previewTransport.getLengthInSeconds() - 0.01)
+    {
+        previewTransport.setPosition(0.0);
+    }
+
+    previewTransport.start();
+
+    for (const auto& item : getRecursiveStemItems())
+    {
+        if (item.id == itemId)
+        {
+            setStatus("Playing " + item.label);
+            break;
+        }
+    }
+
+    return true;
+}
+
+bool StemLabAudioProcessor::seekRecursiveStem(const juce::String& itemId, double normalisedPosition)
+{
+    if (capturing.load() || isEngineRunning() || !hasSuccessfulJob())
+        return false;
+
+    const auto stemFile = getRecursiveStemFile(itemId);
+    if (!stemFile.existsAsFile())
+        return false;
+
+    const auto currentId = getPreviewRecursiveId();
+    const bool keepPlaying = currentId == itemId && previewTransport.isPlaying();
+
+    if (currentId != itemId)
+    {
+        if (!loadPreviewFile(stemFile, -3))
+            return false;
+
+        const juce::ScopedLock lock(recursiveLock);
+        previewRecursiveId = itemId;
+    }
+
+    const auto length = previewTransport.getLengthInSeconds();
+    if (length <= 0.0)
+        return false;
+
+    previewTransport.setPosition(juce::jlimit(0.0, 1.0, normalisedPosition) * length);
+
+    if (keepPlaying)
+        previewTransport.start();
+
+    sendChangeMessage();
+    return true;
+}
+
+void StemLabAudioProcessor::finishRecursiveJob(const juce::File& manifestFile)
+{
+    // The Python side owns separation details. The plugin only consumes the
+    // schema-2 tree contract and turns child nodes into selectable UI rows.
+    const auto parsed = juce::JSON::parse(manifestFile.loadFileAsString());
+    auto* object = parsed.getDynamicObject();
+
+    if (object == nullptr)
+    {
+        setStatus("Recursive result manifest is invalid");
+        return;
+    }
+
+    const auto parentId = object->getProperty("parent_id").toString();
+    const auto rootStem = object->getProperty("root_stem").toString();
+    auto* children = object->getProperty("children").getArray();
+
+    if (parentId.isEmpty() || rootStem.isEmpty() || children == nullptr)
+    {
+        setStatus("Recursive result manifest is incomplete");
+        return;
+    }
+
+    std::vector<StemLabRecursiveStemInfo> newItems;
+
+    for (const auto& entry : *children)
+    {
+        auto* child = entry.getDynamicObject();
+        if (child == nullptr)
+            continue;
+
+        StemLabRecursiveStemInfo item;
+        item.id = child->getProperty("id").toString();
+        item.label = child->getProperty("label").toString();
+        item.parentId = parentId;
+        item.rootStem = rootStem;
+        item.category = child->getProperty("category").toString();
+        item.file = juce::File(child->getProperty("path").toString());
+        item.selected = !item.label.containsIgnoreCase("Removed Reverb");
+        item.estimatedSourceCount =
+            juce::jmax(1, static_cast<int>(child->getProperty("estimated_source_count")));
+        item.confidence =
+            juce::jlimit(0.0, 1.0, static_cast<double>(child->getProperty("confidence")));
+
+        if (auto* actions = child->getProperty("actions").getArray())
+        {
+            for (const auto& action : *actions)
+                item.actions.addIfNotAlreadyThere(action.toString());
+        }
+
+        if (item.id.isNotEmpty() && item.file.existsAsFile())
+            newItems.push_back(std::move(item));
+    }
+
+    if (newItems.empty())
+    {
+        setStatus("Recursive split finished without usable audio files");
+        return;
+    }
+
+    {
+        const juce::ScopedLock lock(recursiveLock);
+        const auto prefix = parentId + "/";
+
+        recursiveItems.erase(std::remove_if(recursiveItems.begin(), recursiveItems.end(),
+                                            [&](const auto& item)
+                                            { return item.id.startsWith(prefix); }),
+                             recursiveItems.end());
+
+        // Once a node is split further, default to its children rather than
+        // sending/saving both the parent and every child at the same time.
+        if (parentId != rootStem)
+        {
+            for (auto& item : recursiveItems)
+                if (item.id == parentId)
+                    item.selected = false;
+        }
+
+        recursiveItems.insert(recursiveItems.end(), newItems.begin(), newItems.end());
+    }
+
+    if (parentId == rootStem)
+    {
+        for (int i = 0; i < stemCount; ++i)
+            if (getStemName(i).equalsIgnoreCase(rootStem))
+                setStemEnabled(i, false);
+    }
+
+    sendChangeMessage();
+}
+
+bool StemLabAudioProcessor::launchRecursiveStemSplit(int rootStemIndex)
+{
+    if (!hasSuccessfulJob() || isEngineRunning() ||
+        !juce::isPositiveAndBelow(rootStemIndex, stemCount))
+    {
+        return false;
+    }
+
+    const auto rootStem = getStemName(rootStemIndex);
+    const bool isVocals = rootStem.equalsIgnoreCase("vocals");
+    const bool isDrums = rootStem.equalsIgnoreCase("drums");
+    const bool isLeadCandidate = rootStem.equalsIgnoreCase("guitar") ||
+                                 rootStem.equalsIgnoreCase("piano") ||
+                                 rootStem.equalsIgnoreCase("other");
+
+    if (!isVocals && !isDrums && !isLeadCandidate)
+    {
+        setStatus("Adaptive splitting is not available for this stem yet");
+        return false;
+    }
+
+    const auto source = getCompletedStemFile(rootStemIndex);
+    if (!source.existsAsFile())
+    {
+        setStatus("Stem file was not found for adaptive splitting");
+        return false;
+    }
+
+    auto command = makePythonModuleCommand("stemlab.recursive_job");
+    if (command.isEmpty())
+    {
+        setStatus("Adaptive stem engine could not be located");
+        return false;
+    }
+
+    const auto output = getLastJobDirectory().getChildFile("recursive").getChildFile(rootStem);
+
+    if (output.isDirectory())
+        output.deleteRecursively();
+    output.createDirectory();
+
+    const auto operation = isVocals ? juce::String("vocals")
+                                    : (isDrums ? juce::String("drums") : juce::String("lead"));
+
+    const auto category =
+        isVocals ? juce::String("vocal.group")
+                 : (isDrums ? juce::String("drum.group") : juce::String("instrument.") + rootStem);
+
+    command.add("--operation");
+    command.add(operation);
+    command.add("--input");
+    command.add(source.getFullPathName());
+    command.add("--output");
+    command.add(output.getFullPathName());
+    command.add("--parent-id");
+    command.add(rootStem);
+    command.add("--root-stem");
+    command.add(rootStem);
+    command.add("--category");
+    command.add(category);
+    command.add("--depth");
+    command.add("1");
+
+    recursiveThread.reset();
+    engineProgress.store(0.01);
+    engineStartMs.store(nowMs());
+    engineProgressUpdateMs.store(engineStartMs.load());
+    lastEngineDurationSeconds.store(0.0);
+
+    if (isVocals)
+        setStatus("Adaptive vocals: separating lead and backing groups...");
+    else if (isDrums)
+        setStatus("Adaptive drums: splitting drum components...");
+    else
+        setStatus("Adaptive lead: detecting foreground and backing layers...");
+
+    recursiveThread = std::make_unique<StemLabRecursiveThread>(
+        *this, command, output.getChildFile("recursive_manifest.json"));
+
+    recursiveThread->startThread();
+    return true;
+}
+
+bool StemLabAudioProcessor::launchRecursiveAction(const juce::String& itemId,
+                                                  const juce::String& action)
+{
+    if (!hasSuccessfulJob() || isEngineRunning())
+        return false;
+
+    StemLabRecursiveStemInfo target;
+    bool found = false;
+
+    for (const auto& item : getRecursiveStemItems())
+    {
+        if (item.id == itemId)
+        {
+            target = item;
+            found = true;
+            break;
+        }
+    }
+
+    if (!found || !target.file.existsAsFile())
+    {
+        setStatus("Adaptive source was not found");
+        return false;
+    }
+
+    if (!target.actions.contains(action))
+    {
+        setStatus("That adaptive action is not available for this stem");
+        return false;
+    }
+
+    const bool isDeverb = action.equalsIgnoreCase("deverb");
+    const bool isAdaptiveSplit = action.equalsIgnoreCase("split");
+
+    if (!isDeverb && !isAdaptiveSplit)
+    {
+        setStatus("Adaptive action is not implemented yet");
+        return false;
+    }
+
+    auto command = makePythonModuleCommand("stemlab.recursive_job");
+    if (command.isEmpty())
+    {
+        setStatus("Adaptive stem engine could not be located");
+        return false;
+    }
+
+    auto safeFolder = itemId.replace("/", "_").replace("\\", "_");
+    const auto operation = isDeverb ? juce::String("deverb") : juce::String("adaptive");
+    const auto output = getLastJobDirectory()
+                            .getChildFile("recursive")
+                            .getChildFile("actions")
+                            .getChildFile(safeFolder + "_" + operation);
+
+    if (output.isDirectory())
+        output.deleteRecursively();
+    output.createDirectory();
+
+    command.add("--operation");
+    command.add(operation);
+    command.add("--input");
+    command.add(target.file.getFullPathName());
+    command.add("--output");
+    command.add(output.getFullPathName());
+    command.add("--parent-id");
+    command.add(target.id);
+    command.add("--root-stem");
+    command.add(target.rootStem);
+    command.add("--category");
+    command.add(target.category.isNotEmpty() ? target.category : "unknown");
+    command.add("--depth");
+    command.add(juce::String(target.depth + 1));
+
+    recursiveThread.reset();
+    engineProgress.store(0.01);
+    engineStartMs.store(nowMs());
+    engineProgressUpdateMs.store(engineStartMs.load());
+    lastEngineDurationSeconds.store(0.0);
+
+    setStatus(isDeverb ? "De-reverb: processing isolated lead vocal..."
+                       : "Adaptive split: analysing how many useful layers remain...");
+
+    recursiveThread = std::make_unique<StemLabRecursiveThread>(
+        *this, command, output.getChildFile("recursive_manifest.json"));
+
+    recursiveThread->startThread();
+    return true;
+}
+
+bool StemLabAudioProcessor::isRecursiveEngineRunning() const noexcept
+{
+    return recursiveThread != nullptr && recursiveThread->isThreadRunning();
+}
+
+bool StemLabAudioProcessor::isEngineRunning() const noexcept
+{
+    return (engineThread != nullptr && engineThread->isThreadRunning()) ||
+           isRecursiveEngineRunning();
+}
+
+double StemLabAudioProcessor::getEngineElapsedSeconds() const noexcept
+{
+    const auto start = engineStartMs.load();
+
+    if (start <= 0.0)
+        return 0.0;
+
+    if (isEngineRunning())
+        return juce::jmax(0.0, (nowMs() - start) / 1000.0);
+
+    return lastEngineDurationSeconds.load();
+}
+
+double StemLabAudioProcessor::getEngineEstimatedRemainingSeconds() const noexcept
+{
+    if (!isEngineRunning())
+        return 0.0;
+
+    const auto progress = engineProgress.load();
+
+    if (progress < 0.12 || progress >= 0.995)
+        return -1.0;
+
+    const auto updated = engineProgressUpdateMs.load();
+    const auto start = engineStartMs.load();
+
+    // Model calls can sit on one progress marker for minutes. In that case an
+    // elapsed-time projection grows forever, so report an unknown ETA instead.
+    if (updated <= start || nowMs() - updated > 5000.0)
+        return -1.0;
+
+    const auto elapsedAtUpdate = (updated - start) / 1000.0;
+    const auto estimate = elapsedAtUpdate * (1.0 - progress) / progress;
+    return juce::jlimit(0.0, 60.0 * 60.0, estimate);
+}
+
+void StemLabAudioProcessor::refreshEngineProgressFromDisk()
+{
+    // Recursive jobs stream their progress directly through stdout. The main
+    // job's progress file may still contain 100% from the six-stem pass, so
+    // do not let that stale file overwrite recursive progress/status.
+    if (isRecursiveEngineRunning())
+        return;
+
+    if (!isEngineRunning())
+        return;
+
+    const auto job = getLastJobDirectory();
+
+    if (!job.isDirectory())
+        return;
+
+    const auto progressFile = job.getChildFile("stemlab_progress.txt");
+
+    if (!progressFile.existsAsFile())
+        return;
+
+    const auto text = progressFile.loadFileAsString().trim();
+    const auto separator = text.indexOfChar('|');
+
+    if (separator <= 0)
+        return;
+
+    const auto percent = text.substring(0, separator).getDoubleValue();
+
+    const auto stage = text.substring(separator + 1).trim();
+
+    setEngineProgress(juce::jlimit(0.0, 1.0, percent / 100.0));
+
+    if (stage.isNotEmpty())
+    {
+        const auto current = getStatus();
+
+        if (current != stage)
+            setStatus(stage);
+    }
+}
+
+juce::String StemLabAudioProcessor::getStatus() const
+{
+    const juce::ScopedLock lock(stateLock);
+    return status;
+}
+
+void StemLabAudioProcessor::postUiStatus(const juce::String& message) { setStatus(message); }
+
+juce::String StemLabAudioProcessor::getEngineLog() const
+{
+    const juce::ScopedLock lock(stateLock);
+    return engineLog;
+}
+
+juce::File StemLabAudioProcessor::getLastJobDirectory() const
+{
+    const juce::ScopedLock lock(stateLock);
+    return lastJobDirectory;
+}
+
+void StemLabAudioProcessor::setStatus(const juce::String& newStatus)
+{
+    {
+        const juce::ScopedLock lock(stateLock);
+        status = newStatus;
+    }
+
+    sendChangeMessage();
+}
+
+void StemLabAudioProcessor::setEngineProgress(double progress)
+{
+    const auto current = engineProgress.load();
+    const auto next = juce::jmax(current, juce::jlimit(0.0, 1.0, progress));
+
+    if (next > current)
+        engineProgressUpdateMs.store(nowMs());
+
+    engineProgress.store(next);
+
+    sendChangeMessage();
+}
+
+void StemLabAudioProcessor::handleEngineOutputLine(const juce::String& line)
+{
+    appendEngineLog(line + "\n");
+
+    if (line.startsWithIgnoreCase("STEMLAB_ERROR "))
+    {
+        const auto message = line.fromFirstOccurrenceOf("STEMLAB_ERROR ", false, false).trim();
+
+        if (message.isNotEmpty())
+            setStatus("Failed - " + message);
+
+        return;
+    }
+
+    if (line.startsWithIgnoreCase("STEMLAB_PROGRESS "))
+    {
+        auto tokens = juce::StringArray::fromTokens(line, " ", "\"");
+
+        if (tokens.size() >= 2)
+        {
+            const auto percent = juce::jlimit(0, 100, tokens[1].getIntValue());
+
+            setEngineProgress(percent / 100.0);
+
+            if (tokens.size() >= 3)
+            {
+                auto stage = line.fromFirstOccurrenceOf(tokens[1], false, false).trim();
+
+                setStatus(stage);
+            }
+        }
+
+        return;
+    }
+
+    const auto percentPos = line.indexOfChar('%');
+
+    if (percentPos > 0)
+    {
+        int start = percentPos - 1;
+
+        while (start >= 0 &&
+               juce::CharacterFunctions::isDigit(static_cast<juce::juce_wchar>(line[start])))
+        {
+            --start;
+        }
+
+        const auto number = line.substring(start + 1, percentPos).getIntValue();
+
+        if (number >= 0 && number <= 100)
+            setEngineProgress(0.10 + 0.68 * (number / 100.0));
+    }
+}
+
+void StemLabAudioProcessor::appendEngineLog(const juce::String& text)
+{
+    {
+        const juce::ScopedLock lock(stateLock);
+        engineLog += text;
+
+        constexpr int maxLogCharacters = 50000;
+
+        if (engineLog.length() > maxLogCharacters)
+        {
+            engineLog = engineLog.substring(engineLog.length() - maxLogCharacters);
+        }
+    }
+
+    sendChangeMessage();
+}
+
+int StemLabAudioProcessor::saveSelectedStemsTo(const juce::File& destination)
+{
+    if (getHostIntegration() == hostIntegrationAbletonLive || !hasSuccessfulJob())
+        return 0;
+
+    if (!destination.isDirectory())
+    {
+        if (!destination.createDirectory())
+            return 0;
+    }
+
+    const auto baseName = getCaptureFile().getFileNameWithoutExtension();
+
+    int saved = 0;
+
+    for (int i = 0; i < stemCount; ++i)
+    {
+        if (!isStemEnabled(i))
+            continue;
+
+        const auto source = getCompletedStemFile(i);
+
+        if (!source.existsAsFile())
+            continue;
+
+        const auto outputName = baseName + "_" + getStemName(i) + source.getFileExtension();
+
+        auto target = destination.getChildFile(outputName);
+
+        if (target.existsAsFile())
+            target.deleteFile();
+
+        if (source.copyFileTo(target))
+            ++saved;
+    }
+
+    for (const auto& item : getRecursiveStemItems())
+    {
+        if (!item.selected || !item.file.existsAsFile())
+            continue;
+
+        auto safeName = item.id.replace("/", "_").replace("\\", "_");
+        const auto outputName = baseName + "_" + safeName + item.file.getFileExtension();
+
+        auto target = destination.getChildFile(outputName);
+
+        if (target.existsAsFile())
+            target.deleteFile();
+
+        if (item.file.copyFileTo(target))
+            ++saved;
+    }
+
+    setStatus("Saved " + juce::String(saved) + (saved == 1 ? " stem" : " stems"));
+
+    return saved;
+}
+
+juce::String StemLabAudioProcessor::getAbletonBridgeStatus() const
+{
+    const juce::ScopedLock lock(abletonBridgeLock);
+    return abletonBridgeStatus;
+}
+
+void StemLabAudioProcessor::refreshAbletonBridgeStatusFromDisk()
+{
+    if (getHostIntegration() != hostIntegrationAbletonLive)
+        return;
+
+    if (isStandaloneApp())
+        return;
+
+    // The invisible Remote Script writes a small heartbeat/status file when
+    // Live loads it. This lets the VST distinguish "integration installed"
+    // from "no background script is active" without any visible Live device.
+    const auto globalStatusFile =
+        stemlab::paths::legacyBridgeDirectory().getChildFile("stemlab_remote_status.json");
+
+    if (globalStatusFile.existsAsFile())
+    {
+        const auto remoteStatus = juce::JSON::parse(globalStatusFile.loadFileAsString());
+
+        if (auto* statusObject = remoteStatus.getDynamicObject())
+        {
+            if (statusObject->getProperty("protocol").toString() == "stemlab-remote-status")
+            {
+                const bool active = static_cast<bool>(statusObject->getProperty("active"));
+
+                const double timestamp =
+                    static_cast<double>(statusObject->getProperty("timestamp"));
+
+                const auto nowUnix = juce::Time::getCurrentTime().toMilliseconds() / 1000.0;
+
+                // The init heartbeat persists on disk. Treat it as a useful
+                // "installed/loaded recently" indication but never override a
+                // job-specific wait/import status once a separation exists.
+                if (active && nowUnix - timestamp < 24.0 * 60.0 * 60.0 && !hasSuccessfulJob())
+                {
+                    const juce::ScopedLock lock(abletonBridgeLock);
+
+                    abletonBridgeStatus =
+                        "StemLabRemote active - background Ableton integration ready";
+                }
+            }
+        }
+    }
+
+    const auto job = getLastJobDirectory();
+
+    if (!job.isDirectory())
+        return;
+
+    const auto importProgress = job.getChildFile("stemlab_ableton_import_progress.json");
+
+    if (importProgress.existsAsFile() && abletonBridgeWaitStartMs.load() > 0.0)
+    {
+        const auto progressParsed = juce::JSON::parse(importProgress.loadFileAsString());
+
+        if (auto* progressObject = progressParsed.getDynamicObject())
+        {
+            if (progressObject->getProperty("protocol").toString() ==
+                "stemlab-ableton-import-progress")
+            {
+                const auto progressMessage = progressObject->getProperty("message").toString();
+
+                const int imported = static_cast<int>(progressObject->getProperty("imported"));
+
+                const int total = static_cast<int>(progressObject->getProperty("total"));
+
+                if (progressMessage.isNotEmpty())
+                {
+                    juce::String visible = progressMessage;
+
+                    if (total > 0)
+                    {
+                        visible += " (" + juce::String(juce::jmin(imported + 1, total)) + "/" +
+                                   juce::String(total) + ")";
+                    }
+
+                    setStatus(visible);
+                }
+            }
+        }
+    }
+
+    const auto ack = job.getChildFile("stemlab_ableton_ack.json");
+
+    if (ack.existsAsFile())
+    {
+        const auto parsed = juce::JSON::parse(ack.loadFileAsString());
+
+        if (auto* object = parsed.getDynamicObject())
+        {
+            const auto protocol = object->getProperty("protocol").toString();
+
+            if (protocol == "stemlab-ableton-ack")
+            {
+                const bool success = static_cast<bool>(object->getProperty("success"));
+
+                const int imported = static_cast<int>(object->getProperty("imported"));
+
+                const auto message = object->getProperty("message").toString();
+
+                {
+                    const juce::ScopedLock lock(abletonBridgeLock);
+
+                    abletonBridgeStatus =
+                        success ? "Ableton imported " + juce::String(imported) +
+                                      (imported == 1 ? " stem" : " stems")
+                                : "Ableton import failed" +
+                                      (message.isNotEmpty() ? ": " + message : juce::String{});
+                }
+
+                setStatus(success ? "Imported into Ableton"
+                                  : "Ableton import failed - select source track if needed, then "
+                                    "Retry Import");
+
+                abletonBridgeWaitStartMs.store(0.0);
+                return;
+            }
+        }
+    }
+
+    const auto waitStart = abletonBridgeWaitStartMs.load();
+
+    if (waitStart > 0.0 && nowMs() - waitStart > 12000.0)
+    {
+        {
+            const juce::ScopedLock lock(abletonBridgeLock);
+
+            abletonBridgeStatus = "Ableton import timed out - click Retry";
+        }
+
+        setStatus("Ableton import timed out - click Retry");
+
+        abletonBridgeWaitStartMs.store(0.0);
+    }
+}
+
+bool StemLabAudioProcessor::sendAbletonBridgeNotification(const juce::File& manifestFile)
+{
+    if (!manifestFile.existsAsFile())
+        return false;
+
+    const auto payload = "stemlab_ready " + utf8ToHex(manifestFile.getFullPathName());
+
+    juce::DatagramSocket socket(false);
+
+    const auto bytes = payload.toRawUTF8();
+
+    const auto written =
+        socket.write("127.0.0.1", 39277, bytes, static_cast<int>(std::strlen(bytes)));
+
+    return written > 0;
+}
+
+bool StemLabAudioProcessor::sendSelectedStemsToAbleton()
+{
+    if (getHostIntegration() != hostIntegrationAbletonLive)
+        return false;
+
+    if (isStandaloneApp() || isEngineRunning() || !hasSuccessfulJob())
+    {
+        return false;
+    }
+
+    const auto job = getLastJobDirectory();
+
+    const auto masterManifest = job.getChildFile("stemlab_ableton_manifest.json");
+
+    if (!masterManifest.existsAsFile())
+    {
+        setStatus("Completed stem manifest was not found");
+        return false;
+    }
+
+    auto manifest = juce::JSON::parse(masterManifest.loadFileAsString());
+
+    auto* object = manifest.getDynamicObject();
+
+    if (object == nullptr)
+    {
+        setStatus("Completed stem manifest is invalid");
+        return false;
+    }
+
+    auto* allStems = object->getProperty("stems").getArray();
+
+    if (allStems == nullptr)
+    {
+        setStatus("Completed stem list is invalid");
+        return false;
+    }
+
+    juce::Array<juce::var> selected;
+
+    for (const auto& entry : *allStems)
+    {
+        auto* stemObject = entry.getDynamicObject();
+
+        if (stemObject == nullptr)
+            continue;
+
+        const auto name = stemObject->getProperty("name").toString();
+
+        for (int i = 0; i < stemCount; ++i)
+        {
+            if (name.equalsIgnoreCase(getStemName(i)) && isStemEnabled(i))
+            {
+                selected.add(entry);
+                break;
+            }
+        }
+    }
+
+    for (const auto& item : getRecursiveStemItems())
+    {
+        if (!item.selected || !item.file.existsAsFile())
+            continue;
+
+        auto* recursiveObject = new juce::DynamicObject();
+        recursiveObject->setProperty("name", item.label);
+        recursiveObject->setProperty("label", "StemLab - " + item.label);
+        recursiveObject->setProperty("path", item.file.getFullPathName().replace("\\", "/"));
+        recursiveObject->setProperty("recursive", true);
+        recursiveObject->setProperty("root_stem", item.rootStem);
+        selected.add(juce::var(recursiveObject));
+    }
+
+    if (selected.isEmpty())
+    {
+        setStatus("Choose at least one stem to send");
+        return false;
+    }
+
+    object->setProperty("stems", juce::var(selected));
+
+    object->setProperty("selection_mode", "post-audition");
+
+    const auto selectedManifest = job.getChildFile("stemlab_ableton_selected_manifest.json");
+
+    if (!selectedManifest.replaceWithText(juce::JSON::toString(manifest, true)))
+    {
+        setStatus("Could not write selected-stem manifest");
+        return false;
+    }
+
+    const auto ack = job.getChildFile("stemlab_ableton_ack.json");
+
+    if (ack.existsAsFile())
+        ack.deleteFile();
+
+    const auto importProgress = job.getChildFile("stemlab_ableton_import_progress.json");
+
+    if (importProgress.existsAsFile())
+        importProgress.deleteFile();
+
+    if (!sendAbletonBridgeNotification(selectedManifest))
+    {
+        setStatus("Could not contact StemLabRemote");
+        return false;
+    }
+
+    {
+        const juce::ScopedLock lock(abletonBridgeLock);
+
+        abletonBridgeStatus = "Sent " + juce::String(selected.size()) +
+                              (selected.size() == 1 ? " stem to Ableton" : " stems to Ableton") +
+                              " - waiting for import confirmation";
+    }
+
+    abletonBridgeWaitStartMs.store(nowMs());
+
+    setStatus("Sending selected stems to Ableton...");
+    return true;
+}
+
+bool StemLabAudioProcessor::retryAbletonImport()
+{
+    if (getHostIntegration() != hostIntegrationAbletonLive)
+        return false;
+
+    if (isStandaloneApp() || isEngineRunning())
+    {
+        return false;
+    }
+
+    const auto job = getLastJobDirectory();
+
+    auto manifest = job.getChildFile("stemlab_ableton_selected_manifest.json");
+
+    if (!manifest.existsAsFile())
+    {
+        manifest = job.getChildFile("stemlab_ableton_manifest.json");
+    }
+
+    if (!manifest.existsAsFile())
+    {
+        setStatus("No completed Ableton manifest to import");
+        return false;
+    }
+
+    const auto ack = job.getChildFile("stemlab_ableton_ack.json");
+
+    if (ack.existsAsFile())
+        ack.deleteFile();
+
+    const auto importProgress = job.getChildFile("stemlab_ableton_import_progress.json");
+
+    if (importProgress.existsAsFile())
+        importProgress.deleteFile();
+
+    {
+        const juce::ScopedLock lock(abletonBridgeLock);
+
+        abletonBridgeStatus = "Retry sent - waiting for StemLabRemote...";
+    }
+
+    abletonBridgeWaitStartMs.store(nowMs());
+
+    if (!sendAbletonBridgeNotification(manifest))
+    {
+        setStatus("Could not send Retry Import message");
+        return false;
+    }
+
+    setStatus("Retry Import sent to Ableton");
+    return true;
+}
+
+StemLabAudioProcessor::HostIntegration StemLabAudioProcessor::getHostIntegration() const noexcept
 {
     if (isStandaloneApp())
         return hostIntegrationNone;
@@ -2233,33 +2979,31 @@ StemLabAudioProcessor::getHostIntegration() const noexcept
     // Live offers no in-process API, so its bridge cannot self-identify the
     // way REAPER's does. On Windows - the only platform Live runs on - the
     // UDP + Remote Script path stays the assumption for any other host.
-   #if JUCE_WINDOWS
+#if JUCE_WINDOWS
     return hostIntegrationAbletonLive;
-   #else
+#else
     return hostIntegrationNone;
-   #endif
+#endif
 }
 
-void StemLabAudioProcessor::setIHostApplication (Steinberg::FUnknown* host)
+void StemLabAudioProcessor::setIHostApplication(Steinberg::FUnknown* host)
 {
     if (reaperApi != nullptr)
         return;
 
-    reaperApi = stemlab::reaper::Api::tryCreate (host);
+    reaperApi = stemlab::reaper::Api::tryCreate(host);
 
     if (reaperApi != nullptr)
     {
         const auto version = reaperApi->getAppVersion();
 
-        appendEngineLog (
-            "REAPER host detected"
-            + (version.isNotEmpty() ? " (v" + version + ")" : juce::String())
-            + (reaperApi->isValid()
-                   ? juce::String (" - API bridge ready\n")
-                   : " - missing API functions: "
-                       + reaperApi->getMissingFunctionNames()
-                             .joinIntoString (", ")
-                       + "\n"));
+        appendEngineLog(
+            "REAPER host detected" +
+            (version.isNotEmpty() ? " (v" + version + ")" : juce::String()) +
+            (reaperApi->isValid()
+                 ? juce::String(" - API bridge ready\n")
+                 : " - missing API functions: " +
+                       reaperApi->getMissingFunctionNames().joinIntoString(", ") + "\n"));
     }
 
     runReaperSelfTestIfRequested();
@@ -2269,34 +3013,24 @@ bool StemLabAudioProcessor::requestReaperSourceItem()
 {
     JUCE_ASSERT_MESSAGE_THREAD
 
-    if (getHostIntegration() != hostIntegrationReaper
-        || capturing.load()
-        || isEngineRunning())
-    {
+    if (getHostIntegration() != hostIntegrationReaper || capturing.load() || isEngineRunning())
         return false;
-    }
 
     stopStandalonePlayback();
 
-    const auto item =
-        stemlab::reaper::querySelectedItem (*reaperApi);
+    const auto item = stemlab::reaper::querySelectedItem(*reaperApi);
 
-    if (! item.ok)
+    if (!item.ok)
     {
-        setStatus (item.message);
+        setStatus(item.message);
         return false;
     }
 
-    if (! setInputAudioFile (
-            item.file,
-            juce::jmax (0.0, item.startQN),
-            item.label))
-    {
+    if (!setInputAudioFile(item.file, juce::jmax(0.0, item.startQN), item.label))
         return false;
-    }
 
     {
-        const juce::ScopedLock lock (stateLock);
+        const juce::ScopedLock lock(stateLock);
 
         reaperSourceInfo.valid = true;
         reaperSourceInfo.startSeconds = item.startSeconds;
@@ -2307,7 +3041,7 @@ bool StemLabAudioProcessor::requestReaperSourceItem()
         reaperSourceInfo.trackNumber = item.trackNumber;
     }
 
-    setStatus ("REAPER item ready: " + item.label);
+    setStatus("REAPER item ready: " + item.label);
     return true;
 }
 
@@ -2315,37 +3049,28 @@ bool StemLabAudioProcessor::insertSelectedStemsIntoReaper()
 {
     JUCE_ASSERT_MESSAGE_THREAD
 
-    if (getHostIntegration() != hostIntegrationReaper
-        || isEngineRunning()
-        || ! hasSuccessfulJob())
-    {
+    if (getHostIntegration() != hostIntegrationReaper || isEngineRunning() || !hasSuccessfulJob())
         return false;
-    }
 
     const auto job = getLastJobDirectory();
 
-    const auto manifestFile =
-        job.getChildFile ("stemlab_ableton_manifest.json");
+    const auto manifestFile = job.getChildFile("stemlab_ableton_manifest.json");
 
-    if (! manifestFile.existsAsFile())
+    if (!manifestFile.existsAsFile())
     {
-        setStatus ("Completed stem manifest was not found");
+        setStatus("Completed stem manifest was not found");
         return false;
     }
 
-    const auto manifest =
-        juce::JSON::parse (manifestFile.loadFileAsString());
+    const auto manifest = juce::JSON::parse(manifestFile.loadFileAsString());
 
     const auto* object = manifest.getDynamicObject();
 
-    const auto* allStems =
-        object != nullptr
-            ? object->getProperty ("stems").getArray()
-            : nullptr;
+    const auto* allStems = object != nullptr ? object->getProperty("stems").getArray() : nullptr;
 
     if (allStems == nullptr)
     {
-        setStatus ("Completed stem manifest is invalid");
+        setStatus("Completed stem manifest is invalid");
         return false;
     }
 
@@ -2358,19 +3083,13 @@ bool StemLabAudioProcessor::insertSelectedStemsIntoReaper()
         if (stemObject == nullptr)
             continue;
 
-        const auto name =
-            stemObject->getProperty ("name").toString();
+        const auto name = stemObject->getProperty("name").toString();
 
         for (int i = 0; i < stemCount; ++i)
         {
-            if (name.equalsIgnoreCase (getStemName (i))
-                && isStemEnabled (i))
+            if (name.equalsIgnoreCase(getStemName(i)) && isStemEnabled(i))
             {
-                selected.add (
-                    { name,
-                      juce::File (
-                          stemObject->getProperty ("path")
-                              .toString()) });
+                selected.add({name, juce::File(stemObject->getProperty("path").toString())});
                 break;
             }
         }
@@ -2378,7 +3097,7 @@ bool StemLabAudioProcessor::insertSelectedStemsIntoReaper()
 
     if (selected.isEmpty())
     {
-        setStatus ("Choose at least one stem to insert");
+        setStatus("Choose at least one stem to insert");
         return false;
     }
 
@@ -2387,7 +3106,7 @@ bool StemLabAudioProcessor::insertSelectedStemsIntoReaper()
     bool hasReaperGeometry = false;
 
     {
-        const juce::ScopedLock lock (stateLock);
+        const juce::ScopedLock lock(stateLock);
 
         sourceLabel = inputSourceLabel;
         hasReaperGeometry = reaperSourceInfo.valid;
@@ -2403,43 +3122,33 @@ bool StemLabAudioProcessor::insertSelectedStemsIntoReaper()
         }
     }
 
-    if (! hasReaperGeometry)
+    if (!hasReaperGeometry)
     {
         // A dropped file has no REAPER geometry; place the stems where the
         // captured start beat lands on the current tempo map.
         anchor.startSeconds =
-            reaperApi->TimeMap2_QNToTime (
-                nullptr,
-                juce::jmax (0.0, captureStartPpq.load()));
+            reaperApi->TimeMap2_QNToTime(nullptr, juce::jmax(0.0, captureStartPpq.load()));
     }
 
-    const auto result =
-        stemlab::reaper::insertStemTracks (
-            *reaperApi,
-            selected,
-            anchor,
-            sourceLabel);
+    const auto result = stemlab::reaper::insertStemTracks(*reaperApi, selected, anchor, sourceLabel);
 
-    setStatus (result.message);
+    setStatus(result.message);
     return result.inserted > 0;
 }
 
 void StemLabAudioProcessor::runReaperSelfTestIfRequested()
 {
-    /*  Test-only instrumentation: when the environment names a report file,
-        write what the REAPER handshake produced, and optionally exercise the
-        real pull/insert paths against the live project. Never triggered in
-        normal use - both variables have to be set explicitly by a harness.
-    */
+    // Test-only instrumentation: when the environment names a report file,
+    // write what the REAPER handshake produced, and optionally exercise the
+    // real pull/insert paths against the live project. Never triggered in
+    // normal use - both variables have to be set explicitly by a harness.
     const auto reportPath =
-        juce::SystemStats::getEnvironmentVariable (
-            "STEMLAB_REAPER_SELFTEST",
-            {});
+        juce::SystemStats::getEnvironmentVariable("STEMLAB_REAPER_SELFTEST", {});
 
     if (reportPath.isEmpty())
         return;
 
-    const juce::File report (reportPath);
+    const juce::File report(reportPath);
 
     juce::String text;
     text << "protocol: stemlab-reaper-selftest\n";
@@ -2447,7 +3156,7 @@ void StemLabAudioProcessor::runReaperSelfTestIfRequested()
     if (reaperApi == nullptr)
     {
         text << "reaper: not-detected\n";
-        report.replaceWithText (text);
+        report.replaceWithText(text);
         return;
     }
 
@@ -2457,50 +3166,45 @@ void StemLabAudioProcessor::runReaperSelfTestIfRequested()
 
     const auto missing = reaperApi->getMissingFunctionNames();
 
-    if (! missing.isEmpty())
-        text << "missing: " << missing.joinIntoString (",") << "\n";
+    if (!missing.isEmpty())
+        text << "missing: " << missing.joinIntoString(",") << "\n";
 
-    report.replaceWithText (text);
+    report.replaceWithText(text);
 
     const auto action =
-        juce::SystemStats::getEnvironmentVariable (
-            "STEMLAB_REAPER_SELFTEST_ACTION",
-            {});
+        juce::SystemStats::getEnvironmentVariable("STEMLAB_REAPER_SELFTEST_ACTION", {});
 
-    if (action.isEmpty() || ! reaperApi->isValid())
+    if (action.isEmpty() || !reaperApi->isValid())
         return;
 
-    // The project may still be loading while plugins initialise; give
-    // REAPER a moment, then run on the message thread like the real UI.
-    juce::WeakReference<StemLabAudioProcessor> weak (this);
+    // The project may still be loading while plugins initialise; give REAPER
+    // a moment, then run on the message thread like the real UI.
+    juce::WeakReference<StemLabAudioProcessor> weak(this);
 
-    juce::Timer::callAfterDelay (
-        2500,
-        [weak, action, report]
-        {
-            if (weak != nullptr)
-                weak->runReaperSelfTestAction (action, report);
-        });
+    juce::Timer::callAfterDelay(2500,
+                                [weak, action, report]
+                                {
+                                    if (weak != nullptr)
+                                        weak->runReaperSelfTestAction(action, report);
+                                });
 }
 
-void StemLabAudioProcessor::runReaperSelfTestAction (
-    const juce::String& action,
-    const juce::File& report)
+void StemLabAudioProcessor::runReaperSelfTestAction(const juce::String& action,
+                                                    const juce::File& report)
 {
     juce::String text = report.loadFileAsString();
 
-    if (action.contains ("pull"))
+    if (action.contains("pull"))
     {
-        const auto item =
-            stemlab::reaper::querySelectedItem (*reaperApi);
+        const auto item = stemlab::reaper::querySelectedItem(*reaperApi);
 
         text << "pull: " << (item.ok ? "ok" : "failed") << "\n";
 
         if (item.ok)
         {
             text << "pull-file: " << item.file.getFullPathName() << "\n";
-            text << "pull-start: " << juce::String (item.startSeconds, 6) << "\n";
-            text << "pull-length: " << juce::String (item.lengthSeconds, 6) << "\n";
+            text << "pull-start: " << juce::String(item.startSeconds, 6) << "\n";
+            text << "pull-length: " << juce::String(item.lengthSeconds, 6) << "\n";
             text << "pull-label: " << item.label << "\n";
         }
         else
@@ -2508,13 +3212,13 @@ void StemLabAudioProcessor::runReaperSelfTestAction (
             text << "pull-message: " << item.message << "\n";
         }
 
-        if (item.ok && action.contains ("insert"))
+        if (item.ok && action.contains("insert"))
         {
             // Insert the selected item's own audio twice, standing in for
             // stems, echoing the item's real geometry.
             juce::Array<stemlab::reaper::StemToInsert> stems;
-            stems.add ({ "vocals", item.file });
-            stems.add ({ "drums", item.file });
+            stems.add({"vocals", item.file});
+            stems.add({"drums", item.file});
 
             stemlab::reaper::InsertAnchor anchor;
             anchor.startSeconds = item.startSeconds;
@@ -2525,11 +3229,7 @@ void StemLabAudioProcessor::runReaperSelfTestAction (
             anchor.afterTrackNumber = item.trackNumber;
 
             const auto result =
-                stemlab::reaper::insertStemTracks (
-                    *reaperApi,
-                    stems,
-                    anchor,
-                    "Selftest");
+                stemlab::reaper::insertStemTracks(*reaperApi, stems, anchor, "Selftest");
 
             text << "insert: " << result.inserted << "\n";
             text << "insert-message: " << result.message << "\n";
@@ -2537,892 +3237,48 @@ void StemLabAudioProcessor::runReaperSelfTestAction (
     }
 
     text << "selftest: done\n";
-    report.replaceWithText (text);
-}
-
-bool StemLabAudioProcessor::launchSeparationAndExport()
-{
-    stopStandalonePlayback();
-
-    if (capturing.load()
-        || captureArmed.load()
-        || captureFinalizeRequested.load())
-    {
-        setStatus ("Finish the capture before separating");
-        return false;
-    }
-
-    if (isEngineRunning())
-        return false;
-
-    const auto source = getCaptureFile();
-
-    if (! source.existsAsFile())
-    {
-        setStatus (
-            isStandaloneApp()
-                ? "Select or record audio first"
-                : "Use Live Clip or Record PC first");
-        return false;
-    }
-
-    const auto commandName = getEngineCommand().trim();
-
-    if (commandName.isEmpty())
-    {
-        setStatus ("Choose the StemLab engine in Settings");
-        return false;
-    }
-
-    juce::StringArray command;
-    command.add (commandName);
-
-    // Portable releases ship a relocatable embedded Python runtime under
-    // Engine\python.exe rather than requiring a system Python/venv. When
-    // auto-discovery resolves that interpreter, launch StemLab's worker as a
-    // module. The old stemlab-plugin-job.exe development path still works.
-    {
-        const juce::File commandFile (commandName);
-
-        if (looksLikePythonInterpreter (commandFile))
-        {
-            // For the self-contained Engine, -s keeps the user's ~/.local
-            // site-packages from shadowing the Engine's own dependencies. A
-            // system or venv interpreter must NOT get it: a user-site
-            // "pip install --user -e ." setup depends on user site.
-            if (isPortableEngineRuntime (commandFile))
-                command.add ("-s");
-
-            command.add ("-m");
-            command.add ("stemlab.plugin_job");
-        }
-    }
-
-    command.add ("--input");
-    command.add (source.getFullPathName());
-
-    const auto job = createJobDirectory();
-
-    {
-        const juce::ScopedLock lock (stateLock);
-        lastJobDirectory = job;
-        engineLog.clear();
-    }
-
-    if (getHostIntegration() == hostIntegrationAbletonLive)
-    {
-        const auto ack =
-            job.getChildFile ("stemlab_ableton_ack.json");
-
-        if (ack.existsAsFile())
-            ack.deleteFile();
-
-        {
-            const juce::ScopedLock lock (abletonBridgeLock);
-            abletonBridgeStatus =
-                "Separating all six stems...";
-        }
-
-        abletonImportedStemCount.store (0);
-        abletonBridgeWaitStartMs.store (0.0);
-    }
-
-    command.add ("--output");
-    command.add (job.getFullPathName());
-
-    command.add ("--start-ppq");
-    command.add (juce::String (juce::jmax (0.0, captureStartPpq.load()), 8));
-
-    command.add ("--device");
-    command.add ("cuda");
-
-    command.add ("--engine");
-    command.add (getSeparatorEngineId());
-
-    if (! refinementEnabled.load())
-        command.add ("--no-refine");
-
-    // Separation always produces every stem first. Ableton selection is
-    // intentionally deferred until after the user can audition the results.
-    command.add ("--no-notify");
-    command.add ("--stems");
-
-    for (int i = 0; i < stemCount; ++i)
-        command.add (getStemName (i));
-
-    setStatus (
-        "Separating with "
-        + getSeparatorEngineDisplayName()
-        + "...");
-
-    engineCompletedSuccessfully.store (false);
-    engineProgress.store (0.01);
-    engineStartMs.store (nowMs());
-    lastEngineDurationSeconds.store (0.0);
-
-    engineThread = std::make_unique<StemLabEngineThread> (
-        *this,
-        command,
-        job);
-
-    engineThread->startThread();
-    return true;
-}
-
-bool StemLabAudioProcessor::isEngineRunning() const noexcept
-{
-    return engineThread != nullptr && engineThread->isThreadRunning();
-}
-
-double StemLabAudioProcessor::getEngineElapsedSeconds() const noexcept
-{
-    const auto start = engineStartMs.load();
-
-    if (start <= 0.0)
-        return 0.0;
-
-    if (isEngineRunning())
-        return juce::jmax (0.0, (nowMs() - start) / 1000.0);
-
-    return lastEngineDurationSeconds.load();
-}
-
-double StemLabAudioProcessor::getEngineEstimatedRemainingSeconds() const noexcept
-{
-    if (! isEngineRunning())
-        return 0.0;
-
-    const auto progress = engineProgress.load();
-
-    if (progress < 0.12 || progress >= 0.995)
-        return -1.0;
-
-    const auto elapsed = getEngineElapsedSeconds();
-
-    if (elapsed <= 0.1)
-        return -1.0;
-
-    const auto estimate = elapsed * (1.0 - progress) / progress;
-    return juce::jlimit (0.0, 60.0 * 60.0, estimate);
-}
-
-void StemLabAudioProcessor::refreshEngineProgressFromDisk()
-{
-    if (! isEngineRunning())
-        return;
-
-    const auto job = getLastJobDirectory();
-
-    if (! job.isDirectory())
-        return;
-
-    const auto progressFile =
-        job.getChildFile ("stemlab_progress.txt");
-
-    if (! progressFile.existsAsFile())
-        return;
-
-    const auto text = progressFile.loadFileAsString().trim();
-    const auto separator = text.indexOfChar ('|');
-
-    if (separator <= 0)
-        return;
-
-    const auto percent =
-        text.substring (0, separator).getDoubleValue();
-
-    const auto stage =
-        text.substring (separator + 1).trim();
-
-    setEngineProgress (
-        juce::jlimit (0.0, 1.0, percent / 100.0));
-
-    if (stage.isNotEmpty())
-    {
-        const auto current = getStatus();
-
-        if (current != stage)
-            setStatus (stage);
-    }
-}
-
-juce::String StemLabAudioProcessor::getStatus() const
-{
-    const juce::ScopedLock lock (stateLock);
-    return status;
-}
-
-void StemLabAudioProcessor::postUiStatus (const juce::String& message)
-{
-    setStatus (message);
-}
-
-juce::String StemLabAudioProcessor::getEngineLog() const
-{
-    const juce::ScopedLock lock (stateLock);
-    return engineLog;
-}
-
-juce::File StemLabAudioProcessor::getLastJobDirectory() const
-{
-    const juce::ScopedLock lock (stateLock);
-    return lastJobDirectory;
-}
-
-void StemLabAudioProcessor::setStatus (const juce::String& newStatus)
-{
-    {
-        const juce::ScopedLock lock (stateLock);
-        status = newStatus;
-    }
-
-    sendChangeMessage();
-}
-
-void StemLabAudioProcessor::setEngineProgress (double progress)
-{
-    const auto current = engineProgress.load();
-
-    engineProgress.store (
-        juce::jmax (
-            current,
-            juce::jlimit (0.0, 1.0, progress)));
-
-    sendChangeMessage();
-}
-
-void StemLabAudioProcessor::handleEngineOutputLine (const juce::String& line)
-{
-    appendEngineLog (line + "\n");
-
-    if (line.startsWithIgnoreCase ("STEMLAB_ERROR "))
-    {
-        const auto message =
-            line.fromFirstOccurrenceOf ("STEMLAB_ERROR ", false, false).trim();
-
-        if (message.isNotEmpty())
-            setStatus ("Failed - " + message);
-
-        return;
-    }
-
-    if (line.startsWithIgnoreCase ("STEMLAB_PROGRESS "))
-    {
-        auto tokens = juce::StringArray::fromTokens (line, " ", "\"");
-
-        if (tokens.size() >= 2)
-        {
-            const auto percent =
-                juce::jlimit (0, 100, tokens[1].getIntValue());
-
-            setEngineProgress (percent / 100.0);
-
-            if (tokens.size() >= 3)
-            {
-                auto stage =
-                    line.fromFirstOccurrenceOf (
-                        tokens[1],
-                        false,
-                        false)
-                        .trim();
-
-                setStatus (stage);
-            }
-        }
-
-        return;
-    }
-
-    const auto percentPos = line.indexOfChar ('%');
-
-    if (percentPos > 0)
-    {
-        int start = percentPos - 1;
-
-        while (start >= 0
-               && juce::CharacterFunctions::isDigit (
-                   static_cast<juce::juce_wchar> (line[start])))
-        {
-            --start;
-        }
-
-        const auto number =
-            line.substring (start + 1, percentPos).getIntValue();
-
-        if (number >= 0 && number <= 100)
-            setEngineProgress (
-                0.10 + 0.68 * (number / 100.0));
-    }
-}
-
-void StemLabAudioProcessor::appendEngineLog (const juce::String& text)
-{
-    {
-        const juce::ScopedLock lock (stateLock);
-        engineLog += text;
-
-        constexpr int maxLogCharacters = 50000;
-
-        if (engineLog.length() > maxLogCharacters)
-        {
-            engineLog = engineLog.substring (
-                engineLog.length() - maxLogCharacters);
-        }
-    }
-
-    sendChangeMessage();
-}
-
-int StemLabAudioProcessor::saveSelectedStemsTo (
-    const juce::File& destination)
-{
-    if (getHostIntegration() == hostIntegrationAbletonLive
-        || ! hasSuccessfulJob())
-    {
-        return 0;
-    }
-
-    if (! destination.isDirectory())
-    {
-        if (! destination.createDirectory())
-            return 0;
-    }
-
-    const auto baseName =
-        getCaptureFile().getFileNameWithoutExtension();
-
-    int saved = 0;
-
-    for (int i = 0; i < stemCount; ++i)
-    {
-        if (! isStemEnabled (i))
-            continue;
-
-        const auto source = getCompletedStemFile (i);
-
-        if (! source.existsAsFile())
-            continue;
-
-        const auto outputName =
-            baseName
-            + "_"
-            + getStemName (i)
-            + source.getFileExtension();
-
-        auto target = destination.getChildFile (outputName);
-
-        if (target.existsAsFile())
-            target.deleteFile();
-
-        if (source.copyFileTo (target))
-            ++saved;
-    }
-
-    setStatus (
-        "Saved "
-        + juce::String (saved)
-        + (saved == 1 ? " stem" : " stems"));
-
-    return saved;
-}
-
-juce::String StemLabAudioProcessor::getAbletonBridgeStatus() const
-{
-    const juce::ScopedLock lock (abletonBridgeLock);
-    return abletonBridgeStatus;
-}
-
-void StemLabAudioProcessor::refreshAbletonBridgeStatusFromDisk()
-{
-    if (getHostIntegration() != hostIntegrationAbletonLive)
-        return;
-
-    // The invisible Remote Script writes a small heartbeat/status file when
-    // Live loads it. This lets the VST distinguish "integration installed"
-    // from "no background script is active" without any visible Live device.
-    const auto globalStatusFile =
-        juce::File::getSpecialLocation (
-            juce::File::userDocumentsDirectory)
-            .getChildFile ("StemLab")
-            .getChildFile ("Ableton")
-            .getChildFile ("stemlab_remote_status.json");
-
-    if (globalStatusFile.existsAsFile())
-    {
-        const auto remoteStatus =
-            juce::JSON::parse (
-                globalStatusFile.loadFileAsString());
-
-        if (auto* statusObject =
-                remoteStatus.getDynamicObject())
-        {
-            if (statusObject->getProperty ("protocol").toString()
-                == "stemlab-remote-status")
-            {
-                const bool active =
-                    static_cast<bool> (
-                        statusObject->getProperty ("active"));
-
-                const double timestamp =
-                    static_cast<double> (
-                        statusObject->getProperty ("timestamp"));
-
-                const auto nowUnix =
-                    juce::Time::getCurrentTime().toMilliseconds()
-                    / 1000.0;
-
-                // The init heartbeat persists on disk. Treat it as a useful
-                // "installed/loaded recently" indication but never override a
-                // job-specific wait/import status once a separation exists.
-                if (active
-                    && nowUnix - timestamp < 24.0 * 60.0 * 60.0
-                    && ! hasSuccessfulJob())
-                {
-                    const juce::ScopedLock lock (
-                        abletonBridgeLock);
-
-                    abletonBridgeStatus =
-                        "StemLabRemote active - background Ableton integration ready";
-                }
-            }
-        }
-    }
-
-    const auto job =
-        getLastJobDirectory();
-
-    if (! job.isDirectory())
-        return;
-
-    const auto importProgress =
-        job.getChildFile (
-            "stemlab_ableton_import_progress.json");
-
-    if (importProgress.existsAsFile()
-        && abletonBridgeWaitStartMs.load() > 0.0)
-    {
-        const auto progressParsed =
-            juce::JSON::parse (
-                importProgress.loadFileAsString());
-
-        if (auto* progressObject =
-                progressParsed.getDynamicObject())
-        {
-            if (progressObject->getProperty (
-                    "protocol").toString()
-                == "stemlab-ableton-import-progress")
-            {
-                const auto progressMessage =
-                    progressObject->getProperty (
-                        "message").toString();
-
-                const int imported =
-                    static_cast<int> (
-                        progressObject->getProperty (
-                            "imported"));
-
-                const int total =
-                    static_cast<int> (
-                        progressObject->getProperty (
-                            "total"));
-
-                if (progressMessage.isNotEmpty())
-                {
-                    juce::String visible =
-                        progressMessage;
-
-                    if (total > 0)
-                    {
-                        visible +=
-                            " ("
-                            + juce::String (
-                                juce::jmin (
-                                    imported + 1,
-                                    total))
-                            + "/"
-                            + juce::String (total)
-                            + ")";
-                    }
-
-                    setStatus (visible);
-                }
-            }
-        }
-    }
-
-    const auto ack =
-        job.getChildFile (
-            "stemlab_ableton_ack.json");
-
-    if (ack.existsAsFile())
-    {
-        const auto parsed =
-            juce::JSON::parse (
-                ack.loadFileAsString());
-
-        if (auto* object =
-                parsed.getDynamicObject())
-        {
-            const auto protocol =
-                object->getProperty (
-                    "protocol").toString();
-
-            if (protocol == "stemlab-ableton-ack")
-            {
-                const bool success =
-                    static_cast<bool> (
-                        object->getProperty (
-                            "success"));
-
-                const int imported =
-                    static_cast<int> (
-                        object->getProperty (
-                            "imported"));
-
-                const auto message =
-                    object->getProperty (
-                        "message").toString();
-
-                abletonImportedStemCount.store (
-                    juce::jmax (0, imported));
-
-                {
-                    const juce::ScopedLock lock (
-                        abletonBridgeLock);
-
-                    abletonBridgeStatus =
-                        success
-                            ? "Ableton imported "
-                                + juce::String (imported)
-                                + (imported == 1
-                                    ? " stem"
-                                    : " stems")
-                            : "Ableton import failed"
-                                + (message.isNotEmpty()
-                                    ? ": " + message
-                                    : juce::String {});
-                }
-
-                setStatus (
-                    success
-                        ? "Imported into Ableton"
-                        : "Ableton import failed - select source track if needed, then Retry Import");
-
-                abletonBridgeWaitStartMs.store (0.0);
-                return;
-            }
-        }
-    }
-
-    const auto waitStart =
-        abletonBridgeWaitStartMs.load();
-
-    if (waitStart > 0.0
-        && nowMs() - waitStart > 12000.0)
-    {
-        {
-            const juce::ScopedLock lock (
-                abletonBridgeLock);
-
-            abletonBridgeStatus =
-                "Ableton import timed out - click Retry";
-        }
-
-        setStatus (
-            "Ableton import timed out - click Retry");
-
-        abletonBridgeWaitStartMs.store (0.0);
-    }
-}
-
-bool StemLabAudioProcessor::sendAbletonBridgeNotification (
-    const juce::File& manifestFile)
-{
-    if (! manifestFile.existsAsFile())
-        return false;
-
-    const auto payload =
-        "stemlab_ready "
-        + utf8ToHex (
-            manifestFile.getFullPathName());
-
-    juce::DatagramSocket socket (false);
-
-    const auto bytes =
-        payload.toRawUTF8();
-
-    const auto written =
-        socket.write (
-            "127.0.0.1",
-            39277,
-            bytes,
-            static_cast<int> (
-                std::strlen (bytes)));
-
-    return written > 0;
-}
-
-bool StemLabAudioProcessor::sendSelectedStemsToAbleton()
-{
-    if (getHostIntegration() != hostIntegrationAbletonLive
-        || isEngineRunning()
-        || ! hasSuccessfulJob())
-    {
-        return false;
-    }
-
-    const auto job =
-        getLastJobDirectory();
-
-    const auto masterManifest =
-        job.getChildFile (
-            "stemlab_ableton_manifest.json");
-
-    if (! masterManifest.existsAsFile())
-    {
-        setStatus (
-            "Completed stem manifest was not found");
-        return false;
-    }
-
-    auto manifest =
-        juce::JSON::parse (
-            masterManifest.loadFileAsString());
-
-    auto* object =
-        manifest.getDynamicObject();
-
-    if (object == nullptr)
-    {
-        setStatus (
-            "Completed stem manifest is invalid");
-        return false;
-    }
-
-    auto* allStems =
-        object->getProperty (
-            "stems").getArray();
-
-    if (allStems == nullptr)
-    {
-        setStatus (
-            "Completed stem list is invalid");
-        return false;
-    }
-
-    juce::Array<juce::var> selected;
-
-    for (const auto& entry : *allStems)
-    {
-        auto* stemObject =
-            entry.getDynamicObject();
-
-        if (stemObject == nullptr)
-            continue;
-
-        const auto name =
-            stemObject->getProperty (
-                "name").toString();
-
-        for (int i = 0;
-             i < stemCount;
-             ++i)
-        {
-            if (name.equalsIgnoreCase (
-                    getStemName (i))
-                && isStemEnabled (i))
-            {
-                selected.add (entry);
-                break;
-            }
-        }
-    }
-
-    if (selected.isEmpty())
-    {
-        setStatus (
-            "Choose at least one stem to send");
-        return false;
-    }
-
-    object->setProperty (
-        "stems",
-        juce::var (selected));
-
-    object->setProperty (
-        "selection_mode",
-        "post-audition");
-
-    const auto selectedManifest =
-        job.getChildFile (
-            "stemlab_ableton_selected_manifest.json");
-
-    if (! selectedManifest.replaceWithText (
-            juce::JSON::toString (
-                manifest,
-                true)))
-    {
-        setStatus (
-            "Could not write selected-stem manifest");
-        return false;
-    }
-
-    const auto ack =
-        job.getChildFile (
-            "stemlab_ableton_ack.json");
-
-    if (ack.existsAsFile())
-        ack.deleteFile();
-
-    const auto importProgress =
-        job.getChildFile (
-            "stemlab_ableton_import_progress.json");
-
-    if (importProgress.existsAsFile())
-        importProgress.deleteFile();
-
-    if (! sendAbletonBridgeNotification (
-            selectedManifest))
-    {
-        setStatus (
-            "Could not contact StemLabRemote");
-        return false;
-    }
-
-    {
-        const juce::ScopedLock lock (
-            abletonBridgeLock);
-
-        abletonBridgeStatus =
-            "Sent "
-            + juce::String (selected.size())
-            + (selected.size() == 1
-                ? " stem to Ableton"
-                : " stems to Ableton")
-            + " - waiting for import confirmation";
-    }
-
-    abletonImportedStemCount.store (0);
-    abletonBridgeWaitStartMs.store (nowMs());
-
-    setStatus (
-        "Sending selected stems to Ableton...");
-    return true;
-}
-
-bool StemLabAudioProcessor::retryAbletonImport()
-{
-    if (getHostIntegration() != hostIntegrationAbletonLive
-        || isEngineRunning())
-    {
-        return false;
-    }
-
-    const auto job =
-        getLastJobDirectory();
-
-    auto manifest =
-        job.getChildFile (
-            "stemlab_ableton_selected_manifest.json");
-
-    if (! manifest.existsAsFile())
-    {
-        manifest =
-            job.getChildFile (
-                "stemlab_ableton_manifest.json");
-    }
-
-    if (! manifest.existsAsFile())
-    {
-        setStatus ("No completed Ableton manifest to import");
-        return false;
-    }
-
-    const auto ack =
-        job.getChildFile (
-            "stemlab_ableton_ack.json");
-
-    if (ack.existsAsFile())
-        ack.deleteFile();
-
-    const auto importProgress =
-        job.getChildFile (
-            "stemlab_ableton_import_progress.json");
-
-    if (importProgress.existsAsFile())
-        importProgress.deleteFile();
-
-    {
-        const juce::ScopedLock lock (
-            abletonBridgeLock);
-
-        abletonBridgeStatus =
-            "Retry sent - waiting for StemLabRemote...";
-    }
-
-    abletonImportedStemCount.store (0);
-    abletonBridgeWaitStartMs.store (nowMs());
-
-    if (! sendAbletonBridgeNotification (manifest))
-    {
-        setStatus ("Could not send Retry Import message");
-        return false;
-    }
-
-    setStatus ("Retry Import sent to Ableton");
-    return true;
+    report.replaceWithText(text);
 }
 
 juce::String StemLabAudioProcessor::discoverEngineCommand() const
 {
-    const auto env = juce::SystemStats::getEnvironmentVariable (
-        "STEMLAB_ENGINE",
-        {});
+    const auto env = juce::SystemStats::getEnvironmentVariable("STEMLAB_ENGINE", {});
 
     if (env.isNotEmpty())
     {
-        const juce::File envFile (env);
+        const juce::File envFile(env);
 
         if (envFile.existsAsFile())
             return envFile.getFullPathName();
     }
 
-    auto checkRoot = [] (juce::File root) -> juce::String
+    auto checkRoot = [](juce::File root) -> juce::String
     {
-        const juce::StringArray relativeCandidates
-        {
-           #if JUCE_WINDOWS
+        const juce::StringArray relativeCandidates{
+#if JUCE_WINDOWS
             // Portable release: keep the whole runtime beside StemLab.exe or
             // beside a VST3 folder that the host scans directly.
-            "Engine/python.exe",
-            "engine/python.exe",
+            "Engine/python.exe", "engine/python.exe",
 
             // Development fallbacks.
-            ".venv/Scripts/stemlab-plugin-job.exe",
-            ".venv/Scripts/stemlab-plugin-job",
-            "venv/Scripts/stemlab-plugin-job.exe",
-            "venv/Scripts/stemlab-plugin-job"
-           #else
+            ".venv/Scripts/stemlab-plugin-job.exe", ".venv/Scripts/stemlab-plugin-job",
+            "venv/Scripts/stemlab-plugin-job.exe", "venv/Scripts/stemlab-plugin-job"
+#else
             // Same portable layout, POSIX interpreter location. The "engine"
             // spelling is kept because ext4 will not forgive the difference.
-            "Engine/bin/python3",
-            "engine/bin/python3",
-            "Engine/bin/python",
-            "engine/bin/python",
+            "Engine/bin/python3", "engine/bin/python3", "Engine/bin/python", "engine/bin/python",
 
             // Development fallbacks.
-            ".venv/bin/stemlab-plugin-job",
-            "venv/bin/stemlab-plugin-job",
-            ".venv/bin/python3",
+            ".venv/bin/stemlab-plugin-job", "venv/bin/stemlab-plugin-job", ".venv/bin/python3",
             "venv/bin/python3"
-           #endif
+#endif
         };
 
         for (int depth = 0; depth < 10 && root.exists(); ++depth)
         {
             for (const auto& relative : relativeCandidates)
             {
-                const auto candidate = root.getChildFile (relative);
+                const auto candidate = root.getChildFile(relative);
 
                 if (candidate.existsAsFile())
                     return candidate.getFullPathName();
@@ -3442,30 +3298,25 @@ juce::String StemLabAudioProcessor::discoverEngineCommand() const
     // Prefer a sibling Engine directory. This makes an extracted portable
     // build self-contained even when a development venv or an older installed
     // engine also exists on the same machine.
-    if (const auto found = checkRoot (
-            juce::File::getSpecialLocation (
-                juce::File::currentExecutableFile)
-                .getParentDirectory());
+    if (const auto found = checkRoot(
+            juce::File::getSpecialLocation(juce::File::currentExecutableFile).getParentDirectory());
         found.isNotEmpty())
     {
         return found;
     }
 
-    // The Standalone portable app writes this pointer on launch. The VST3 can
-    // then reuse the Engine directory from the extracted release instead of
-    // requiring a second multi-gigabyte copy.
+    // The Standalone portable app and install_backend_linux.sh write this
+    // pointer. The VST3 can then reuse the Engine from the extracted release
+    // or the installed backend instead of requiring a second copy.
     {
-        const auto stemLabLocal =
-            stemlab::paths::configDirectory();
+        const auto stemLabLocal = stemlab::paths::configDirectory();
 
-        const auto portablePointer =
-            stemLabLocal.getChildFile ("portable_engine_path.txt");
+        const auto portablePointer = stemLabLocal.getChildFile("portable_engine_path.txt");
 
         if (portablePointer.existsAsFile())
         {
-            const auto portablePath =
-                portablePointer.loadFileAsString().trim();
-            const juce::File portableRuntime (portablePath);
+            const auto portablePath = portablePointer.loadFileAsString().trim();
+            const juce::File portableRuntime(portablePath);
 
             if (portableRuntime.existsAsFile())
                 return portableRuntime.getFullPathName();
@@ -3473,110 +3324,94 @@ juce::String StemLabAudioProcessor::discoverEngineCommand() const
 
         // Backward-compatible fallback for older installer builds that copied
         // the runtime under the config directory itself.
-        const auto installedRuntime =
-            stemLabLocal.getChildFile ("Engine")
-               #if JUCE_WINDOWS
-                .getChildFile ("python.exe");
-               #else
-                .getChildFile ("bin")
-                .getChildFile ("python3");
-               #endif
+        const auto installedRuntime = stemLabLocal.getChildFile("Engine")
+#if JUCE_WINDOWS
+                                          .getChildFile("python.exe");
+#else
+                                          .getChildFile("bin")
+                                          .getChildFile("python3");
+#endif
 
         if (installedRuntime.existsAsFile())
             return installedRuntime.getFullPathName();
     }
 
-   #ifdef STEMLAB_DEV_REPO_ROOT
+#ifdef STEMLAB_DEV_REPO_ROOT
     {
-        const auto devRoot =
-            juce::File (STEMLAB_DEV_REPO_ROOT);
+        const auto devRoot = juce::File(STEMLAB_DEV_REPO_ROOT);
 
-        if (const auto found =
-                checkRoot (devRoot);
-            found.isNotEmpty())
+        if (const auto found = checkRoot(devRoot); found.isNotEmpty())
         {
             return found;
         }
     }
-   #endif
+#endif
 
-    if (const auto found = checkRoot (
-            juce::File::getCurrentWorkingDirectory());
-        found.isNotEmpty())
+    if (const auto found = checkRoot(juce::File::getCurrentWorkingDirectory()); found.isNotEmpty())
     {
         return found;
     }
 
-   #if ! JUCE_WINDOWS
-    // A pip/pipx install is the normal way to get the backend on Linux, and it
-    // leaves the launcher on PATH rather than in a sibling directory. Resolve
-    // it to an absolute path here so the host's environment - which may not
-    // inherit the user's shell PATH at all - cannot lose it later.
+#if !JUCE_WINDOWS
+    // A pip/pipx install is the normal way to get the backend on Linux, and
+    // it leaves the launcher on PATH rather than in a sibling directory.
+    // Resolve it to an absolute path here so the host's environment - which
+    // may not inherit the user's shell PATH at all - cannot lose it later.
     {
         juce::StringArray searchPath;
-
-        searchPath.addTokens (
-            juce::SystemStats::getEnvironmentVariable ("PATH", {}),
-            ":",
-            {});
+        searchPath.addTokens(juce::SystemStats::getEnvironmentVariable("PATH", {}), ":", {});
 
         for (const auto& directory : searchPath)
         {
-            if (! juce::File::isAbsolutePath (directory))
+            if (!juce::File::isAbsolutePath(directory))
                 continue;
 
-            const auto candidate =
-                juce::File (directory)
-                    .getChildFile ("stemlab-plugin-job");
+            const auto candidate = juce::File(directory).getChildFile("stemlab-plugin-job");
 
             if (candidate.existsAsFile())
                 return candidate.getFullPathName();
         }
     }
-   #endif
+#endif
 
     return "stemlab-plugin-job";
 }
 
-void StemLabAudioProcessor::setEngineCommand (const juce::String& command)
+void StemLabAudioProcessor::setEngineCommand(const juce::String& command)
 {
-    const juce::ScopedLock lock (stateLock);
+    const juce::ScopedLock lock(stateLock);
     engineCommand = command;
 }
 
 juce::String StemLabAudioProcessor::getEngineCommand() const
 {
-    const juce::ScopedLock lock (stateLock);
+    const juce::ScopedLock lock(stateLock);
     return engineCommand;
 }
 
 void StemLabAudioProcessor::resetEngineCommandToAutoDiscover()
 {
-    setEngineCommand (discoverEngineCommand());
-    setStatus ("Engine path auto-detected");
+    setEngineCommand(discoverEngineCommand());
+    setStatus("Engine path auto-detected");
 }
 
-void StemLabAudioProcessor::setStemEnabled (int index, bool enabled)
+void StemLabAudioProcessor::setStemEnabled(int index, bool enabled)
 {
-    if (juce::isPositiveAndBelow (index, stemCount))
-        stemEnabled[static_cast<size_t> (index)].store (enabled);
+    if (juce::isPositiveAndBelow(index, stemCount))
+        stemEnabled[static_cast<size_t>(index)].store(enabled);
 }
 
-bool StemLabAudioProcessor::isStemEnabled (int index) const
+bool StemLabAudioProcessor::isStemEnabled(int index) const
 {
-    if (! juce::isPositiveAndBelow (index, stemCount))
+    if (!juce::isPositiveAndBelow(index, stemCount))
         return false;
 
-    return stemEnabled[static_cast<size_t> (index)].load();
+    return stemEnabled[static_cast<size_t>(index)].load();
 }
 
-void StemLabAudioProcessor::setWaveformColourIndex (int index)
+void StemLabAudioProcessor::setWaveformColourIndex(int index)
 {
-    waveformColourIndex.store (
-        juce::jlimit (
-            0,
-            waveformColourCount - 1,
-            index));
+    waveformColourIndex.store(juce::jlimit(0, waveformColourCount - 1, index));
 
     sendChangeMessage();
 }
@@ -3585,15 +3420,15 @@ juce::String StemLabAudioProcessor::getSeparatorEngineId() const
 {
     switch (getSeparatorEngineIndex())
     {
-        case separatorDemucs:
-            return "demucs";
+    case separatorDemucs:
+        return "demucs";
 
-        case separatorHybrid:
-            return "hybrid";
+    case separatorHybrid:
+        return "hybrid";
 
-        case separatorRoFormer:
-        default:
-            return "roformer";
+    case separatorRoFormer:
+    default:
+        return "roformer";
     }
 }
 
@@ -3601,122 +3436,92 @@ juce::String StemLabAudioProcessor::getSeparatorEngineDisplayName() const
 {
     switch (getSeparatorEngineIndex())
     {
-        case separatorDemucs:
-            return "Demucs";
+    case separatorDemucs:
+        return "Demucs";
 
-        case separatorHybrid:
-            return "Hybrid (RoFormer + Demucs)";
+    case separatorHybrid:
+        return "Hybrid (RoFormer + Demucs)";
 
-        case separatorRoFormer:
-        default:
-            return "BS-RoFormer";
+    case separatorRoFormer:
+    default:
+        return "BS-RoFormer";
     }
 }
 
-juce::String StemLabAudioProcessor::getStemName (int index)
+juce::String StemLabAudioProcessor::getStemName(int index)
 {
-    static constexpr const char* names[stemCount] =
-    {
-        "vocals",
-        "drums",
-        "bass",
-        "guitar",
-        "piano",
-        "other"
-    };
+    static constexpr const char* names[stemCount] = {"vocals", "drums", "bass",
+                                                     "guitar", "piano", "other"};
 
-    if (! juce::isPositiveAndBelow (index, stemCount))
+    if (!juce::isPositiveAndBelow(index, stemCount))
         return {};
 
     return names[index];
 }
 
-void StemLabAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
+void StemLabAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
     auto rootObject = std::make_unique<juce::DynamicObject>();
-    rootObject->setProperty ("engineCommand", getEngineCommand());
-    rootObject->setProperty ("refinement", refinementEnabled.load());
-    rootObject->setProperty (
-        "separatorEngine",
-        separatorEngineIndex.load());
-    rootObject->setProperty (
-        "waveformColour",
-        waveformColourIndex.load());
+    rootObject->setProperty("engineCommand", getEngineCommand());
+    rootObject->setProperty("refinement", refinementEnabled.load());
+    rootObject->setProperty("separatorEngine", separatorEngineIndex.load());
+    rootObject->setProperty("waveformColour", waveformColourIndex.load());
 
-    rootObject->setProperty (
-        "jobRootDirectory",
-        getJobRootDirectory().getFullPathName());
+    rootObject->setProperty("jobRootDirectory", getJobRootDirectory().getFullPathName());
 
     juce::Array<juce::var> stems;
 
     for (int i = 0; i < stemCount; ++i)
-        stems.add (isStemEnabled (i));
+        stems.add(isStemEnabled(i));
 
-    rootObject->setProperty ("stems", stems);
+    rootObject->setProperty("stems", stems);
 
-    const auto json = juce::JSON::toString (
-        juce::var (rootObject.release()),
-        false);
+    const auto json = juce::JSON::toString(juce::var(rootObject.release()), false);
 
-    destData.replaceAll (
-        json.toRawUTF8(),
-        static_cast<size_t> (json.getNumBytesAsUTF8()));
+    destData.replaceAll(json.toRawUTF8(), static_cast<size_t>(json.getNumBytesAsUTF8()));
 }
 
-void StemLabAudioProcessor::setStateInformation (
-    const void* data,
-    int sizeInBytes)
+void StemLabAudioProcessor::setStateInformation(const void* data, int sizeInBytes)
 {
-    const juce::String json (
-        juce::String::fromUTF8 (
-            static_cast<const char*> (data),
-            sizeInBytes));
+    const juce::String json(juce::String::fromUTF8(static_cast<const char*>(data), sizeInBytes));
 
-    const auto parsed = juce::JSON::parse (json);
+    const auto parsed = juce::JSON::parse(json);
     auto* object = parsed.getDynamicObject();
 
     if (object == nullptr)
         return;
 
-    if (object->hasProperty ("engineCommand"))
+    if (object->hasProperty("engineCommand"))
     {
-        const auto savedEngine =
-            object->getProperty ("engineCommand").toString().trim();
+        const auto savedEngine = object->getProperty("engineCommand").toString().trim();
 
         const auto discoveredEngine = discoverEngineCommand();
 
-        const bool savedIsGeneric =
-            savedEngine.isEmpty()
-            || savedEngine == "stemlab-plugin-job";
+        const bool savedIsGeneric = savedEngine.isEmpty() || savedEngine == "stemlab-plugin-job";
 
-        const juce::File savedFile (savedEngine);
+        const juce::File savedFile(savedEngine);
 
         const bool savedLooksLikePath =
-            savedEngine.containsChar ('\\')
-            || savedEngine.containsChar ('/');
+            savedEngine.containsChar('\\') || savedEngine.containsChar('/');
 
-        const bool savedPathIsStale =
-            savedLooksLikePath
-            && ! savedFile.existsAsFile();
+        const bool savedPathIsStale = savedLooksLikePath && !savedFile.existsAsFile();
 
-        const juce::File discoveredFile (discoveredEngine);
+        const juce::File discoveredFile(discoveredEngine);
         const bool discoveredIsPortableRuntime =
-            isPortableEngineRuntime (discoveredFile);
+            discoveredFile.getFileName().equalsIgnoreCase("python.exe") &&
+            discoveredFile.getParentDirectory().getFileName().equalsIgnoreCase("Engine");
 
         // A self-contained release must not silently fall back to a saved
         // development venv merely because that venv still exists on the build
         // machine. Prefer the discovered sibling/installed Engine runtime.
-        if ((discoveredIsPortableRuntime
-                || savedIsGeneric
-                || savedPathIsStale)
-            && discoveredEngine.isNotEmpty()
-            && discoveredEngine != "stemlab-plugin-job")
+        if ((discoveredIsPortableRuntime || savedIsGeneric || savedPathIsStale) &&
+            discoveredEngine.isNotEmpty() && discoveredEngine != "stemlab-plugin-job")
         {
-            setEngineCommand (discoveredEngine);
+            setEngineCommand(discoveredEngine);
         }
         else
         {
-            setEngineCommand (savedEngine);
+            setEngineCommand(savedEngine);
         }
     }
     else
@@ -3724,59 +3529,43 @@ void StemLabAudioProcessor::setStateInformation (
         resetEngineCommandToAutoDiscover();
     }
 
-    if (object->hasProperty ("refinement"))
+    if (object->hasProperty("refinement"))
     {
-        refinementEnabled.store (
-            static_cast<bool> (
-                object->getProperty ("refinement")));
+        refinementEnabled.store(static_cast<bool>(object->getProperty("refinement")));
     }
 
-    if (object->hasProperty ("separatorEngine"))
+    if (object->hasProperty("separatorEngine"))
     {
-        setSeparatorEngineIndex (
-            static_cast<int> (
-                object->getProperty ("separatorEngine")));
+        setSeparatorEngineIndex(static_cast<int>(object->getProperty("separatorEngine")));
     }
 
-    if (object->hasProperty ("waveformColour"))
+    if (object->hasProperty("waveformColour"))
     {
-        setWaveformColourIndex (
-            static_cast<int> (
-                object->getProperty ("waveformColour")));
+        setWaveformColourIndex(static_cast<int>(object->getProperty("waveformColour")));
     }
 
-    if (object->hasProperty ("jobRootDirectory"))
+    if (object->hasProperty("jobRootDirectory"))
     {
-        const juce::File savedJobRoot (
-            object->getProperty (
-                "jobRootDirectory").toString());
+        const juce::File savedJobRoot(object->getProperty("jobRootDirectory").toString());
 
         if (savedJobRoot.isDirectory())
-            setJobRootDirectory (savedJobRoot);
+            setJobRootDirectory(savedJobRoot);
     }
 
-    const auto stems = object->getProperty ("stems");
+    const auto stems = object->getProperty("stems");
 
     if (auto* array = stems.getArray())
     {
-        for (int i = 0;
-             i < juce::jmin (stemCount, array->size());
-             ++i)
+        for (int i = 0; i < juce::jmin(stemCount, array->size()); ++i)
         {
-            setStemEnabled (
-                i,
-                static_cast<bool> (
-                    array->getUnchecked (i)));
+            setStemEnabled(i, static_cast<bool>(array->getUnchecked(i)));
         }
     }
 }
 
 juce::AudioProcessorEditor* StemLabAudioProcessor::createEditor()
 {
-    return new StemLabAudioProcessorEditor (*this);
+    return new StemLabAudioProcessorEditor(*this);
 }
 
-juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
-{
-    return new StemLabAudioProcessor();
-}
+juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new StemLabAudioProcessor(); }

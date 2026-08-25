@@ -2,7 +2,7 @@
 #
 # Build the StemLab VST3 + Standalone targets on Linux.
 #
-# Mirrors build_windows.ps1: the pinned JUCE source is downloaded into
+# Mirrors scripts/build_plugin.ps1: the pinned JUCE source is downloaded into
 # .portable-cache/ and passed straight to CMake, so the build never depends on
 # CMake's FetchContent git sub-build.
 #

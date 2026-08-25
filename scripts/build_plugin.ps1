@@ -1,12 +1,13 @@
 param(
-    [string]$JuceVersion = "9.0.0"
+    [string]$JuceVersion = "9.0.0",
+    [switch]$Clean
 )
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
-$PluginRoot = $PSScriptRoot
-$RepoRoot = Split-Path $PluginRoot -Parent
+$RepoRoot = Split-Path $PSScriptRoot -Parent
+$PluginRoot = Join-Path $RepoRoot "plugin"
 $BuildDir = Join-Path $PluginRoot "build"
 $CacheRoot = Join-Path $RepoRoot ".portable-cache"
 $JuceZip = Join-Path $CacheRoot "JUCE-$JuceVersion.zip"
@@ -14,10 +15,44 @@ $JuceExtractRoot = Join-Path $CacheRoot "JUCE-$JuceVersion"
 $JuceSource = Join-Path $JuceExtractRoot "JUCE-$JuceVersion"
 $JuceUrl = "https://github.com/juce-framework/JUCE/archive/refs/tags/$JuceVersion.zip"
 
+$PluginRootPrefix = [System.IO.Path]::GetFullPath($PluginRoot).TrimEnd('\') + '\'
+$ResolvedBuildDir = [System.IO.Path]::GetFullPath($BuildDir)
+if (-not $ResolvedBuildDir.StartsWith($PluginRootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing unsafe build directory: $ResolvedBuildDir"
+}
+
 function Assert-Exists([string]$Path, [string]$Message) {
     if (-not (Test-Path $Path)) {
         throw "$Message`nMissing: $Path"
     }
+}
+
+function Enter-VisualStudioShell {
+    if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+        return
+    }
+
+    $DevShell = $null
+    $VsWhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+
+    if (Test-Path -LiteralPath $VsWhere -PathType Leaf) {
+        $InstallPath = & $VsWhere `
+            -latest `
+            -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+
+        if ($InstallPath) {
+            $DevShell = Join-Path $InstallPath "Common7\Tools\Launch-VsDevShell.ps1"
+        }
+    }
+
+    if (-not $DevShell -or -not (Test-Path -LiteralPath $DevShell -PathType Leaf)) {
+        throw "Visual Studio with Desktop development with C++ was not found."
+    }
+
+    Write-Host "Loading the Visual Studio C++ build environment..."
+    & $DevShell -Arch amd64 -HostArch amd64
 }
 
 function Download-FileWithRetry(
@@ -56,6 +91,12 @@ function Download-FileWithRetry(
 }
 
 Write-Host "Preparing pinned JUCE $JuceVersion..."
+Enter-VisualStudioShell
+
+if (-not (Get-Command cmake.exe -ErrorAction SilentlyContinue)) {
+    throw "CMake was not found. Install the C++ CMake tools from Visual Studio Installer."
+}
+
 New-Item -ItemType Directory -Path $CacheRoot -Force | Out-Null
 
 if (-not (Test-Path $JuceZip -PathType Leaf)) {
@@ -87,9 +128,10 @@ Write-Host "Build:  $BuildDir"
 Write-Host "JUCE:   $JuceSource"
 Write-Host ""
 
-# Always configure from a clean tree. This prevents a failed FetchContent/Git
-# population from a previous attempt leaving poisoned CMake state behind.
-Remove-Item $BuildDir -Recurse -Force -ErrorAction SilentlyContinue
+if ($Clean -and (Test-Path -LiteralPath $BuildDir -PathType Container)) {
+    Write-Host "Removing the previous C++ build..."
+    Remove-Item -LiteralPath $BuildDir -Recurse -Force
+}
 
 cmake `
     -S $PluginRoot `
