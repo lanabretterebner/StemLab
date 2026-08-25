@@ -3,16 +3,16 @@
 # Install the freshly built StemLab VST3 bundle for the current user.
 #
 # Usage:
-#   ./install_vst3.sh
-#   ./install_vst3.sh --build-type Debug
-#   ./install_vst3.sh --prefix /usr/local/lib/vst3     # system-wide
+#   ./scripts/install_vst3.sh
+#   ./scripts/install_vst3.sh --build-type Debug
+#   ./scripts/install_vst3.sh --prefix /usr/local/lib/vst3   # system-wide
 
 set -euo pipefail
 
 BUILD_TYPE="Release"
 DEST_DIR="${HOME}/.vst3"
 
-PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../plugin" && pwd)"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -37,7 +37,7 @@ if [[ ! -d "$SOURCE" ]]; then
     echo "Build StemLab first. Could not find the VST3 bundle at:" >&2
     echo "  $PLUGIN_ROOT/build/StemLabPlugin_artefacts/$BUILD_TYPE/VST3/StemLab.vst3" >&2
     echo >&2
-    echo "Run: $PLUGIN_ROOT/build_linux.sh" >&2
+    echo "Run: $(dirname "$PLUGIN_ROOT")/scripts/build_plugin.sh" >&2
     exit 1
 fi
 

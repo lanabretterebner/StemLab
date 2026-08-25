@@ -23,6 +23,8 @@ packaging.
 - Waveform preview and selective export
 - Direct import into Ableton through `StemLabRemote` (Windows)
 - In-process REAPER integration on Linux - no scripts or extensions to install
+- Drag-and-drop stem export into any DAW or file manager
+- NVIDIA CUDA, AMD ROCm, and Intel XPU offload with runtime CPU fallback
 
 ## Set Up Development
 
@@ -54,15 +56,23 @@ To reuse a different environment:
 Linux builds natively and needs no venv or system Python for the backend:
 
 ```bash
-./plugin/build_linux.sh          # Standalone + VST3
-./plugin/install_vst3.sh         # -> ~/.vst3
-./install_backend_linux.sh       # self-contained Engine + auto-discovery
+./scripts/build_portable.sh               # everything in one folder,
+cd dist/StemLab-*-Linux && ./install.sh   # Engine included - no extra steps
+```
+
+Or piece by piece:
+
+```bash
+./scripts/build_plugin.sh        # Standalone + VST3
+./scripts/install_vst3.sh        # -> ~/.vst3
+./scripts/install_backend.sh     # Engine + auto-discovery (supports
+                                 # --cuda / --rocm / --xpu / --cpu)
 ```
 
 Inside REAPER, StemLab talks to the host directly: **Use Selected Item** reads
 the selected arrangement item and **Insert Stems** creates colour-coded stem
 tracks under the source track, aligned with the original selection. See
-`LINUX_BUILD.md` for dependencies, the REAPER workflow, and where StemLab
+`docs/linux.md` for dependencies, the REAPER workflow, and where StemLab
 writes files.
 
 ## Build And Run
@@ -157,7 +167,7 @@ scripts/                 Development setup, build, and install commands
 stemlab/                 Python separation and DSP engine
 tests/                   Fast unit tests using generated audio
 pyproject.toml           Python package, commands, and tool settings
-LINUX_BUILD.md           Linux build, install, and REAPER guide
+docs/linux.md            Linux build, install, and REAPER guide
 ```
 
 Directories such as `.venv/`, `.portable-cache/`, `plugin/build/`, `dist/`,

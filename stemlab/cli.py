@@ -22,7 +22,7 @@ def separate_main() -> None:
     parser.add_argument("--output", required=True)
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--engine", choices=ENGINE_CHOICES, default=DEFAULT_ENGINE)
-    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--device", default="auto")
     parser.add_argument(
         "--no-refine",
         action="store_true",

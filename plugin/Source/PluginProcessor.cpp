@@ -1832,8 +1832,11 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
     command.add("--start-ppq");
     command.add(juce::String(juce::jmax(0.0, captureStartPpq.load()), 8));
 
-    command.add("--device");
-    command.add("cuda");
+    // No --device: the backend's default ("auto" from this release on)
+    // resolves the best backend at run time - CUDA, which is also how ROCm
+    // answers, then Intel XPU, then CPU. Older engines default to "cuda"
+    // and would reject a literal "auto", so omitting the flag is also what
+    // keeps a new plugin working against a released 0.9.9 Engine.
 
     command.add("--engine");
     command.add(getSeparatorEngineId());
@@ -3009,6 +3012,13 @@ void StemLabAudioProcessor::setIHostApplication(Steinberg::FUnknown* host)
     runReaperSelfTestIfRequested();
 }
 
+bool StemLabAudioProcessor::isFileFromCurrentJob(const juce::File& file) const
+{
+    const juce::ScopedLock lock(stateLock);
+
+    return lastJobDirectory != juce::File() && file.isAChildOf(lastJobDirectory);
+}
+
 bool StemLabAudioProcessor::requestReaperSourceItem()
 {
     JUCE_ASSERT_MESSAGE_THREAD
@@ -3268,9 +3278,10 @@ juce::String StemLabAudioProcessor::discoverEngineCommand() const
             // spelling is kept because ext4 will not forgive the difference.
             "Engine/bin/python3", "engine/bin/python3", "Engine/bin/python", "engine/bin/python",
 
-            // Development fallbacks.
-            ".venv/bin/stemlab-plugin-job", "venv/bin/stemlab-plugin-job", ".venv/bin/python3",
-            "venv/bin/python3"
+            // Development fallbacks. Only the console script proves stemlab
+            // is actually installed in a venv; a bare venv python would let
+            // an unrelated ~/.venv shadow the discovery pointer.
+            ".venv/bin/stemlab-plugin-job", "venv/bin/stemlab-plugin-job"
 #endif
         };
 
@@ -3305,7 +3316,7 @@ juce::String StemLabAudioProcessor::discoverEngineCommand() const
         return found;
     }
 
-    // The Standalone portable app and install_backend_linux.sh write this
+    // The Standalone portable app and scripts/install_backend.sh write this
     // pointer. The VST3 can then reuse the Engine from the extracted release
     // or the installed backend instead of requiring a second copy.
     {
