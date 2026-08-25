@@ -213,6 +213,27 @@ void StemLabLookAndFeel::drawScrollbar(juce::Graphics& g, juce::ScrollBar&, int 
     g.fillRoundedRectangle(thumb.toFloat(), 3.0f);
 }
 
+void StemLabLookAndFeel::drawCornerResizer(juce::Graphics& g, int width, int height,
+                                           bool mouseOver, bool mouseDown)
+{
+    // Three short diagonal ticks in the corner: enough to say the window
+    // resizes, quiet enough to sit on top of the footer without shouting.
+    const auto colour = (mouseOver || mouseDown) ? theme::colours::accent()
+                                                 : theme::colours::text45();
+
+    g.setColour(colour.withMultipliedAlpha(mouseDown ? 1.0f : 0.75f));
+
+    const auto w = static_cast<float>(width);
+    const auto h = static_cast<float>(height);
+
+    for (int tick = 1; tick <= 3; ++tick)
+    {
+        const auto inset = static_cast<float>(tick) * juce::jmin(w, h) * 0.22f;
+
+        g.drawLine(w - inset, h - 2.0f, w - 2.0f, h - inset, 1.2f);
+    }
+}
+
 juce::Rectangle<int> StemLabLookAndFeel::getTooltipBounds(const juce::String& text,
                                                           juce::Point<int> screenPos,
                                                           juce::Rectangle<int> parentArea)
@@ -270,21 +291,32 @@ namespace stemlab::icons
 
     juce::Path sliders(juce::Rectangle<float> b)
     {
-        // Three horizontal lines with a knob on each, offset left/right.
+        /*
+         * Three horizontal rails with a knob on each, offset left/right.
+         *
+         * This path is filled, never stroked: a rail is barely more than a
+         * pixel tall, so stroking its outline drew two touching edges plus
+         * a ring around every knob - at 16px that collapsed into a smudge.
+         */
         juce::Path p;
 
-        const float knob = b.getHeight() * 0.22f;
-        const float lineH = juce::jmax(1.2f, b.getHeight() * 0.08f);
-        const float knobXs[] = {0.68f, 0.30f, 0.55f};
+        const float railHeight = juce::jmax(1.3f, b.getHeight() * 0.10f);
+        const float knobRadius = juce::jmax(1.7f, b.getHeight() * 0.15f);
+
+        const float railY[] = {0.16f, 0.50f, 0.84f};
+        const float knobX[] = {0.70f, 0.30f, 0.56f};
 
         for (int i = 0; i < 3; ++i)
         {
-            const float y = b.getY() + b.getHeight() * (0.18f + 0.32f * static_cast<float>(i));
+            const float y = b.getY() + b.getHeight() * railY[i];
 
-            p.addRoundedRectangle(b.getX(), y - lineH * 0.5f, b.getWidth(), lineH, lineH * 0.5f);
+            p.addRoundedRectangle(b.getX(), y - railHeight * 0.5f, b.getWidth(), railHeight,
+                                  railHeight * 0.5f);
 
-            const float cx = b.getX() + b.getWidth() * knobXs[i];
-            p.addEllipse(cx - knob, y - knob, knob * 2.0f, knob * 2.0f);
+            const float cx = juce::jlimit(b.getX() + knobRadius, b.getRight() - knobRadius,
+                                          b.getX() + b.getWidth() * knobX[i]);
+
+            p.addEllipse(cx - knobRadius, y - knobRadius, knobRadius * 2.0f, knobRadius * 2.0f);
         }
 
         return p;
@@ -309,20 +341,26 @@ namespace stemlab::icons
 
     juce::Path folder(juce::Rectangle<float> b)
     {
+        /*
+         * A tab on the top left rising out of one straight left edge, the
+         * way every folder glyph is drawn. The previous outline chamfered
+         * its top-left corner and set the tab a third of the way down the
+         * body, which read as a lopsided pentagon rather than a folder.
+         */
         juce::Path p;
-        const float tabW = b.getWidth() * 0.4f;
-        const float tabH = b.getHeight() * 0.22f;
 
-        p.startNewSubPath(b.getX(), b.getY() + tabH);
-        p.lineTo(b.getX(), b.getBottom());
+        const float tabTop = b.getY() + b.getHeight() * 0.08f;
+        const float bodyTop = b.getY() + b.getHeight() * 0.28f;
+
+        p.startNewSubPath(b.getX(), tabTop);
+        p.lineTo(b.getX() + b.getWidth() * 0.36f, tabTop);
+        p.lineTo(b.getX() + b.getWidth() * 0.50f, bodyTop);
+        p.lineTo(b.getRight(), bodyTop);
         p.lineTo(b.getRight(), b.getBottom());
-        p.lineTo(b.getRight(), b.getY() + tabH * 1.6f);
-        p.lineTo(b.getX() + tabW + tabH, b.getY() + tabH * 1.6f);
-        p.lineTo(b.getX() + tabW, b.getY());
-        p.lineTo(b.getX() + tabH, b.getY());
+        p.lineTo(b.getX(), b.getBottom());
         p.closeSubPath();
-        p = p.createPathWithRoundedCorners(1.5f);
-        return p;
+
+        return p.createPathWithRoundedCorners(1.5f);
     }
 
     juce::Path check(juce::Rectangle<float> b)
@@ -331,6 +369,30 @@ namespace stemlab::icons
         p.startNewSubPath(b.getX(), b.getY() + b.getHeight() * 0.55f);
         p.lineTo(b.getX() + b.getWidth() * 0.38f, b.getBottom() - b.getHeight() * 0.08f);
         p.lineTo(b.getRight(), b.getY() + b.getHeight() * 0.12f);
+        return p;
+    }
+
+    juce::Path chevron(juce::Rectangle<float> b, bool pointingDown)
+    {
+        juce::Path p;
+
+        if (pointingDown)
+        {
+            const float inset = b.getHeight() * 0.20f;
+
+            p.startNewSubPath(b.getX(), b.getY() + inset);
+            p.lineTo(b.getCentreX(), b.getBottom() - inset);
+            p.lineTo(b.getRight(), b.getY() + inset);
+        }
+        else
+        {
+            const float inset = b.getWidth() * 0.20f;
+
+            p.startNewSubPath(b.getX() + inset, b.getY());
+            p.lineTo(b.getRight() - inset, b.getCentreY());
+            p.lineTo(b.getX() + inset, b.getBottom());
+        }
+
         return p;
     }
 

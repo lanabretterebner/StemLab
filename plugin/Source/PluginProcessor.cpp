@@ -23,8 +23,13 @@
 #endif
 
 /**
- * Sums one AudioFormatReaderSource per completed stem on a single shared
- * clock, applying per-stem solo/mute gains.
+ * Sums one AudioFormatReaderSource per audible lane on a single shared
+ * clock, applying that lane's solo/mute gains.
+ *
+ * The entries are the leaves of the stem tree: root stems, except where a
+ * root was split further and its adaptive children stand in for it. That is
+ * what gives an adaptive child lane a real mute - and it is why no stem is
+ * ever summed together with the children it was split into.
  *
  * Built on the message thread by ensureStemMixLoaded() and handed to
  * stemMixTransport; afterwards the audio thread drives it through the
@@ -39,13 +44,15 @@ public:
     struct Entry
     {
         std::unique_ptr<juce::AudioFormatReaderSource> source;
-        int stemIndex = 0;
+
+        // The lane this entry belongs to. Owned by the processor, but held
+        // by shared_ptr so a rebuild of the lane map cannot pull the flags
+        // out from under a mix the audio thread is still playing.
+        std::shared_ptr<StemLabLaneMonitorFlags> flags;
     };
 
-    StemLabStemMixSource(std::vector<Entry> entriesIn,
-                         const std::array<std::atomic<bool>, StemLabAudioProcessor::stemCount>& soloIn,
-                         const std::array<std::atomic<bool>, StemLabAudioProcessor::stemCount>& muteIn)
-        : entries(std::move(entriesIn)), solo(soloIn), mute(muteIn)
+    explicit StemLabStemMixSource(std::vector<Entry> entriesIn)
+        : entries(std::move(entriesIn))
     {
         currentGains.resize(entries.size(), 0.0f);
     }
@@ -86,10 +93,12 @@ public:
         // and simply takes effect next call.
         const auto blockStart = position.load(std::memory_order_acquire);
 
+        // Solo is scoped to what is actually in the mix: a lane whose audio
+        // never made it in must not be able to silence everything else.
         bool anySolo = false;
 
-        for (const auto& state : solo)
-            anySolo = anySolo || state.load(std::memory_order_relaxed);
+        for (const auto& entry : entries)
+            anySolo = anySolo || entry.flags->solo.load(std::memory_order_relaxed);
 
         if (scratch.getNumSamples() < info.numSamples)
             scratch.setSize(2, info.numSamples, false, false, true); // last-resort fallback
@@ -100,10 +109,9 @@ public:
         {
             auto& entry = entries[i];
 
-            const auto stem = static_cast<size_t>(entry.stemIndex);
-
-            const bool audible = anySolo ? solo[stem].load(std::memory_order_relaxed)
-                                         : !mute[stem].load(std::memory_order_relaxed);
+            const bool audible =
+                anySolo ? entry.flags->solo.load(std::memory_order_relaxed)
+                        : !entry.flags->mute.load(std::memory_order_relaxed);
 
             const float target = audible ? 1.0f : 0.0f;
             const float previous = currentGains[i];
@@ -158,8 +166,6 @@ public:
 
 private:
     std::vector<Entry> entries;
-    const std::array<std::atomic<bool>, StemLabAudioProcessor::stemCount>& solo;
-    const std::array<std::atomic<bool>, StemLabAudioProcessor::stemCount>& mute;
     std::vector<float> currentGains;
     float gainStepPerSample = 0.1f;
     juce::AudioBuffer<float> scratch;
@@ -982,6 +988,9 @@ StemLabAudioProcessor::StemLabAudioProcessor()
     for (auto& value : stemEnabled)
         value.store(true);
 
+    for (auto& flags : rootMonitorFlags)
+        flags = std::make_shared<MonitorFlags>();
+
     previewFormats.registerBasicFormats();
     diskWriterThread.startThread();
 
@@ -1241,12 +1250,6 @@ bool StemLabAudioProcessor::loadPreviewFile(const juce::File& file, int previewS
     previewTransport.setPosition(0.0);
     previewStemIndex.store(previewStem);
 
-    if (previewStem != -3)
-    {
-        const juce::ScopedLock lock(recursiveLock);
-        previewRecursiveId.clear();
-    }
-
     return true;
 }
 
@@ -1314,12 +1317,7 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
 
     // The previous job's stems are gone as far as monitoring is concerned.
     unloadStemMix();
-
-    for (auto& state : stemSolo)
-        state.store(false);
-
-    for (auto& state : stemMute)
-        state.store(false);
+    clearAllMonitorFlags();
 
     {
         const juce::ScopedLock lock(abletonBridgeLock);
@@ -1438,6 +1436,7 @@ void StemLabAudioProcessor::unloadStemMix()
     stemMixTransport.setSource(nullptr);
     stemMixSource.reset();
     stemMixJobDirectory = juce::File();
+    stemMixTreeGeneration = -1;
     audioMonitorIsMix.store(false);
     monitorMode.store(monitorOriginal);
 }
@@ -1452,20 +1451,66 @@ bool StemLabAudioProcessor::ensureStemMixLoaded()
     if (!job.isDirectory())
         return false;
 
-    if (stemMixSource != nullptr && job == stemMixJobDirectory)
+    int generation = 0;
+
+    {
+        const juce::ScopedLock lock(recursiveLock);
+        generation = recursiveTreeGeneration;
+    }
+
+    // An adaptive split changes which files the mix has to play, so the
+    // tree generation is part of the identity of a loaded mix.
+    if (stemMixSource != nullptr && job == stemMixJobDirectory &&
+        generation == stemMixTreeGeneration)
+    {
         return true;
+    }
+
+    const auto tree = getRecursiveStemItems();
+
+    /*
+     * The mix plays the leaves of the stem tree. A root stem that was split
+     * further hands its slot to its children - summing both would play the
+     * same audio twice - and every leaf, root or child, brings its own
+     * lane's solo/mute along.
+     */
+    struct Lane
+    {
+        juce::File file;
+        std::shared_ptr<MonitorFlags> flags;
+    };
+
+    std::vector<Lane> lanes;
+    lanes.reserve(static_cast<size_t>(stemCount) + tree.size());
+
+    for (int i = 0; i < stemCount; ++i)
+    {
+        const auto rootName = getStemName(i);
+
+        const bool splitFurther =
+            std::any_of(tree.begin(), tree.end(), [&rootName](const auto& item)
+                        { return item.rootStem.equalsIgnoreCase(rootName); });
+
+        if (splitFurther)
+            continue;
+
+        lanes.push_back({getCompletedStemFile(i), monitorFlagsForStem(i)});
+    }
+
+    for (const auto& item : tree)
+        if (!item.hasChildren)
+            lanes.push_back({item.file, monitorFlagsForRecursive(item.id)});
 
     std::vector<StemLabStemMixSource::Entry> entries;
     double mixRate = 0.0;
 
-    for (int i = 0; i < stemCount; ++i)
+    for (const auto& lane : lanes)
     {
-        const auto file = getCompletedStemFile(i);
-
-        if (!file.existsAsFile())
+        if (lane.flags == nullptr || !lane.file.existsAsFile())
             continue;
 
-        std::unique_ptr<juce::AudioFormatReader> reader(previewFormats.createReaderFor(file));
+        std::unique_ptr<juce::AudioFormatReader> reader(
+            previewFormats.createReaderFor(lane.file));
 
         if (reader == nullptr || reader->sampleRate <= 0.0)
             continue;
@@ -1480,7 +1525,7 @@ bool StemLabAudioProcessor::ensureStemMixLoaded()
 
         StemLabStemMixSource::Entry entry;
         entry.source = std::make_unique<juce::AudioFormatReaderSource>(reader.release(), true);
-        entry.stemIndex = i;
+        entry.flags = lane.flags;
         entries.push_back(std::move(entry));
     }
 
@@ -1488,19 +1533,31 @@ bool StemLabAudioProcessor::ensureStemMixLoaded()
         return false;
 
     const bool wasMixActive = audioMonitorIsMix.load();
+    const bool wasPlaying = wasMixActive && stemMixTransport.isPlaying();
     const auto previousPosition = stemMixTransport.getCurrentPosition();
 
     stemMixTransport.stop();
     stemMixTransport.setSource(nullptr);
 
-    stemMixSource =
-        std::make_unique<StemLabStemMixSource>(std::move(entries), stemSolo, stemMute);
+    stemMixSource = std::make_unique<StemLabStemMixSource>(std::move(entries));
 
     stemMixTransport.setSource(stemMixSource.get(), 0, nullptr, mixRate);
     stemMixTransport.setPosition(wasMixActive ? previousPosition : 0.0);
 
+    // A split finishing mid-playback rebuilds the mix underneath the user;
+    // the clock keeps running rather than stopping on them.
+    if (wasPlaying)
+        stemMixTransport.start();
+
     stemMixJobDirectory = job;
+    stemMixTreeGeneration = generation;
     return true;
+}
+
+void StemLabAudioProcessor::refreshStemMixIfNeeded()
+{
+    if (hasSuccessfulJob() && !isEngineRunning())
+        ensureStemMixLoaded();
 }
 
 void StemLabAudioProcessor::switchAudioMonitor(bool useMix)
@@ -1536,16 +1593,10 @@ void StemLabAudioProcessor::setMonitorMode(int mode)
 
     monitorMode.store(clamped);
 
-    // Leaving a child audition also ends here: the monitor decides again.
-    {
-        const juce::ScopedLock lock(recursiveLock);
-        previewRecursiveId.clear();
-    }
-
     if (clamped == monitorOriginal)
     {
-        // The single-file transport may currently hold a stem or child
-        // audition; put the source back before it becomes the monitor.
+        // The single-file transport may currently hold a completed stem;
+        // put the source back before it becomes the monitor.
         const auto source = getCaptureFile();
 
         if (previewStemIndex.load() != -1 && source.existsAsFile())
@@ -1595,28 +1646,9 @@ void StemLabAudioProcessor::transportTogglePlay()
         return;
     }
 
-    // Original / child-audition path: the single-file transport. When it
-    // holds a completed stem from the legacy per-stem API, fall back to the
-    // source so the transport button always means Original.
-    if (getPreviewRecursiveId().isNotEmpty())
-    {
-        if (previewTransport.isPlaying())
-        {
-            previewTransport.stop();
-            setStatus("Paused");
-            return;
-        }
-
-        if (previewTransport.getCurrentPosition() >=
-            previewTransport.getLengthInSeconds() - 0.01)
-        {
-            previewTransport.setPosition(0.0);
-        }
-
-        previewTransport.start();
-        return;
-    }
-
+    // Original path: the single-file transport. When it holds a completed
+    // stem from the legacy per-stem API, fall back to the source so the
+    // transport button always means Original.
     toggleStandalonePlayback();
 }
 
@@ -1655,69 +1687,118 @@ double StemLabAudioProcessor::getTransportLengthSeconds() const noexcept
     return activeTransport().getLengthInSeconds();
 }
 
+std::shared_ptr<StemLabAudioProcessor::MonitorFlags>
+StemLabAudioProcessor::monitorFlagsForStem(int index) const
+{
+    if (!juce::isPositiveAndBelow(index, stemCount))
+        return {};
+
+    return rootMonitorFlags[static_cast<size_t>(index)];
+}
+
+std::shared_ptr<StemLabAudioProcessor::MonitorFlags>
+StemLabAudioProcessor::monitorFlagsForRecursive(const juce::String& itemId) const
+{
+    if (itemId.isEmpty())
+        return {};
+
+    const juce::ScopedLock lock(recursiveLock);
+
+    // Created on first touch: a lane's flags have to exist before the mix
+    // that reads them is built, and before the UI first asks for them.
+    auto& flags = recursiveMonitorFlags[itemId];
+
+    if (flags == nullptr)
+        flags = std::make_shared<MonitorFlags>();
+
+    return flags;
+}
+
+void StemLabAudioProcessor::clearAllMonitorFlags()
+{
+    for (const auto& flags : rootMonitorFlags)
+    {
+        flags->solo.store(false);
+        flags->mute.store(false);
+    }
+
+    const juce::ScopedLock lock(recursiveLock);
+    recursiveMonitorFlags.clear();
+}
+
+void StemLabAudioProcessor::followSoloIntoStemMix()
+{
+    /*
+     * Solo only means anything inside the stem mix, so pressing it while
+     * the monitor is on Original would otherwise change nothing audible.
+     * This is also what replaced the old child-audition path: soloing a
+     * child lane now plays that child through the same shared clock as
+     * every other lane instead of hijacking the single-file transport.
+     */
+    if (monitorMode.load() != monitorStems)
+        setMonitorMode(monitorStems);
+}
+
 void StemLabAudioProcessor::setStemSolo(int index, bool solo)
 {
-    if (juce::isPositiveAndBelow(index, stemCount))
-        stemSolo[static_cast<size_t>(index)].store(solo);
+    const auto flags = monitorFlagsForStem(index);
+
+    if (flags == nullptr)
+        return;
+
+    flags->solo.store(solo);
+
+    if (solo)
+        followSoloIntoStemMix();
 }
 
 bool StemLabAudioProcessor::isStemSoloed(int index) const
 {
-    return juce::isPositiveAndBelow(index, stemCount) &&
-           stemSolo[static_cast<size_t>(index)].load();
+    const auto flags = monitorFlagsForStem(index);
+    return flags != nullptr && flags->solo.load();
 }
 
 void StemLabAudioProcessor::setStemMute(int index, bool mute)
 {
-    if (juce::isPositiveAndBelow(index, stemCount))
-        stemMute[static_cast<size_t>(index)].store(mute);
+    if (const auto flags = monitorFlagsForStem(index))
+        flags->mute.store(mute);
 }
 
 bool StemLabAudioProcessor::isStemMuted(int index) const
 {
-    return juce::isPositiveAndBelow(index, stemCount) &&
-           stemMute[static_cast<size_t>(index)].load();
+    const auto flags = monitorFlagsForStem(index);
+    return flags != nullptr && flags->mute.load();
 }
 
-void StemLabAudioProcessor::setAuditionRecursiveStem(const juce::String& itemId, bool on)
+void StemLabAudioProcessor::setRecursiveStemSolo(const juce::String& itemId, bool solo)
 {
-    if (!on)
-    {
-        // Return to whatever the monitor mode says.
-        setMonitorMode(monitorMode.load());
-        return;
-    }
+    const auto flags = monitorFlagsForRecursive(itemId);
 
-    const auto stemFile = getRecursiveStemFile(itemId);
-
-    if (!stemFile.existsAsFile())
+    if (flags == nullptr)
         return;
 
-    const auto position = activeTransport().getCurrentPosition();
-    const bool wasPlaying = activeTransport().isPlaying();
+    flags->solo.store(solo);
 
-    stemMixTransport.stop();
-
-    if (!loadPreviewFile(stemFile, -3))
-        return;
-
-    {
-        const juce::ScopedLock lock(recursiveLock);
-        previewRecursiveId = itemId;
-    }
-
-    previewTransport.setPosition(
-        juce::jlimit(0.0, previewTransport.getLengthInSeconds(), position));
-
-    audioMonitorIsMix.store(false);
-
-    if (wasPlaying)
-        previewTransport.start();
+    if (solo)
+        followSoloIntoStemMix();
 }
 
-juce::String StemLabAudioProcessor::getAuditionRecursiveId() const
+bool StemLabAudioProcessor::isRecursiveStemSoloed(const juce::String& itemId) const
 {
-    return getPreviewRecursiveId();
+    const auto flags = monitorFlagsForRecursive(itemId);
+    return flags != nullptr && flags->solo.load();
+}
+
+void StemLabAudioProcessor::setRecursiveStemMute(const juce::String& itemId, bool mute)
+{
+    if (const auto flags = monitorFlagsForRecursive(itemId))
+        flags->mute.store(mute);
+}
+
+bool StemLabAudioProcessor::isRecursiveStemMuted(const juce::String& itemId) const
+{
+    const auto flags = monitorFlagsForRecursive(itemId);
+    return flags != nullptr && flags->mute.load();
 }
 
 bool StemLabAudioProcessor::startStandaloneRecording()
@@ -2401,7 +2482,8 @@ void StemLabAudioProcessor::clearRecursiveResults()
     {
         const juce::ScopedLock lock(recursiveLock);
         recursiveItems.clear();
-        previewRecursiveId.clear();
+        recursiveMonitorFlags.clear();
+        ++recursiveTreeGeneration;
     }
 
     // Recursive children replace their parent in the default selection for a
@@ -2505,12 +2587,6 @@ bool StemLabAudioProcessor::isRecursiveStemEnabled(const juce::String& itemId) c
     return false;
 }
 
-juce::String StemLabAudioProcessor::getPreviewRecursiveId() const
-{
-    const juce::ScopedLock lock(recursiveLock);
-    return previewRecursiveId;
-}
-
 void StemLabAudioProcessor::finishRecursiveJob(const juce::File& manifestFile)
 {
     // The Python side owns separation details. The plugin only consumes the
@@ -2590,6 +2666,9 @@ void StemLabAudioProcessor::finishRecursiveJob(const juce::File& manifestFile)
         }
 
         recursiveItems.insert(recursiveItems.end(), newItems.begin(), newItems.end());
+
+        // New leaves for the monitor mix to play in place of their parent.
+        ++recursiveTreeGeneration;
     }
 
     if (parentId == rootStem)
@@ -3530,6 +3609,7 @@ bool StemLabAudioProcessor::requestReaperSourceItem()
         const juce::ScopedLock lock(stateLock);
 
         reaperSourceInfo.valid = true;
+        reaperSourceInfo.item = item.item;
         reaperSourceInfo.startSeconds = item.startSeconds;
         reaperSourceInfo.lengthSeconds = item.lengthSeconds;
         reaperSourceInfo.startOffsetSeconds = item.startOffsetSeconds;
@@ -3571,41 +3651,145 @@ bool StemLabAudioProcessor::insertSelectedStemsIntoReaper()
         return false;
     }
 
-    juce::Array<stemlab::reaper::StemToInsert> selected;
+    juce::String sourceLabel;
 
-    for (const auto& entry : *allStems)
     {
-        const auto* stemObject = entry.getDynamicObject();
+        const juce::ScopedLock lock(stateLock);
+        sourceLabel = inputSourceLabel;
+    }
 
-        if (stemObject == nullptr)
-            continue;
+    const auto baseName = sourceLabel.isNotEmpty() ? sourceLabel : juce::String("StemLab");
 
-        const auto name = stemObject->getProperty("name").toString();
+    /*
+     * The project mirrors the stem tree: one track per stem the user kept,
+     * and a REAPER folder wherever a stem was split further. A group's own
+     * audio still goes in - muted - so the user can unmute it and A/B the
+     * whole stem against the parts it was split into.
+     */
+    struct Node
+    {
+        juce::String name;
+        juce::String colourStem;
+        juce::File file;
+        bool selected = false;
+        std::vector<int> children;
+    };
 
-        for (int i = 0; i < stemCount; ++i)
+    std::vector<Node> nodes;
+    std::map<juce::String, int> indexById;
+
+    nodes.reserve(static_cast<size_t>(stemCount));
+
+    for (int i = 0; i < stemCount; ++i)
+    {
+        const auto stemName = getStemName(i);
+
+        Node node;
+        node.name = baseName + " - " + stemName.substring(0, 1).toUpperCase() +
+                    stemName.substring(1).toLowerCase();
+        node.colourStem = stemName;
+        node.selected = isStemEnabled(i);
+
+        for (const auto& entry : *allStems)
         {
-            if (name.equalsIgnoreCase(getStemName(i)) && isStemEnabled(i))
+            const auto* stemObject = entry.getDynamicObject();
+
+            if (stemObject == nullptr)
+                continue;
+
+            if (stemObject->getProperty("name").toString().equalsIgnoreCase(stemName))
             {
-                selected.add({name, juce::File(stemObject->getProperty("path").toString())});
+                node.file = juce::File(stemObject->getProperty("path").toString());
                 break;
             }
         }
+
+        indexById[stemName] = static_cast<int>(nodes.size());
+        nodes.push_back(std::move(node));
     }
 
-    if (selected.isEmpty())
+    // The tree arrives parent-before-child, which is what the two passes
+    // below rely on.
+    for (const auto& item : getRecursiveStemItems())
+    {
+        Node node;
+        node.name = item.label.trim().isNotEmpty() ? item.label.trim() : juce::String("Stem");
+        node.colourStem = item.rootStem;
+        node.file = item.file;
+        node.selected = item.selected;
+
+        const auto parent = indexById.find(item.parentId);
+
+        if (parent == indexById.end())
+            continue; // a node whose parent never made it into the tree
+
+        const auto index = static_cast<int>(nodes.size());
+        nodes[static_cast<size_t>(parent->second)].children.push_back(index);
+        indexById[item.id] = index;
+        nodes.push_back(std::move(node));
+    }
+
+    // A node is inserted when the user kept it, or when it has to exist to
+    // hold something below it that the user kept.
+    std::vector<bool> wanted(nodes.size(), false);
+
+    for (int i = static_cast<int>(nodes.size()) - 1; i >= 0; --i)
+    {
+        const auto& node = nodes[static_cast<size_t>(i)];
+
+        bool keep = node.selected && node.file.existsAsFile();
+
+        for (const auto child : node.children)
+            keep = keep || wanted[static_cast<size_t>(child)];
+
+        wanted[static_cast<size_t>(i)] = keep;
+    }
+
+    juce::Array<stemlab::reaper::StemToInsert> ordered;
+
+    std::function<void(int)> flatten = [&](int index)
+    {
+        const auto& node = nodes[static_cast<size_t>(index)];
+
+        std::vector<int> keptChildren;
+
+        for (const auto child : node.children)
+            if (wanted[static_cast<size_t>(child)])
+                keptChildren.push_back(child);
+
+        stemlab::reaper::StemToInsert entry;
+        entry.name = node.name;
+        entry.colourStem = node.colourStem;
+        entry.file = node.file.existsAsFile() ? node.file : juce::File();
+        entry.muted = !keptChildren.empty();
+        entry.folderDepth = keptChildren.empty() ? 0 : 1;
+
+        ordered.add(entry);
+
+        for (const auto child : keptChildren)
+            flatten(child);
+
+        // The last track inside a folder is the one that closes it.
+        if (!keptChildren.empty())
+            --ordered.getReference(ordered.size() - 1).folderDepth;
+    };
+
+    for (int i = 0; i < stemCount; ++i)
+        if (wanted[static_cast<size_t>(i)])
+            flatten(i);
+
+    if (ordered.isEmpty())
     {
         setStatus("Choose at least one stem to insert");
         return false;
     }
 
     stemlab::reaper::InsertAnchor anchor;
-    juce::String sourceLabel;
     bool hasReaperGeometry = false;
 
     {
         const juce::ScopedLock lock(stateLock);
 
-        sourceLabel = inputSourceLabel;
         hasReaperGeometry = reaperSourceInfo.valid;
 
         if (hasReaperGeometry)
@@ -3616,6 +3800,7 @@ bool StemLabAudioProcessor::insertSelectedStemsIntoReaper()
             anchor.playRate = reaperSourceInfo.playRate;
             anchor.preservePitch = reaperSourceInfo.preservePitch;
             anchor.afterTrackNumber = reaperSourceInfo.trackNumber;
+            anchor.sourceItem = reaperSourceInfo.item;
         }
     }
 
@@ -3627,7 +3812,19 @@ bool StemLabAudioProcessor::insertSelectedStemsIntoReaper()
             reaperApi->TimeMap2_QNToTime(nullptr, juce::jmax(0.0, captureStartPpq.load()));
     }
 
-    const auto result = stemlab::reaper::insertStemTracks(*reaperApi, selected, anchor, sourceLabel);
+    const auto result = stemlab::reaper::insertStemTracks(*reaperApi, ordered, anchor);
+
+    if (result.inserted > 0)
+    {
+        /*
+         * REAPER draws an item from its .reapeaks file, and only builds one
+         * for media it imported itself - so stems placed through the API
+         * arrive as empty lanes. Build them now, sliced over the message
+         * thread, and redraw the arrangement when the last one lands.
+         */
+        reaperPeakBuilder =
+            std::make_unique<stemlab::reaper::PeakBuilder>(*reaperApi, result.insertedFiles);
+    }
 
     setStatus(result.message);
     return result.inserted > 0;
@@ -3711,11 +3908,16 @@ void StemLabAudioProcessor::runReaperSelfTestAction(const juce::String& action,
 
         if (item.ok && action.contains("insert"))
         {
-            // Insert the selected item's own audio twice, standing in for
-            // stems, echoing the item's real geometry.
+            /*
+             * Insert the selected item's own audio three times, standing in
+             * for stems: a group holding one child, plus a plain stem. That
+             * exercises folder depth, the muted group item, and the flat
+             * path in one pass.
+             */
             juce::Array<stemlab::reaper::StemToInsert> stems;
-            stems.add({"vocals", item.file});
-            stems.add({"drums", item.file});
+            stems.add({"Selftest - Vocals", "vocals", item.file, true, 1});
+            stems.add({"Lead", "vocals", item.file, false, -1});
+            stems.add({"Selftest - Drums", "drums", item.file, false, 0});
 
             stemlab::reaper::InsertAnchor anchor;
             anchor.startSeconds = item.startSeconds;
@@ -3724,11 +3926,13 @@ void StemLabAudioProcessor::runReaperSelfTestAction(const juce::String& action,
             anchor.playRate = item.playRate;
             anchor.preservePitch = item.preservePitch;
             anchor.afterTrackNumber = item.trackNumber;
+            anchor.sourceItem = item.item;
 
             const auto result =
-                stemlab::reaper::insertStemTracks(*reaperApi, stems, anchor, "Selftest");
+                stemlab::reaper::insertStemTracks(*reaperApi, stems, anchor);
 
             text << "insert: " << result.inserted << "\n";
+            text << "insert-muted-source: " << (result.mutedSourceItem ? "yes" : "no") << "\n";
             text << "insert-message: " << result.message << "\n";
         }
     }
@@ -3914,6 +4118,13 @@ void StemLabAudioProcessor::setWaveformColourIndex(int index)
     sendChangeMessage();
 }
 
+void StemLabAudioProcessor::setEditorScalePercent(int percent)
+{
+    // Deliberately no change broadcast: this is written from the editor's
+    // own resized(), and telling it to refresh from there would be a loop.
+    editorScalePercent.store(juce::jlimit(25, 400, percent));
+}
+
 juce::String StemLabAudioProcessor::getSeparatorEngineId() const
 {
     switch (getSeparatorEngineIndex())
@@ -3964,6 +4175,7 @@ void StemLabAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     rootObject->setProperty("refinement", refinementEnabled.load());
     rootObject->setProperty("separatorEngine", separatorEngineIndex.load());
     rootObject->setProperty("waveformColour", waveformColourIndex.load());
+    rootObject->setProperty("editorScale", editorScalePercent.load());
 
     rootObject->setProperty("jobRootDirectory", getJobRootDirectory().getFullPathName());
 
@@ -4040,6 +4252,11 @@ void StemLabAudioProcessor::setStateInformation(const void* data, int sizeInByte
     if (object->hasProperty("waveformColour"))
     {
         setWaveformColourIndex(static_cast<int>(object->getProperty("waveformColour")));
+    }
+
+    if (object->hasProperty("editorScale"))
+    {
+        setEditorScalePercent(static_cast<int>(object->getProperty("editorScale")));
     }
 
     if (object->hasProperty("jobRootDirectory"))

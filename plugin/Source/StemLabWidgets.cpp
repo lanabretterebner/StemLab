@@ -99,6 +99,48 @@ namespace stemlab::widgets
             g.fillPath(path);
     }
 
+    // ----------------------------------------------------------- disclosure
+
+    DisclosureButton::DisclosureButton() : juce::Button("disclosure")
+    {
+        setTooltip("Show or hide this stem's sub-stems");
+    }
+
+    void DisclosureButton::setExpanded(bool shouldBeExpanded)
+    {
+        if (expanded != shouldBeExpanded)
+        {
+            expanded = shouldBeExpanded;
+            repaint();
+        }
+    }
+
+    void DisclosureButton::paintButton(juce::Graphics& g, bool highlighted, bool down)
+    {
+        namespace lanes = theme::metrics::lanes;
+
+        const bool hover = (highlighted || down) && isEnabled();
+
+        const float dim = isEnabled() ? 1.0f : theme::metrics::disabledOpacity;
+
+        auto colour = (hover ? theme::colours::accent() : theme::colours::text45())
+                          .withMultipliedAlpha(dim);
+
+        g.setColour(colour);
+
+        // The chevron keeps the same proportions in both orientations: a
+        // fixed box would squash the collapsed one against the expanded one.
+        const auto span = static_cast<float>(lanes::twistyIcon);
+        const auto depth = span * 0.62f;
+
+        const auto icon = getLocalBounds().toFloat().withSizeKeepingCentre(
+            expanded ? span : depth, expanded ? depth : span);
+
+        g.strokePath(stemlab::icons::chevron(icon, expanded),
+                     juce::PathStrokeType(1.5f, juce::PathStrokeType::curved,
+                                          juce::PathStrokeType::rounded));
+    }
+
     // ----------------------------------------------------------- play circle
 
     PlayCircleButton::PlayCircleButton() : juce::Button("play") {}
@@ -480,24 +522,31 @@ namespace stemlab::widgets
             auto segment = getLocalBounds();
             segment = i == 0 ? segment.removeFromLeft(half) : segment.withTrimmedLeft(half);
 
+            /*
+             * Each state is its own closed pill inset inside the shell.
+             * The ring used to be the shell's own rounded rectangle clipped
+             * to one half, so it lost its inner edge and its inner corners
+             * and read as a broken box against the divider.
+             */
+            const auto pill = segment.toFloat().reduced(transport::abInset);
+
+            const float pillRadius =
+                juce::jmax(2.0f, transport::abRadius - transport::abInset);
+
             const bool isActive = selected == i;
 
             if (isActive)
             {
-                // Inset accent ring on the active option.
-                juce::Graphics::ScopedSaveState save(g);
-                g.reduceClipRegion(segment.reduced(1));
+                g.setColour(theme::colours::accentTint10().withMultipliedAlpha(dim));
+                g.fillRoundedRectangle(pill, pillRadius);
 
-                g.setColour(theme::colours::accent());
-                g.drawRoundedRectangle(bounds.reduced(1.5f), transport::abRadius - 1.5f, 1.0f);
+                g.setColour(theme::colours::accent().withMultipliedAlpha(dim));
+                g.drawRoundedRectangle(pill, pillRadius, 1.0f);
             }
             else if (hovered == i && isEnabled())
             {
-                juce::Graphics::ScopedSaveState save(g);
-                g.reduceClipRegion(segment.reduced(1));
-
                 g.setColour(theme::colours::hoverFill());
-                g.fillRoundedRectangle(bounds.reduced(1.0f), transport::abRadius - 1.0f);
+                g.fillRoundedRectangle(pill, pillRadius);
             }
 
             auto textColour = isActive ? theme::colours::accent() : theme::colours::text50();
@@ -509,10 +558,6 @@ namespace stemlab::widgets
             g.setFont(theme::fonts::time());
             g.drawText(labels[i], segment, juce::Justification::centred, false);
         }
-
-        // Divider between segments.
-        g.setColour(theme::colours::outline());
-        g.drawVerticalLine(half, bounds.getY() + 3.0f, bounds.getBottom() - 3.0f);
     }
 
     void SegmentedControl::mouseMove(const juce::MouseEvent& event)

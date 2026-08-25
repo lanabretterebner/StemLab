@@ -107,6 +107,7 @@ std::unique_ptr<Api> Api::tryCreate (Steinberg::FUnknown* hostContext)
     resolve (api->SetMediaItemPosition,        "SetMediaItemPosition",        true);
     resolve (api->SetMediaItemLength,          "SetMediaItemLength",          true);
     resolve (api->SetMediaItemTakeInfo_Value,  "SetMediaItemTakeInfo_Value",  true);
+    resolve (api->SetMediaItemInfo_Value,      "SetMediaItemInfo_Value",      true);
     resolve (api->Undo_BeginBlock2,            "Undo_BeginBlock2",            true);
     resolve (api->Undo_EndBlock2,              "Undo_EndBlock2",              true);
     resolve (api->UpdateArrange,               "UpdateArrange",               true);
@@ -116,6 +117,8 @@ std::unique_ptr<Api> Api::tryCreate (Steinberg::FUnknown* hostContext)
     resolve (api->PCM_Source_Destroy,          "PCM_Source_Destroy",          false);
     resolve (api->GetAppVersion,               "GetAppVersion",               false);
     resolve (api->TakeIsMIDI,                  "TakeIsMIDI",                  false);
+    resolve (api->ValidatePtr2,                "ValidatePtr2",                false);
+    resolve (api->PCM_Source_BuildPeaks,       "PCM_Source_BuildPeaks",       false);
 
     api->valid = api->missingFunctions.isEmpty();
     return api;
