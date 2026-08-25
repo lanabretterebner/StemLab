@@ -254,7 +254,7 @@ def main() -> None:
         choices=ENGINE_CHOICES,
         default=DEFAULT_ENGINE,
     )
-    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--device", default="auto")
     parser.add_argument("--no-refine", action="store_true")
     parser.add_argument("--no-notify", action="store_true")
     args = parser.parse_args()

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .device import resolve_torch_device
+from .device import pick_best_device, resolve_torch_device
 from .demucs_backend import DEFAULT_DEMUCS_MODEL, DemucsBackend
 from .hybrid import fuse_stem_folders
 from .pretrained import DEFAULT_MODEL, RoFormerBackend
@@ -32,14 +32,15 @@ def resolve_device(device: str) -> str:
     a ROCm-only torch build, or a driver mismatch. Falling back to CPU with a
     clear log line beats handing the user a torch stack trace.
 
-    "auto" is accepted for callers that would rather not guess at all. The
-    actual CUDA probe lives in stemlab.device so the pipeline and the
-    individual backends share one answer.
+    "auto" is accepted for callers that would rather not guess at all, and
+    picks the best available backend: cuda (which also covers ROCm), then
+    Intel xpu, then cpu. The actual probes live in stemlab.device so the
+    pipeline and the individual backends share one answer.
     """
     requested = str(device or "").strip().lower()
 
     if requested in ("", "auto"):
-        requested = "cuda"
+        return pick_best_device()
 
     return resolve_torch_device(requested)
 
@@ -96,7 +97,7 @@ def separate(
 
         log(f"STEMLAB_PROGRESS {percent:.1f} {stage}")
 
-    requested_device = device
+    requested_device = str(device or "").strip().lower()
     device = resolve_device(device)
 
     progress(5.0, "Preparing")
@@ -104,11 +105,10 @@ def separate(
     log(f"Output: {output_dir}")
     log(f"Separation engine: {engine}")
 
-    if device != str(requested_device).strip().lower():
-        log(
-            f"Device: {device} "
-            f"(requested {requested_device}, CUDA is not available here)"
-        )
+    if requested_device in ("", "auto"):
+        log(f"Device: {device} (auto-selected)")
+    elif device != requested_device:
+        log(f"Device: {device} (requested {requested_device}, which is not available here)")
     else:
         log(f"Device: {device}")
 

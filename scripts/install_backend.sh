@@ -11,11 +11,16 @@
 #   Pointer  ~/.config/StemLab/portable_engine_path.txt
 #
 # Usage:
-#   ./install_backend_linux.sh              # auto-detect NVIDIA -> cuda/cpu
-#   ./install_backend_linux.sh --cpu        # force CPU-only torch (smallest)
-#   ./install_backend_linux.sh --cuda       # force CUDA torch
-#   ./install_backend_linux.sh --dest DIR   # custom Engine location
-#   ./install_backend_linux.sh --reinstall  # rebuild the Engine from scratch
+#   ./scripts/install_backend.sh              # auto-detect GPU -> cuda/rocm/cpu
+#   ./scripts/install_backend.sh --cpu        # force CPU-only torch (smallest)
+#   ./scripts/install_backend.sh --cuda       # force NVIDIA CUDA torch
+#   ./scripts/install_backend.sh --rocm       # force AMD ROCm torch
+#   ./scripts/install_backend.sh --xpu        # force Intel GPU (XPU) torch
+#   ./scripts/install_backend.sh --dest DIR   # custom Engine location
+#   ./scripts/install_backend.sh --reinstall  # rebuild the Engine from scratch
+#   ./scripts/install_backend.sh --no-pointer # build-only: skip the discovery
+#                                             pointer (used by the portable
+#                                             bundle builder)
 
 set -euo pipefail
 
@@ -26,16 +31,20 @@ PBS_PYTHON="3.11.13"
 
 TORCH_FLAVOR="auto"
 REINSTALL=0
+WRITE_POINTER=1
 DEST=""
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --cpu)       TORCH_FLAVOR="cpu";  shift ;;
         --cuda)      TORCH_FLAVOR="cuda"; shift ;;
+        --rocm)      TORCH_FLAVOR="rocm"; shift ;;
+        --xpu)       TORCH_FLAVOR="xpu";  shift ;;
         --dest)      DEST="$2";           shift 2 ;;
         --reinstall) REINSTALL=1;         shift ;;
+        --no-pointer) WRITE_POINTER=0;    shift ;;
         -h|--help)
             sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             exit 0 ;;
@@ -96,9 +105,22 @@ if [[ "$TORCH_FLAVOR" == "auto" ]]; then
        || [[ -e /proc/driver/nvidia/version ]]; then
         TORCH_FLAVOR="cuda"
     else
+        # Never auto-pick ROCm: /sys/module/amdgpu also exists for APUs,
+        # iGPUs and RDNA1 cards that the rocm wheels have no kernels for,
+        # and HIP still reports those as "available" - the failure would
+        # surface as a crash mid-separation, not as a clean CPU fallback.
         TORCH_FLAVOR="cpu"
+
+        if [[ -d /sys/module/amdgpu ]]; then
+            echo "An AMD GPU was detected. For a discrete RDNA2-or-newer card,"
+            echo "re-run with --rocm to enable GPU separation."
+        elif command -v lspci >/dev/null 2>&1 \
+             && lspci 2>/dev/null | grep -qiE "VGA.*Intel|Display.*Intel"; then
+            echo "An Intel GPU was detected. torch's XPU backend may work for it:"
+            echo "re-run with --xpu to try (needs the Intel compute runtime)."
+        fi
     fi
-    echo "Detected torch flavor: $TORCH_FLAVOR (override with --cpu / --cuda)"
+    echo "Detected torch flavor: $TORCH_FLAVOR (override with --cpu / --cuda / --rocm / --xpu)"
 fi
 
 # A directory this script did not create is never touched, reused, or
@@ -199,31 +221,38 @@ if [[ -n "$previous_flavor" && "$previous_flavor" != "$TORCH_FLAVOR" ]]; then
     TORCH_ARGS+=(--force-reinstall)
 fi
 
-if [[ "$TORCH_FLAVOR" == "cpu" ]]; then
-    # --index-url (not --extra-index-url): torch must come from the CPU
-    # index, never from a newer CUDA release that happens to be on PyPI.
-    TORCH_ARGS+=(--index-url "https://download.pytorch.org/whl/cpu")
-fi
+# --index-url (not --extra-index-url): torch must come from the matching
+# variant index, never from a newer CUDA release that happens to be on PyPI.
+# CUDA is PyPI's default build, so it needs no index override.
+case "$TORCH_FLAVOR" in
+    cpu)  TORCH_ARGS+=(--index-url "https://download.pytorch.org/whl/cpu") ;;
+    rocm) TORCH_ARGS+=(--index-url "https://download.pytorch.org/whl/rocm6.4") ;;
+    xpu)  TORCH_ARGS+=(--index-url "https://download.pytorch.org/whl/xpu") ;;
+esac
 
 # PYTHONNOUSERSITE keeps the user's ~/.local packages out of dependency
 # resolution - the Engine must be self-contained.
 PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install --upgrade pip --quiet
 
-# Install torch first, pinned to the requested flavor; the main install then
-# sees its requirement already satisfied.
+# Install torch AND torchaudio together, pinned to the requested flavor.
+# Demucs depends on torchaudio, and PyPI's torchaudio is a CUDA build that
+# declares no torch dependency - resolved on its own it would sit mismatched
+# next to a cpu/rocm/xpu torch. Same index, same resolution, same variant.
 PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install \
-    ${TORCH_ARGS[@]+"${TORCH_ARGS[@]}"} "torch>=2.4"
+    ${TORCH_ARGS[@]+"${TORCH_ARGS[@]}"} "torch>=2.4" "torchaudio"
 
 # Recursive/adaptive stem splitting needs audio-separator. The project's own
-# "recursive" extra pins the GPU build unconditionally, so install the
-# flavor-matched build here instead of through the extra.
+# "recursive" extra pins the CUDA onnxruntime unconditionally, so install the
+# flavor-matched build here instead: CUDA gets the GPU runtime; every other
+# flavor gets the CPU runtime (onnxruntime has no PyPI build for ROCm/XPU, so
+# the recursive stage runs on CPU there - the main separation still offloads).
 if [[ "$TORCH_FLAVOR" == "cuda" ]]; then
     PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install "audio-separator[gpu]==0.44.5"
 else
     PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install "audio-separator[cpu]==0.44.5"
 fi
 
-PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install "$SCRIPT_DIR"
+PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install "$REPO_ROOT"
 
 printf '%s\n' "$TORCH_FLAVOR" > "$FLAVOR_FILE"
 
@@ -243,10 +272,11 @@ PYCHECK
 
 # ------------------------------------------------------------------- pointer
 
-mkdir -p "$CONFIG_HOME/StemLab"
-printf '%s\n' "$PYTHON" > "$CONFIG_HOME/StemLab/portable_engine_path.txt"
+if [[ $WRITE_POINTER -eq 1 ]]; then
+    mkdir -p "$CONFIG_HOME/StemLab"
+    printf '%s\n' "$PYTHON" > "$CONFIG_HOME/StemLab/portable_engine_path.txt"
 
-cat <<EOF
+    cat <<EOF
 
 StemLab backend installed.
 
@@ -256,6 +286,14 @@ StemLab backend installed.
 The plugin and Standalone app will discover it automatically - no settings
 needed. Re-run this script any time to update.
 EOF
+else
+    cat <<EOF
+
+StemLab backend assembled (no discovery pointer written).
+
+  Engine:  $DEST
+EOF
+fi
 
 if ! command -v ffmpeg >/dev/null 2>&1; then
     cat <<'EOF'
