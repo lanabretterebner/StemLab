@@ -113,4 +113,10 @@ namespace stemlab::icons
 
     /** Per-stem split: stacked layers (diamond top + two arcs below). */
     juce::Path layers(juce::Rectangle<float> bounds);
+
+    /** Per-lane actions: three dots, the usual "more actions" affordance. */
+    juce::Path kebab(juce::Rectangle<float> bounds);
+
+    /** Drag this stem out: a square, a diagonal arrow, a target corner. */
+    juce::Path dragOut(juce::Rectangle<float> bounds);
 }

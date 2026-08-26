@@ -188,12 +188,13 @@ namespace stemlab::theme
         /**
          * The played-portion colour of one waveform bar.
          *
-         * @param index          selected palette
-         * @param stemName       identity key ("vocals"...) for Stem Colours
-         * @param positionAcross 0..1 across the lane, for the spectrum sweep
+         * @param index      selected palette
+         * @param stemName   identity key ("vocals"...) for Stem Colours
+         * @param brightness 0..1 spectral brightness of the audio under this
+         *                   bar, for Spectrum; 0.5 means "not analysed yet"
          */
         inline juce::Colour playedColour(int index, const juce::String& stemName,
-                                         float positionAcross)
+                                         float brightness)
         {
             switch (juce::jlimit(0, paletteCount - 1, index))
             {
@@ -201,11 +202,22 @@ namespace stemlab::theme
                 return palette::stemIdentityColour(stemName).value_or(colours::accent());
 
             case 2:
-                // One sweep from violet to amber, so a lane reads left to
-                // right without any bar dropping to an unreadable value.
+                /*
+                    Violet where the audio's spectral centroid sits low and
+                    amber where it sits high, so a bass lane reads violet and
+                    a hi-hat lane reads amber.
+
+                    This used to be driven by the bar's position across the
+                    lane, which looked like a spectrum and meant nothing: a
+                    sine tone and a drum loop came out identically coloured.
+                    The value now comes from stemlab::waveform::brightnessAt
+                    over a real FFT of the file.
+
+                    Saturation and value are fixed so no bar can land on an
+                    unreadable colour, whatever the audio does.
+                */
                 return juce::Colour::fromHSV(
-                    0.72f - 0.62f * juce::jlimit(0.0f, 1.0f, positionAcross), 0.55f, 0.98f,
-                    1.0f);
+                    0.72f - 0.62f * juce::jlimit(0.0f, 1.0f, brightness), 0.55f, 0.98f, 1.0f);
 
             case 3:
                 return juce::Colour(0xff4ea8ff);
@@ -223,12 +235,12 @@ namespace stemlab::theme
         }
 
         inline juce::Colour unplayedColour(int index, const juce::String& stemName,
-                                           float positionAcross)
+                                           float brightness)
         {
             if (juce::jlimit(0, paletteCount - 1, index) == 0)
                 return colours::waveUnplayed();
 
-            return playedColour(index, stemName, positionAcross)
+            return playedColour(index, stemName, brightness)
                 .withMultipliedSaturation(0.55f)
                 .withMultipliedBrightness(0.45f);
         }
@@ -286,6 +298,10 @@ namespace stemlab::theme
         inline juce::FontOptions time() { return make(12.0f, false); }
         inline juce::FontOptions footerPath() { return make(12.0f, false); }
         inline juce::FontOptions smallButton() { return make(10.0f, false); }
+
+        // Bar numbers on the lane grid: small and quiet, since they are a
+        // ruler behind the audio rather than something to read.
+        inline juce::FontOptions gridLabel() { return make(9.0f, false); }
         inline juce::FontOptions tooltip() { return make(12.0f, false); }
     }
 
@@ -430,14 +446,26 @@ namespace stemlab::theme
         namespace lanes
         {
             // Grid per row: twisty | include | name | waveform | controls.
-            constexpr int twistyColumn = 14;
-            constexpr int twistyIcon = 9;
+            constexpr int twistyColumn = 16;
+            constexpr int twistyIcon = 11;
+
+            // The twisty used to butt straight up against the checkbox.
+            constexpr int twistyGap = 6;
+
             constexpr int includeColumn = 18;
             constexpr int nameColumn = 92;
+
+            // S, M and the menu. The drag handle sits on the other side of
+            // the waveform, next to the name it belongs to.
             constexpr int controlsColumn = 78;
+
+            // Between the drag handle and the waveform it drags.
+            constexpr int dragGap = 8;
             constexpr int columnGap = 12;
 
-            constexpr int rowPadY = 5;
+            // The wells sit close together: this is the whole gap between one
+            // lane's waveform and the next, halved.
+            constexpr int rowPadY = 1;
             constexpr float rowRadius = 6.0f;
             constexpr int wellHeight = 40;
             constexpr float wellRadius = 6.0f;
@@ -451,8 +479,21 @@ namespace stemlab::theme
             constexpr int smGap = 6;
             constexpr int layersIcon = 14;
 
-            // Waveform bars: 2px rounded bars on a ~4px pitch (approx. 150
-            // bars across the reference 612px well).
+            // The well's inset: the waveform draws inside this, and clicks
+            // are measured against the same rectangle.
+            constexpr float wellPadX = 6.0f;
+            constexpr float wellPadY = 5.0f;
+
+            // Stereo draws as two half-height waveforms with this between:
+            // enough to read as two channels, not enough to waste the well.
+            constexpr float channelGap = 1.0f;
+
+            // Silence still draws a hairline, so an empty stem reads as flat
+            // rather than as a lane that failed to load.
+            constexpr float waveMinHeight = 1.0f;
+
+            // Retained for the reference layout; the lanes now draw one
+            // column per pixel from a peak envelope rather than these bars.
             constexpr float barWidth = 2.0f;
             constexpr float barPitch = 4.0f;
             constexpr float barMinHeight = 2.0f;
@@ -465,6 +506,13 @@ namespace stemlab::theme
             constexpr int childIndent = 26;
 
             constexpr int scrollbarThickness = 8;
+
+            // Bar-number labels on the beat grid. Below this spacing the
+            // numbers would run into each other, so the ruler thins out to
+            // every 2nd, 4th, 8th bar instead of crowding.
+            constexpr float gridLabelMinSpacing = 42.0f;
+            constexpr float gridLabelWidth = 26.0f;
+            constexpr float gridLabelHeight = 11.0f;
         }
 
         namespace transport

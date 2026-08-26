@@ -47,10 +47,38 @@ public:
         std::unique_ptr<juce::AudioFormatReaderSource> source;
         std::unique_ptr<juce::BufferingAudioSource> buffered;
 
-        // The lane this entry belongs to. Owned by the processor, but held
-        // by shared_ptr so a rebuild of the lane map cannot pull the flags
-        // out from under a mix the audio thread is still playing.
-        std::shared_ptr<StemLabLaneMonitorFlags> flags;
+        /*
+         * The lane this entry belongs to, then each of its ancestors up to
+         * the root stem. Owned by the processor, but held by shared_ptr so a
+         * rebuild of the lane map cannot pull the flags out from under a mix
+         * the audio thread is still playing.
+         *
+         * The mix plays leaves, so a split root has no entry of its own.
+         * Reading the whole chain is what keeps its Solo and Mute working:
+         * without it, muting Drums after splitting it into Kick and Snare
+         * did nothing at all, because the Drums flags were not in the mix.
+         *
+         * Built on the message thread; only read here.
+         */
+        std::vector<std::shared_ptr<StemLabLaneMonitorFlags>> chain;
+
+        bool soloed() const
+        {
+            for (const auto& flags : chain)
+                if (flags->solo.load(std::memory_order_relaxed))
+                    return true;
+
+            return false;
+        }
+
+        bool muted() const
+        {
+            for (const auto& flags : chain)
+                if (flags->mute.load(std::memory_order_relaxed))
+                    return true;
+
+            return false;
+        }
     };
 
     // ~0.7 s at 48 kHz: enough to ride out a disk hiccup, small enough that
@@ -114,7 +142,7 @@ public:
         bool anySolo = false;
 
         for (const auto& entry : entries)
-            anySolo = anySolo || entry.flags->solo.load(std::memory_order_relaxed);
+            anySolo = anySolo || entry.soloed();
 
         if (scratch.getNumSamples() < info.numSamples)
             scratch.setSize(2, info.numSamples, false, false, true); // last-resort fallback
@@ -125,9 +153,7 @@ public:
         {
             auto& entry = entries[i];
 
-            const bool audible =
-                anySolo ? entry.flags->solo.load(std::memory_order_relaxed)
-                        : !entry.flags->mute.load(std::memory_order_relaxed);
+            const bool audible = anySolo ? entry.soloed() : !entry.muted();
 
             const float target = audible ? 1.0f : 0.0f;
             const float previous = currentGains[i];
@@ -1926,11 +1952,55 @@ bool StemLabAudioProcessor::ensureStemMixLoaded()
     struct Lane
     {
         juce::File file;
-        std::shared_ptr<MonitorFlags> flags;
+        std::vector<std::shared_ptr<MonitorFlags>> chain;
     };
 
     std::vector<Lane> lanes;
     lanes.reserve(static_cast<size_t>(stemCount) + tree.size());
+
+    const auto rootIndexFor = [](const juce::String& name)
+    {
+        for (int i = 0; i < stemCount; ++i)
+            if (getStemName(i).equalsIgnoreCase(name))
+                return i;
+
+        return -1;
+    };
+
+    /*
+     * A leaf answers to its own lane and to every lane above it. Walking the
+     * chain here is what keeps a split group's Solo and Mute working: the
+     * group itself is no longer in the mix, so its flags would otherwise go
+     * nowhere.
+     */
+    const auto chainFor = [this, &tree, &rootIndexFor](const StemLabRecursiveStemInfo& leaf)
+    {
+        std::vector<std::shared_ptr<MonitorFlags>> chain;
+
+        chain.push_back(monitorFlagsForRecursive(leaf.id));
+
+        auto parentId = leaf.parentId;
+
+        // Bounded by the tree's depth, and guarded anyway: a manifest that
+        // pointed a node at its own ancestor would otherwise spin here.
+        for (int depth = 0; depth < 32 && parentId.isNotEmpty(); ++depth)
+        {
+            const auto parent =
+                std::find_if(tree.begin(), tree.end(), [&parentId](const auto& item)
+                             { return item.id == parentId; });
+
+            if (parent == tree.end())
+                break;
+
+            chain.push_back(monitorFlagsForRecursive(parent->id));
+            parentId = parent->parentId;
+        }
+
+        if (const auto root = rootIndexFor(leaf.rootStem); root >= 0)
+            chain.push_back(monitorFlagsForStem(root));
+
+        return chain;
+    };
 
     for (int i = 0; i < stemCount; ++i)
     {
@@ -1943,20 +2013,26 @@ bool StemLabAudioProcessor::ensureStemMixLoaded()
         if (splitFurther)
             continue;
 
-        lanes.push_back({getCompletedStemFile(i), monitorFlagsForStem(i)});
+        lanes.push_back({getCompletedStemFile(i), {monitorFlagsForStem(i)}});
     }
 
     for (const auto& item : tree)
         if (!item.hasChildren)
-            lanes.push_back({item.file, monitorFlagsForRecursive(item.id)});
+            lanes.push_back({item.file, chainFor(item)});
 
     std::vector<StemLabStemMixSource::Entry> entries;
     double mixRate = 0.0;
 
     for (const auto& lane : lanes)
     {
-        if (lane.flags == nullptr || !lane.file.existsAsFile())
+        if (lane.chain.empty() || !lane.file.existsAsFile())
             continue;
+
+        if (std::any_of(lane.chain.begin(), lane.chain.end(),
+                        [](const auto& flags) { return flags == nullptr; }))
+        {
+            continue;
+        }
 
         std::unique_ptr<juce::AudioFormatReader> reader(
             previewFormats.createReaderFor(lane.file));
@@ -1974,7 +2050,7 @@ bool StemLabAudioProcessor::ensureStemMixLoaded()
 
         StemLabStemMixSource::Entry entry;
         entry.source = std::make_unique<juce::AudioFormatReaderSource>(reader.release(), true);
-        entry.flags = lane.flags;
+        entry.chain = lane.chain;
         entries.push_back(std::move(entry));
     }
 
@@ -5358,20 +5434,42 @@ void StemLabAudioProcessor::setStemSelectionRange(const juce::String& id, double
             stemSelections.erase(id.toStdString());
     }
 
-    if (getCurrentPreviewSelectionId() == id)
-        updatePreviewLoopForId(id);
+    /*
+     * The lane you just swept becomes the one driving the loop.
+     *
+     * Upstream keyed this off whichever lane was being previewed, which in
+     * the Lanes interface means the soloed one - so dragging a range on any
+     * other lane stored it and looped nothing. The transport here is shared
+     * by every lane, so a loop is a property of the transport, and the last
+     * range drawn is the one that owns it.
+     */
+    {
+        const juce::ScopedLock lock(selectionLock);
+        loopSelectionId = range.active ? id : juce::String();
+    }
+
+    updatePreviewLoopForId(id);
 
     sendChangeMessage();
 }
 
 void StemLabAudioProcessor::clearStemSelectionRange(const juce::String& id)
 {
+    bool ownedLoop = false;
+
     {
         const juce::ScopedLock lock(selectionLock);
         stemSelections.erase(id.toStdString());
+
+        ownedLoop = loopSelectionId == id;
+
+        if (ownedLoop)
+            loopSelectionId = juce::String();
     }
 
-    if (getCurrentPreviewSelectionId() == id)
+    // Only the lane that set the loop can take it away; clearing some other
+    // lane's leftover range must not stop playback looping.
+    if (ownedLoop)
         updatePreviewLoopForId(id);
 
     sendChangeMessage();
@@ -5382,6 +5480,7 @@ void StemLabAudioProcessor::clearAllStemSelectionRanges()
     {
         const juce::ScopedLock lock(selectionLock);
         stemSelections.clear();
+        loopSelectionId = juce::String();
     }
     previewLoopEnabled.store(false);
     previewLoopStart.store(0.0);

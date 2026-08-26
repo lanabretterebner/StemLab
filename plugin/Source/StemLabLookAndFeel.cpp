@@ -604,37 +604,115 @@ namespace stemlab::icons
     juce::Path palette(juce::Rectangle<float> b)
     {
         /*
-         * A painter's palette: a rounded blob with a thumb notch bitten out
-         * of the lower right, and three paint wells. Filled, not stroked -
-         * at 15px the wells would otherwise close up into dots.
+         * A painter's palette: an oval body, a thumb hole, and three wells.
+         *
+         * Everything subtracted stays inside the outline. Even-odd winding
+         * fills any region an odd number of subpaths cover, so a hole that
+         * crosses the edge leaves the part of itself lying outside the body
+         * filled - a stray crescent hanging off the side.
+         *
+         * What fixes the "ugly circle" is proportion, not a bite: an oval
+         * rather than a disc, a thumb hole big enough to read as one, and
+         * wells that survive the downscale to 15px.
          */
+        const auto size = juce::jmin(b.getWidth(), b.getHeight());
+
+        // Wider than tall: a perfect circle reads as a dot, not a palette.
+        const auto body = juce::Rectangle<float>(size, size * 0.88f)
+                              .withCentre(b.getCentre());
+
         juce::Path p;
+        p.addEllipse(body);
 
-        p.addEllipse(b);
-
-        // The notch, and the wells, are subtracted so the fill reads as a
-        // palette rather than a spotted circle.
         juce::Path holes;
 
-        const auto thumb = juce::jmin(b.getWidth(), b.getHeight()) * 0.30f;
+        // The thumb hole, low and to the right, well inside the outline.
+        const auto thumb = size * 0.30f;
 
-        holes.addEllipse(b.getRight() - thumb * 1.25f, b.getBottom() - thumb * 1.25f, thumb,
-                         thumb);
+        holes.addEllipse(body.getX() + body.getWidth() * 0.74f - thumb * 0.5f,
+                         body.getY() + body.getHeight() * 0.66f - thumb * 0.5f, thumb, thumb);
 
-        const auto well = juce::jmin(b.getWidth(), b.getHeight()) * 0.15f;
+        // Three wells along the upper arc, large enough to survive the
+        // downscale to icon size.
+        const auto well = size * 0.155f;
 
-        const float wellX[] = {0.30f, 0.52f, 0.74f};
-        const float wellY[] = {0.52f, 0.28f, 0.34f};
+        const float wellX[] = {0.26f, 0.47f, 0.70f};
+        const float wellY[] = {0.52f, 0.28f, 0.33f};
 
         for (int i = 0; i < 3; ++i)
         {
-            holes.addEllipse(b.getX() + b.getWidth() * wellX[i] - well * 0.5f,
-                             b.getY() + b.getHeight() * wellY[i] - well * 0.5f, well, well);
+            holes.addEllipse(body.getX() + body.getWidth() * wellX[i] - well * 0.5f,
+                             body.getY() + body.getHeight() * wellY[i] - well * 0.5f, well,
+                             well);
         }
 
         // Even-odd winding turns the added sub-paths into holes.
         p.addPath(holes);
         p.setUsingNonZeroWinding(false);
+
+        return p;
+    }
+
+    juce::Path dragOut(juce::Rectangle<float> b)
+    {
+        /*
+         * Drag this stem out: a rounded square, an arrow leaving it
+         * diagonally, and a corner bracket standing in for wherever it is
+         * going.
+         *
+         * The reference art dashes that second square. At 14px dashes close
+         * up into a grey smear, so it is reduced to the two edges that carry
+         * the meaning.
+         */
+        const auto size = juce::jmin(b.getWidth(), b.getHeight());
+
+        juce::Path p;
+
+        // Source: rounded square across the top-left.
+        const auto square = size * 0.52f;
+        p.addRoundedRectangle(b.getX(), b.getY(), square, square, size * 0.12f);
+
+        // Target: the far corner of a box, opposite the source.
+        const auto bracket = size * 0.30f;
+        const auto right = b.getX() + size;
+        const auto bottom = b.getY() + size;
+
+        p.startNewSubPath(right, bottom - bracket);
+        p.lineTo(right, bottom);
+        p.lineTo(right - bracket, bottom);
+
+        // The arrow between them, on the diagonal.
+        const auto from = juce::Point<float>(b.getX() + size * 0.34f, b.getY() + size * 0.34f);
+        const auto to = juce::Point<float>(b.getX() + size * 0.74f, b.getY() + size * 0.74f);
+
+        p.startNewSubPath(from);
+        p.lineTo(to);
+
+        const auto head = size * 0.20f;
+
+        p.startNewSubPath(to.x - head, to.y);
+        p.lineTo(to.x, to.y);
+        p.lineTo(to.x, to.y - head);
+
+        return p;
+    }
+
+    juce::Path kebab(juce::Rectangle<float> b)
+    {
+        // Three dots up the centre: the usual "more actions" affordance.
+        // Filled, because a 2px ring at this size closes up into a smudge.
+        const auto size = juce::jmin(b.getWidth(), b.getHeight());
+        const auto dot = size * 0.19f;
+        const auto centreX = b.getCentreX();
+
+        juce::Path p;
+
+        for (int i = 0; i < 3; ++i)
+        {
+            const auto centreY = b.getY() + size * (0.18f + 0.32f * static_cast<float>(i));
+
+            p.addEllipse(centreX - dot * 0.5f, centreY - dot * 0.5f, dot, dot);
+        }
 
         return p;
     }

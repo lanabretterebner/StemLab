@@ -133,12 +133,10 @@ juce::String stemDisplayName(int index)
 // ==================================================================== waveform
 
 StemLaneWaveform::StemLaneWaveform(StemLabAudioProcessor& processorIn,
-                                   juce::AudioFormatManager& formatManager,
-                                   juce::AudioThumbnailCache& thumbnailCache)
-    : processor(processorIn),
-      thumbnail(theme::metrics::waveform::thumbnailResolution, formatManager, thumbnailCache)
+                                   StemLabWaveformCache& waveformCacheIn)
+    : processor(processorIn), waveformCache(waveformCacheIn)
 {
-    setMouseCursor(juce::MouseCursor::PointingHandCursor);
+    setMouseCursor(juce::MouseCursor::IBeamCursor);
     setInterceptsMouseClicks(true, false);
 }
 
@@ -148,10 +146,9 @@ void StemLaneWaveform::setFile(const juce::File& file)
         return;
 
     currentFile = file;
-    thumbnail.clear();
-
-    if (currentFile.existsAsFile())
-        thumbnail.setSource(new juce::FileInputSource(currentFile));
+    profile.reset();
+    columns.clear();
+    columnsFile = juce::File();
 
     repaint();
 }
@@ -174,6 +171,80 @@ void StemLaneWaveform::setStemIdentity(const juce::String& stemName)
     }
 }
 
+void StemLaneWaveform::setSelectionId(const juce::String& id) { selectionId = id; }
+
+double StemLaneWaveform::normalisedForX(float x) const
+{
+    namespace lanes = theme::metrics::lanes;
+
+    const auto inner = getLocalBounds().toFloat().reduced(lanes::wellPadX, lanes::wellPadY);
+
+    if (inner.getWidth() <= 0.0f || profile == nullptr || !(profile->lengthSeconds > 0.0))
+        return 0.0;
+
+    const auto across =
+        juce::jlimit(0.0, 1.0, static_cast<double>(x - inner.getX()) /
+                                   static_cast<double>(inner.getWidth()));
+
+    const auto view = processor.getWaveformViewRange(profile->lengthSeconds);
+
+    return juce::jlimit(0.0, 1.0,
+                        (view.getStart() + across * view.getLength()) / profile->lengthSeconds);
+}
+
+void StemLaneWaveform::refreshColumns(juce::Rectangle<float> inner, double viewStart,
+                                      double viewLength)
+{
+    const auto width = juce::jmax(0, static_cast<int>(inner.getWidth()));
+
+    if (profile == nullptr || profile->peaks.isEmpty() || width <= 0)
+    {
+        columns.clear();
+        return;
+    }
+
+    const auto channels = juce::jlimit(1, 2, profile->peaks.channels);
+
+    // Nothing about the picture changed, so neither do the columns. This is
+    // what keeps a still lane free and a scrolling one cheap.
+    if (columnsFile == currentFile && columnsWidth == width && columnsChannels == channels &&
+        std::abs(columnsStart - viewStart) < 1.0e-9 &&
+        std::abs(columnsLength - viewLength) < 1.0e-9)
+    {
+        return;
+    }
+
+    columnsFile = currentFile;
+    columnsWidth = width;
+    columnsChannels = channels;
+    columnsStart = viewStart;
+    columnsLength = viewLength;
+
+    columns.assign(static_cast<std::size_t>(width), {});
+
+    const auto secondsPerColumn = viewLength / static_cast<double>(width);
+
+    for (int x = 0; x < width; ++x)
+    {
+        const auto from = viewStart + secondsPerColumn * static_cast<double>(x);
+        const auto to = from + secondsPerColumn;
+
+        auto& column = columns[static_cast<std::size_t>(x)];
+
+        for (int channel = 0; channel < channels; ++channel)
+        {
+            const auto range =
+                stemlab::waveform::peakBetween(profile->peaks, channel, from, to);
+
+            column.minimum[channel] = range.minimum;
+            column.maximum[channel] = range.maximum;
+        }
+
+        column.brightness =
+            stemlab::waveform::brightnessAt(profile->spectrum, (from + to) * 0.5);
+    }
+}
+
 void StemLaneWaveform::paint(juce::Graphics& g)
 {
     namespace lanes = theme::metrics::lanes;
@@ -183,7 +254,44 @@ void StemLaneWaveform::paint(juce::Graphics& g)
     g.setColour(theme::colours::laneWell());
     g.fillRoundedRectangle(full, lanes::wellRadius);
 
-    const auto length = thumbnail.getTotalLength();
+    if (profile == nullptr && currentFile.existsAsFile())
+        profile = waveformCache.get(currentFile);
+
+    const auto inner = full.reduced(lanes::wellPadX, lanes::wellPadY);
+
+    if (profile == nullptr || !(profile->lengthSeconds > 0.0) || inner.isEmpty())
+        return;
+
+    const auto length = profile->lengthSeconds;
+
+    /*
+     * Snap the window's start to a whole column of time.
+     *
+     * Without this a scrolling view re-buckets the audio every frame: each
+     * column covers a slightly different span, its peak jumps to a
+     * neighbouring sample, and the whole waveform crawls and shimmers even
+     * though the audio is not moving. Snapped, the picture translates by
+     * whole columns and every column keeps exactly the audio it had.
+     */
+    const auto view = processor.getWaveformViewRange(length);
+    const auto viewLength = juce::jmax(1.0e-6, view.getLength());
+
+    const auto secondsPerColumn = viewLength / static_cast<double>(inner.getWidth());
+
+    const auto snappedStart =
+        secondsPerColumn > 0.0
+            ? std::floor(view.getStart() / secondsPerColumn) * secondsPerColumn
+            : view.getStart();
+
+    refreshColumns(inner, snappedStart, viewLength);
+
+    const auto secondsToX = [&inner, snappedStart, viewLength](double seconds)
+    {
+        return inner.getX() +
+               static_cast<float>((seconds - snappedStart) / viewLength) * inner.getWidth();
+    };
+
+    const int palette = processor.getWaveformColourIndex();
 
     const auto transportLength = processor.getTransportLengthSeconds();
     const auto transportPosition = processor.getTransportPositionSeconds();
@@ -192,27 +300,8 @@ void StemLaneWaveform::paint(juce::Graphics& g)
         transportLength > 0.0 ? juce::jlimit(0.0, 1.0, transportPosition / transportLength)
                               : -1.0;
 
-    const auto inner = full.reduced(6.0f, 5.0f);
-
-    const int palette = processor.getWaveformColourIndex();
-
-    /*
-     * At zoom 1 this is the whole file, as it always was. Above that it is a
-     * window of it, centred on the playhead - and every lane asks the
-     * processor for it, so they all scroll together.
-     */
-    const auto view = processor.getWaveformViewRange(length);
-    const auto viewLength = juce::jmax(1.0e-6, view.getLength());
-
-    const auto secondsToX = [&inner, &view, viewLength](double seconds)
-    {
-        return inner.getX() +
-               static_cast<float>((seconds - view.getStart()) / viewLength) * inner.getWidth();
-    };
-
     // Beat grid behind the waveform: bars read stronger than beats, and the
     // whole thing stays subordinate to the audio it sits behind.
-    if (length > 0.0 && !inner.isEmpty())
     {
         const auto grid = processor.getWaveformGridInfo();
 
@@ -229,16 +318,39 @@ void StemLaneWaveform::paint(juce::Graphics& g)
                 // Thin out beat lines that would be closer than a few pixels.
                 const bool drawBeats = secondsPerBeat * pixelsPerSecond >= 7.0;
 
+                const auto secondsPerBar = secondsPerBeat * beatsPerBar;
+
+                /*
+                 * Number every Nth bar, where N is the smallest power-of-two
+                 * step whose labels do not collide. Zoomed out that lands on
+                 * 4 or 8; zoomed in, every bar gets its number.
+                 */
+                int barLabelStep = 1;
+
+                while (secondsPerBar * barLabelStep * pixelsPerSecond <
+                           lanes::gridLabelMinSpacing &&
+                       barLabelStep < 512)
+                {
+                    barLabelStep *= 2;
+                }
+
+                // Beats get their own bar.beat labels once they are far
+                // enough apart to carry one.
+                const bool labelBeats =
+                    drawBeats && secondsPerBeat * pixelsPerSecond >= lanes::gridLabelMinSpacing;
+
                 /*
                  * Start at the first beat in view rather than at bar one: at
                  * 64x on a long track that is thousands of iterations that
                  * would each be computed only to be discarded.
                  */
                 int beatIndex = static_cast<int>(
-                    std::floor((view.getStart() - grid.barOne) / secondsPerBeat));
+                    std::floor((snappedStart - grid.barOne) / secondsPerBeat));
+
+                g.setFont(theme::fonts::gridLabel());
 
                 for (double t = grid.barOne + beatIndex * secondsPerBeat;
-                     t <= view.getEnd() && t < length;
+                     t <= snappedStart + viewLength && t < length;
                      t += secondsPerBeat, ++beatIndex)
                 {
                     if (t < 0.0)
@@ -246,7 +358,10 @@ void StemLaneWaveform::paint(juce::Graphics& g)
 
                     // beatIndex is negative before bar one, and % keeps that
                     // sign in C++; fold it back before testing for a bar.
-                    const bool bar = (((beatIndex % beatsPerBar) + beatsPerBar) % beatsPerBar) == 0;
+                    const int withinBar =
+                        ((beatIndex % beatsPerBar) + beatsPerBar) % beatsPerBar;
+
+                    const bool bar = withinBar == 0;
 
                     if (!bar && !drawBeats)
                         continue;
@@ -258,151 +373,235 @@ void StemLaneWaveform::paint(juce::Graphics& g)
 
                     g.setColour(theme::colours::text().withAlpha(bar ? 0.22f : 0.10f));
                     g.fillRect(x, inner.getY(), bar ? 1.4f : 1.0f, inner.getHeight());
+
+                    if (!bar && !labelBeats)
+                        continue;
+
+                    // Bar one is bar 1, not bar 0, and bars before it count
+                    // backwards rather than wrapping to a huge number.
+                    const int barNumber =
+                        static_cast<int>(std::floor(static_cast<double>(beatIndex) /
+                                                    static_cast<double>(beatsPerBar))) +
+                        1;
+
+                    if (bar && barNumber % barLabelStep != 0 && barLabelStep > 1)
+                        continue;
+
+                    const auto text = bar ? juce::String(barNumber)
+                                          : juce::String(barNumber) + "." +
+                                                juce::String(withinBar + 1);
+
+                    const auto label = juce::Rectangle<float>(
+                        x + 2.0f, inner.getY(), lanes::gridLabelWidth, lanes::gridLabelHeight);
+
+                    if (label.getRight() > inner.getRight())
+                        continue;
+
+                    g.setColour(theme::colours::text().withAlpha(bar ? 0.34f : 0.20f));
+                    g.drawText(text, label, juce::Justification::topLeft, false);
                 }
             }
         }
     }
 
-    if (length > 0.0 && thumbnail.getNumChannels() > 0 && !inner.isEmpty())
+    if (columns.empty())
+        return;
+
+    const auto channels = juce::jlimit(1, 2, profile->peaks.channels);
+
+    const float playheadX = secondsToX(juce::jmax(0.0, playNormalised) * length);
+
+    /*
+     * Stereo draws as two half-height waveforms rather than one summed
+     * envelope: which side a part sits on is information, and summing hides
+     * anything that cancels.
+     */
+    const auto channelHeight =
+        channels > 1 ? (inner.getHeight() - lanes::channelGap) * 0.5f : inner.getHeight();
+
+    for (int channel = 0; channel < channels; ++channel)
     {
-        const int channels = juce::jmin(2, thumbnail.getNumChannels());
+        const auto top =
+            inner.getY() + static_cast<float>(channel) * (channelHeight + lanes::channelGap);
 
-        const float playheadX =
-            secondsToX(juce::jmax(0.0, playNormalised) * length);
+        const auto centreY = top + channelHeight * 0.5f;
+        const auto halfHeight = channelHeight * 0.5f;
 
-        const auto centreY = inner.getCentreY();
-
-        for (float x = inner.getX(); x < inner.getRight(); x += lanes::barPitch)
+        for (std::size_t i = 0; i < columns.size(); ++i)
         {
-            const auto start =
-                view.getStart() + static_cast<double>(x - inner.getX()) /
-                                      static_cast<double>(inner.getWidth()) * viewLength;
+            const auto& column = columns[i];
+            const auto x = inner.getX() + static_cast<float>(i);
 
-            const auto end = juce::jmax(
-                start + 0.000001,
-                view.getStart() + static_cast<double>(x + lanes::barPitch - inner.getX()) /
-                                      static_cast<double>(inner.getWidth()) * viewLength);
-
-            float peak = 0.0f;
-
-            for (int channel = 0; channel < channels; ++channel)
-            {
-                float minimum = 0.0f, maximum = 0.0f;
-                thumbnail.getApproximateMinMax(start, end, channel, minimum, maximum);
-                peak = juce::jmax(peak, std::abs(minimum), std::abs(maximum));
-            }
-
-            // Square-root lift keeps quiet material visible without faking
-            // loudness; the spec's bars render from the real peaks.
-            const auto level = std::sqrt(juce::jlimit(0.0f, 1.0f, peak));
-
-            const auto barHeight =
-                juce::jmax(lanes::barMinHeight, level * inner.getHeight() * 0.96f);
-
-            const float across = inner.getWidth() > 0.0f
-                                     ? (x - inner.getX()) / inner.getWidth()
-                                     : 0.0f;
-
-            juce::Colour barColour;
+            juce::Colour colour;
 
             if (mutedAppearance)
-                barColour = theme::colours::waveMuted();
+                colour = theme::colours::waveMuted();
             else if (playNormalised >= 0.0 && x < playheadX)
-                barColour = theme::waveform::playedColour(palette, stemIdentity, across);
+                colour = theme::waveform::playedColour(palette, stemIdentity, column.brightness);
             else
-                barColour = theme::waveform::unplayedColour(palette, stemIdentity, across);
+                colour =
+                    theme::waveform::unplayedColour(palette, stemIdentity, column.brightness);
 
-            g.setColour(barColour);
-            g.fillRoundedRectangle(x, centreY - barHeight * 0.5f, lanes::barWidth, barHeight,
-                                   lanes::barWidth * 0.5f);
+            const auto lowest = juce::jlimit(-1.0f, 1.0f, column.minimum[channel]);
+            const auto highest = juce::jlimit(-1.0f, 1.0f, column.maximum[channel]);
+
+            auto topY = centreY - highest * halfHeight;
+            auto bottomY = centreY - lowest * halfHeight;
+
+            // Silence still draws a hairline, so an empty stem reads as a
+            // flat line rather than as a lane that failed to load.
+            if (bottomY - topY < lanes::waveMinHeight)
+            {
+                const auto centre = (topY + bottomY) * 0.5f;
+                topY = centre - lanes::waveMinHeight * 0.5f;
+                bottomY = centre + lanes::waveMinHeight * 0.5f;
+            }
+
+            g.setColour(colour);
+            g.fillRect(x, topY, 1.0f, bottomY - topY);
         }
+    }
 
-        // Shared playhead: every lane draws it at the same x (one clock).
-        // Zoomed in it can sit outside the window at either end of the file,
-        // where the view stops following it.
-        if (playNormalised >= 0.0 && playheadX >= inner.getX() && playheadX <= inner.getRight())
+    // Selection / loop range, live while dragging and persistent after.
+    {
+        auto range = processor.getStemSelectionRange(selectionId);
+
+        double from = 0.0, to = 0.0;
+        bool show = false;
+
+        if (selecting)
         {
-            g.setColour(theme::colours::playheadGlow());
-            g.fillRect(playheadX - lanes::playheadGlowWidth * 0.5f, inner.getY(),
-                       lanes::playheadGlowWidth, inner.getHeight());
-
-            g.setColour(theme::colours::playhead());
-            g.fillRect(playheadX - lanes::playheadWidth * 0.5f, inner.getY(),
-                       lanes::playheadWidth, inner.getHeight());
+            from = juce::jmin(selectionAnchor, selectionHead);
+            to = juce::jmax(selectionAnchor, selectionHead);
+            show = to - from > 0.0;
         }
+        else if (range.active)
+        {
+            from = range.start;
+            to = range.end;
+            show = true;
+        }
+
+        if (show)
+        {
+            const auto left = secondsToX(from * length);
+            const auto right = secondsToX(to * length);
+
+            const auto clippedLeft = juce::jmax(left, inner.getX());
+            const auto clippedRight = juce::jmin(right, inner.getRight());
+
+            if (clippedRight > clippedLeft)
+            {
+                g.setColour(theme::colours::accent().withAlpha(0.16f));
+                g.fillRect(clippedLeft, inner.getY(), clippedRight - clippedLeft,
+                           inner.getHeight());
+
+                g.setColour(theme::colours::accent().withAlpha(0.75f));
+
+                if (left >= inner.getX() && left <= inner.getRight())
+                    g.fillRect(left, inner.getY(), 1.0f, inner.getHeight());
+
+                if (right >= inner.getX() && right <= inner.getRight())
+                    g.fillRect(right - 1.0f, inner.getY(), 1.0f, inner.getHeight());
+            }
+        }
+    }
+
+    // Shared playhead: every lane draws it at the same x (one clock).
+    // Zoomed in it can sit outside the window at either end of the file,
+    // where the view stops following it.
+    if (playNormalised >= 0.0 && playheadX >= inner.getX() && playheadX <= inner.getRight())
+    {
+        g.setColour(theme::colours::playheadGlow());
+        g.fillRect(playheadX - lanes::playheadGlowWidth * 0.5f, inner.getY(),
+                   lanes::playheadGlowWidth, inner.getHeight());
+
+        g.setColour(theme::colours::playhead());
+        g.fillRect(playheadX - lanes::playheadWidth * 0.5f, inner.getY(),
+                   lanes::playheadWidth, inner.getHeight());
     }
 }
 
-void StemLaneWaveform::mouseDown(const juce::MouseEvent&)
+void StemLaneWaveform::mouseDown(const juce::MouseEvent& event)
 {
-    // The gesture is ambiguous at press time: a click seeks, a drag exports.
-    // Deciding at release keeps a drag from disturbing the transport.
-    externalDragStarted = false;
-}
-
-void StemLaneWaveform::mouseUp(const juce::MouseEvent& event)
-{
-    // Plain Components still receive mouse events while disabled.
-    if (!isEnabled() || externalDragStarted || getWidth() <= 0)
+    if (!isEnabled())
         return;
 
-    if (event.getDistanceFromDragStart() >= theme::metrics::waveform::clickVersusDragThreshold)
-        return;
-
-    /*
-     * Measured against the same inset rectangle paint() draws into, not the
-     * whole component: at zoom 1 the difference is a pixel, but zoomed in
-     * the well's 6px margin is a meaningful slice of the window.
-     */
-    const auto inner = getLocalBounds().toFloat().reduced(6.0f, 5.0f);
-
-    if (inner.getWidth() <= 0.0f)
-        return;
-
-    const auto across = juce::jlimit(
-        0.0, 1.0,
-        static_cast<double>(event.mouseDownPosition.x - inner.getX()) /
-            static_cast<double>(inner.getWidth()));
-
-    const auto length = thumbnail.getTotalLength();
-
-    // Zoomed in, the click lands somewhere in the visible window rather than
-    // somewhere in the file.
-    const auto view = processor.getWaveformViewRange(length);
-
-    const auto normalised =
-        length > 0.0
-            ? juce::jlimit(0.0, 1.0, (view.getStart() + across * view.getLength()) / length)
-            : across;
-
-    processor.transportSeekNormalised(normalised);
-    repaint();
+    // Both gestures start here: a drag sweeps out a loop range, a click that
+    // never moves falls through to a seek on release.
+    selecting = false;
+    selectionAnchor = normalisedForX(event.position.x);
+    selectionHead = selectionAnchor;
 }
 
 void StemLaneWaveform::mouseDrag(const juce::MouseEvent& event)
 {
     /*
-     * Dragging a lane's waveform exports its file to whatever the pointer
-     * lands on - a DAW arrangement, a file manager, an editor. This is what
-     * makes StemLab useful in hosts with no integration path at all: every
-     * host accepts an audio-file drop.
+     * Dragging the well sweeps a selection, which is also the preview loop.
+     * Exporting the stem moved to the lane's own drag handle: one gesture
+     * cannot both scrub out a range and carry a file to another application.
      */
-    if (externalDragStarted || !currentFile.existsAsFile())
+    if (!isEnabled() || profile == nullptr)
         return;
 
-    if (event.getDistanceFromDragStart() < theme::metrics::waveform::clickVersusDragThreshold)
+    if (!selecting &&
+        event.getDistanceFromDragStart() < theme::metrics::waveform::clickVersusDragThreshold)
+    {
+        return;
+    }
+
+    selecting = true;
+    selectionHead = normalisedForX(event.position.x);
+
+    repaint();
+}
+
+void StemLaneWaveform::mouseUp(const juce::MouseEvent& event)
+{
+    // Plain Components still receive mouse events while disabled.
+    if (!isEnabled())
         return;
 
-    externalDragStarted = juce::DragAndDropContainer::performExternalDragDropOfFiles(
-        juce::StringArray{currentFile.getFullPathName()}, false, this);
+    if (selecting)
+    {
+        selecting = false;
+
+        const auto from = juce::jmin(selectionAnchor, selectionHead);
+        const auto to = juce::jmax(selectionAnchor, selectionHead);
+
+        // A sweep that collapses to nothing clears rather than storing an
+        // empty loop the transport would sit inside forever.
+        if (to - from >= 0.0005)
+            processor.setStemSelectionRange(selectionId, from, to);
+        else
+            processor.clearStemSelectionRange(selectionId);
+
+        repaint();
+        return;
+    }
+
+    if (event.getDistanceFromDragStart() >= theme::metrics::waveform::clickVersusDragThreshold)
+        return;
+
+    processor.transportSeekNormalised(normalisedForX(event.mouseDownPosition.x));
+    repaint();
+}
+
+void StemLaneWaveform::mouseDoubleClick(const juce::MouseEvent&)
+{
+    // The way back out of a loop, without having to sweep a zero-width drag.
+    if (isEnabled())
+    {
+        processor.clearStemSelectionRange(selectionId);
+        repaint();
+    }
 }
 
 // ======================================================================== lane
 
 StemLaneComponent::StemLaneComponent(StemLabAudioProcessor& processorIn, int stemIndexIn,
                                      juce::String childIdIn,
-                                     juce::AudioFormatManager& formatManager,
-                                     juce::AudioThumbnailCache& thumbnailCache,
+                                     StemLabWaveformCache& waveformCache,
                                      std::function<void()> refreshEditorIn,
                                      std::function<void(int)> showRootMenuIn,
                                      std::function<void(const juce::String&)> showChildMenuIn,
@@ -443,10 +642,17 @@ StemLaneComponent::StemLaneComponent(StemLabAudioProcessor& processorIn, int ste
 
     addAndMakeVisible(nameLabel);
 
-    waveform = std::make_unique<StemLaneWaveform>(processor, formatManager, thumbnailCache);
+    waveform = std::make_unique<StemLaneWaveform>(processor, waveformCache);
 
     if (!isChildLane())
+    {
         waveform->setStemIdentity(StemLabAudioProcessor::getStemName(stemIndex));
+        waveform->setSelectionId(StemLabAudioProcessor::getStemName(stemIndex));
+    }
+    else
+    {
+        waveform->setSelectionId(childId);
+    }
 
     addAndMakeVisible(*waveform);
 
@@ -482,14 +688,46 @@ StemLaneComponent::StemLaneComponent(StemLabAudioProcessor& processorIn, int ste
 
     addAndMakeVisible(muteButton);
 
-    layersButton = std::make_unique<widgets::IconButton>(
-        "layers", [](juce::Rectangle<float> b) { return stemlab::icons::layers(b); },
+    /*
+     * The stem's own drag handle. Dragging the waveform used to carry the
+     * file out, which left no gesture for sweeping a loop range - and the
+     * two cannot share one, since a sweep and a drag-to-another-application
+     * look identical until the pointer leaves the window.
+     */
+    dragButton = std::make_unique<widgets::IconButton>(
+        "drag-out", [](juce::Rectangle<float> b) { return stemlab::icons::dragOut(b); },
         static_cast<float>(theme::metrics::lanes::layersIcon), true,
         theme::metrics::lanes::smRadius, false);
 
-    layersButton->setTooltip("Split this stem further");
+    dragButton->setTooltip("Drag this stem to a DAW or a folder");
+    dragButton->setMouseCursor(juce::MouseCursor::DraggingHandCursor);
 
-    layersButton->onClick = [this]
+    // Drags on the button are handled by the lane, which owns the file.
+    dragButton->addMouseListener(this, false);
+
+    // A plain click is a dead end here, so say what the button is for
+    // rather than doing nothing at all.
+    dragButton->onClick = [this]
+    {
+        if (laneFile.existsAsFile())
+            processor.postUiStatus("Drag this button onto a DAW track or a folder");
+    };
+
+    addAndMakeVisible(*dragButton);
+
+    /*
+     * A kebab, not a layers glyph: this menu stopped being about splitting
+     * when MIDI conversion, audition and export moved into it. The old icon
+     * promised one of its entries and hid the rest.
+     */
+    menuButton = std::make_unique<widgets::IconButton>(
+        "lane-menu", [](juce::Rectangle<float> b) { return stemlab::icons::kebab(b); },
+        static_cast<float>(theme::metrics::lanes::layersIcon), false,
+        theme::metrics::lanes::smRadius, false);
+
+    menuButton->setTooltip("Stem actions");
+
+    menuButton->onClick = [this]
     {
         if (isChildLane())
         {
@@ -502,16 +740,7 @@ StemLaneComponent::StemLaneComponent(StemLabAudioProcessor& processorIn, int ste
         }
     };
 
-    addAndMakeVisible(*layersButton);
-}
-
-void StemLaneComponent::setLayersAvailable(bool available)
-{
-    if (layersAvailable != available)
-    {
-        layersAvailable = available;
-        refresh();
-    }
+    addAndMakeVisible(*menuButton);
 }
 
 void StemLaneComponent::setChildState(bool laneHasChildren, bool expanded)
@@ -544,10 +773,37 @@ void StemLaneComponent::setChildInfo(const StemLabRecursiveStemInfo& info)
         // A child lane carries its root's identity colour, so a split stem
         // still reads as one family down the tree.
         waveform->setStemIdentity(info.rootStem);
+        waveform->setSelectionId(info.id);
     }
 
     refresh();
 }
+
+void StemLaneComponent::mouseDrag(const juce::MouseEvent& event)
+{
+    /*
+     * The drag handle's own drags reach the lane, because a juce::Button
+     * does not forward them anywhere useful. Starting the external drag from
+     * here also means the whole lane is a valid drag source once the gesture
+     * has begun, rather than the pointer having to stay inside 22 pixels.
+     */
+    if (externalDragStarted || dragButton == nullptr || !dragButton->isEnabled())
+        return;
+
+    if (event.eventComponent != dragButton.get())
+        return;
+
+    if (!laneFile.existsAsFile())
+        return;
+
+    if (event.getDistanceFromDragStart() < theme::metrics::waveform::clickVersusDragThreshold)
+        return;
+
+    externalDragStarted = juce::DragAndDropContainer::performExternalDragDropOfFiles(
+        juce::StringArray{laneFile.getFullPathName()}, false, this);
+}
+
+void StemLaneComponent::mouseUp(const juce::MouseEvent&) { externalDragStarted = false; }
 
 void StemLaneComponent::refresh()
 {
@@ -589,16 +845,14 @@ void StemLaneComponent::refresh()
     muteButton.setEnabled(ready);
     muteButton.setToggleState(muted, juce::dontSendNotification);
 
-    if (isChildLane())
-    {
-        layersButton->setEnabled(ready && !childInfo.actions.isEmpty());
-        layersButton->setVisible(!childInfo.actions.isEmpty() || childInfo.hasChildren);
-    }
-    else
-    {
-        layersButton->setEnabled(ready && layersAvailable);
-        layersButton->setVisible(layersAvailable);
-    }
+    /*
+     * Always offered on a ready lane, both kinds. It used to be hidden when
+     * the stem had no adaptive split to offer - which also hid Convert to
+     * MIDI, Audition and Save MIDI, leaving them unreachable on Bass. The
+     * menu itself decides which entries it can show.
+     */
+    menuButton->setEnabled(ready);
+    dragButton->setEnabled(ready && laneFile.existsAsFile());
 
     if (waveform != nullptr)
         waveform->setMutedAppearance(muted && !soloed);
@@ -621,6 +875,8 @@ void StemLaneComponent::resized()
     // so checkboxes and names stay on one grid down the whole list.
     twisty.setBounds(row.removeFromLeft(lanes::twistyColumn));
 
+    row.removeFromLeft(lanes::twistyGap);
+
     auto includeArea = row.removeFromLeft(lanes::includeColumn);
     include.setBounds(includeArea);
 
@@ -630,6 +886,13 @@ void StemLaneComponent::resized()
         lanes::nameColumn - (isChildLane() ? lanes::childIndent : 0)));
 
     row.removeFromLeft(lanes::columnGap);
+
+    // The drag handle leads the waveform it carries, rather than sitting
+    // across the lane among the controls that act on playback.
+    dragButton->setBounds(row.removeFromLeft(lanes::smButton)
+                              .withSizeKeepingCentre(lanes::smButton, lanes::smButton));
+
+    row.removeFromLeft(lanes::dragGap);
 
     auto controls = row.removeFromRight(lanes::controlsColumn);
 
@@ -642,7 +905,7 @@ void StemLaneComponent::resized()
     muteButton.setBounds(centred.removeFromLeft(lanes::smButton));
     centred.removeFromLeft(lanes::smGap);
 
-    layersButton->setBounds(centred.removeFromLeft(lanes::smButton));
+    menuButton->setBounds(centred.removeFromLeft(lanes::smButton));
 
     row.removeFromRight(lanes::columnGap);
 
@@ -974,7 +1237,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
     {
         rootLanes[static_cast<size_t>(i)] = std::make_unique<StemLaneComponent>(
-            processor, i, juce::String{}, waveformFormats, waveformCache,
+            processor, i, juce::String{}, waveformProfiles,
             [this] { refreshFromProcessor(); },
             [this](int stemIndex) { showRootLayersMenu(stemIndex); },
             [this](const juce::String& id) { showChildLayersMenu(id); },
@@ -1638,7 +1901,7 @@ void StemLabAudioProcessorEditor::syncLanes()
         for (const auto& item : items)
         {
             auto lane = std::make_unique<StemLaneComponent>(
-                processor, -1, item.id, waveformFormats, waveformCache,
+                processor, -1, item.id, waveformProfiles,
                 [this] { refreshFromProcessor(); },
                 [this](int stemIndex) { showRootLayersMenu(stemIndex); },
                 [this](const juce::String& id) { showChildLayersMenu(id); },
@@ -1707,7 +1970,12 @@ void StemLabAudioProcessorEditor::showRootLayersMenu(int stemIndex)
 
     auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
 
-    auto* target = rootLanes[static_cast<size_t>(stemIndex)].get();
+    /*
+     * Anchor to the button, not the lane. A lane runs the full width of the
+     * panel, so targeting it put the menu against the lane's left edge -
+     * across the far side of the window from the button that opened it.
+     */
+    auto* target = rootLanes[static_cast<size_t>(stemIndex)]->getMenuButton();
 
     menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(target),
                        [safeThis, stemIndex, stemName](int result)
@@ -1769,8 +2037,21 @@ void StemLabAudioProcessorEditor::showChildLayersMenu(const juce::String& itemId
 
     auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
 
+    // Same as the root menu: anchor to the button that opened it. With no
+    // target at all this fell back to wherever the mouse happened to be.
+    juce::Component* target = nullptr;
+
+    for (const auto& lane : childLanes)
+    {
+        if (lane != nullptr && lane->getChildId() == itemId)
+        {
+            target = lane->getMenuButton();
+            break;
+        }
+    }
+
     menu.showMenuAsync(
-        juce::PopupMenu::Options(),
+        juce::PopupMenu::Options().withTargetComponent(target),
         [safeThis, itemId](int result)
         {
             if (safeThis == nullptr || result == 0)
@@ -2141,7 +2422,6 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
         {
             const bool hasChildren = rootHasChildren(i);
 
-            lane->setLayersAvailable(rootSupportsAdaptiveSplit(i) || hasChildren);
             lane->setChildState(hasChildren, isLaneExpanded(i, {}));
             lane->refresh();
         }

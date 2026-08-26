@@ -7,6 +7,7 @@
 #include "PluginProcessor.h"
 #include "StemLabLookAndFeel.h"
 #include "StemLabWidgets.h"
+#include "WaveformCache.h"
 
 /**
  * One lane's waveform well: rounded ground-coloured well, 2px rounded bars
@@ -17,11 +18,14 @@
 class StemLaneWaveform final : public juce::Component
 {
 public:
-    StemLaneWaveform(StemLabAudioProcessor& processor, juce::AudioFormatManager& formatManager,
-                     juce::AudioThumbnailCache& thumbnailCache);
+    StemLaneWaveform(StemLabAudioProcessor& processor, StemLabWaveformCache& waveformCache);
 
     void setFile(const juce::File& file);
     void setMutedAppearance(bool muted);
+
+    /** Which selection range this lane's drags write to: the stem name for a
+        root lane, the item id for an adaptive child. */
+    void setSelectionId(const juce::String& id);
 
     /** Which stem identity this lane draws under the Stem Colours palette
         ("vocals", "drums", ...); a child lane uses its root's. */
@@ -31,14 +35,53 @@ public:
     void mouseDown(const juce::MouseEvent&) override;
     void mouseDrag(const juce::MouseEvent&) override;
     void mouseUp(const juce::MouseEvent&) override;
+    void mouseDoubleClick(const juce::MouseEvent&) override;
 
 private:
+    /** One drawn column: the shape of the audio under it, per channel, and
+        the colour that audio calls for. */
+    struct Column
+    {
+        float minimum[2] = {0.0f, 0.0f};
+        float maximum[2] = {0.0f, 0.0f};
+        float brightness = 0.5f;
+    };
+
+    /** Rebuild the column cache if the view, the size or the file moved. */
+    void refreshColumns(juce::Rectangle<float> inner, double viewStart, double viewLength);
+
+    /** Where a point in the well falls in the file, 0 to 1. */
+    double normalisedForX(float x) const;
+
     StemLabAudioProcessor& processor;
-    juce::AudioThumbnail thumbnail;
+    StemLabWaveformCache& waveformCache;
+
+    /** Held rather than re-fetched per column: paint asks the cache once,
+        and only while it is still analysing. */
+    StemLabWaveformCache::ProfilePtr profile;
+
+    std::vector<Column> columns;
+
+    /*
+        What the cached columns were built for. A scrolling view snaps to
+        whole pixels, so these change only when the picture genuinely does -
+        which is also what stops the waveform crawling.
+    */
+    juce::File columnsFile;
+    double columnsStart = -1.0;
+    double columnsLength = -1.0;
+    int columnsWidth = 0;
+    int columnsChannels = 0;
+
     juce::File currentFile;
     juce::String stemIdentity;
+    juce::String selectionId;
     bool mutedAppearance = false;
-    bool externalDragStarted = false;
+
+    /** An in-progress drag over the well, in normalised file position. */
+    bool selecting = false;
+    double selectionAnchor = 0.0;
+    double selectionHead = 0.0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StemLaneWaveform)
 };
@@ -56,8 +99,7 @@ class StemLaneComponent final : public juce::Component
 {
 public:
     StemLaneComponent(StemLabAudioProcessor& processor, int stemIndex, juce::String childId,
-                      juce::AudioFormatManager& formatManager,
-                      juce::AudioThumbnailCache& thumbnailCache,
+                      StemLabWaveformCache& waveformCache,
                       std::function<void()> refreshEditor,
                       std::function<void(int)> showRootMenu,
                       std::function<void(const juce::String&)> showChildMenu,
@@ -65,9 +107,9 @@ public:
 
     void refresh();
 
-    /** Root lanes: whether the layers menu has anything to offer (adaptive
-        split supported, or children exist). Hidden otherwise (e.g. Bass). */
-    void setLayersAvailable(bool available);
+    /** What a lane menu anchors to, so it opens under the button that
+        was clicked rather than against the whole lane row. */
+    juce::Component* getMenuButton() const { return menuButton.get(); }
 
     /** Drives the disclosure twisty: shown only when there is something to
         collapse, pointing down while those children are on screen. */
@@ -81,6 +123,8 @@ public:
 
     void resized() override;
     void paint(juce::Graphics&) override;
+    void mouseDrag(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override;
 
 private:
     StemLabAudioProcessor& processor;
@@ -95,9 +139,10 @@ private:
     std::unique_ptr<StemLaneWaveform> waveform;
     juce::TextButton soloButton{"S"};
     juce::TextButton muteButton{"M"};
-    std::unique_ptr<stemlab::widgets::IconButton> layersButton;
-    bool layersAvailable = true;
+    std::unique_ptr<stemlab::widgets::IconButton> dragButton;
+    std::unique_ptr<stemlab::widgets::IconButton> menuButton;
     bool hasChildren = false;
+    bool externalDragStarted = false;
 
     std::function<void()> refreshEditor;
     std::function<void(int)> showRootMenu;
@@ -266,8 +311,7 @@ private:
 
     // Lanes.
     juce::AudioFormatManager waveformFormats;
-    juce::AudioThumbnailCache waveformCache{
-        stemlab::theme::metrics::waveform::thumbnailCacheSize};
+    StemLabWaveformCache waveformProfiles{waveformFormats};
     juce::Viewport laneViewport;
     juce::Component laneContent;
     std::array<std::unique_ptr<StemLaneComponent>, StemLabAudioProcessor::stemCount> rootLanes;
