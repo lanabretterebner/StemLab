@@ -99,10 +99,32 @@ if ($LASTEXITCODE -ne 0) {
     throw "Could not create temporary $InnoSourceDir mapping for: $PortableRoot"
 }
 
+# Leftovers from a previous compile of this same version and flavor would
+# ship alongside the new output: a stale .bin next to a new single-file .exe
+# looks like a slice of it.
+Get-ChildItem -LiteralPath $DistRoot -Filter "StemLab-Setup-$Version-$Flavor*" -ErrorAction SilentlyContinue |
+    Remove-Item -Force
+
 $IsccExitCode = 1
 try {
-    & $Iscc "/DSourceDir=$InnoSourceDir" "/DAppVersion=$Version" "/DFlavor=$Flavor" "/DOutputDir=$DistRoot" $Iss
+    $IsccArgs = @(
+        "/DSourceDir=$InnoSourceDir", "/DAppVersion=$Version",
+        "/DFlavor=$Flavor", "/DOutputDir=$DistRoot"
+    )
+
+    # A single .exe is a friendlier download than .exe + .bin slices, but the
+    # compressed size is unknowable before compiling and Inno refuses a
+    # monolithic installer past 2,100,000,000 bytes. So the compiler's own
+    # refusal - not a guess about payload sizes - is the signal to span.
+    $IsccOutput = & $Iscc @IsccArgs "/DSpanning=no" $Iss 2>&1 |
+        ForEach-Object { Write-Host $_; "$_" }
     $IsccExitCode = $LASTEXITCODE
+
+    if ($IsccExitCode -ne 0 -and ($IsccOutput -join "`n") -match '(?i)spanning|2[.,]?100[.,]?000[.,]?000') {
+        Write-Host "Too large for a single file; recompiling with disk spanning..." -ForegroundColor Yellow
+        & $Iscc @IsccArgs "/DSpanning=yes" $Iss
+        $IsccExitCode = $LASTEXITCODE
+    }
 }
 finally {
     & subst.exe "$InnoDrive`:" /D | Out-Null

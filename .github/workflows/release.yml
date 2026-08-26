@@ -411,6 +411,18 @@ jobs:
         shell: pwsh
         run: .\scripts\win\build_installer_windows.ps1 -SkipTests
 
+      # The one-step setup script ships beside the installers, tied to this
+      # release so it can download the other assets itself: on a real
+      # release it is the only file a Windows user needs.
+      - name: Stage the one-download setup script
+        shell: pwsh
+        run: |
+          $Url = "https://github.com/${{ github.repository }}/releases/download/${{ needs.metadata.outputs.tag }}"
+          (Get-Content scripts/win/StemLab-Windows-setup.ps1 -Raw).
+            Replace('@RELEASE_URL@', $Url).
+            Replace('@VERSION@', '${{ needs.metadata.outputs.version }}') |
+            Set-Content dist/StemLab-Windows-setup.ps1 -NoNewline
+
       - name: Report disk use
         if: always()
         shell: pwsh
@@ -472,6 +484,7 @@ jobs:
             dist/StemLab-Setup-*.exe
             dist/StemLab-Setup-*.bin
             dist/StemLab-*-Windows-plugin-only.zip
+            dist/StemLab-Windows-setup.ps1
           if-no-files-found: error
           compression-level: 0
 
@@ -510,7 +523,8 @@ jobs:
 
           | File | What it is |
           | --- | --- |
-          | `StemLab-Setup-*-<flavor>.exe` **and** its `.bin` slices | **Windows installer.** Download every part into the same folder before running the `.exe` - it will not start without its `.bin` slices. Installs the app, the VST3 and the Engine; no Python needed. Pick the flavor for your hardware. |
+          | `StemLab-Windows-setup.ps1` | **Windows - the only file you need.** Right-click it, "Run with PowerShell", and pick a flavor - it downloads that installer (and its `.bin` slices, if any), verifies it, runs it, and deletes the downloads. |
+          | `StemLab-Setup-*-<flavor>.exe` (+ `.bin` slices, if any) | **Windows installer.** What the script above fetches; grab it by hand if you prefer. An installer that ships with `.bin` slices needs every one of them in the same folder before the `.exe` will start. Installs the app, the VST3 and the Engine; no Python needed. Pick the flavor for your hardware. |
           | `StemLab-Linux-setup.sh` | **Linux - the only file you need.** Run `bash StemLab-Linux-setup.sh <flavor>` (e.g. `xpu`) and it downloads that bundle from this release, verifies it, extracts it, installs it, and deletes the archive. |
           | `StemLab-*-Linux-<flavor>.tar.gz` | **Linux, self-contained.** What the script above fetches; grab it by hand if you prefer (every `.partNN`, if split, plus the `.sha256`). Includes the Engine; no Python needed. Pick the flavor for your hardware - see below. |
           | `StemLab-*-plugin-only.*` | The VST3 and Standalone binaries alone, for anyone who already has an Engine installed. |
@@ -558,9 +572,11 @@ jobs:
           tar -xzf StemLab-<version>-Linux-rocm.tar.gz
           ```
 
-          The Windows installers are split the same way, by Inno Setup, into
-          `.bin` slices beside each `.exe`. Those are named for their own
-          installer, so slices from different flavors never mix.
+          A Windows installer over the limit is split by Inno Setup instead,
+          into `.bin` slices beside its `.exe`; smaller flavors are a single
+          `.exe`. Slices reassemble themselves - download them next to their
+          `.exe` and run it - and are named for their own installer, so
+          slices from different flavors never mix.
 
           Model weights download on first use on Linux; the Windows installer
           carries them.

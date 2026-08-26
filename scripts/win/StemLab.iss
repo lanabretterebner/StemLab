@@ -13,6 +13,13 @@
 #ifndef Flavor
   #define Flavor "cpu"
 #endif
+; Whether to slice the installer into .bin files. build_installer_windows.ps1
+; tries a single-file build first and only re-runs with spanning when the
+; compiler refuses the size, so small flavors ship as one double-clickable
+; .exe. Defaults to spanning for manual compiles, which always succeed.
+#ifndef Spanning
+  #define Spanning "yes"
+#endif
 
 #define AppName "StemLab"
 #define AppPublisher "StemLab"
@@ -39,7 +46,7 @@ OutputBaseFilename=StemLab-Setup-{#AppVersion}-{#Flavor}
 SetupIconFile={#SourceDir}\StemLabIcon.ico
 Compression=lzma2/max
 SolidCompression=yes
-DiskSpanning=yes
+DiskSpanning={#Spanning}
 DiskSliceSize=2100000000
 WizardStyle=modern
 UninstallDisplayIcon={app}\StemLab.exe
