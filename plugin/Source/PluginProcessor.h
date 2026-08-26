@@ -334,6 +334,12 @@ public:
     juce::String getSeparatorEngineId() const;
     juce::String getSeparatorEngineDisplayName() const;
 
+    /** What the header selector shows on its face: "Hybrid", "Demucs". */
+    static juce::String getSeparatorEngineShortName(int index);
+
+    /** What that selector's menu spells out: "Hybrid (RoFormer + Demucs)". */
+    static juce::String getSeparatorEngineMenuName(int index);
+
     static constexpr int separatorEngineCount = 3;
 
     void setStemEnabled(int index, bool enabled);

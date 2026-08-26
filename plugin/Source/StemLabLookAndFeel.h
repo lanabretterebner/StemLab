@@ -42,6 +42,31 @@ public:
     void drawCornerResizer(juce::Graphics&, int width, int height, bool mouseOver,
                            bool mouseDown) override;
 
+    void drawPopupMenuBackgroundWithOptions(juce::Graphics&, int width, int height,
+                                            const juce::PopupMenu::Options&) override;
+
+    void drawPopupMenuItemWithOptions(juce::Graphics&, const juce::Rectangle<int>& area,
+                                      bool isHighlighted, const juce::PopupMenu::Item&,
+                                      const juce::PopupMenu::Options&) override;
+
+    void drawPopupMenuSectionHeaderWithOptions(juce::Graphics&, const juce::Rectangle<int>& area,
+                                               const juce::String& sectionName,
+                                               const juce::PopupMenu::Options&) override;
+
+    void getIdealPopupMenuItemSizeWithOptions(const juce::String& text, bool isSeparator,
+                                              int standardMenuItemHeight, int& idealWidth,
+                                              int& idealHeight,
+                                              const juce::PopupMenu::Options&) override;
+
+    void getIdealPopupMenuSectionHeaderSizeWithOptions(const juce::String& text,
+                                                       int standardMenuItemHeight,
+                                                       int& idealWidth, int& idealHeight,
+                                                       const juce::PopupMenu::Options&) override;
+
+    int getPopupMenuBorderSizeWithOptions(const juce::PopupMenu::Options&) override;
+
+    juce::Font getPopupMenuFont() override;
+
     juce::Rectangle<int> getTooltipBounds(const juce::String& text, juce::Point<int> screenPos,
                                           juce::Rectangle<int> parentArea) override;
     void drawTooltip(juce::Graphics&, const juce::String& text, int width, int height) override;
@@ -67,8 +92,21 @@ namespace stemlab::icons
     juce::Path folder(juce::Rectangle<float> bounds);
     juce::Path check(juce::Rectangle<float> bounds);
 
-    /** Disclosure chevron: down when a lane's children are expanded. */
-    juce::Path chevron(juce::Rectangle<float> bounds, bool pointingDown);
+    /** Which way a chevron points: down discloses, left/right step. */
+    enum class ChevronDirection
+    {
+        down,
+        left,
+        right
+    };
+
+    juce::Path chevron(juce::Rectangle<float> bounds, ChevronDirection direction);
+
+    /** Separation model: a four-point spark. */
+    juce::Path sparkle(juce::Rectangle<float> bounds);
+
+    /** Waveform colour: an artist's palette. */
+    juce::Path palette(juce::Rectangle<float> bounds);
 
     /** Per-stem split: stacked layers (diamond top + two arcs below). */
     juce::Path layers(juce::Rectangle<float> bounds);

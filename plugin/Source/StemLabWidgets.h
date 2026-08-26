@@ -53,6 +53,32 @@ namespace stemlab::widgets
     };
 
     /**
+     * Header dropdown: an outlined pill carrying a leading icon, a label,
+     * and a trailing caret. Clicking it opens the caller's menu; the arrows
+     * beside it step the same choice without one.
+     */
+    class SelectorButton final : public juce::Button
+    {
+    public:
+        using PathFactory = std::function<juce::Path(juce::Rectangle<float>)>;
+
+        SelectorButton(const juce::String& name, PathFactory leadingIcon);
+
+        void setLabel(const juce::String& newLabel);
+
+        /** What the label needs, so the header can lay the pill out to fit. */
+        int getPreferredWidth() const;
+
+        void paintButton(juce::Graphics&, bool highlighted, bool down) override;
+
+    private:
+        PathFactory makeIcon;
+        juce::String label;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SelectorButton)
+    };
+
+    /**
      * Lane disclosure twisty: a chevron that points down while a lane's
      * children are shown and right while they are collapsed. Lanes with no
      * children keep the column but hide the button, so every checkbox and
