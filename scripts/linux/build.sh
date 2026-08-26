@@ -13,10 +13,10 @@
 #   dist/StemLab-<version>-Linux.tar.gz
 #
 # Usage:
-#   ./scripts/build_portable.sh                     # auto GPU flavor
-#   ./scripts/build_portable.sh --torch-flavor cpu  # cpu|cuda|rocm|xpu|auto
-#   ./scripts/build_portable.sh --juce-source DIR   # reuse a JUCE checkout
-#   ./scripts/build_portable.sh --no-tarball        # skip the .tar.gz
+#   ./scripts/linux/build.sh                     # auto GPU flavor
+#   ./scripts/linux/build.sh --torch-flavor cpu  # cpu|cuda|rocm|xpu|auto
+#   ./scripts/linux/build.sh --juce-source DIR   # reuse a JUCE checkout
+#   ./scripts/linux/build.sh --no-tarball        # skip the .tar.gz
 
 set -euo pipefail
 
