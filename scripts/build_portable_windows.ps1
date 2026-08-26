@@ -196,6 +196,28 @@ try {
     & $EnginePython -c "import stemlab, torch, beat_this, demucs, audio_separator, mido; print('Portable imports OK; CUDA:', torch.cuda.is_available())"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+    # Ask torch what it is rather than being told. A wheel tags itself -
+    # 2.9.1+cu128, 2.9.1+cpu, 2.9.1+xpu - so this cannot drift from the
+    # payload the way a build label passed down the chain can. The Linux
+    # bundle records the same marker from install_backend.sh.
+    $TorchBuild = & $EnginePython -c "import torch; print(torch.__version__)"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    # Deliberately unanchored: a local version can carry a suffix
+    # (2.9.1+cu128.post1), and anchoring would drop such a build through to
+    # the default and label a CUDA installer "cpu" - the exact mislabel this
+    # is here to prevent.
+    $Flavor = switch -Regex ($TorchBuild) {
+        '\+cu\d+'   { "cuda"; break }
+        '\+xpu'     { "xpu";  break }
+        '\+rocm'    { "rocm"; break }
+        default     { "cpu" }
+    }
+
+    Set-Content -LiteralPath (Join-Path $Engine ".stemlab-torch-flavor") `
+        -Encoding ASCII -Value $Flavor
+    Write-Host "Engine torch build: $TorchBuild (flavor: $Flavor)" -ForegroundColor Cyan
+
     $env:STEMLAB_ENGINE_DIR = $Engine
     try {
         & $EnginePython (Join-Path $RepoRoot "scripts\smoke_portable.py")

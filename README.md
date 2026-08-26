@@ -75,9 +75,14 @@ model output.
 
 Push a tag matching the version in `pyproject.toml` and
 `.github/workflows/release.yml` builds, checksums, and publishes every
-asset (Windows installer, Linux bundle, plugin binaries, wheel/sdist). A
+asset (Windows installers, Linux bundles, plugin binaries, wheel/sdist). A
 mismatched tag fails the run. Run the workflow manually with **publish**
 off to test packaging changes.
+
+Bundles are built per torch flavor: `cpu`, `cuda` and `xpu` on both
+platforms, plus `rocm` on Linux only - PyTorch publishes no ROCm wheel for
+Windows. Each is named for the torch build it actually contains, read out
+of the assembled Engine rather than from what the build was asked for.
 
 Locally: `.\scripts\build_portable_windows.ps1` then
 `.\scripts\build_installer_windows.ps1 -SkipPortableBuild` on Windows;

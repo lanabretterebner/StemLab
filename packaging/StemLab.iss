@@ -7,6 +7,12 @@
 #ifndef OutputDir
   #define OutputDir "."
 #endif
+; Which torch build the bundled Engine carries. Read from the Engine itself
+; by build_installer_windows.ps1 rather than passed down from a build label,
+; so the filename cannot claim hardware support the payload does not have.
+#ifndef Flavor
+  #define Flavor "cpu"
+#endif
 
 #define AppName "StemLab"
 #define AppPublisher "StemLab"
@@ -25,7 +31,7 @@ PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir={#OutputDir}
-OutputBaseFilename=StemLab-Setup-{#AppVersion}
+OutputBaseFilename=StemLab-Setup-{#AppVersion}-{#Flavor}
 Compression=lzma2/max
 SolidCompression=yes
 DiskSpanning=yes

@@ -34,6 +34,21 @@ if (-not (Test-Path -LiteralPath (Join-Path $PortableRoot "StemLab.exe") -PathTy
     throw "Portable payload is missing: $PortableRoot"
 }
 
+# The payload names itself. build_portable_windows.ps1 writes this from the
+# torch it actually installed, so the installer filename describes what is
+# inside it rather than what a build was asked for.
+$FlavorFile = Join-Path $PortableRoot "Engine\.stemlab-torch-flavor"
+if (-not (Test-Path -LiteralPath $FlavorFile -PathType Leaf)) {
+    throw @"
+The portable payload does not record which torch build it carries.
+Missing: $FlavorFile
+Rebuild the payload with build_portable_windows.ps1.
+"@
+}
+$Flavor = (Get-Content -LiteralPath $FlavorFile -Raw).Trim()
+if (-not $Flavor) { throw "The recorded torch flavor is empty: $FlavorFile" }
+Write-Host "Payload torch flavor: $Flavor" -ForegroundColor Cyan
+
 $IsccCandidates = @()
 $IsccCommand = Get-Command ISCC.exe -ErrorAction SilentlyContinue
 if ($IsccCommand) { $IsccCandidates += $IsccCommand.Source }
@@ -79,7 +94,7 @@ if ($LASTEXITCODE -ne 0) {
 
 $IsccExitCode = 1
 try {
-    & $Iscc "/DSourceDir=$InnoSourceDir" "/DAppVersion=$Version" "/DOutputDir=$DistRoot" $Iss
+    & $Iscc "/DSourceDir=$InnoSourceDir" "/DAppVersion=$Version" "/DFlavor=$Flavor" "/DOutputDir=$DistRoot" $Iss
     $IsccExitCode = $LASTEXITCODE
 }
 finally {
@@ -87,7 +102,7 @@ finally {
 }
 if ($IsccExitCode -ne 0) { exit $IsccExitCode }
 
-$Setup = Join-Path $DistRoot "StemLab-Setup-$Version.exe"
+$Setup = Join-Path $DistRoot "StemLab-Setup-$Version-$Flavor.exe"
 if (-not (Test-Path -LiteralPath $Setup -PathType Leaf)) {
     throw "Inno Setup completed without producing: $Setup"
 }
@@ -95,6 +110,6 @@ if (-not (Test-Path -LiteralPath $Setup -PathType Leaf)) {
 Write-Host ""
 Write-Host "Installer build complete." -ForegroundColor Green
 Write-Host "  $Setup"
-Get-ChildItem -LiteralPath $DistRoot -Filter "StemLab-Setup-$Version-*.bin" -ErrorAction SilentlyContinue | ForEach-Object {
+Get-ChildItem -LiteralPath $DistRoot -Filter "StemLab-Setup-$Version-$Flavor-*.bin" -ErrorAction SilentlyContinue | ForEach-Object {
     Write-Host "  $($_.FullName)"
 }
