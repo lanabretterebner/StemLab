@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="plugin/Resources/StemLabIcon.png" alt="StemLab" width="220">
-</p>
-
 # StemLab
 
 StemLab is a Windows and Linux application and VST3 for separating music into
