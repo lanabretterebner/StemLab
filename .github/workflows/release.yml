@@ -253,7 +253,7 @@ jobs:
           # release it is the only file anyone needs.
           sed -e "s|@RELEASE_URL@|https://github.com/${{ github.repository }}/releases/download/${{ needs.metadata.outputs.tag }}|" \
               -e "s|@VERSION@|${{ needs.metadata.outputs.version }}|" \
-              scripts/StemLab-Linux-setup.sh > dist/StemLab-Linux-setup.sh
+              scripts/linux/StemLab-Linux-setup.sh > dist/StemLab-Linux-setup.sh
 
       - name: List what was produced
         run: ls -lh dist/
