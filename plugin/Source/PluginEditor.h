@@ -7,6 +7,7 @@
 #include "PluginProcessor.h"
 #include "StemLabLookAndFeel.h"
 #include "StemLabWidgets.h"
+#include "SpectrumCache.h"
 
 /**
  * One lane's waveform well: rounded ground-coloured well, 2px rounded bars
@@ -18,7 +19,8 @@ class StemLaneWaveform final : public juce::Component
 {
 public:
     StemLaneWaveform(StemLabAudioProcessor& processor, juce::AudioFormatManager& formatManager,
-                     juce::AudioThumbnailCache& thumbnailCache);
+                     juce::AudioThumbnailCache& thumbnailCache,
+                     StemLabSpectrumCache& spectrumCache);
 
     void setFile(const juce::File& file);
     void setMutedAppearance(bool muted);
@@ -35,6 +37,12 @@ public:
 private:
     StemLabAudioProcessor& processor;
     juce::AudioThumbnail thumbnail;
+    StemLabSpectrumCache& spectrumCache;
+
+    /** Held rather than re-fetched per bar: paint asks the cache once, and
+        only while it is still analysing. */
+    StemLabSpectrumCache::ProfilePtr spectrum;
+
     juce::File currentFile;
     juce::String stemIdentity;
     bool mutedAppearance = false;
@@ -58,6 +66,7 @@ public:
     StemLaneComponent(StemLabAudioProcessor& processor, int stemIndex, juce::String childId,
                       juce::AudioFormatManager& formatManager,
                       juce::AudioThumbnailCache& thumbnailCache,
+                      StemLabSpectrumCache& spectrumCache,
                       std::function<void()> refreshEditor,
                       std::function<void(int)> showRootMenu,
                       std::function<void(const juce::String&)> showChildMenu,
@@ -65,9 +74,9 @@ public:
 
     void refresh();
 
-    /** Root lanes: whether the layers menu has anything to offer (adaptive
-        split supported, or children exist). Hidden otherwise (e.g. Bass). */
-    void setLayersAvailable(bool available);
+    /** What a lane menu anchors to, so it opens under the button that
+        was clicked rather than against the whole lane row. */
+    juce::Component* getMenuButton() const { return menuButton.get(); }
 
     /** Drives the disclosure twisty: shown only when there is something to
         collapse, pointing down while those children are on screen. */
@@ -95,8 +104,7 @@ private:
     std::unique_ptr<StemLaneWaveform> waveform;
     juce::TextButton soloButton{"S"};
     juce::TextButton muteButton{"M"};
-    std::unique_ptr<stemlab::widgets::IconButton> layersButton;
-    bool layersAvailable = true;
+    std::unique_ptr<stemlab::widgets::IconButton> menuButton;
     bool hasChildren = false;
 
     std::function<void()> refreshEditor;
@@ -268,6 +276,7 @@ private:
     juce::AudioFormatManager waveformFormats;
     juce::AudioThumbnailCache waveformCache{
         stemlab::theme::metrics::waveform::thumbnailCacheSize};
+    StemLabSpectrumCache spectrumCache{waveformFormats};
     juce::Viewport laneViewport;
     juce::Component laneContent;
     std::array<std::unique_ptr<StemLaneComponent>, StemLabAudioProcessor::stemCount> rootLanes;

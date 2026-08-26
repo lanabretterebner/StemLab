@@ -476,6 +476,16 @@ public:
     static constexpr int waveformColourCount = 7;
 
     /**
+     * Which palette a fresh instance starts on: Spectrum, index 2.
+     *
+     * It shows what the audio is actually doing - violet where the spectral
+     * centroid sits low, amber where it sits high - which is worth more on
+     * first sight than one accent colour repeated down every lane. Saved
+     * state still wins, so nobody's chosen palette changes under them.
+     */
+    static constexpr int defaultWaveformColourIndex = 2;
+
+    /**
      * Horizontal waveform zoom, shared by every lane so they stay in step.
      *
      * 1 draws the whole file, as the lanes always did. Above that they draw
@@ -708,7 +718,7 @@ private:
     std::atomic<bool> refinementEnabled{true};
     std::atomic<int> separatorEngineIndex{separatorRoFormer};
     std::atomic<double> waveformZoom{1.0};
-    std::atomic<int> waveformColourIndex{0};
+    std::atomic<int> waveformColourIndex{defaultWaveformColourIndex};
     std::atomic<int> editorScalePercent{100};
 
     std::atomic<double> engineProgress{0.0};

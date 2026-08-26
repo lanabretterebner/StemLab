@@ -134,9 +134,11 @@ juce::String stemDisplayName(int index)
 
 StemLaneWaveform::StemLaneWaveform(StemLabAudioProcessor& processorIn,
                                    juce::AudioFormatManager& formatManager,
-                                   juce::AudioThumbnailCache& thumbnailCache)
+                                   juce::AudioThumbnailCache& thumbnailCache,
+                                   StemLabSpectrumCache& spectrumCacheIn)
     : processor(processorIn),
-      thumbnail(theme::metrics::waveform::thumbnailResolution, formatManager, thumbnailCache)
+      thumbnail(theme::metrics::waveform::thumbnailResolution, formatManager, thumbnailCache),
+      spectrumCache(spectrumCacheIn)
 {
     setMouseCursor(juce::MouseCursor::PointingHandCursor);
     setInterceptsMouseClicks(true, false);
@@ -149,6 +151,7 @@ void StemLaneWaveform::setFile(const juce::File& file)
 
     currentFile = file;
     thumbnail.clear();
+    spectrum.reset();
 
     if (currentFile.existsAsFile())
         thumbnail.setSource(new juce::FileInputSource(currentFile));
@@ -197,6 +200,17 @@ void StemLaneWaveform::paint(juce::Graphics& g)
     const int palette = processor.getWaveformColourIndex();
 
     /*
+     * Only Spectrum reads the audio's frequency content, so only Spectrum
+     * pays for the analysis. Asking while it is still running queues the
+     * file once and returns null; the lane draws in one neutral colour and
+     * the editor's repaint timer picks up the result when it lands.
+     */
+    if (palette == 2 && spectrum == nullptr && currentFile.existsAsFile())
+        spectrum = spectrumCache.get(currentFile);
+
+    const auto* profile = spectrum.get();
+
+    /*
      * At zoom 1 this is the whole file, as it always was. Above that it is a
      * window of it, centred on the playhead - and every lane asks the
      * processor for it, so they all scroll together.
@@ -237,6 +251,24 @@ void StemLaneWaveform::paint(juce::Graphics& g)
                 int beatIndex = static_cast<int>(
                     std::floor((view.getStart() - grid.barOne) / secondsPerBeat));
 
+                /*
+                 * Number every Nth bar, where N is the smallest power-of-two
+                 * step whose labels do not collide. Zoomed out that lands on
+                 * 4 or 8; zoomed in, every bar gets its number.
+                 */
+                const auto secondsPerBar = secondsPerBeat * beatsPerBar;
+
+                int barLabelStep = 1;
+
+                while (secondsPerBar * barLabelStep * pixelsPerSecond <
+                           lanes::gridLabelMinSpacing &&
+                       barLabelStep < 512)
+                {
+                    barLabelStep *= 2;
+                }
+
+                g.setFont(theme::fonts::gridLabel());
+
                 for (double t = grid.barOne + beatIndex * secondsPerBeat;
                      t <= view.getEnd() && t < length;
                      t += secondsPerBeat, ++beatIndex)
@@ -258,6 +290,27 @@ void StemLaneWaveform::paint(juce::Graphics& g)
 
                     g.setColour(theme::colours::text().withAlpha(bar ? 0.22f : 0.10f));
                     g.fillRect(x, inner.getY(), bar ? 1.4f : 1.0f, inner.getHeight());
+
+                    if (!bar)
+                        continue;
+
+                    // Bar one is bar 1, not bar 0, and bars before it count
+                    // backwards rather than wrapping to a huge number.
+                    const int barNumber = beatIndex / beatsPerBar + 1;
+
+                    if (barNumber % barLabelStep != 0 && barLabelStep > 1)
+                        continue;
+
+                    const auto label =
+                        juce::Rectangle<float>(x + 2.0f, inner.getY(),
+                                               lanes::gridLabelWidth, lanes::gridLabelHeight);
+
+                    if (label.getRight() > inner.getRight())
+                        continue;
+
+                    g.setColour(theme::colours::text().withAlpha(0.34f));
+                    g.drawText(juce::String(barNumber), label, juce::Justification::topLeft,
+                               false);
                 }
             }
         }
@@ -299,18 +352,25 @@ void StemLaneWaveform::paint(juce::Graphics& g)
             const auto barHeight =
                 juce::jmax(lanes::barMinHeight, level * inner.getHeight() * 0.96f);
 
-            const float across = inner.getWidth() > 0.0f
-                                     ? (x - inner.getX()) / inner.getWidth()
-                                     : 0.0f;
+            /*
+             * What the Spectrum palette colours by: the spectral centroid of
+             * the audio under this bar, not where the bar happens to sit.
+             * Without a profile this is a flat 0.5, so the lane reads as one
+             * calm mid-hue until the analysis lands.
+             */
+            const float brightness =
+                profile != nullptr
+                    ? stemlab::waveform::brightnessAt(*profile, (start + end) * 0.5)
+                    : 0.5f;
 
             juce::Colour barColour;
 
             if (mutedAppearance)
                 barColour = theme::colours::waveMuted();
             else if (playNormalised >= 0.0 && x < playheadX)
-                barColour = theme::waveform::playedColour(palette, stemIdentity, across);
+                barColour = theme::waveform::playedColour(palette, stemIdentity, brightness);
             else
-                barColour = theme::waveform::unplayedColour(palette, stemIdentity, across);
+                barColour = theme::waveform::unplayedColour(palette, stemIdentity, brightness);
 
             g.setColour(barColour);
             g.fillRoundedRectangle(x, centreY - barHeight * 0.5f, lanes::barWidth, barHeight,
@@ -403,6 +463,7 @@ StemLaneComponent::StemLaneComponent(StemLabAudioProcessor& processorIn, int ste
                                      juce::String childIdIn,
                                      juce::AudioFormatManager& formatManager,
                                      juce::AudioThumbnailCache& thumbnailCache,
+                                     StemLabSpectrumCache& spectrumCache,
                                      std::function<void()> refreshEditorIn,
                                      std::function<void(int)> showRootMenuIn,
                                      std::function<void(const juce::String&)> showChildMenuIn,
@@ -443,7 +504,8 @@ StemLaneComponent::StemLaneComponent(StemLabAudioProcessor& processorIn, int ste
 
     addAndMakeVisible(nameLabel);
 
-    waveform = std::make_unique<StemLaneWaveform>(processor, formatManager, thumbnailCache);
+    waveform = std::make_unique<StemLaneWaveform>(processor, formatManager, thumbnailCache,
+                                                  spectrumCache);
 
     if (!isChildLane())
         waveform->setStemIdentity(StemLabAudioProcessor::getStemName(stemIndex));
@@ -482,14 +544,19 @@ StemLaneComponent::StemLaneComponent(StemLabAudioProcessor& processorIn, int ste
 
     addAndMakeVisible(muteButton);
 
-    layersButton = std::make_unique<widgets::IconButton>(
-        "layers", [](juce::Rectangle<float> b) { return stemlab::icons::layers(b); },
-        static_cast<float>(theme::metrics::lanes::layersIcon), true,
+    /*
+     * A kebab, not a layers glyph: this menu stopped being about splitting
+     * when MIDI conversion, audition and export moved into it. The old icon
+     * promised one of its entries and hid the rest.
+     */
+    menuButton = std::make_unique<widgets::IconButton>(
+        "lane-menu", [](juce::Rectangle<float> b) { return stemlab::icons::kebab(b); },
+        static_cast<float>(theme::metrics::lanes::layersIcon), false,
         theme::metrics::lanes::smRadius, false);
 
-    layersButton->setTooltip("Split this stem further");
+    menuButton->setTooltip("Stem actions");
 
-    layersButton->onClick = [this]
+    menuButton->onClick = [this]
     {
         if (isChildLane())
         {
@@ -502,16 +569,7 @@ StemLaneComponent::StemLaneComponent(StemLabAudioProcessor& processorIn, int ste
         }
     };
 
-    addAndMakeVisible(*layersButton);
-}
-
-void StemLaneComponent::setLayersAvailable(bool available)
-{
-    if (layersAvailable != available)
-    {
-        layersAvailable = available;
-        refresh();
-    }
+    addAndMakeVisible(*menuButton);
 }
 
 void StemLaneComponent::setChildState(bool laneHasChildren, bool expanded)
@@ -589,16 +647,13 @@ void StemLaneComponent::refresh()
     muteButton.setEnabled(ready);
     muteButton.setToggleState(muted, juce::dontSendNotification);
 
-    if (isChildLane())
-    {
-        layersButton->setEnabled(ready && !childInfo.actions.isEmpty());
-        layersButton->setVisible(!childInfo.actions.isEmpty() || childInfo.hasChildren);
-    }
-    else
-    {
-        layersButton->setEnabled(ready && layersAvailable);
-        layersButton->setVisible(layersAvailable);
-    }
+    /*
+     * Always offered on a ready lane, both kinds. It used to be hidden when
+     * the stem had no adaptive split to offer - which also hid Convert to
+     * MIDI, Audition and Save MIDI, leaving them unreachable on Bass. The
+     * menu itself decides which entries it can show.
+     */
+    menuButton->setEnabled(ready);
 
     if (waveform != nullptr)
         waveform->setMutedAppearance(muted && !soloed);
@@ -642,7 +697,7 @@ void StemLaneComponent::resized()
     muteButton.setBounds(centred.removeFromLeft(lanes::smButton));
     centred.removeFromLeft(lanes::smGap);
 
-    layersButton->setBounds(centred.removeFromLeft(lanes::smButton));
+    menuButton->setBounds(centred.removeFromLeft(lanes::smButton));
 
     row.removeFromRight(lanes::columnGap);
 
@@ -974,7 +1029,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
     {
         rootLanes[static_cast<size_t>(i)] = std::make_unique<StemLaneComponent>(
-            processor, i, juce::String{}, waveformFormats, waveformCache,
+            processor, i, juce::String{}, waveformFormats, waveformCache, spectrumCache,
             [this] { refreshFromProcessor(); },
             [this](int stemIndex) { showRootLayersMenu(stemIndex); },
             [this](const juce::String& id) { showChildLayersMenu(id); },
@@ -1638,7 +1693,7 @@ void StemLabAudioProcessorEditor::syncLanes()
         for (const auto& item : items)
         {
             auto lane = std::make_unique<StemLaneComponent>(
-                processor, -1, item.id, waveformFormats, waveformCache,
+                processor, -1, item.id, waveformFormats, waveformCache, spectrumCache,
                 [this] { refreshFromProcessor(); },
                 [this](int stemIndex) { showRootLayersMenu(stemIndex); },
                 [this](const juce::String& id) { showChildLayersMenu(id); },
@@ -1707,7 +1762,12 @@ void StemLabAudioProcessorEditor::showRootLayersMenu(int stemIndex)
 
     auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
 
-    auto* target = rootLanes[static_cast<size_t>(stemIndex)].get();
+    /*
+     * Anchor to the button, not the lane. A lane runs the full width of the
+     * panel, so targeting it put the menu against the lane's left edge -
+     * across the far side of the window from the button that opened it.
+     */
+    auto* target = rootLanes[static_cast<size_t>(stemIndex)]->getMenuButton();
 
     menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(target),
                        [safeThis, stemIndex, stemName](int result)
@@ -1769,8 +1829,21 @@ void StemLabAudioProcessorEditor::showChildLayersMenu(const juce::String& itemId
 
     auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
 
+    // Same as the root menu: anchor to the button that opened it. With no
+    // target at all this fell back to wherever the mouse happened to be.
+    juce::Component* target = nullptr;
+
+    for (const auto& lane : childLanes)
+    {
+        if (lane != nullptr && lane->getChildId() == itemId)
+        {
+            target = lane->getMenuButton();
+            break;
+        }
+    }
+
     menu.showMenuAsync(
-        juce::PopupMenu::Options(),
+        juce::PopupMenu::Options().withTargetComponent(target),
         [safeThis, itemId](int result)
         {
             if (safeThis == nullptr || result == 0)
@@ -2141,7 +2214,6 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
         {
             const bool hasChildren = rootHasChildren(i);
 
-            lane->setLayersAvailable(rootSupportsAdaptiveSplit(i) || hasChildren);
             lane->setChildState(hasChildren, isLaneExpanded(i, {}));
             lane->refresh();
         }
