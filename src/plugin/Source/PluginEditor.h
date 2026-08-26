@@ -243,8 +243,8 @@ private:
     void paintPanel(juce::Graphics&);
     void layoutPanel();
 
-    /** Centres the footer status line and progress row around their current
-        text, so it runs on every status refresh, not just on resize. */
+    /** Lays out the footer status line and progress row; the rows rearrange
+        when a job starts or ends, so it runs on every status refresh. */
     void layoutStatusArea();
 
     /** A menu window is not a child of the editor, so it would otherwise
