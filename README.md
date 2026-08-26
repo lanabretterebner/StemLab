@@ -13,8 +13,7 @@ builds, model weights, or virtual environments.
 
 ```bash
 cd Downloads
-chmod +x ./StemLab-Linux-setup.sh
-./StemLab-Linux-setup.sh cpu|xpu|cuda|rocm
+bash StemLab-Linux-setup.sh cpu|xpu|cuda|rocm
 ```
 
     
