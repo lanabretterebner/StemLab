@@ -38,17 +38,12 @@ See [ableton.md](ableton.md) for the Ableton setup and workflow.
 No venv or system Python needed. Everything in one bundle:
 
 ```bash
-./scripts/linux/build_portable.sh
-cd dist/StemLab-*-Linux && ./install.sh
+./scripts/linux/build.sh
+cd dist/StemLab-*-Linux-* && ./install.sh
 ```
 
-Or piece by piece:
-
-```bash
-./scripts/linux/build_plugin.sh        # Standalone + VST3
-./scripts/linux/install_vst3.sh        # -> ~/.vst3
-./scripts/linux/install_backend.sh     # Engine (--cuda / --rocm / --xpu / --cpu)
-```
+`./scripts/linux/build_plugin.sh` builds the Standalone and VST3 on their
+own for plugin development; the bundle's `install.sh` is the installer.
 
 See [linux.md](linux.md) for dependencies, GPU flavors, and the REAPER
 workflow.
@@ -229,7 +224,7 @@ the assembled Engine rather than from what the build was asked for.
 
 Locally: `.\scripts\win\build_portable_windows.ps1` then
 `.\scripts\win\build_installer_windows.ps1 -SkipPortableBuild` on Windows;
-`./scripts/linux/build_portable.sh --torch-flavor cpu` on Linux.
+`./scripts/linux/build.sh --torch-flavor cpu` on Linux.
 
 No bundle carries model weights. Each model downloads the first time it is
 used, is rejected unless it matches a recorded length and digest, and is

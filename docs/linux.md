@@ -8,8 +8,8 @@ Windows release.
 The quickest path is the self-contained bundle, which includes the Engine:
 
 ```bash
-./scripts/linux/build_portable.sh      # builds dist/StemLab-<version>-Linux/
-cd dist/StemLab-*-Linux && ./install.sh
+./scripts/linux/build.sh      # builds dist/StemLab-<version>-Linux-<flavor>/
+cd dist/StemLab-*-Linux-* && ./install.sh
 ```
 
 The sections below cover the individual pieces.
@@ -61,19 +61,12 @@ src/plugin/build/StemLabPlugin_artefacts/Release/VST3/StemLab.vst3
 src/plugin/build/StemLabPlugin_artefacts/Release/Standalone/StemLab
 ```
 
-## 3. Install the VST3
-
-```bash
-./scripts/linux/install_vst3.sh
-```
-
-That copies the bundle to `~/.vst3/StemLab.vst3` and verifies the module inside
-it. Use `--prefix /usr/local/lib/vst3` for a system-wide install.
-
-In REAPER, make sure `~/.vst3` is listed under
+Installing goes through the self-contained bundle: `./scripts/linux/build.sh`
+then the bundle's `install.sh`, which registers the VST3 in `~/.vst3` and the
+Engine in one step. In REAPER, make sure `~/.vst3` is listed under
 **Options > Preferences > Plug-ins > VST**, then **Re-scan**.
 
-## 4. Install the separation backend
+## 3. Install the separation backend
 
 The plugin shells out to the Python backend. One script sets it up - no venv,
 no system Python, nothing to configure:

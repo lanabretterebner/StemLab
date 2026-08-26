@@ -196,5 +196,5 @@ if [[ -f "$ARTEFACTS/Standalone/StemLab" ]]; then
     echo "  Standalone: $ARTEFACTS/Standalone/StemLab"
 fi
 echo
-echo "Install the plugin into ~/.vst3 with:"
-echo "  $REPO_ROOT/scripts/linux/install_vst3.sh"
+echo "For an installable, self-contained build run:"
+echo "  $REPO_ROOT/scripts/linux/build.sh"
