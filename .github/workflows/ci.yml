@@ -41,6 +41,13 @@ jobs:
           # here would multiply the install for no extra coverage.
           pip install numpy scipy soundfile librosa mido pytest ruff
 
+          # The package itself, so "import stemlab" resolves. --no-deps keeps
+          # the lean set above rather than pulling every runtime dependency
+          # from pyproject. Without this the whole suite fails to collect:
+          # the pytest console script does not put the working directory on
+          # sys.path, however well it works under "python -m pytest".
+          pip install -e . --no-deps
+
       - name: Lint
         run: ruff check .
 
