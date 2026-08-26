@@ -177,11 +177,12 @@ configure. Add StemLab to any track and the buttons become:
 1. Select an audio item in the arrangement.
 2. **Use Selected Item** - StemLab reads the item's audio file, timeline
    position, and take geometry (trim offset, play rate).
-3. **Separate All Stems**, then audition the results.
+3. **Separate**, then audition the lanes (solo/mute per stem, A/B
+   **Original | Stems**).
 4. **Insert Stems** - one new track per selected stem appears directly under
    the source track, colour-coded, aligned with the original item, in a
-   single undo block. **Save Selected...** also works if you would rather
-   place the files yourself.
+   single undo block. **Save Stems** also works if you would rather place
+   the files yourself.
 
 Items whose take is trimmed or rate-shifted are re-created with the same
 trim and rate, so the inserted stems play exactly in sync with the item you
@@ -207,7 +208,7 @@ project) need a render/glue first - the readout in the header says so.
 
 Requires REAPER 5.02 or later (the API handshake); tested against 7.42. If a
 future or heavily stripped REAPER stops exposing a function StemLab needs,
-the plugin falls back to the Select File / Save Selected workflow and lists
+the plugin falls back to the Select File / Save Stems workflow and lists
 what was missing under **Settings > Copy diagnostics**.
 
 ## Differences from the Windows build
@@ -222,7 +223,7 @@ missing instead of recording.
 **Ableton Live integration does not apply.** Live has no Linux build, so the
 *Install / Repair Ableton Integration* menu entry is hidden. In hosts other
 than REAPER the plugin offers the same local-file workflow as the Standalone
-app: drop or select a file, separate, audition, **Save Selected...**.
+app: drop or select a file, separate, audition, **Save Stems**.
 
 **A GPU is optional.** The plugin asks the backend for the best device and
 the backend probes at run time (CUDA/ROCm, then XPU, then CPU), logging which
@@ -238,7 +239,7 @@ still seeks; drag exports.
 **Progress, ETA, and Cancel.** During a job the status line, the bar, and
 the ETA all update live — a one-time model download shows as its own stage,
 and BS-RoFormer's per-chunk time estimates feed the ETA directly. While a
-job runs, **Separate All Stems** becomes **Cancel**: the engine shuts down
+job runs, **Separate** becomes **Cancel**: the engine shuts down
 its own model workers, so nothing keeps burning CPU. The same watchdog fires
 if the plugin or the whole host disappears mid-job — closing REAPER cannot
 leave a separation running in the background.
