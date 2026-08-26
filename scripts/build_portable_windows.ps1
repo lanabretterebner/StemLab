@@ -186,6 +186,8 @@ New-Item -ItemType Directory -Path (Join-Path $OutputDirectory "scripts") -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\install_ableton.ps1") -Destination (Join-Path $OutputDirectory "scripts\install_ableton.ps1") -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "LICENSE") -Destination $OutputDirectory -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "docs\third-party.md") -Destination (Join-Path $OutputDirectory "THIRD_PARTY.md") -Force
+# The installer definition's SetupIconFile reads this out of the payload.
+Copy-Item -LiteralPath (Join-Path $RepoRoot "plugin\Resources\StemLabIcon.ico") -Destination (Join-Path $OutputDirectory "StemLabIcon.ico") -Force
 
 $EnginePython = Join-Path $Engine "python.exe"
 Assert-File $EnginePython "The embedded Python runtime was not assembled correctly."

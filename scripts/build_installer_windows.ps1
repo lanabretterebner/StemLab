@@ -49,6 +49,13 @@ $Flavor = (Get-Content -LiteralPath $FlavorFile -Raw).Trim()
 if (-not $Flavor) { throw "The recorded torch flavor is empty: $FlavorFile" }
 Write-Host "Payload torch flavor: $Flavor" -ForegroundColor Cyan
 
+# The installer copies the VST3 bundle to the system VST3 directory, so a
+# payload whose bundle is hollow must fail here, not on the user's machine.
+$PortableVst3Module = Join-Path $PortableRoot "StemLab.vst3\Contents\x86_64-win\StemLab.vst3"
+if (-not (Test-Path -LiteralPath $PortableVst3Module -PathType Leaf)) {
+    throw "Portable VST3 module is missing: $PortableVst3Module"
+}
+
 $IsccCandidates = @()
 $IsccCommand = Get-Command ISCC.exe -ErrorAction SilentlyContinue
 if ($IsccCommand) { $IsccCandidates += $IsccCommand.Source }

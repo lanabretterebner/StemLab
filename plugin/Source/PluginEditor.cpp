@@ -1245,9 +1245,23 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     panelContent.addAndMakeVisible(recordSystemButton);
     recordSystemButton.setVisible(StemLabAudioProcessor::isSystemAudioCaptureSupported());
 
+    /*
+     * In the Standalone this records the selected physical input. In a
+     * generic VST host - no Ableton bridge, no REAPER API - the same slot
+     * records the audio the host is already sending through the plugin
+     * (upstream's host-audio capture): that host's equivalent of "use what
+     * is on this track".
+     */
     recordInputButton.onClick = [this]
     {
-        if (processor.getStandaloneRecordingMode() == StemLabAudioProcessor::recordingInput)
+        if (!processor.isStandaloneApp())
+        {
+            if (processor.isHostAudioCapturing())
+                processor.stopHostAudioCapture();
+            else
+                processor.startHostAudioCapture();
+        }
+        else if (processor.getStandaloneRecordingMode() == StemLabAudioProcessor::recordingInput)
             processor.stopStandaloneRecording();
         else
             processor.startStandaloneRecording();
@@ -1256,7 +1270,10 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     };
 
     panelContent.addAndMakeVisible(recordInputButton);
-    recordInputButton.setVisible(processor.isStandaloneApp());
+
+    recordInputButton.setVisible(
+        processor.isStandaloneApp() ||
+        processor.getHostIntegration() == StemLabAudioProcessor::hostIntegrationNone);
 
     separateControl.setRefineOn(processor.isRefinementEnabled());
 
@@ -1400,8 +1417,26 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
     case StemLabAudioProcessor::hostIntegrationNone:
     default:
-        insertButton.setVisible(false);
-        saveButton.setComponentID("primary");
+        if (processor.isStandaloneApp())
+        {
+            insertButton.setVisible(false);
+            saveButton.setComponentID("primary");
+        }
+        else
+        {
+            /*
+             * Generic VST host (upstream's genericVst UI mode): there is
+             * no bridge to send through, so the primary action is a drag
+             * source for every selected stem at once, honouring each
+             * lane's selection range. Click gets the hint; dragging
+             * exports, exactly like the per-lane handles.
+             */
+            insertButton.setButtonText("Drag Stems");
+            insertButton.setTooltip("Drag the selected stems into the DAW");
+            insertButton.addMouseListener(this, false);
+            insertButton.onClick = [this]
+            { processor.postUiStatus("Drag this button onto a DAW track or a folder"); };
+        }
         break;
     }
 
@@ -1462,12 +1497,60 @@ bool StemLabAudioProcessorEditor::isInterestedInFileDrag(const juce::StringArray
 
     for (const auto& path : files)
     {
-        if (isSupportedAudioFile(juce::File(path)))
+        // Files of our own in-flight outbound drag are not an invitation
+        // to reload the source they were split from.
+        if (!selfFileDragGuard.shouldIgnore(path) && isSupportedAudioFile(juce::File(path)))
             return true;
     }
 
     return false;
 }
+
+void StemLabAudioProcessorEditor::startSelectedStemsDrag()
+{
+    const auto files = processor.getSelectedStemFilesForDrag();
+
+    if (files.isEmpty())
+        return;
+
+    selfFileDragGuard.begin(files);
+
+    auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
+
+    const bool started = juce::DragAndDropContainer::performExternalDragDropOfFiles(
+        files, false, &insertButton,
+        [safeThis]
+        {
+            if (safeThis != nullptr)
+                safeThis->selfFileDragGuard.clear();
+        });
+
+    if (!started)
+    {
+        selfFileDragGuard.clear();
+        processor.postUiStatus("Could not start the stem drag");
+    }
+}
+
+void StemLabAudioProcessorEditor::mouseDrag(const juce::MouseEvent& event)
+{
+    // The Drag Stems pill is a drag source the way the lane handles are:
+    // the gesture starts on the button and the whole selected set rides it.
+    if (footerDragStarted || !insertButton.isVisible() || !insertButton.isEnabled())
+        return;
+
+    if (event.eventComponent != &insertButton ||
+        processor.getHostIntegration() != StemLabAudioProcessor::hostIntegrationNone)
+        return;
+
+    if (event.getDistanceFromDragStart() < theme::metrics::waveform::clickVersusDragThreshold)
+        return;
+
+    footerDragStarted = true;
+    startSelectedStemsDrag();
+}
+
+void StemLabAudioProcessorEditor::mouseUp(const juce::MouseEvent&) { footerDragStarted = false; }
 
 void StemLabAudioProcessorEditor::filesDropped(const juce::StringArray& files, int, int)
 {
@@ -1485,6 +1568,9 @@ void StemLabAudioProcessorEditor::filesDropped(const juce::StringArray& files, i
 
     for (const auto& path : files)
     {
+        if (selfFileDragGuard.shouldIgnore(path))
+            continue;
+
         const juce::File file(path);
 
         if (!isSupportedAudioFile(file))
@@ -1517,9 +1603,11 @@ bool StemLabAudioProcessorEditor::loadSourceFile(const juce::File& file)
         file, juce::jmax(0.0, processor.getCaptureStartPpq()), file.getFileName());
 }
 
-void StemLabAudioProcessorEditor::fileDragEnter(const juce::StringArray&, int, int)
+void StemLabAudioProcessorEditor::fileDragEnter(const juce::StringArray& files, int, int)
 {
-    dragActive = true;
+    // No drop glow for a drag the editor would refuse - most importantly
+    // our own outbound stem drag passing back over the window.
+    dragActive = isInterestedInFileDrag(files);
     panelContent.repaint();
 }
 
@@ -1738,7 +1826,7 @@ void StemLabAudioProcessorEditor::layoutPanel()
                                   .withSizeKeepingCentre(source::dividerWidth,
                                                          source::dividerHeight);
 
-        if (processor.isStandaloneApp())
+        if (recordInputButton.isVisible())
         {
             recordInputButton.setBounds(
                 strip.removeFromRight(source::recordButtonWidth)
@@ -2365,12 +2453,28 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     recordSystemButton.setButtonText(systemRecording ? "Stop PC" : "Record PC");
     recordSystemButton.setRecordingActive(systemRecording && capturing);
 
-    recordInputButton.setEnabled(!engineRunning &&
-                                 (recordingMode == StemLabAudioProcessor::recordingNone ||
-                                  inputRecording));
+    // The input slot answers for the physical input in the Standalone and
+    // for host-audio capture in a generic VST host.
+    const bool hostRecording = recordingMode == StemLabAudioProcessor::recordingHost;
 
-    recordInputButton.setButtonText(inputRecording ? "Stop In" : "Record In");
-    recordInputButton.setRecordingActive(inputRecording && capturing);
+    if (processor.isStandaloneApp())
+    {
+        recordInputButton.setEnabled(!engineRunning &&
+                                     (recordingMode == StemLabAudioProcessor::recordingNone ||
+                                      inputRecording));
+
+        recordInputButton.setButtonText(inputRecording ? "Stop In" : "Record In");
+        recordInputButton.setRecordingActive(inputRecording && capturing);
+    }
+    else
+    {
+        recordInputButton.setEnabled(!engineRunning &&
+                                     (recordingMode == StemLabAudioProcessor::recordingNone ||
+                                      hostRecording));
+
+        recordInputButton.setButtonText(hostRecording ? "Stop Capture" : "Capture Host");
+        recordInputButton.setRecordingActive(hostRecording && capturing);
+    }
 
     // The action segment doubles as Cancel while a job runs.
     const bool cancelPending = processor.isCancelRequested();
@@ -2396,7 +2500,9 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     }
     else if (capturing)
     {
-        fileName = systemRecording ? "Recording PC audio" : "Recording input";
+        fileName = systemRecording  ? "Recording PC audio"
+                   : hostRecording  ? "Capturing host audio"
+                                    : "Recording input";
         fileMeta = formatSeconds(processor.getCapturedSeconds());
     }
     else if (captureExists)
@@ -2458,7 +2564,9 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
         case StemLabAudioProcessor::hostIntegrationNone:
         default:
             fileName = "No audio loaded";
-            fileMeta = "Drop audio here, or click Select File";
+            fileMeta = processor.isStandaloneApp()
+                           ? "Drop audio here, or click Select File"
+                           : "Capture Host, drop audio here, or click Select File";
             break;
         }
     }

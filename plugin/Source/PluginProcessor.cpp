@@ -596,7 +596,11 @@ public:
 
             case StemLabAudioProcessor::hostIntegrationNone:
             default:
-                owner.setStatus("Done - audition stems, then choose what to save");
+                // A generic VST host has no import bridge: the stems leave
+                // by drag, so the done line points at that instead.
+                owner.setStatus(owner.isStandaloneApp()
+                                    ? "Done - audition stems, then choose what to save"
+                                    : "Done - audition stems, then Drag Selected");
                 break;
             }
         }
@@ -1524,8 +1528,8 @@ void StemLabAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
         }
     }
 
-    // Standalone input recording uses audio arriving through this processor;
-    // system loopback is captured by a separate WASAPI thread.
+    // Physical-input and explicit host capture both use this pre-preview input
+    // buffer and the same threaded disk writer. System loopback uses WASAPI.
     if (standaloneRecordingMode.load() != recordingSystem)
     {
         // Uncontended except at the moment recording stops, which is the
@@ -1602,6 +1606,26 @@ void StemLabAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
 bool StemLabAudioProcessor::isStandaloneApp() const noexcept
 {
     return wrapperType == wrapperType_Standalone;
+}
+
+bool StemLabAudioProcessor::isAbletonHost() const noexcept
+{
+    return !isStandaloneApp() && juce::PluginHostType{}.isAbletonLive();
+}
+
+stemlab::host::UiMode StemLabAudioProcessor::getHostUiMode() const noexcept
+{
+    if (isStandaloneApp())
+        return stemlab::host::UiMode::standalone;
+
+    if (getHostIntegration() == hostIntegrationAbletonLive)
+        return stemlab::host::UiMode::ableton;
+
+    // REAPER's in-process integration is richer than the generic policy
+    // knows about; callers dispatch on getHostIntegration() before
+    // consulting the UiMode, so a REAPER instance never reaches the
+    // generic capture flow.
+    return stemlab::host::UiMode::genericVst;
 }
 
 bool StemLabAudioProcessor::loadPreviewFile(const juce::File& file, int previewStem)
@@ -1720,10 +1744,10 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
     unloadStemMix();
     clearAllMonitorFlags();
 
+    if (isAbletonHost())
     {
         const juce::ScopedLock lock(abletonBridgeLock);
-        abletonBridgeStatus =
-            isStandaloneApp() ? juce::String{} : "Source ready - Separate All Stems";
+        abletonBridgeStatus = "Source ready - Separate All Stems";
     }
 
     // Source analysis is optional, but its results must never outlive the
@@ -2366,13 +2390,29 @@ bool StemLabAudioProcessor::startStandaloneRecording()
         return false;
     }
 
-    currentSampleRate = sampleRate;
-
     const int activeInputs = device->getActiveInputChannels().countNumberOfSetBits();
 
-    currentInputChannels = juce::jlimit(1, 2, activeInputs);
+    return startThreadedInputCapture("input", sampleRate, juce::jlimit(1, 2, activeInputs), 0.0,
+                                     recordingInput, "Recording input...");
+}
 
-    const auto recordingFile = createRecordingFile("input");
+/*
+ * The shared tail of physical-input and host-audio capture (upstream's
+ * generic-VST work): everything from the WAV writer to the armed flags is
+ * identical, only the source of the samples reaching processBlock differs.
+ */
+bool StemLabAudioProcessor::startThreadedInputCapture(const juce::String& prefix,
+                                                      double sampleRate, int channels,
+                                                      double startPpq, int recordingMode,
+                                                      const juce::String& recordingStatus)
+{
+    if (capturing.load() || isEngineRunning() || sampleRate <= 0.0 || channels <= 0)
+        return false;
+
+    currentSampleRate = sampleRate;
+    currentInputChannels = juce::jlimit(1, 2, channels);
+
+    const auto recordingFile = createRecordingFile(prefix);
 
     auto fileStream = std::make_unique<juce::FileOutputStream>(recordingFile);
 
@@ -2408,16 +2448,16 @@ bool StemLabAudioProcessor::startStandaloneRecording()
 
     capturedSamples.store(0);
     inputDurationSeconds.store(0.0);
-    captureStartPpq.store(0.0);
+    captureStartPpq.store(juce::jmax(0.0, startPpq));
     engineCompletedSuccessfully.store(false);
     engineProgress.store(0.0);
 
-    standaloneRecordingMode.store(recordingInput);
+    standaloneRecordingMode.store(recordingMode);
 
     activeWriter.store(threadedWriter.get(), std::memory_order_release);
 
     capturing.store(true);
-    setStatus("Recording input...");
+    setStatus(recordingStatus);
     return true;
 }
 
@@ -2450,6 +2490,64 @@ void StemLabAudioProcessor::stopStandaloneRecording()
     else
     {
         setStatus("Input recording stopped");
+    }
+}
+
+bool StemLabAudioProcessor::startHostAudioCapture()
+{
+    /*
+     * Explicit capture of the audio arriving at the plugin, for hosts with
+     * no richer path: not the Standalone (it records its own device), not
+     * Ableton (clip bridge), not REAPER (Use Selected Item reads the file).
+     */
+    if (getHostIntegration() != hostIntegrationNone ||
+        !stemlab::host::canStartHostAudioCapture(getHostUiMode(), capturing.load(),
+                                                 isEngineRunning()))
+    {
+        return false;
+    }
+
+    stopStandalonePlayback();
+
+    const auto sampleRate = currentSampleRate;
+    const auto channels = juce::jlimit(1, 2, getTotalNumInputChannels());
+
+    if (sampleRate <= 0.0 || channels <= 0)
+    {
+        setActionStatus("Host audio input is not ready");
+        return false;
+    }
+
+    return startThreadedInputCapture("host", sampleRate, channels,
+                                     juce::jmax(0.0, lastKnownHostPpq.load()), recordingHost,
+                                     "Capturing host audio...");
+}
+
+void StemLabAudioProcessor::stopHostAudioCapture()
+{
+    if (standaloneRecordingMode.load() != recordingHost || !capturing.exchange(false))
+        return;
+
+    {
+        // Same window as stopStandaloneRecording: the audio thread may hold
+        // the old writer pointer, so wait out any in-flight write first.
+        const juce::ScopedLock lock(writerLock);
+        activeWriter.store(nullptr, std::memory_order_release);
+    }
+
+    threadedWriter.reset();
+    standaloneRecordingMode.store(recordingNone);
+
+    const auto recordingFile = getCaptureFile();
+
+    if (recordingFile.existsAsFile() && recordingFile.getSize() > 44 &&
+        setInputAudioFile(recordingFile, captureStartPpq.load(), "Host audio capture"))
+    {
+        setStatus("Host audio capture ready");
+    }
+    else
+    {
+        setStatus("Host audio capture stopped - no audio was received");
     }
 }
 
@@ -2603,6 +2701,8 @@ void StemLabAudioProcessor::stopCapture()
         stopSystemAudioRecording();
     else if (mode == recordingInput)
         stopStandaloneRecording();
+    else if (mode == recordingHost)
+        stopHostAudioCapture();
 }
 
 double StemLabAudioProcessor::getCapturedSeconds() const noexcept
@@ -2855,8 +2955,21 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
 
     if (!source.existsAsFile())
     {
-        setActionStatus(isStandaloneApp() ? "Select or record audio first"
-                                          : "Use Live Clip or Record PC first");
+        switch (isStandaloneApp() ? hostIntegrationNone : getHostIntegration())
+        {
+        case hostIntegrationAbletonLive:
+            setActionStatus("Use Live Clip or Record PC first");
+            break;
+        case hostIntegrationReaper:
+            setActionStatus("Select an item in REAPER, then Use Selected Item");
+            break;
+        case hostIntegrationNone:
+        default:
+            setActionStatus(isStandaloneApp() ? "Select or record audio first"
+                                              : "Capture Host or Record PC first");
+            break;
+        }
+
         return false;
     }
 
@@ -3879,6 +3992,146 @@ int StemLabAudioProcessor::saveSelectedStemsTo(const juce::File& destination)
     return saved;
 }
 
+/*
+ * A stem leaves as its whole file unless the lane carries an active
+ * selection range, in which case the range is rendered to its own WAV.
+ * With no active range the destination is a plain copy, so callers can
+ * always hand the returned file away without touching the job's output.
+ */
+juce::File StemLabAudioProcessor::exportSelectedRegion(const juce::File& source,
+                                                       const juce::File& destination,
+                                                       const juce::String& selectionId)
+{
+    if (!source.existsAsFile())
+        return {};
+
+    const auto range = getStemSelectionRange(selectionId);
+
+    if (!range.active)
+    {
+        auto target = destination;
+
+        if (target.getFileExtension().isEmpty())
+            target = target.withFileExtension(source.getFileExtension());
+
+        if (target.existsAsFile())
+            target.deleteFile();
+
+        return source.copyFileTo(target) ? target : juce::File{};
+    }
+
+    std::unique_ptr<juce::AudioFormatReader> reader(previewFormats.createReaderFor(source));
+
+    if (reader == nullptr || reader->sampleRate <= 0.0 || reader->lengthInSamples <= 0)
+        return {};
+
+    const auto startSample = juce::jlimit<juce::int64>(
+        0, reader->lengthInSamples - 1,
+        static_cast<juce::int64>(std::floor(range.start * reader->lengthInSamples)));
+    const auto endSample = juce::jlimit<juce::int64>(
+        startSample + 1, reader->lengthInSamples,
+        static_cast<juce::int64>(std::ceil(range.end * reader->lengthInSamples)));
+
+    auto target = destination.withFileExtension("wav");
+
+    if (target.existsAsFile())
+        target.deleteFile();
+
+    auto fileStream = std::make_unique<juce::FileOutputStream>(target);
+
+    if (!fileStream->openedOk())
+        return {};
+
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::OutputStream> stream = std::move(fileStream);
+    const auto bits = juce::jlimit(16, 32, static_cast<int>(reader->bitsPerSample));
+    const auto options = juce::AudioFormatWriter::Options{}
+                             .withSampleRate(reader->sampleRate)
+                             .withNumChannels(static_cast<int>(reader->numChannels))
+                             .withBitsPerSample(bits > 0 ? bits : 24);
+    auto writer = wav.createWriterFor(stream, options);
+
+    if (writer == nullptr ||
+        !writer->writeFromAudioReader(*reader, startSample, endSample - startSample))
+    {
+        writer.reset();
+        target.deleteFile();
+        return {};
+    }
+
+    writer.reset();
+    return target;
+}
+
+juce::StringArray StemLabAudioProcessor::getSelectedStemFilesForDrag()
+{
+    juce::StringArray files;
+
+    if (isEngineRunning() || !hasSuccessfulJob())
+        return files;
+
+    const auto selectedRegionDirectory = getLastJobDirectory().getChildFile("selected_regions");
+
+    for (int i = 0; i < stemCount; ++i)
+    {
+        if (!isStemEnabled(i))
+            continue;
+
+        const auto source = getCompletedStemFile(i);
+
+        if (!source.existsAsFile())
+            continue;
+
+        const auto id = getStemName(i);
+        auto dragFile = source;
+
+        if (getStemSelectionRange(id).active)
+        {
+            selectedRegionDirectory.createDirectory();
+            dragFile = exportSelectedRegion(
+                source, selectedRegionDirectory.getChildFile(id + "_selection.wav"), id);
+        }
+
+        if (!dragFile.existsAsFile())
+        {
+            setStatus("Could not export selected " + id + " range");
+            return {};
+        }
+
+        files.addIfNotAlreadyThere(dragFile.getFullPathName());
+    }
+
+    for (const auto& item : getRecursiveStemItems())
+    {
+        if (!item.selected || !item.file.existsAsFile())
+            continue;
+
+        auto dragFile = item.file;
+
+        if (getStemSelectionRange(item.id).active)
+        {
+            selectedRegionDirectory.createDirectory();
+            const auto safeName = item.id.replace("/", "_").replace("\\", "_");
+            dragFile = exportSelectedRegion(
+                item.file, selectedRegionDirectory.getChildFile(safeName + "_selection.wav"),
+                item.id);
+        }
+
+        if (!dragFile.existsAsFile())
+        {
+            setStatus("Could not export selected " + item.label + " range");
+            return {};
+        }
+
+        files.addIfNotAlreadyThere(dragFile.getFullPathName());
+    }
+
+    if (files.isEmpty())
+        setActionStatus("Choose at least one stem to drag");
+
+    return files;
+}
+
 juce::String StemLabAudioProcessor::getAbletonBridgeStatus() const
 {
     const juce::ScopedLock lock(abletonBridgeLock);
@@ -4220,13 +4473,10 @@ StemLabAudioProcessor::HostIntegration StemLabAudioProcessor::getHostIntegration
         return hostIntegrationReaper;
 
     // Live offers no in-process API, so its bridge cannot self-identify the
-    // way REAPER's does. On Windows - the only platform Live runs on - the
-    // UDP + Remote Script path stays the assumption for any other host.
-#if JUCE_WINDOWS
-    return hostIntegrationAbletonLive;
-#else
-    return hostIntegrationNone;
-#endif
+    // way REAPER's does; the wrapper's host type stands in. Any other host
+    // gets the generic local-file + host-capture workflow instead of a
+    // bridge it does not have.
+    return isAbletonHost() ? hostIntegrationAbletonLive : hostIntegrationNone;
 }
 
 void StemLabAudioProcessor::setIHostApplication(Steinberg::FUnknown* host)

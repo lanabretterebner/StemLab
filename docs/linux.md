@@ -110,6 +110,10 @@ while the main separation offloads.
 
 Developers can use a plain venv instead - `python3 -m venv .venv &&
 .venv/bin/pip install -e .` next to the repository is found automatically.
+Torch is deliberately not a declared dependency (the Windows backend
+installers pin their own build), so install one first:
+`.venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu
+torch torchaudio` for CPU, or drop the index override for CUDA.
 
 The plugin discovers the engine in this order:
 

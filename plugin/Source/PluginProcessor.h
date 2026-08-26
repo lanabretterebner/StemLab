@@ -8,6 +8,8 @@
 #include <memory>
 #include <vector>
 
+#include "HostIntegrationPolicy.h"
+
 namespace stemlab::reaper
 {
 struct Api;
@@ -121,7 +123,8 @@ public:
     {
         recordingNone = 0,
         recordingInput = 1,
-        recordingSystem = 2
+        recordingSystem = 2,
+        recordingHost = 3
     };
 
     StemLabAudioProcessor();
@@ -168,6 +171,8 @@ public:
 
     bool setStandaloneInputFile(const juce::File& file);
     bool isStandaloneApp() const noexcept;
+    bool isAbletonHost() const noexcept;
+    stemlab::host::UiMode getHostUiMode() const noexcept;
 
     /**
      * Which host-integration path this instance can use.
@@ -224,6 +229,14 @@ public:
     /** Start/stop recording the Standalone app's selected physical input. */
     bool startStandaloneRecording();
     void stopStandaloneRecording();
+
+    /** Explicitly capture VST3 input audio in non-Ableton, non-REAPER hosts. */
+    bool startHostAudioCapture();
+    void stopHostAudioCapture();
+    bool isHostAudioCapturing() const noexcept
+    {
+        return standaloneRecordingMode.load() == recordingHost && capturing.load();
+    }
 
     /**
      * Start/stop system-audio recording of the default output: WASAPI
@@ -442,6 +455,8 @@ public:
 
     /** Copy selected completed stems to a Standalone export directory. */
     int saveSelectedStemsTo(const juce::File& destination);
+    /** Return selected WAVs, rendering existing waveform ranges when needed. */
+    juce::StringArray getSelectedStemFilesForDrag();
     juce::File getCompletedStemFile(int index) const;
 
     /** Override or query the executable used for the main Python worker. */
@@ -577,6 +592,14 @@ private:
     void appendEngineLog(const juce::String&);
     bool sendAbletonBridgeNotification(const juce::File& manifestFile);
     bool sendAbletonControlMessage(const juce::String& message);
+
+    bool startThreadedInputCapture(const juce::String& prefix, double sampleRate, int channels,
+                                   double startPpq, int recordingMode,
+                                   const juce::String& recordingStatus);
+
+    /** The stem file itself, or its active selection range rendered to WAV. */
+    juce::File exportSelectedRegion(const juce::File& source, const juce::File& destination,
+                                    const juce::String& selectionId);
 
     juce::File createRecordingFile(const juce::String& prefix) const;
     juce::File createJobDirectory() const;

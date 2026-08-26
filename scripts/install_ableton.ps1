@@ -7,10 +7,13 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path $PSScriptRoot -Parent
 $PortableVst = Join-Path $RepoRoot "StemLab.vst3"
 $PortableRemote = Join-Path $RepoRoot "StemLabRemote"
+$DevelopmentVst = Join-Path $RepoRoot "plugin\build\StemLabPlugin_artefacts\Release\VST3\StemLab.vst3"
 $VstSource = if (Test-Path -LiteralPath $PortableVst -PathType Container) {
     $PortableVst
+} elseif (Test-Path -LiteralPath $DevelopmentVst -PathType Container) {
+    $DevelopmentVst
 } else {
-    Join-Path $RepoRoot "plugin\build\StemLabPlugin_artefacts\Release\VST3\StemLab.vst3"
+    $null
 }
 $RemoteSource = if (Test-Path -LiteralPath (Join-Path $PortableRemote "__init__.py") -PathType Leaf) {
     $PortableRemote
@@ -19,6 +22,7 @@ $RemoteSource = if (Test-Path -LiteralPath (Join-Path $PortableRemote "__init__.
 }
 $VstDestination = Join-Path $env:CommonProgramFiles "VST3\StemLab.vst3"
 $LegacyVstDestination = Join-Path $env:CommonProgramFiles "VST3\StemLab.vst3"
+$VstModule = Join-Path $VstDestination "Contents\x86_64-win\StemLab.vst3"
 
 function Normalize-UserLibrary([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
@@ -85,8 +89,8 @@ function Test-Administrator {
     return $Principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-if (-not (Test-Path -LiteralPath $VstSource -PathType Container)) {
-    throw "Build StemLab first. Missing: $VstSource"
+if (-not $VstSource -and -not (Test-Path -LiteralPath $VstModule -PathType Leaf)) {
+    throw "StemLab.vst3 was not found in the portable/source payload or the system VST3 directory."
 }
 if (-not (Test-Path -LiteralPath (Join-Path $RemoteSource "__init__.py") -PathType Leaf)) {
     throw "StemLabRemote source is missing: $RemoteSource"
@@ -128,10 +132,15 @@ if (Test-Path -LiteralPath $LegacyRemoteDestination) {
     Remove-Item -LiteralPath $LegacyRemoteDestination -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-Write-Host "Installing StemLab.vst3..."
-New-Item -ItemType Directory -Path (Split-Path $VstDestination -Parent) -Force | Out-Null
-Remove-Item -LiteralPath $VstDestination -Recurse -Force -ErrorAction SilentlyContinue
-Copy-Item -LiteralPath $VstSource -Destination $VstDestination -Recurse -Force
+if ($VstSource) {
+    Write-Host "Installing StemLab.vst3..."
+    New-Item -ItemType Directory -Path (Split-Path $VstDestination -Parent) -Force | Out-Null
+    Remove-Item -LiteralPath $VstDestination -Recurse -Force -ErrorAction SilentlyContinue
+    Copy-Item -LiteralPath $VstSource -Destination $VstDestination -Recurse -Force
+}
+else {
+    Write-Host "StemLab.vst3 is already installed in the system VST3 directory."
+}
 
 Write-Host "Installing StemLabRemote..."
 New-Item -ItemType Directory -Path $RemoteRoot -Force | Out-Null
@@ -162,7 +171,6 @@ if ($EnginePointer) {
         -Value ([System.IO.Path]::GetFullPath($EnginePointer))
 }
 
-$VstModule = Join-Path $VstDestination "Contents\x86_64-win\StemLab.vst3"
 if (-not (Test-Path -LiteralPath $VstModule -PathType Leaf)) {
     throw "VST3 install verification failed: $VstModule"
 }

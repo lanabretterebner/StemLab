@@ -334,7 +334,9 @@ jobs:
         shell: pwsh
         env:
           PIP_CONSTRAINT: torch-constraints.txt
-        run: .\scripts\setup_dev.ps1
+        # -SkipTorchInstall: the flavor torch installed above must survive;
+        # setup_dev would otherwise replace it with its default backend build.
+        run: .\scripts\setup_dev.ps1 -SkipTorchInstall
 
       # The venv is what the Engine is copied from, so a substitution here
       # ships a broken bundle. Checking beats trusting the constraint, and
@@ -365,7 +367,7 @@ jobs:
       # so the asset name comes from the bundle rather than from this label.
       - name: Build the portable payload and the installer
         shell: pwsh
-        run: .\scripts\build_installer_windows.ps1 -SkipTests
+        run: .\scripts\build_installer_windows.ps1 -Backend nvidia -SkipTests
 
       - name: Report disk use
         if: always()
