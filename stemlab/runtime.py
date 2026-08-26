@@ -144,11 +144,14 @@ def looks_like_download(raw: bytes) -> bool:
 
 def tqdm_remaining_seconds(raw: bytes) -> float | None:
     """Return tqdm's ``[elapsed<remaining, rate]`` remaining time, if present."""
-    match = None
-    for match in _TQDM_REMAINING_RE.finditer(raw):
-        pass
-    if match is None:
+    # The last match on the line, not the first: tqdm rewrites the whole bar
+    # on one carriage-returned line, so earlier matches are stale.
+    matches = list(_TQDM_REMAINING_RE.finditer(raw))
+
+    if not matches:
         return None
+
+    match = matches[-1]
     hours = int(match.group(1) or 0)
     return float(hours * 3600 + int(match.group(2)) * 60 + int(match.group(3)))
 

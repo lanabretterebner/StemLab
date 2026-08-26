@@ -1,0 +1,94 @@
+name: CI
+
+# Nothing verified a push before this: every check on the last few pull
+# requests was run by hand on a developer machine, so a branch nobody
+# happened to build could merge broken.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push supersedes the first: there is no value in finishing a
+# plugin build for a commit that is already stale.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+
+          # CPU-only torch. The default wheel pulls the whole CUDA runtime -
+          # about 2.5GB - and nothing in the test suite runs a model.
+          pip install --index-url https://download.pytorch.org/whl/cpu torch
+
+          # Only what the tests import. demucs, bs-roformer-infer, beat-this
+          # and audio-separator are imported lazily inside the functions that
+          # need a model, so the suite passes without them; installing them
+          # here would multiply the install for no extra coverage.
+          pip install numpy scipy soundfile librosa mido pytest ruff
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Tests
+        run: pytest tests -q
+
+  plugin:
+    name: Plugin
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config ccache \
+            libasound2-dev libjack-jackd2-dev \
+            libx11-dev libxext-dev libxi-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxcomposite-dev libxrender-dev \
+            libfreetype-dev libfontconfig1-dev libgl1-mesa-dev libpulse-dev
+
+      # Putting ccache's wrapper directory first on PATH speeds up repeat
+      # builds without the build script having to know about it.
+      - name: Enable ccache
+        run: echo "/usr/lib/ccache" >> "$GITHUB_PATH"
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: ccache-${{ runner.os }}-
+
+      # The build script downloads JUCE 9.0.0 into here on a cold run.
+      - name: Cache JUCE
+        uses: actions/cache@v4
+        with:
+          path: .portable-cache
+          key: juce-9.0.0-${{ runner.os }}
+
+      # Debug on purpose: JUCE applies -flto only to Release, and a link-time
+      # optimised build of this plugin takes several minutes on its own. A
+      # Debug build compiles every line just the same, which is what this job
+      # is here to check.
+      - name: Build
+        run: ./scripts/build_plugin.sh --build-type Debug
+
+      - name: Tests
+        run: ctest --test-dir plugin/build --output-on-failure
