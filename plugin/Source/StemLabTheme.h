@@ -358,6 +358,35 @@ namespace stemlab::theme
             constexpr int groupGap = 10;
             constexpr int paletteButton = 30;
             constexpr int paletteIcon = 15;
+
+            /*
+                Which stems the job carries forward is a per-lane checkbox,
+                which is fine for one change and tedious for six. The two
+                pills act on every lane at once and the readout beside them
+                says where that left things:
+
+                    [Select all] [Deselect all]  5 of 6 selected
+            */
+            constexpr int selectButtonHeight = 22;
+            constexpr int selectButtonPadX = 12;
+            constexpr int selectButtonGap = 6;
+            constexpr int selectCountGap = 10;
+
+            /*
+                Waveform zoom, sitting between that group and the model:
+
+                    (o) [-----O------------]  4x
+
+                The lanes draw a window of the file rather than the whole of
+                it, so the readout is a multiplier, not a duration.
+            */
+            constexpr int zoomIcon = 15;
+            constexpr int zoomIconGap = 7;
+            constexpr int zoomTrackWidth = 92;
+            constexpr int zoomTrackHeight = 4;
+            constexpr int zoomKnob = 13;
+            constexpr int zoomLabelGap = 8;
+            constexpr int zoomLabelWidth = 26;
         }
 
         namespace source

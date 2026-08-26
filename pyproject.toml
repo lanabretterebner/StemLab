@@ -14,6 +14,9 @@ dependencies = [
   "numpy>=1.26",
   "scipy>=1.12",
   "soundfile>=0.12",
+  "librosa>=0.11",
+  "mido>=1.3",
+  "beat-this==1.1.0",
   "pyyaml>=6.0",
   "tqdm>=4.66",
   "bs-roformer-infer>=0.1.4",
@@ -30,6 +33,8 @@ stemlab-refine = "stemlab.cli:refine_main"
 stemlab-models = "stemlab.cli:models_main"
 stemlab-plugin-job = "stemlab.plugin_job:main"
 stemlab-recursive-job = "stemlab.recursive_job:main"
+stemlab-source-analysis = "stemlab.source_analysis:main"
+stemlab-midi-job = "stemlab.midi:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

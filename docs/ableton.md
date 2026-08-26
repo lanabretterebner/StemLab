@@ -4,7 +4,7 @@ StemLab uses two components inside Ableton:
 
 ```text
 StemLab.vst3       Captures/loads audio and runs separation
-StemLabRemote      Creates Arrangement tracks and clips
+StemLabRemote       Creates Arrangement tracks and clips
 ```
 
 No Max for Live device or MIDI port is required.
@@ -62,3 +62,7 @@ rescan VST3 plug-ins.
 
 `StemLabRemote` creates the selected stems as Arrangement tracks beneath the
 source track.
+
+With the editor focused, `V` asks `StemLabRemote` to toggle Live's transport.
+VST3 playhead APIs are read-only in this workflow, so the shortcut requires the
+Remote Script. Unhandled keys are returned to Live.

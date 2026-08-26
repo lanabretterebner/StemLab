@@ -8,6 +8,11 @@ import time
 import traceback
 
 try:
+    import Live
+except ImportError:
+    Live = None
+
+try:
     from _Framework.ControlSurface import ControlSurface
 except ImportError:
     # Some Live builds expose the same framework from ableton.v2.
@@ -21,7 +26,25 @@ BUFFER_SIZE = 65535
 PROTOCOL = "stemlab-ableton-bridge"
 ACK_PROTOCOL = "stemlab-ableton-ack"
 
-STEMLAB_DEVICE_TOKEN = "stemlab"
+FI_STEM_DEVICE_TOKENS = ("stemlab", "fistem", "stemlab")
+
+
+def _normalise_midi_notes(items):
+    """Validate the small JSON note contract before touching Live's API."""
+    notes = []
+    for item in items or ():
+        try:
+            notes.append(
+                {
+                    "pitch": max(0, min(127, int(item["pitch"]))),
+                    "start": max(0.0, float(item["start"])),
+                    "duration": max(0.0001, float(item["duration"])),
+                    "velocity": max(1, min(127, int(item["velocity"]))),
+                }
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return notes
 
 
 def create_instance(c_instance):
@@ -43,6 +66,7 @@ class StemLabRemote(ControlSurface):
         self._socket = None
         self._listener_thread = None
         self._last_manifest = None
+        self._last_midi_manifest = None
 
         # Tracks recent Use Live Clip requests so the modern + legacy
         # compatibility messages do not trigger duplicate work.
@@ -129,6 +153,29 @@ class StemLabRemote(ControlSurface):
                 self.log_message("StemLabRemote: UDP message error:\n%s" % traceback.format_exc())
 
     def _handle_udp_message(self, text):
+        if text == "stemlab_toggle_transport":
+            self.schedule_message(1, self._toggle_transport)
+            return
+
+        if text.startswith("stemlab_midi_ready "):
+            encoded_path = text[len("stemlab_midi_ready ") :].strip()
+
+            try:
+                manifest_path = bytes.fromhex(encoded_path).decode(
+                    "utf-8",
+                    errors="strict",
+                )
+            except Exception as exc:
+                self.log_message("StemLabRemote: invalid MIDI manifest path: %s" % exc)
+                return
+
+            self._last_midi_manifest = manifest_path
+            self.schedule_message(
+                1,
+                lambda path=manifest_path: self._import_midi_on_live_thread(path),
+            )
+            return
+
         if text.startswith("stemlab_ready "):
             encoded_path = text[len("stemlab_ready ") :].strip()
 
@@ -193,6 +240,17 @@ class StemLabRemote(ControlSurface):
                     1,
                     lambda rid=request_id, rp=reply_path: self._reply_with_source_clip(rid, rp),
                 )
+
+    def _toggle_transport(self):
+        """Toggle Live on its main thread; VST3 has no reliable write API for this."""
+        try:
+            song = self.song()
+            if song.is_playing:
+                song.stop_playing()
+            else:
+                song.start_playing()
+        except Exception:
+            self.log_message("StemLabRemote: transport toggle failed:\n%s" % traceback.format_exc())
 
     # ------------------------------------------------------------------
     # Source clip lookup
@@ -427,6 +485,149 @@ class StemLabRemote(ControlSurface):
     # Manifest / source-track resolution
     # ------------------------------------------------------------------
 
+    def _import_midi_on_live_thread(self, manifest_path):
+        """Create one editable Arrangement MIDI clip beside the source track."""
+        try:
+            manifest = self._load_json(manifest_path)
+            if manifest.get("protocol") != "stemlab-ableton-midi":
+                raise RuntimeError("Unsupported StemLab MIDI protocol")
+
+            notes = _normalise_midi_notes(manifest.get("notes"))
+            if not notes:
+                raise RuntimeError("StemLab MIDI manifest contains no valid notes")
+
+            song = self.song()
+            source_index, source_track = self._resolve_source_track(song)
+            target_name = str(manifest.get("target_track") or "").strip()
+            target_index = self._find_midi_track(song, target_name)
+
+            state = {
+                "manifest_path": manifest_path,
+                "notes": notes,
+                "start_beat": max(0.0, float(manifest.get("capture_start_ppq", 0.0))),
+                "stem": str(manifest.get("source_stem") or "stem"),
+                "source_name": self._safe_name(source_track, "StemLab Source"),
+            }
+
+            if target_index is None:
+                target_index = source_index + 1
+                song.create_midi_track(target_index)
+                self.schedule_message(
+                    1,
+                    lambda s=state, index=target_index: self._populate_midi_track(s, index, True),
+                )
+            else:
+                self._populate_midi_track(state, target_index, False)
+
+        except Exception as exc:
+            self._finish_midi_import(manifest_path, False, str(exc))
+
+    def _find_midi_track(self, song, target_name):
+        if not target_name:
+            return None
+        for index, track in enumerate(song.tracks):
+            try:
+                if str(track.name) == target_name and bool(track.has_midi_input):
+                    return index
+            except Exception:
+                pass
+        return None
+
+    def _populate_midi_track(self, state, track_index, rename_track):
+        try:
+            song = self.song()
+            tracks = list(song.tracks)
+            if track_index < 0 or track_index >= len(tracks):
+                raise RuntimeError("Live did not expose the MIDI track")
+
+            track = tracks[track_index]
+            pretty_stem = self._title_case(state["stem"])
+            if rename_track:
+                track.name = "%s - %s MIDI" % (state["source_name"], pretty_stem)
+
+            end_beat = max(note["start"] + note["duration"] for note in state["notes"])
+            clip_length = max(0.25, end_beat)
+            track.create_midi_clip(float(state["start_beat"]), float(clip_length))
+
+            self.schedule_message(
+                1,
+                lambda s=state, index=track_index: self._write_midi_notes(s, index),
+            )
+        except Exception as exc:
+            self._finish_midi_import(state["manifest_path"], False, str(exc))
+
+    def _write_midi_notes(self, state, track_index):
+        try:
+            track = list(self.song().tracks)[track_index]
+            clips = list(track.arrangement_clips)
+            if not clips:
+                raise RuntimeError("Live did not create the Arrangement MIDI clip")
+
+            start_beat = float(state["start_beat"])
+            clip = min(clips, key=lambda item: abs(float(item.start_time) - start_beat))
+            clip.name = "StemLab %s MIDI" % self._title_case(state["stem"])
+
+            if Live is not None and hasattr(Live.Clip, "MidiNoteSpecification"):
+                specifications = tuple(
+                    Live.Clip.MidiNoteSpecification(
+                        pitch=note["pitch"],
+                        start_time=note["start"],
+                        duration=note["duration"],
+                        velocity=note["velocity"],
+                        mute=False,
+                    )
+                    for note in state["notes"]
+                )
+                clip.add_new_notes(specifications)
+            else:
+                # Live 11's Remote Script API accepts the older tuple shape.
+                clip.set_notes(
+                    tuple(
+                        (
+                            note["pitch"],
+                            note["start"],
+                            note["duration"],
+                            note["velocity"],
+                            False,
+                        )
+                        for note in state["notes"]
+                    )
+                )
+
+            message = "Created %s MIDI clip with %d notes" % (
+                self._title_case(state["stem"]),
+                len(state["notes"]),
+            )
+            self._finish_midi_import(state["manifest_path"], True, message)
+        except Exception as exc:
+            self._finish_midi_import(state["manifest_path"], False, str(exc))
+
+    def _finish_midi_import(self, manifest_path, success, message):
+        try:
+            ack_path = os.path.join(
+                os.path.dirname(os.path.abspath(manifest_path)),
+                "stemlab_ableton_midi_ack.json",
+            )
+            self._atomic_write_json(
+                ack_path,
+                {
+                    "protocol": "stemlab-ableton-midi-ack",
+                    "version": 1,
+                    "success": bool(success),
+                    "message": str(message),
+                    "timestamp": time.time(),
+                },
+            )
+        except Exception:
+            pass
+
+        self._write_status(active=True, message=str(message))
+        self.log_message("StemLabRemote: " + str(message))
+        try:
+            self.show_message("StemLab: " + str(message))
+        except Exception:
+            pass
+
     def _import_manifest_on_live_thread(self, manifest_path):
         """Validate once, then mutate Live one small step per UI tick.
 
@@ -572,7 +773,7 @@ class StemLabRemote(ControlSurface):
 
             new_track.create_audio_clip(
                 audio_path,
-                float(state["start_beat"]),
+                float(stem.get("start_beat", state["start_beat"])),
             )
 
             # Clip creation and warping changes may be deferred by Live.
@@ -831,7 +1032,7 @@ class StemLabRemote(ControlSurface):
 
         searchable = " ".join(labels).lower()
 
-        if STEMLAB_DEVICE_TOKEN in searchable:
+        if any(token in searchable for token in FI_STEM_DEVICE_TOKENS):
             return True
 
         # Also support StemLab placed inside an Audio Effect Rack.

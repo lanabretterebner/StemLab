@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <map>
+#include <unordered_map>
 #include <memory>
 #include <vector>
 
@@ -17,6 +18,7 @@ class PeakBuilder;
 class StemLabEngineThread;
 class StemLabRecursiveThread;
 class StemLabStemMixSource;
+class StemLabUtilityThread;
 
 #if JUCE_WINDOWS || JUCE_LINUX
 class StemLabSystemLoopbackThread;
@@ -38,6 +40,54 @@ struct StemLabRecursiveStemInfo
     int depth = 1;
     int estimatedSourceCount = 1;
     double confidence = 0.0;
+};
+
+struct StemLabKeyCandidate
+{
+    juce::String key;
+    double probability = 0.0;
+};
+
+struct StemLabMidiNoteInfo
+{
+    double start = 0.0;
+    double end = 0.0;
+    int pitch = 60;
+    int velocity = 100;
+    double confidence = 1.0;
+};
+
+struct StemLabMidiInfo
+{
+    juce::String id;
+    juce::String sourceStem;
+    juce::File midiFile;
+    juce::File dragFile;
+    std::vector<StemLabMidiNoteInfo> notes;
+    double sourceTempo = 120.0;
+    double barOne = 0.0;
+    bool drums = false;
+};
+
+struct StemLabGridInfo
+{
+    int mode = 1;
+    double bpm = 120.0;
+    int numerator = 4;
+    int denominator = 4;
+    double barOne = 0.0;
+    double captureStartPpq = 0.0;
+    std::vector<double> beats;
+    std::vector<double> downbeats;
+};
+
+struct StemLabSelectionRange
+{
+    double start = 0.0;
+    double end = 1.0;
+    bool active = false;
+
+    double length() const noexcept { return juce::jmax(0.0, end - start); }
 };
 
 /**
@@ -199,6 +249,33 @@ public:
     void stopStandalonePlayback();
 
     /**
+     * Source analysis: tempo, key, and the beat grid the waveform draws.
+     *
+     * Fast is the default because Accurate loads the Beat This! model; the
+     * tempo interpretation lets the user overrule an octave-doubled BPM
+     * without re-running anything.
+     */
+    enum SourceAnalysisMode
+    {
+        analysisAccurate = 0,
+        analysisFast = 1
+    };
+
+    enum TempoInterpretation
+    {
+        tempoHalf = 0,
+        tempoDetected = 1,
+        tempoDouble = 2
+    };
+
+    enum WaveformGridMode
+    {
+        gridHost = 0,
+        gridSource = 1,
+        gridManual = 2
+    };
+
+    /**
      * The shared monitoring transport behind the Lanes interface: one clock
      * driving either the untouched source ("Original") or a live mix of the
      * completed stems ("Stems") that honours per-lane solo/mute.
@@ -291,6 +368,52 @@ public:
     juce::String getEngineLog() const;
     juce::File getLastJobDirectory() const;
 
+    /** Compact key/BPM text for the currently loaded original source. */
+    juce::String getSourceAnalysisText() const;
+    juce::String getSourceAnalysisDetails() const;
+    juce::String getSourceKey() const;
+    double getSourceBpm() const noexcept { return sourceBpm.load(); }
+    double getDetectedSourceBpm() const noexcept { return sourceDetectedBpm.load(); }
+    double getHalfTimeSourceBpm() const noexcept { return sourceHalfBpm.load(); }
+    double getDoubleTimeSourceBpm() const noexcept { return sourceDoubleBpm.load(); }
+    double getSourceBarOne() const noexcept { return sourceBarOne.load(); }
+    int getSourceMeterNumerator() const noexcept { return sourceMeterNumerator.load(); }
+    int getSourceMeterDenominator() const noexcept { return sourceMeterDenominator.load(); }
+    void setBeatThisEnabled(bool enabled);
+    bool isBeatThisEnabled() const noexcept { return beatThisEnabled.load(); }
+    void setSourceAnalysisMode(int mode);
+    int getSourceAnalysisMode() const noexcept { return sourceAnalysisMode.load(); }
+    void setTempoInterpretation(int interpretation);
+    int getTempoInterpretation() const noexcept { return tempoInterpretation.load(); }
+    bool saveSourceCorrection(double bpm, const juce::String& key, int numerator, int denominator,
+                              double barOne);
+    bool forgetSourceCorrection();
+    bool clearAnalysisCache();
+
+    void setWaveformGridMode(int mode) noexcept;
+    int getWaveformGridMode() const noexcept { return waveformGridMode.load(); }
+    void setManualGrid(double bpm, int numerator, int denominator, double barOne) noexcept;
+    StemLabGridInfo getWaveformGridInfo() const;
+
+    int getWaveformLaneHeight(const juce::String& id) const;
+    void setWaveformLaneHeight(const juce::String& id, int height);
+
+    /** One highlighted time range per stem. Dragging a waveform sets it. */
+    StemLabSelectionRange getStemSelectionRange(const juce::String& id) const;
+    void setStemSelectionRange(const juce::String& id, double start, double end);
+    void clearStemSelectionRange(const juce::String& id);
+    void clearAllStemSelectionRanges();
+
+    bool launchStemMidiConversion(int stemIndex);
+    bool launchRecursiveMidiConversion(const juce::String& itemId);
+    bool isMidiConversionRunning() const noexcept;
+    StemLabMidiInfo getMidiInfo(const juce::String& id) const;
+    bool hasMidiInfo(const juce::String& id) const;
+    bool auditionMidi(const juce::String& id);
+    bool isMidiAuditioning(const juce::String& id) const;
+    void stopMidiAudition();
+    bool sendMidiToAbleton(const juce::String& id);
+
     void setJobRootDirectory(const juce::File& directory);
     juce::File getJobRootDirectory() const;
 
@@ -353,6 +476,26 @@ public:
     static constexpr int waveformColourCount = 7;
 
     /**
+     * Horizontal waveform zoom, shared by every lane so they stay in step.
+     *
+     * 1 draws the whole file, as the lanes always did. Above that they draw
+     * a window of it centred on the playhead, which is the only way to see
+     * an individual hit in a five-minute track at 800px wide.
+     */
+    void setWaveformZoom(double zoom);
+    double getWaveformZoom() const noexcept { return waveformZoom.load(); }
+
+    static constexpr double minWaveformZoom = 1.0;
+    static constexpr double maxWaveformZoom = 64.0;
+
+    /**
+     * The seconds a lane draws for a file of totalLengthSeconds at the
+     * current zoom: a window centred on the playhead, clamped so it never
+     * runs past either end of the file.
+     */
+    juce::Range<double> getWaveformViewRange(double totalLengthSeconds) const;
+
+    /**
      * The size the user last left the editor at, as a percentage of its
      * design size. Lives here rather than in the editor so a reopened window
      * comes back the way they left it.
@@ -366,6 +509,7 @@ public:
 private:
     friend class StemLabEngineThread;
     friend class StemLabRecursiveThread;
+    friend class StemLabUtilityThread;
 
 #if JUCE_WINDOWS || JUCE_LINUX
     friend class StemLabSystemLoopbackThread;
@@ -378,6 +522,23 @@ private:
     juce::StringArray makePythonModuleCommand(const juce::String& moduleName) const;
     void finishRecursiveJob(const juce::File& manifestFile);
     void clearRecursiveResults();
+
+    void startSourceAnalysis(const juce::File& source);
+    void finishSourceAnalysis(const juce::File& source, const juce::File& result, int exitCode);
+    bool launchAnalysisMaintenance(const juce::StringArray& arguments, const juce::String& label);
+    void finishAnalysisMaintenance(const juce::File& source, const juce::String& label,
+                                   int exitCode);
+    bool launchMidiConversion(const juce::File& source, const juce::String& stemType,
+                              const juce::String& label, const juce::String& outputName,
+                              const juce::String& resultId);
+    void finishMidiConversion(const juce::String& label, const juce::File& output, int exitCode,
+                              const juce::String& resultId);
+    bool loadMidiInfo(const juce::String& id, const juce::File& midiFile);
+    bool renderMidiAudition(juce::AudioBuffer<float>& buffer, int startSample, int numSamples);
+
+    /** Which lane a highlighted range applies to, in Lanes terms. */
+    juce::String getCurrentPreviewSelectionId() const;
+    void updatePreviewLoopForId(const juce::String& id);
 
     using MonitorFlags = StemLabLaneMonitorFlags;
 
@@ -444,6 +605,63 @@ private:
     juce::String inputSourceLabel;
     juce::String abletonClipRequestId;
 
+    juce::String sourceKey;
+    juce::String sourceHash;
+    juce::String sourceAnalysisDevice;
+    juce::String sourceBeatModel;
+    std::vector<StemLabKeyCandidate> sourceKeyCandidates;
+    std::vector<double> sourceBeats;
+    std::vector<double> sourceDownbeats;
+    std::atomic<double> sourceBpm{-1.0};
+    std::atomic<double> sourceDetectedBpm{-1.0};
+    std::atomic<double> sourceHalfBpm{-1.0};
+    std::atomic<double> sourceDoubleBpm{-1.0};
+    std::atomic<double> sourceBarOne{0.0};
+    std::atomic<int> sourceMeterNumerator{4};
+    std::atomic<int> sourceMeterDenominator{4};
+    std::atomic<bool> sourceAnalysisCorrected{false};
+    std::atomic<bool> sourceAnalysisRunning{false};
+    std::atomic<bool> beatThisEnabled{false};
+    std::atomic<int> sourceAnalysisMode{analysisFast};
+    std::atomic<int> tempoInterpretation{tempoDetected};
+    std::atomic<int> waveformGridMode{gridSource};
+    std::atomic<double> manualGridBpm{120.0};
+    std::atomic<int> manualGridNumerator{4};
+    std::atomic<int> manualGridDenominator{4};
+    std::atomic<double> manualGridBarOne{0.0};
+
+    mutable juce::CriticalSection laneHeightLock;
+    std::unordered_map<std::string, int> waveformLaneHeights;
+
+    mutable juce::CriticalSection midiInfoLock;
+    std::unordered_map<std::string, StemLabMidiInfo> midiInfos;
+
+    juce::Synthesiser midiAuditionSynth;
+    mutable juce::CriticalSection midiAuditionLock;
+    std::vector<StemLabMidiNoteInfo> midiAuditionNotes;
+    juce::String midiAuditionId;
+    double midiAuditionPosition = 0.0;
+    double midiAuditionDuration = 0.0;
+    std::atomic<bool> midiAuditionActive{false};
+
+    // Host tempo/meter seen by processBlock, so the waveform grid can draw
+    // the host's bars when the user picks that mode.
+    std::atomic<double> lastHostBpm{-1.0};
+    std::atomic<int> lastHostNumerator{4};
+    std::atomic<int> lastHostDenominator{4};
+
+    // One highlighted range per lane, keyed by stem name or child id.
+    mutable juce::CriticalSection selectionLock;
+    std::map<juce::String, StemLabSelectionRange> stemSelections;
+
+    // Looping the monitored lane over its highlighted range. Read on the
+    // audio thread, written from the message thread.
+    std::atomic<bool> previewLoopEnabled{false};
+    std::atomic<double> previewLoopStart{0.0};
+    std::atomic<double> previewLoopEnd{0.0};
+
+    std::atomic<bool> abletonBridgeActive{false};
+
     juce::String engineCommand{"stemlab-plugin-job"};
     juce::String status{"Ready"};
     juce::String engineLog;
@@ -489,6 +707,7 @@ private:
     std::array<std::atomic<bool>, stemCount> stemEnabled;
     std::atomic<bool> refinementEnabled{true};
     std::atomic<int> separatorEngineIndex{separatorRoFormer};
+    std::atomic<double> waveformZoom{1.0};
     std::atomic<int> waveformColourIndex{0};
     std::atomic<int> editorScalePercent{100};
 
@@ -540,6 +759,10 @@ private:
 
     std::unique_ptr<StemLabEngineThread> engineThread;
     std::unique_ptr<StemLabRecursiveThread> recursiveThread;
+
+    /** Short side jobs: source analysis, cache maintenance, MIDI. */
+    std::unique_ptr<StemLabUtilityThread> analysisThread;
+    std::unique_ptr<StemLabUtilityThread> midiThread;
 
 #if JUCE_WINDOWS || JUCE_LINUX
     std::unique_ptr<StemLabSystemLoopbackThread> systemLoopbackThread;

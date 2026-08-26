@@ -95,6 +95,10 @@ threading constraints in mind when editing them.
 | `hybrid.py` | Spectral fusion of model estimates |
 | `plugin_job.py` | JUCE command arguments, progress files, Ableton manifest |
 | `runtime.py` | Child-process output and progress handling |
+| `analysis_cache.py` | Local SQLite analysis/MIDI cache and corrections |
+| `beat_tracking.py` | Offline Beat This! inference and beat interpretation |
+| `source_analysis.py` | Optional source key/BPM analysis |
+| `midi.py` | Stem-specific transcription and MIDI output |
 | `recursive.py` | Adaptive operation router and tree-manifest writer |
 | `adaptive/analysis.py` | Source-complexity estimates |
 | `adaptive/policy.py` | Rules for offering another recursive split |
@@ -166,7 +170,8 @@ copies under `plugin/build`.
 
 ## Current Limits
 
-- Recursive vocal/drum splitting requires `audio-separator` model downloads.
+- Release-model downloads happen during deliberate staging, never during normal
+  installed runtime operation.
 - Guitar/piano/other adaptive splitting is DSP-based and experimental.
 - Source-count estimates are recursion heuristics, not literal musician counts.
 - `PluginProcessor.cpp`, `PluginEditor.cpp`, and

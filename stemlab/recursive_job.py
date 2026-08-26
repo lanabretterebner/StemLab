@@ -6,13 +6,24 @@ import argparse
 from pathlib import Path
 
 from .recursive import default_model_dir, run_recursive
-from .runtime import configure_utf8_stdio, start_cancel_watchdog
+from .runtime import (
+    CANCEL_FILE,
+    CancellationToken,
+    JobCancelled,
+    configure_utf8_stdio,
+    start_cancel_watchdog,
+)
 
 
 def main() -> None:
     """CLI entry: ``stemlab-recursive-job``."""
     try:
         _main()
+    except JobCancelled:
+        # A cancel is a user action, not a failure: report it as such and
+        # leave the "Failed - ..." status for real errors.
+        print("STEMLAB_CANCELLED", flush=True)
+        raise SystemExit(130) from None
     except Exception as exc:
         # Must be inside main(): console-script entry points bypass the
         # __main__ block, and the plugin needs this line to show a reason.
@@ -36,9 +47,18 @@ def _main() -> None:
     parser.add_argument("--category", default="unknown")
     parser.add_argument("--depth", type=int, default=1)
     parser.add_argument("--model-dir", default=str(default_model_dir()))
+    parser.add_argument("--cancel-file")
     args = parser.parse_args()
 
+    # Default to the sentinel the watchdog already watches, so a plugin
+    # that writes the file without passing --cancel-file still gets the
+    # clean cooperative stop rather than only the hard kill.
+    cancellation = CancellationToken(
+        Path(args.cancel_file) if args.cancel_file else Path(args.output) / CANCEL_FILE
+    )
+
     def progress(percent: float, stage: str) -> None:
+        cancellation.raise_if_cancelled()
         bounded = int(max(0, min(100, percent)))
         print(f"STEMLAB_PROGRESS {bounded} {stage}", flush=True)
 

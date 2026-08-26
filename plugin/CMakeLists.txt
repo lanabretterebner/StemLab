@@ -99,6 +99,7 @@ target_sources(StemLabPlugin
         Source/ReaperBridge.h
         Source/LinuxSystemCapture.cpp
         Source/LinuxSystemCapture.h
+        Source/WaveformGrid.h
 )
 
 target_include_directories(StemLabPlugin
@@ -119,13 +120,19 @@ if (NOT MSVC)
     )
 endif()
 
+include(CTest)
+if (BUILD_TESTING)
+    add_executable(StemLabWaveformGridTests Tests/WaveformGridTests.cpp Source/WaveformGrid.h)
+    target_include_directories(StemLabWaveformGridTests PRIVATE Source)
+    target_compile_features(StemLabWaveformGridTests PRIVATE cxx_std_20)
+    add_test(NAME StemLabWaveformGridTests COMMAND StemLabWaveformGridTests)
+endif()
+
 target_compile_definitions(StemLabPlugin
     PUBLIC
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
-    PRIVATE
-        STEMLAB_DEV_REPO_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 
 target_link_libraries(StemLabPlugin

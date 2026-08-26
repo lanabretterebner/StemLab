@@ -2,6 +2,7 @@
 #include "PluginEditor.h"
 #include "ReaperBridge.h"
 #include "StemLabPaths.h"
+#include "WaveformGrid.h"
 
 #include <algorithm>
 #include <functional>
@@ -733,6 +734,207 @@ private:
     std::unique_ptr<juce::ChildProcess> process;
 };
 
+class StemLabUtilityThread final : public juce::Thread
+{
+public:
+    enum Kind
+    {
+        sourceAnalysis,
+        analysisMaintenance,
+        midiConversion
+    };
+
+    StemLabUtilityThread(StemLabAudioProcessor& ownerIn, Kind kindIn, juce::StringArray commandIn,
+                         juce::File sourceIn, juce::File outputIn, juce::String labelIn = {},
+                         juce::String contextIn = {}, juce::File cancelFileIn = {})
+        : juce::Thread(kindIn == sourceAnalysis
+                           ? "StemLab source analysis"
+                           : (kindIn == analysisMaintenance ? "StemLab analysis maintenance"
+                                                            : "StemLab MIDI")),
+          owner(ownerIn), kind(kindIn), command(std::move(commandIn)), source(std::move(sourceIn)),
+          output(std::move(outputIn)), label(std::move(labelIn)), context(std::move(contextIn)),
+          cancelFile(std::move(cancelFileIn))
+    {
+    }
+
+    ~StemLabUtilityThread() override
+    {
+        requestCancel();
+        signalThreadShouldExit();
+
+        // Same reason as the engine threads: this thread parks inside
+        // readProcessOutput, where no exit flag is visible, so the child has
+        // to go first or the join below runs to its timeout and JUCE
+        // force-kills the thread.
+        stopChildProcess(1500);
+
+        stopThread(2500);
+    }
+
+    /** Sentinel-then-kill; safe from any thread, including while run() reads. */
+    void stopChildProcess(int graceMilliseconds)
+    {
+        const juce::ScopedLock lock(processLock);
+
+        if (process == nullptr || !process->isRunning())
+            return;
+
+        if (cancelFile.getFullPathName().isNotEmpty())
+            cancelFile.replaceWithText("cancel\n");
+
+        for (int waited = 0; waited < graceMilliseconds && process->isRunning(); waited += 50)
+            juce::Thread::sleep(50);
+
+        if (process->isRunning())
+            process->kill();
+    }
+
+    bool requestCancel()
+    {
+        if (!isThreadRunning() || cancelRequested.exchange(true))
+            return false;
+
+        cancelStartedMs.store(nowMs());
+
+        // Writing the sentinel lets the job stop itself cleanly; the kill
+        // that follows the grace period is what frees this thread's blocked
+        // read if it does not.
+        if (cancelFile.getFullPathName().isNotEmpty())
+            cancelFile.replaceWithText("cancel\n");
+
+        return true;
+    }
+
+
+    void run() override
+    {
+        juce::ChildProcess* childProcess = nullptr;
+
+        {
+            const juce::ScopedLock lock(processLock);
+            process = std::make_unique<juce::ChildProcess>();
+            childProcess = process.get();
+        }
+
+        if (!childProcess->start(command,
+                                 juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+        {
+            finish(-1);
+
+            const juce::ScopedLock lock(processLock);
+            process.reset();
+            return;
+        }
+
+        std::array<char, 4096> buffer{};
+        juce::String processOutput;
+        juce::String pendingOutput;
+
+        auto forwardAnalysisLines = [&]
+        {
+            while (true)
+            {
+                const auto newline = pendingOutput.indexOfChar('\n');
+                if (newline < 0)
+                    break;
+                const auto line = pendingOutput.substring(0, newline).trimEnd();
+                pendingOutput = pendingOutput.substring(newline + 1);
+                if (line.isNotEmpty())
+                    owner.handleEngineOutputLine(line);
+            }
+        };
+
+        while (!threadShouldExit() && isChildRunning())
+        {
+            const auto bytes = childProcess->readProcessOutput(
+                buffer.data(), static_cast<int>(buffer.size() - 1));
+            if (bytes > 0)
+            {
+                buffer[static_cast<size_t>(bytes)] = '\0';
+                processOutput += juce::String::fromUTF8(buffer.data(), bytes);
+                if (kind == sourceAnalysis)
+                {
+                    pendingOutput += juce::String::fromUTF8(buffer.data(), bytes);
+                    forwardAnalysisLines();
+                }
+            }
+            wait(50);
+        }
+
+        if (threadShouldExit())
+            stopChildProcess(0);
+
+        while (true)
+        {
+            const auto bytes = childProcess->readProcessOutput(
+                buffer.data(), static_cast<int>(buffer.size() - 1));
+            if (bytes <= 0)
+                break;
+            buffer[static_cast<size_t>(bytes)] = '\0';
+            processOutput += juce::String::fromUTF8(buffer.data(), bytes);
+            if (kind == sourceAnalysis)
+            {
+                pendingOutput += juce::String::fromUTF8(buffer.data(), bytes);
+                forwardAnalysisLines();
+            }
+        }
+
+        if (kind == sourceAnalysis && pendingOutput.trim().isNotEmpty())
+            owner.handleEngineOutputLine(pendingOutput.trim());
+
+        int exitCode = 0;
+
+        {
+            const juce::ScopedLock lock(processLock);
+            exitCode = static_cast<int>(process->getExitCode());
+            process.reset();
+        }
+
+        if (processOutput.isNotEmpty() && kind != sourceAnalysis)
+            owner.appendEngineLog(processOutput.endsWithChar('\n') ? processOutput
+                                                                   : processOutput + "\n");
+
+        if (!threadShouldExit() || cancelRequested.load())
+            finish(exitCode);
+    }
+
+private:
+    bool isChildRunning()
+    {
+        const juce::ScopedLock lock(processLock);
+        return process != nullptr && process->isRunning();
+    }
+
+    void finish(int exitCode)
+    {
+        // The cancellation file is a one-run sentinel. Never leave it in the temp
+        // directory where a later source-analysis job could inherit it.
+        if (cancelFile.existsAsFile())
+            cancelFile.deleteFile();
+
+        if (kind == sourceAnalysis)
+            owner.finishSourceAnalysis(source, output, exitCode);
+        else if (kind == analysisMaintenance)
+            owner.finishAnalysisMaintenance(source, label, exitCode);
+        else
+            owner.finishMidiConversion(label, output, exitCode, context);
+    }
+
+    StemLabAudioProcessor& owner;
+    Kind kind;
+    juce::StringArray command;
+    juce::File source;
+    juce::File output;
+    juce::String label;
+    juce::String context;
+    juce::File cancelFile;
+    std::atomic<bool> cancelRequested{false};
+    std::atomic<double> cancelStartedMs{0.0};
+
+    juce::CriticalSection processLock;
+    std::unique_ptr<juce::ChildProcess> process;
+};
+
 #if JUCE_WINDOWS
 class StemLabSystemLoopbackThread final : public juce::Thread
 {
@@ -1180,6 +1382,9 @@ StemLabAudioProcessor::~StemLabAudioProcessor()
         recursiveThread.reset();
     }
 
+    analysisThread.reset();
+    midiThread.reset();
+
 #if JUCE_WINDOWS || JUCE_LINUX
     systemLoopbackThread.reset();
 #endif
@@ -1232,6 +1437,16 @@ void StemLabAudioProcessor::prepareToPlay(int samplesPerBlockExpected, double sa
 
 void StemLabAudioProcessor::getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill)
 {
+    // Same rule as the VST path: an audition replaces the monitor mix while
+    // it plays rather than sounding on top of it.
+    if (midiAuditionActive.load())
+    {
+        bufferToFill.clearActiveBufferRegion();
+        renderMidiAudition(*bufferToFill.buffer, bufferToFill.startSample,
+                           bufferToFill.numSamples);
+        return;
+    }
+
     activeTransport().getNextAudioBlock(bufferToFill);
 }
 
@@ -1267,6 +1482,16 @@ void StemLabAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
             {
                 if (auto value = position->getPpqPosition())
                     lastKnownHostPpq.store(juce::jmax(0.0, *value));
+
+                // Feeds the waveform grid's "host" mode.
+                if (auto value = position->getBpm())
+                    lastHostBpm.store(juce::jlimit(20.0, 400.0, *value));
+
+                if (auto value = position->getTimeSignature())
+                {
+                    lastHostNumerator.store(juce::jlimit(1, 32, value->numerator));
+                    lastHostDenominator.store(juce::jlimit(1, 32, value->denominator));
+                }
             }
         }
     }
@@ -1297,6 +1522,15 @@ void StemLabAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
     // gating this pull on isPlaying() would leave the message thread
     // blocked for the full ~1s timeout on every pause or A/B switch. A
     // stopped transport just clears the scratch and returns.
+    // A MIDI audition takes over the output entirely while it plays: it is
+    // an inspection of one stem's notes, not another layer over the mix.
+    if (!isStandaloneApp() && midiAuditionActive.load())
+    {
+        buffer.clear();
+        renderMidiAudition(buffer, 0, buffer.getNumSamples());
+        return;
+    }
+
     auto& monitorSource = activeTransport();
 
     const bool monitorAudible = monitorSource.isPlaying();
@@ -1464,8 +1698,34 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
             isStandaloneApp() ? juce::String{} : "Source ready - Separate All Stems";
     }
 
+    // Source analysis is optional, but its results must never outlive the
+    // file they describe: clear them for every new source, then re-run only
+    // if the user has the analysis enabled.
+    sourceBpm.store(-1.0);
+    sourceDetectedBpm.store(-1.0);
+    sourceHalfBpm.store(-1.0);
+    sourceDoubleBpm.store(-1.0);
+    sourceBarOne.store(0.0);
+    sourceMeterNumerator.store(4);
+    sourceMeterDenominator.store(4);
+    sourceAnalysisCorrected.store(false);
+
+    {
+        const juce::ScopedLock lock(stateLock);
+        sourceKey.clear();
+        sourceHash.clear();
+        sourceAnalysisDevice.clear();
+        sourceBeatModel.clear();
+        sourceKeyCandidates.clear();
+        sourceBeats.clear();
+        sourceDownbeats.clear();
+    }
+
     setStatus(previewAvailable ? "Source ready"
                                : "Source ready - preview unavailable until stems are made");
+
+    if (beatThisEnabled.load())
+        startSourceAnalysis(file);
 
     return true;
 }
@@ -4380,6 +4640,39 @@ void StemLabAudioProcessor::setWaveformColourIndex(int index)
     sendChangeMessage();
 }
 
+void StemLabAudioProcessor::setWaveformZoom(double zoom)
+{
+    const auto clamped = juce::jlimit(minWaveformZoom, maxWaveformZoom, zoom);
+
+    if (std::abs(clamped - waveformZoom.load()) < 1.0e-6)
+        return;
+
+    waveformZoom.store(clamped);
+
+    sendChangeMessage();
+}
+
+juce::Range<double> StemLabAudioProcessor::getWaveformViewRange(double totalLengthSeconds) const
+{
+    if (!(totalLengthSeconds > 0.0))
+        return {0.0, 0.0};
+
+    const auto zoom = juce::jlimit(minWaveformZoom, maxWaveformZoom, waveformZoom.load());
+
+    const auto transportLength = getTransportLengthSeconds();
+
+    const auto normalised =
+        transportLength > 0.0
+            ? juce::jlimit(0.0, 1.0, getTransportPositionSeconds() / transportLength)
+            : 0.0;
+
+    // The window itself is plain arithmetic, so it lives in WaveformGrid.h
+    // where the test target can reach it without standing up a processor.
+    const auto window = stemlab::waveform::visibleWindow(totalLengthSeconds, zoom, normalised);
+
+    return {window.start, window.end};
+}
+
 void StemLabAudioProcessor::setEditorScalePercent(int percent)
 {
     // Deliberately no change broadcast: this is written from the editor's
@@ -4458,6 +4751,7 @@ void StemLabAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     rootObject->setProperty("refinement", refinementEnabled.load());
     rootObject->setProperty("separatorEngine", separatorEngineIndex.load());
     rootObject->setProperty("waveformColour", waveformColourIndex.load());
+    rootObject->setProperty("waveformZoom", waveformZoom.load());
     rootObject->setProperty("editorScale", editorScalePercent.load());
 
     rootObject->setProperty("jobRootDirectory", getJobRootDirectory().getFullPathName());
@@ -4535,6 +4829,9 @@ void StemLabAudioProcessor::setStateInformation(const void* data, int sizeInByte
     if (object->hasProperty("waveformColour"))
     {
         setWaveformColourIndex(static_cast<int>(object->getProperty("waveformColour")));
+
+    if (object->hasProperty("waveformZoom"))
+        setWaveformZoom(static_cast<double>(object->getProperty("waveformZoom")));
     }
 
     if (object->hasProperty("editorScale"))
@@ -4567,3 +4864,921 @@ juce::AudioProcessorEditor* StemLabAudioProcessor::createEditor()
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new StemLabAudioProcessor(); }
+
+void StemLabAudioProcessor::startSourceAnalysis(const juce::File& source)
+{
+    analysisThread.reset();
+    sourceAnalysisRunning.store(true);
+    engineCancelRequested.store(false);
+    engineProgress.store(0.0);
+    engineStartMs.store(nowMs());
+    engineProgressUpdateMs.store(engineStartMs.load());
+    lastEngineDurationSeconds.store(0.0);
+    sourceBpm.store(-1.0);
+    sourceDetectedBpm.store(-1.0);
+    sourceHalfBpm.store(-1.0);
+    sourceDoubleBpm.store(-1.0);
+    sourceAnalysisCorrected.store(false);
+    {
+        const juce::ScopedLock lock(stateLock);
+        sourceKey.clear();
+        sourceHash.clear();
+        sourceAnalysisDevice.clear();
+        sourceBeatModel.clear();
+        sourceKeyCandidates.clear();
+        sourceBeats.clear();
+        sourceDownbeats.clear();
+    }
+
+    auto command = makePythonModuleCommand("stemlab.source_analysis");
+    if (command.isEmpty())
+    {
+        sourceAnalysisRunning.store(false);
+        sendChangeMessage();
+        return;
+    }
+
+    const auto output = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                            .getNonexistentChildFile("stemlab_source_analysis", ".json", false);
+    const auto cancelFile = output.withFileExtension("cancel");
+
+    // A cancelled analysis leaves its sentinel file behind unless it is explicitly
+    // removed. Because the JSON result is normally deleted after every run, JUCE can
+    // choose the same result basename on the next analysis. A stale .cancel file then
+    // makes the Python worker abort immediately after hashing the source. Clear that
+    // per-run sentinel before the worker can observe it.
+    if (cancelFile.existsAsFile())
+        cancelFile.deleteFile();
+
+    command.add("--input");
+    command.add(source.getFullPathName());
+    command.add("--output");
+    command.add(output.getFullPathName());
+    command.add("--mode");
+    command.add(sourceAnalysisMode.load() == analysisFast ? "fast" : "accurate");
+    command.add("--cancel-file");
+    command.add(cancelFile.getFullPathName());
+
+    if (hasSuccessfulJob())
+    {
+        for (int index : {3, 4, 5})
+        {
+            const auto stem = getCompletedStemFile(index);
+            if (stem.existsAsFile())
+            {
+                command.add("--harmony-stem");
+                command.add(stem.getFullPathName());
+            }
+        }
+        const auto bass = getCompletedStemFile(2);
+        if (bass.existsAsFile())
+        {
+            command.add("--bass-stem");
+            command.add(bass.getFullPathName());
+        }
+    }
+
+    analysisThread = std::make_unique<StemLabUtilityThread>(
+        *this, StemLabUtilityThread::sourceAnalysis, command, source, output, juce::String{},
+        juce::String{}, cancelFile);
+
+    if (!analysisThread->startThread())
+    {
+        analysisThread.reset();
+        sourceAnalysisRunning.store(false);
+    }
+    setStatus("Analyzing source with Beat This!...");
+    sendChangeMessage();
+}
+
+void StemLabAudioProcessor::finishSourceAnalysis(const juce::File& source, const juce::File& result,
+                                                 int exitCode)
+{
+    if (source != getCaptureFile())
+    {
+        if (result.existsAsFile())
+            result.deleteFile();
+        return;
+    }
+
+    const auto elapsed = juce::jmax(0.0, (nowMs() - engineStartMs.load()) / 1000.0);
+    lastEngineDurationSeconds.store(elapsed);
+
+    if (engineCancelRequested.load())
+    {
+        if (result.existsAsFile())
+            result.deleteFile();
+        sourceAnalysisRunning.store(false);
+        engineCancelRequested.store(false);
+        engineProgress.store(0.0);
+        setStatus("Source analysis cancelled - source ready");
+        return;
+    }
+
+    juce::String key;
+    double bpm = -1.0;
+    double detectedBpm = -1.0;
+    double halfBpm = -1.0;
+    double doubleBpm = -1.0;
+    double barOne = 0.0;
+    int numerator = 4;
+    int denominator = 4;
+    bool corrected = false;
+    juce::String hash;
+    juce::String analysisDevice;
+    juce::String beatModel;
+    std::vector<StemLabKeyCandidate> keyCandidates;
+    std::vector<double> beats;
+    std::vector<double> downbeats;
+
+    if (exitCode == 0 && result.existsAsFile())
+    {
+        const auto parsed = juce::JSON::parse(result.loadFileAsString());
+        if (auto* object = parsed.getDynamicObject())
+        {
+            const auto keyValue = object->getProperty("key");
+            if (!keyValue.isVoid() && !keyValue.isUndefined())
+                key = keyValue.toString();
+            const auto bpmValue = object->getProperty("bpm");
+            if (!bpmValue.isVoid() && !bpmValue.isUndefined())
+                bpm = static_cast<double>(bpmValue);
+
+            detectedBpm = static_cast<double>(object->getProperty("detected_bpm"));
+            halfBpm = static_cast<double>(object->getProperty("half_time_bpm"));
+            doubleBpm = static_cast<double>(object->getProperty("double_time_bpm"));
+            barOne = static_cast<double>(object->getProperty("bar_one"));
+            numerator = juce::jmax(1, static_cast<int>(object->getProperty("meter_numerator")));
+            denominator = juce::jmax(1, static_cast<int>(object->getProperty("meter_denominator")));
+            corrected = static_cast<bool>(object->getProperty("corrected"));
+            hash = object->getProperty("source_hash").toString();
+            analysisDevice = object->getProperty("device").toString();
+            beatModel = object->getProperty("beat_model").toString();
+
+            if (auto* array = object->getProperty("beats").getArray())
+                for (const auto& item : *array)
+                    beats.push_back(static_cast<double>(item));
+            if (auto* array = object->getProperty("downbeats").getArray())
+                for (const auto& item : *array)
+                    downbeats.push_back(static_cast<double>(item));
+            if (auto* array = object->getProperty("key_candidates").getArray())
+            {
+                for (const auto& item : *array)
+                {
+                    if (auto* candidate = item.getDynamicObject())
+                    {
+                        keyCandidates.push_back(
+                            {candidate->getProperty("key").toString(),
+                             static_cast<double>(candidate->getProperty("probability"))});
+                    }
+                }
+            }
+        }
+    }
+
+    if (result.existsAsFile())
+        result.deleteFile();
+
+    {
+        const juce::ScopedLock lock(stateLock);
+        sourceKey = key;
+        sourceHash = hash;
+        sourceAnalysisDevice = analysisDevice;
+        sourceBeatModel = beatModel;
+        sourceKeyCandidates = std::move(keyCandidates);
+        sourceBeats = std::move(beats);
+        sourceDownbeats = std::move(downbeats);
+    }
+    sourceDetectedBpm.store(detectedBpm > 0.0 ? detectedBpm : -1.0);
+    sourceHalfBpm.store(halfBpm > 0.0 ? halfBpm : -1.0);
+    sourceDoubleBpm.store(doubleBpm > 0.0 ? doubleBpm : -1.0);
+    sourceBarOne.store(barOne);
+    sourceMeterNumerator.store(numerator);
+    sourceMeterDenominator.store(denominator);
+    sourceAnalysisCorrected.store(corrected);
+
+    if (corrected)
+        sourceBpm.store(bpm > 0.0 ? bpm : -1.0);
+    else
+        setTempoInterpretation(tempoInterpretation.load());
+
+    sourceAnalysisRunning.store(false);
+    engineCancelRequested.store(false);
+    engineProgress.store(exitCode == 0 ? 1.0 : 0.0);
+    if (exitCode == 0 && !hasSuccessfulJob())
+        setStatus("Source ready");
+    else if (exitCode == 0)
+        setStatus("Source analysis updated - stems ready");
+    else if (exitCode != 0)
+        setStatus("Source analysis unavailable - separation is still available");
+    sendChangeMessage();
+}
+
+juce::String StemLabAudioProcessor::getSourceAnalysisText() const
+{
+    if (sourceAnalysisRunning.load())
+        return "Analyzing key/BPM...";
+
+    if (!beatThisEnabled.load())
+        return "Beat This!: Off";
+
+    juce::String key;
+    {
+        const juce::ScopedLock lock(stateLock);
+        key = sourceKey;
+    }
+
+    const auto bpm = sourceBpm.load();
+    if (key.isNotEmpty() && bpm > 0.0)
+        return key + " - " + juce::String(juce::roundToInt(bpm)) + " BPM";
+    if (key.isNotEmpty())
+        return key + " - BPM: Unknown";
+    if (bpm > 0.0)
+        return "Key: Unknown - " + juce::String(juce::roundToInt(bpm)) + " BPM";
+    return "Key: Unknown - BPM: Unknown";
+}
+
+juce::String StemLabAudioProcessor::getSourceAnalysisDetails() const
+{
+    juce::String text = getSourceAnalysisText();
+    const juce::ScopedLock lock(stateLock);
+    if (!beatThisEnabled.load())
+        text += "\nBeat This! is disabled for automatic source analysis.";
+    else if (sourceAnalysisDevice.isNotEmpty())
+        text += "\nBeat This!: " + (sourceBeatModel.isNotEmpty() ? sourceBeatModel : "model") +
+                " on " + sourceAnalysisDevice.toUpperCase();
+    if (!sourceKeyCandidates.empty())
+    {
+        text += "\n\nTop key candidates:";
+        for (size_t index = 0; index < std::min<size_t>(3, sourceKeyCandidates.size()); ++index)
+        {
+            const auto& candidate = sourceKeyCandidates[index];
+            text += "\n" + juce::String(static_cast<int>(index + 1)) + ". " + candidate.key +
+                    " - " + juce::String(juce::roundToInt(candidate.probability * 100.0)) + "%";
+        }
+    }
+    text += "\nMeter: " + juce::String(sourceMeterNumerator.load()) + "/" +
+            juce::String(sourceMeterDenominator.load());
+    text += "\nBar one: " + juce::String(sourceBarOne.load(), 3) + " seconds";
+    text += "\nTempo choices: " + juce::String(sourceHalfBpm.load(), 1) + " / " +
+            juce::String(sourceDetectedBpm.load(), 1) + " / " +
+            juce::String(sourceDoubleBpm.load(), 1) + " BPM";
+    return text;
+}
+
+juce::String StemLabAudioProcessor::getSourceKey() const
+{
+    const juce::ScopedLock lock(stateLock);
+    return sourceKey;
+}
+
+void StemLabAudioProcessor::setBeatThisEnabled(bool enabled)
+{
+    beatThisEnabled.store(enabled);
+
+    if (!enabled)
+    {
+        if (analysisThread != nullptr && analysisThread->isThreadRunning())
+        {
+            engineCancelRequested.store(true);
+            analysisThread->requestCancel();
+            setStatus("Stopping Beat This! analysis...");
+
+            // The sentinel is enough for a job that reaches a checkpoint.
+            // Enforce the grace from here for one that does not: the
+            // thread itself is parked in readProcessOutput and cannot.
+            std::weak_ptr<int> lifetime = lifetimeToken;
+
+            juce::Timer::callAfterDelay(2000,
+                                        [this, lifetime]
+                                        {
+                                            if (lifetime.expired())
+                                                return;
+
+                                            if (analysisThread != nullptr &&
+                                                analysisThread->isThreadRunning())
+                                            {
+                                                analysisThread->stopChildProcess(0);
+                                            }
+                                        });
+        }
+        sendChangeMessage();
+        return;
+    }
+
+    const auto source = getCaptureFile();
+    if (source.existsAsFile() && !sourceAnalysisRunning.load() &&
+        !isRecursiveEngineRunning() &&
+        !(engineThread != nullptr && engineThread->isThreadRunning()))
+    {
+        startSourceAnalysis(source);
+    }
+    sendChangeMessage();
+}
+
+void StemLabAudioProcessor::setSourceAnalysisMode(int mode)
+{
+    sourceAnalysisMode.store(juce::jlimit(static_cast<int>(analysisAccurate),
+                                          static_cast<int>(analysisFast), mode));
+    const auto source = getCaptureFile();
+    if (beatThisEnabled.load() && source.existsAsFile() && !sourceAnalysisRunning.load())
+        startSourceAnalysis(source);
+}
+
+void StemLabAudioProcessor::setTempoInterpretation(int interpretation)
+{
+    interpretation = juce::jlimit(static_cast<int>(tempoHalf), static_cast<int>(tempoDouble),
+                                   interpretation);
+    tempoInterpretation.store(interpretation);
+    if (sourceAnalysisCorrected.load())
+        return;
+    const double choices[] = {sourceHalfBpm.load(), sourceDetectedBpm.load(),
+                              sourceDoubleBpm.load()};
+    sourceBpm.store(choices[interpretation] > 0.0 ? choices[interpretation] : -1.0);
+    sendChangeMessage();
+}
+
+bool StemLabAudioProcessor::saveSourceCorrection(double bpm, const juce::String& key,
+                                                 int numerator, int denominator, double barOne)
+{
+    const auto source = getCaptureFile();
+    if (!source.existsAsFile())
+        return false;
+    juce::StringArray arguments{"--input", source.getFullPathName(), "--set-correction",
+                                "--correct-bpm", juce::String(bpm, 4), "--correct-key", key,
+                                "--correct-meter-numerator", juce::String(numerator),
+                                "--correct-meter-denominator", juce::String(denominator),
+                                "--correct-bar-one", juce::String(barOne, 6)};
+    return launchAnalysisMaintenance(arguments, "Saving local analysis correction");
+}
+
+bool StemLabAudioProcessor::forgetSourceCorrection()
+{
+    const auto source = getCaptureFile();
+    if (!source.existsAsFile())
+        return false;
+    return launchAnalysisMaintenance(
+        {"--input", source.getFullPathName(), "--forget-correction"},
+        "Forgetting local analysis correction");
+}
+
+bool StemLabAudioProcessor::clearAnalysisCache()
+{
+    return launchAnalysisMaintenance({"--clear-cache"}, "Clearing local analysis cache");
+}
+
+bool StemLabAudioProcessor::launchAnalysisMaintenance(const juce::StringArray& arguments,
+                                                      const juce::String& label)
+{
+    if (sourceAnalysisRunning.load())
+        return false;
+    auto command = makePythonModuleCommand("stemlab.source_analysis");
+    if (command.isEmpty())
+        return false;
+    command.addArray(arguments);
+    const auto source = getCaptureFile();
+    analysisThread.reset();
+    sourceAnalysisRunning.store(true);
+    setStatus(label + "...");
+    analysisThread = std::make_unique<StemLabUtilityThread>(
+        *this, StemLabUtilityThread::analysisMaintenance, command, source, juce::File{}, label);
+    if (!analysisThread->startThread())
+    {
+        analysisThread.reset();
+        sourceAnalysisRunning.store(false);
+        return false;
+    }
+    return true;
+}
+
+void StemLabAudioProcessor::finishAnalysisMaintenance(const juce::File& source,
+                                                      const juce::String& label, int exitCode)
+{
+    sourceAnalysisRunning.store(false);
+    if (exitCode == 0)
+    {
+        setStatus(label + " complete");
+        if (beatThisEnabled.load() && source.existsAsFile())
+            startSourceAnalysis(source);
+    }
+    else
+        setStatus(label + " failed - see diagnostics");
+}
+
+void StemLabAudioProcessor::setWaveformGridMode(int mode) noexcept
+{
+    waveformGridMode.store(
+        juce::jlimit(static_cast<int>(gridHost), static_cast<int>(gridManual), mode));
+    sendChangeMessage();
+}
+
+void StemLabAudioProcessor::setManualGrid(double bpm, int numerator, int denominator,
+                                          double barOne) noexcept
+{
+    manualGridBpm.store(juce::jlimit(20.0, 400.0, bpm));
+    manualGridNumerator.store(juce::jlimit(1, 32, numerator));
+    manualGridDenominator.store(juce::jlimit(1, 32, denominator));
+    manualGridBarOne.store(juce::jmax(0.0, barOne));
+    sendChangeMessage();
+}
+
+StemLabGridInfo StemLabAudioProcessor::getWaveformGridInfo() const
+{
+    StemLabGridInfo info;
+    info.mode = waveformGridMode.load();
+    info.captureStartPpq = juce::jmax(0.0, captureStartPpq.load());
+
+    if (info.mode == gridHost)
+    {
+        info.bpm = lastHostBpm.load();
+        info.numerator = lastHostNumerator.load();
+        info.denominator = lastHostDenominator.load();
+        const auto barLength = info.numerator * 4.0 / juce::jmax(1, info.denominator);
+        const auto nextBarPpq = std::ceil(info.captureStartPpq / barLength) * barLength;
+        info.barOne = (nextBarPpq - info.captureStartPpq) * 60.0 / info.bpm;
+    }
+    else if (info.mode == gridManual)
+    {
+        info.bpm = manualGridBpm.load();
+        info.numerator = manualGridNumerator.load();
+        info.denominator = manualGridDenominator.load();
+        info.barOne = manualGridBarOne.load();
+    }
+    else
+    {
+        info.bpm = sourceBpm.load() > 0.0 ? sourceBpm.load() : 120.0;
+        info.numerator = sourceMeterNumerator.load();
+        info.denominator = sourceMeterDenominator.load();
+        info.barOne = sourceBarOne.load();
+        const juce::ScopedLock lock(stateLock);
+        info.beats = sourceBeats;
+        info.downbeats = sourceDownbeats;
+    }
+    return info;
+}
+
+int StemLabAudioProcessor::getWaveformLaneHeight(const juce::String& id) const
+{
+    const juce::ScopedLock lock(laneHeightLock);
+    const auto found = waveformLaneHeights.find(id.toStdString());
+    return found != waveformLaneHeights.end() ? found->second
+                                               : stemlab::waveform::defaultLaneHeight;
+}
+
+void StemLabAudioProcessor::setWaveformLaneHeight(const juce::String& id, int height)
+{
+    const juce::ScopedLock lock(laneHeightLock);
+    waveformLaneHeights[id.toStdString()] = stemlab::waveform::clampLaneHeight(height);
+    sendChangeMessage();
+}
+
+StemLabSelectionRange StemLabAudioProcessor::getStemSelectionRange(const juce::String& id) const
+{
+    const juce::ScopedLock lock(selectionLock);
+    const auto found = stemSelections.find(id.toStdString());
+    return found != stemSelections.end() ? found->second : StemLabSelectionRange{};
+}
+
+void StemLabAudioProcessor::setStemSelectionRange(const juce::String& id, double start, double end)
+{
+    start = juce::jlimit(0.0, 1.0, start);
+    end = juce::jlimit(0.0, 1.0, end);
+    if (end < start)
+        std::swap(start, end);
+
+    StemLabSelectionRange range;
+    range.start = start;
+    range.end = end;
+    range.active = end - start >= 0.0001;
+
+    {
+        const juce::ScopedLock lock(selectionLock);
+        if (range.active)
+            stemSelections[id.toStdString()] = range;
+        else
+            stemSelections.erase(id.toStdString());
+    }
+
+    if (getCurrentPreviewSelectionId() == id)
+        updatePreviewLoopForId(id);
+
+    sendChangeMessage();
+}
+
+void StemLabAudioProcessor::clearStemSelectionRange(const juce::String& id)
+{
+    {
+        const juce::ScopedLock lock(selectionLock);
+        stemSelections.erase(id.toStdString());
+    }
+
+    if (getCurrentPreviewSelectionId() == id)
+        updatePreviewLoopForId(id);
+
+    sendChangeMessage();
+}
+
+void StemLabAudioProcessor::clearAllStemSelectionRanges()
+{
+    {
+        const juce::ScopedLock lock(selectionLock);
+        stemSelections.clear();
+    }
+    previewLoopEnabled.store(false);
+    previewLoopStart.store(0.0);
+    previewLoopEnd.store(0.0);
+    sendChangeMessage();
+}
+
+bool StemLabAudioProcessor::launchStemMidiConversion(int stemIndex)
+{
+    if (!hasSuccessfulJob() || isEngineRunning() || isMidiConversionRunning() ||
+        !juce::isPositiveAndBelow(stemIndex, stemCount))
+    {
+        return false;
+    }
+
+    const auto stem = getStemName(stemIndex);
+    return launchMidiConversion(getCompletedStemFile(stemIndex), stem, stem,
+                                juce::File::createLegalFileName(stem), stem);
+}
+
+bool StemLabAudioProcessor::launchRecursiveMidiConversion(const juce::String& itemId)
+{
+    if (!hasSuccessfulJob() || isEngineRunning() || isMidiConversionRunning())
+        return false;
+
+    for (const auto& item : getRecursiveStemItems())
+    {
+        if (item.id == itemId)
+        {
+            const auto stemType = item.category.isNotEmpty() ? item.category : item.rootStem;
+            return launchMidiConversion(item.file, stemType, item.label,
+                                        juce::File::createLegalFileName(item.id.replace("/", "_")),
+                                        item.id);
+        }
+    }
+    return false;
+}
+
+bool StemLabAudioProcessor::isMidiConversionRunning() const noexcept
+{
+    return midiThread != nullptr && midiThread->isThreadRunning();
+}
+
+bool StemLabAudioProcessor::launchMidiConversion(const juce::File& source,
+                                                 const juce::String& stemType,
+                                                 const juce::String& label,
+                                                 const juce::String& outputName,
+                                                 const juce::String& resultId)
+{
+    if (!source.existsAsFile())
+    {
+        setStatus("MIDI source stem was not found");
+        return false;
+    }
+
+    auto command = makePythonModuleCommand("stemlab.midi");
+    if (command.isEmpty())
+    {
+        setStatus("StemLab MIDI worker could not be located");
+        return false;
+    }
+
+    const auto midiDirectory = getLastJobDirectory().getChildFile("midi");
+    if (!midiDirectory.createDirectory())
+    {
+        setStatus("Could not create the MIDI output folder");
+        return false;
+    }
+
+    const auto output = midiDirectory.getChildFile(outputName + ".mid");
+
+    command.add("--input");
+    command.add(source.getFullPathName());
+    command.add("--output");
+    command.add(output.getFullPathName());
+    command.add("--stem-type");
+    command.add(stemType);
+
+    const auto grid = getWaveformGridInfo();
+    command.add("--grid-mode");
+    command.add(grid.mode == gridHost ? "host" : (grid.mode == gridManual ? "manual" : "source"));
+    command.add("--bar-one");
+    command.add(juce::String(grid.barOne, 6));
+
+    if (getSourceBpm() > 0.0)
+    {
+        command.add("--bpm");
+        command.add(juce::String(getSourceBpm(), 3));
+    }
+
+    midiThread.reset();
+    midiThread = std::make_unique<StemLabUtilityThread>(*this, StemLabUtilityThread::midiConversion,
+                                                        command, source, output, label, resultId);
+    setStatus("Converting " + label + " to MIDI...");
+
+    if (!midiThread->startThread())
+    {
+        midiThread.reset();
+        setStatus("Could not start MIDI conversion");
+        return false;
+    }
+    return true;
+}
+
+void StemLabAudioProcessor::finishMidiConversion(const juce::String& label,
+                                                 const juce::File& output, int exitCode,
+                                                 const juce::String& resultId)
+{
+    if (exitCode == 0 && output.existsAsFile() && loadMidiInfo(resultId, output))
+    {
+        setStatus("MIDI saved: " + output.getFullPathName());
+    }
+    else
+    {
+        if (output.existsAsFile())
+            output.deleteFile();
+        setStatus("MIDI conversion failed for " + label + " - see diagnostics");
+    }
+}
+
+bool StemLabAudioProcessor::loadMidiInfo(const juce::String& id, const juce::File& midiFile)
+{
+    const auto metadata = midiFile.getSiblingFile(midiFile.getFileNameWithoutExtension() +
+                                                   ".stemlab-midi.json");
+    if (!metadata.existsAsFile())
+        return false;
+
+    const auto parsed = juce::JSON::parse(metadata.loadFileAsString());
+    auto* object = parsed.getDynamicObject();
+    if (object == nullptr || static_cast<int>(object->getProperty("schema")) < 1)
+        return false;
+
+    StemLabMidiInfo info;
+    info.id = id;
+    info.sourceStem = object->getProperty("source_stem").toString();
+    info.midiFile = juce::File(object->getProperty("midi_file").toString());
+    info.dragFile = juce::File(object->getProperty("drag_file").toString());
+    info.sourceTempo = static_cast<double>(object->getProperty("source_tempo"));
+    info.barOne = static_cast<double>(object->getProperty("bar_one"));
+    info.drums = static_cast<bool>(object->getProperty("drums"));
+
+    if (!info.midiFile.existsAsFile())
+        info.midiFile = midiFile;
+
+    if (auto* notes = object->getProperty("notes").getArray())
+    {
+        info.notes.reserve(static_cast<size_t>(notes->size()));
+        for (const auto& value : *notes)
+        {
+            if (auto* note = value.getDynamicObject())
+            {
+                info.notes.push_back({static_cast<double>(note->getProperty("start")),
+                                      static_cast<double>(note->getProperty("end")),
+                                      static_cast<int>(note->getProperty("pitch")),
+                                      static_cast<int>(note->getProperty("velocity")),
+                                      static_cast<double>(note->getProperty("confidence"))});
+            }
+        }
+    }
+
+    if (info.notes.empty())
+        return false;
+
+    const juce::ScopedLock lock(midiInfoLock);
+    midiInfos[id.toStdString()] = std::move(info);
+    sendChangeMessage();
+    return true;
+}
+
+StemLabMidiInfo StemLabAudioProcessor::getMidiInfo(const juce::String& id) const
+{
+    const juce::ScopedLock lock(midiInfoLock);
+    const auto found = midiInfos.find(id.toStdString());
+    return found != midiInfos.end() ? found->second : StemLabMidiInfo{};
+}
+
+bool StemLabAudioProcessor::hasMidiInfo(const juce::String& id) const
+{
+    const auto info = getMidiInfo(id);
+    return !info.notes.empty() && info.midiFile.existsAsFile();
+}
+
+bool StemLabAudioProcessor::auditionMidi(const juce::String& id)
+{
+    if (isMidiAuditioning(id))
+    {
+        stopMidiAudition();
+        setStatus("MIDI audition stopped");
+        return true;
+    }
+
+    const auto info = getMidiInfo(id);
+    if (info.notes.empty())
+    {
+        setStatus("Convert this stem to MIDI first");
+        return false;
+    }
+
+    previewTransport.stop();
+    {
+        const juce::ScopedLock lock(midiAuditionLock);
+        midiAuditionSynth.allNotesOff(0, false);
+        midiAuditionNotes = info.notes;
+        midiAuditionId = id;
+        midiAuditionPosition = 0.0;
+        midiAuditionDuration = 0.0;
+        for (const auto& note : midiAuditionNotes)
+            midiAuditionDuration = juce::jmax(midiAuditionDuration, note.end);
+        midiAuditionActive.store(true);
+    }
+    setStatus("Auditioning MIDI for " + id);
+    return true;
+}
+
+bool StemLabAudioProcessor::isMidiAuditioning(const juce::String& id) const
+{
+    const juce::ScopedLock lock(midiAuditionLock);
+    return midiAuditionActive.load() && midiAuditionId == id;
+}
+
+void StemLabAudioProcessor::stopMidiAudition()
+{
+    const juce::ScopedLock lock(midiAuditionLock);
+    midiAuditionActive.store(false);
+    midiAuditionSynth.allNotesOff(0, false);
+    midiAuditionNotes.clear();
+    midiAuditionId.clear();
+    midiAuditionPosition = 0.0;
+    midiAuditionDuration = 0.0;
+}
+
+bool StemLabAudioProcessor::renderMidiAudition(juce::AudioBuffer<float>& buffer, int startSample,
+                                               int numSamples)
+{
+    const juce::ScopedLock lock(midiAuditionLock);
+    if (!midiAuditionActive.load() || currentSampleRate <= 0.0 || numSamples <= 0)
+        return false;
+
+    const auto blockStart = midiAuditionPosition;
+    const auto blockEnd = blockStart + static_cast<double>(numSamples) / currentSampleRate;
+    juce::MidiBuffer events;
+
+    auto eventSample = [=](double seconds)
+    {
+        return startSample + juce::jlimit(
+                                 0, numSamples - 1,
+                                 static_cast<int>(std::round((seconds - blockStart) *
+                                                             currentSampleRate)));
+    };
+
+    for (const auto& note : midiAuditionNotes)
+    {
+        if (note.start >= blockStart && note.start < blockEnd)
+            events.addEvent(juce::MidiMessage::noteOn(
+                                1, note.pitch,
+                                static_cast<juce::uint8>(juce::jlimit(1, 127, note.velocity))),
+                            eventSample(note.start));
+        if (note.end >= blockStart && note.end < blockEnd)
+            events.addEvent(juce::MidiMessage::noteOff(1, note.pitch), eventSample(note.end));
+    }
+
+    midiAuditionSynth.renderNextBlock(buffer, events, startSample, numSamples);
+    midiAuditionPosition = blockEnd;
+    if (blockStart > midiAuditionDuration + 0.35)
+    {
+        midiAuditionSynth.allNotesOff(0, false);
+        midiAuditionActive.store(false);
+        midiAuditionNotes.clear();
+        midiAuditionId.clear();
+    }
+    return true;
+}
+
+bool StemLabAudioProcessor::sendMidiToAbleton(const juce::String& id)
+{
+    if (isStandaloneApp() || !abletonBridgeActive.load())
+    {
+        setStatus("StemLab Remote must be active to create an Ableton MIDI clip");
+        return false;
+    }
+
+    const auto info = getMidiInfo(id);
+    if (info.notes.empty())
+    {
+        setStatus("Convert this stem to MIDI first");
+        return false;
+    }
+
+    const auto job = getLastJobDirectory();
+    if (!job.isDirectory())
+        return false;
+
+    const auto grid = getWaveformGridInfo();
+    const auto bpm = juce::jlimit(20.0, 400.0, grid.bpm);
+    const auto beatsPerSecond = bpm / 60.0;
+
+    auto payload = std::make_unique<juce::DynamicObject>();
+    payload->setProperty("protocol", "stemlab-ableton-midi");
+    payload->setProperty("version", 1);
+    payload->setProperty("source_stem", info.sourceStem);
+    payload->setProperty("source_tempo", info.sourceTempo);
+    payload->setProperty("grid_mode",
+                         grid.mode == gridHost ? "host"
+                                               : (grid.mode == gridManual ? "manual" : "source"));
+    payload->setProperty("grid_bpm", bpm);
+    payload->setProperty("bar_one", grid.barOne);
+    payload->setProperty("capture_start_ppq", juce::jmax(0.0, captureStartPpq.load()));
+    payload->setProperty("target_track", juce::String{});
+
+    juce::Array<juce::var> notes;
+    for (const auto& note : info.notes)
+    {
+        auto value = std::make_unique<juce::DynamicObject>();
+        value->setProperty("pitch", note.pitch);
+        value->setProperty("start", juce::jmax(0.0, note.start * beatsPerSecond));
+        value->setProperty("duration",
+                           juce::jmax(0.0001, (note.end - note.start) * beatsPerSecond));
+        value->setProperty("velocity", note.velocity);
+        value->setProperty("confidence", note.confidence);
+        notes.add(juce::var(value.release()));
+    }
+    payload->setProperty("notes", juce::var(notes));
+
+    const auto manifest = job.getChildFile(
+        "stemlab_ableton_midi_" + juce::File::createLegalFileName(id.replace("/", "_")) + ".json");
+    if (!manifest.replaceWithText(juce::JSON::toString(juce::var(payload.release()), true)))
+        return false;
+
+    const auto ack = job.getChildFile("stemlab_ableton_midi_ack.json");
+    if (ack.existsAsFile())
+        ack.deleteFile();
+
+    const auto message = "stemlab_midi_ready " + utf8ToHex(manifest.getFullPathName());
+    if (!sendAbletonControlMessage(message))
+    {
+        setStatus("Could not contact StemLab Remote");
+        return false;
+    }
+
+    setStatus("Creating MIDI clip in Ableton...");
+    return true;
+}
+
+juce::String StemLabAudioProcessor::getCurrentPreviewSelectionId() const
+{
+    // Which lane a selection applies to. Upstream keyed this off a single
+    // "preview" slot; the Lanes interface has no such slot - what you hear
+    // is the monitor mix - so a soloed lane stands in for it, falling back
+    // to the directly previewed stem.
+    {
+        const juce::ScopedLock lock(recursiveLock);
+
+        for (const auto& item : recursiveItems)
+        {
+            const auto flags = monitorFlagsForRecursive(item.id);
+
+            if (flags != nullptr && flags->solo.load())
+                return item.id;
+        }
+    }
+
+    for (int i = 0; i < stemCount; ++i)
+    {
+        const auto flags = monitorFlagsForStem(i);
+
+        if (flags != nullptr && flags->solo.load())
+            return getStemName(i);
+    }
+
+    const auto index = previewStemIndex.load();
+
+    if (juce::isPositiveAndBelow(index, stemCount))
+        return getStemName(index);
+
+    return {};
+}
+
+void StemLabAudioProcessor::updatePreviewLoopForId(const juce::String& id)
+{
+    // The Lanes transport is shared, so the loop follows whichever transport
+    // is currently monitoring rather than a dedicated preview player.
+    const auto range = getStemSelectionRange(id);
+    auto& transport = activeTransport();
+    const auto length = transport.getLengthInSeconds();
+    const bool enabled = range.active && length > 0.0 && range.length() * length >= 0.02;
+
+    previewLoopEnabled.store(enabled);
+    previewLoopStart.store(enabled ? range.start * length : 0.0);
+    previewLoopEnd.store(enabled ? range.end * length : 0.0);
+
+    if (!enabled)
+        return;
+
+    const auto position = transport.getCurrentPosition();
+    const auto start = previewLoopStart.load();
+    const auto end = previewLoopEnd.load();
+
+    if (position < start || position >= end)
+        transport.setPosition(start);
+}

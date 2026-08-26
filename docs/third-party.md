@@ -53,10 +53,16 @@ Authors, licensed under the SIL Open Font License 1.1. The full license text
 ships beside the font files as `plugin/Resources/fonts/OFL.txt` and must
 accompany any redistribution of the font files.
 
+## Beat This!
+
+Optional beat/downbeat analysis uses Beat This! 1.1.0 and the upstream
+`small0` and `final0` checkpoints. Beat This! is MIT licensed. Release staging
+validates the exact files listed in `packaging/models.json`.
+
 ## Python / ML runtime
 
 StemLab's development environment contains third-party components including
-CPython, PyTorch, NumPy, SciPy, SoundFile, PyYAML, tqdm, Demucs, BS-RoFormer
+CPython, PyTorch, NumPy, SciPy, SoundFile, librosa, Mido, PyYAML, tqdm, Demucs, BS-RoFormer
 inference dependencies, audio-separator, and their transitive dependencies.
 
 Those packages retain their respective upstream licenses.

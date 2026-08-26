@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="plugin/Resources/StemLabIcon.png" alt="StemLab" width="420">
+  <img src="plugin/Resources/StemLabIcon.png" alt="StemLab" width="220">
 </p>
 
 # StemLab
@@ -9,8 +9,8 @@ vocals, drums, bass, guitar, piano, and other stems, with direct Ableton Live
 integration on Windows and direct REAPER integration on Linux.
 
 The repository contains the source-development workflow. It deliberately does
-not contain generated builds, model weights, virtual environments, or installer
-packaging.
+not contain generated builds, model weights, or virtual environments. Release
+scripts and checksum manifests are source-controlled; their generated output is not.
 
 ## Features
 
@@ -21,6 +21,8 @@ packaging.
 - File, physical-input, and system-audio capture (WASAPI loopback on Windows,
   PipeWire/PulseAudio monitor on Linux)
 - Waveform preview and selective export
+- Optional Beat This! key/BPM analysis (Fast by default, Accurate available)
+- Per-stem MIDI export and a source-derived beat grid
 - Direct import into Ableton through `StemLabRemote` (Windows)
 - In-process REAPER integration on Linux - no scripts or extensions to install
 - Drag-and-drop stem export into any DAW or file manager
@@ -142,6 +144,8 @@ PluginEditor -> PluginProcessor -> stemlab-plugin-job
 - `stemlab/plugin_job.py` translates between JUCE arguments and Python.
 - `stemlab/pipeline.py` chooses the separation engine and optional refinement.
 - `stemlab/recursive.py` routes adaptive child-stem operations.
+- `stemlab/source_analysis.py` provides optional original-source key/BPM analysis.
+- `stemlab/midi.py` transcribes one completed stem at a time.
 - `StemLabRemote` is the only code allowed to manipulate Ableton tracks/clips.
 
 The module and runtime reference is in [docs/development.md](docs/development.md).
@@ -158,6 +162,23 @@ After setup, separation can also run without the JUCE app:
 
 Use `--engine roformer`, `--engine demucs`, or `--engine hybrid`. Add
 `--no-refine` to keep the raw model output.
+
+Beat This! is off by default in the app and never blocks separation when
+disabled. Fast uses `small0`; Accurate uses `final0`. Release builds stage both
+checkpoints locally and validate their sizes and SHA-256 hashes.
+
+## Build A Release
+
+Build the portable folder and then the Inno Setup installer:
+
+```powershell
+.\build_portable_windows.ps1
+.\build_installer_windows.ps1 -SkipPortableBuild
+```
+
+Outputs are `dist\StemLab-Portable-0.9.9` and
+`dist\StemLab-Setup-0.9.9.exe` (plus installer data slices). Model downloads
+occur only while staging a release; the installed runtime uses packaged models.
 
 ## Repository Map
 

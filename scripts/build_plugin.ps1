@@ -151,6 +151,13 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host ""
+Write-Host "Running C++ grid tests..."
+ctest --test-dir $BuildDir -C Release --output-on-failure
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
+Write-Host ""
 Write-Host "Build complete."
 Write-Host "Standalone:"
 Write-Host "  $(Join-Path $BuildDir 'StemLabPlugin_artefacts\Release\Standalone\StemLab.exe')"

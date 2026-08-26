@@ -13,7 +13,13 @@ from pathlib import Path
 from .audio import STEM_NAMES, find_stem_file
 from .pipeline import DEFAULT_ENGINE, ENGINE_CHOICES, separate
 from .pretrained import DEFAULT_MODEL
-from .runtime import configure_utf8_stdio, start_cancel_watchdog
+from .runtime import (
+    CANCEL_FILE,
+    CancellationToken,
+    JobCancelled,
+    configure_utf8_stdio,
+    start_cancel_watchdog,
+)
 
 BRIDGE_HOST = "127.0.0.1"
 BRIDGE_PORT = 39277
@@ -169,6 +175,7 @@ def run_plugin_job(
     engine: str = DEFAULT_ENGINE,
     refine: bool = True,
     notify: bool = True,
+    cancel_file: Path | None = None,
 ) -> Path:
     """Separate audio, write an Ableton manifest, and optionally notify Live."""
     selected = []
@@ -182,10 +189,14 @@ def run_plugin_job(
     if not selected:
         raise ValueError("At least one stem must be selected")
 
-    # The plugin's Cancel button writes a sentinel into the job directory;
-    # the watchdog takes this process and its model children down together.
+    # Two layers over the same sentinel. The token stops the job cleanly
+    # wherever it reaches a checkpoint; the watchdog is the backstop for
+    # where it cannot - a model child sitting inside torch for minutes, or
+    # the plugin disappearing entirely - and kills the whole job then.
     start_cancel_watchdog(output_dir)
 
+    cancellation = CancellationToken(cancel_file or Path(output_dir) / CANCEL_FILE)
+    cancellation.raise_if_cancelled()
     write_progress(output_dir, 3.0, "Starting")
 
     def on_progress(percent: float, stage: str):
@@ -199,6 +210,7 @@ def run_plugin_job(
         engine=engine,
         refine=refine,
         progress_callback=on_progress,
+        cancellation=cancellation,
     )
 
     write_progress(output_dir, 96.0, "Building stem list")
@@ -237,6 +249,11 @@ def main() -> None:
     """CLI entry used by ``stemlab-plugin-job`` and the JUCE process bridge."""
     try:
         _main()
+    except JobCancelled:
+        # A cancel is a user action, not a failure: report it as such and
+        # leave the "Failed - ..." status for real errors.
+        print("STEMLAB_CANCELLED", flush=True)
+        raise SystemExit(130) from None
     except Exception as exc:
         # The plugin reads the failure reason from this line. It has to live
         # inside main(): the console-script entry points call main()
@@ -280,6 +297,7 @@ def _main() -> None:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--no-refine", action="store_true")
     parser.add_argument("--no-notify", action="store_true")
+    parser.add_argument("--cancel-file")
     args = parser.parse_args()
 
     run_plugin_job(
@@ -292,6 +310,7 @@ def _main() -> None:
         engine=args.engine,
         refine=not args.no_refine,
         notify=not args.no_notify,
+        cancel_file=Path(args.cancel_file) if args.cancel_file else None,
     )
 
 

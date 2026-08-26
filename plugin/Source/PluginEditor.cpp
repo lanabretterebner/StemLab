@@ -62,6 +62,66 @@ juce::String formatSeconds(double seconds)
     return juce::String::formatted("%02d:%02d", minutes, secs);
 }
 
+// Settings-menu ids: 1..5 are the fixed entries.
+constexpr int gridModeMenuBase = 400;
+constexpr int analysisModeMenuBase = 410;
+constexpr int tempoMenuBase = 420;
+constexpr int analysisEnableId = 430;
+constexpr int analysisForgetId = 431;
+constexpr int analysisClearCacheId = 432;
+
+// Lane-menu ids for MIDI, above the per-menu action ids.
+constexpr int midiConvertId = 500;
+constexpr int midiAuditionId = 501;
+constexpr int midiSaveId = 502;
+constexpr int midiSendId = 503;
+
+/*
+    Waveform zoom detents.
+
+    A continuous zoom reads back as "3.7x", which tells nobody anything and
+    never lands on a round number twice. These are the stops the slider
+    snaps to, so the readout beside it is always a clean multiplier and
+    stepping is repeatable.
+*/
+constexpr double waveformZoomSteps[] = {1.0,  1.5,  2.0,  3.0,  4.0,  6.0, 8.0,
+                                        12.0, 16.0, 24.0, 32.0, 48.0, 64.0};
+
+constexpr int waveformZoomStepCount =
+    static_cast<int>(sizeof(waveformZoomSteps) / sizeof(waveformZoomSteps[0]));
+
+/** The detent nearest a stored zoom, which need not be one of them. */
+int waveformZoomIndexFor(double zoom)
+{
+    int best = 0;
+    double bestDistance = std::abs(zoom - waveformZoomSteps[0]);
+
+    for (int i = 1; i < waveformZoomStepCount; ++i)
+    {
+        const auto distance = std::abs(zoom - waveformZoomSteps[i]);
+
+        if (distance < bestDistance)
+        {
+            bestDistance = distance;
+            best = i;
+        }
+    }
+
+    return best;
+}
+
+juce::String waveformZoomText(double zoom)
+{
+    // The half-steps at the low end are the only ones with a fraction.
+    const auto rounded = juce::roundToInt(zoom);
+
+    const auto number = std::abs(zoom - static_cast<double>(rounded)) < 0.01
+                            ? juce::String(rounded)
+                            : juce::String(zoom, 1);
+
+    return number + juce::String::fromUTF8("\xc3\x97");
+}
+
 juce::String stemDisplayName(int index)
 {
     const auto name = StemLabAudioProcessor::getStemName(index);
@@ -136,25 +196,92 @@ void StemLaneWaveform::paint(juce::Graphics& g)
 
     const int palette = processor.getWaveformColourIndex();
 
+    /*
+     * At zoom 1 this is the whole file, as it always was. Above that it is a
+     * window of it, centred on the playhead - and every lane asks the
+     * processor for it, so they all scroll together.
+     */
+    const auto view = processor.getWaveformViewRange(length);
+    const auto viewLength = juce::jmax(1.0e-6, view.getLength());
+
+    const auto secondsToX = [&inner, &view, viewLength](double seconds)
+    {
+        return inner.getX() +
+               static_cast<float>((seconds - view.getStart()) / viewLength) * inner.getWidth();
+    };
+
+    // Beat grid behind the waveform: bars read stronger than beats, and the
+    // whole thing stays subordinate to the audio it sits behind.
+    if (length > 0.0 && !inner.isEmpty())
+    {
+        const auto grid = processor.getWaveformGridInfo();
+
+        if (grid.bpm > 0.0)
+        {
+            const auto secondsPerBeat = 60.0 / grid.bpm;
+            const auto beatsPerBar = juce::jmax(1, grid.numerator);
+
+            if (secondsPerBeat > 0.0 && secondsPerBeat * beatsPerBar * 3.0 < length)
+            {
+                const auto pixelsPerSecond =
+                    static_cast<double>(inner.getWidth()) / viewLength;
+
+                // Thin out beat lines that would be closer than a few pixels.
+                const bool drawBeats = secondsPerBeat * pixelsPerSecond >= 7.0;
+
+                /*
+                 * Start at the first beat in view rather than at bar one: at
+                 * 64x on a long track that is thousands of iterations that
+                 * would each be computed only to be discarded.
+                 */
+                int beatIndex = static_cast<int>(
+                    std::floor((view.getStart() - grid.barOne) / secondsPerBeat));
+
+                for (double t = grid.barOne + beatIndex * secondsPerBeat;
+                     t <= view.getEnd() && t < length;
+                     t += secondsPerBeat, ++beatIndex)
+                {
+                    if (t < 0.0)
+                        continue;
+
+                    // beatIndex is negative before bar one, and % keeps that
+                    // sign in C++; fold it back before testing for a bar.
+                    const bool bar = (((beatIndex % beatsPerBar) + beatsPerBar) % beatsPerBar) == 0;
+
+                    if (!bar && !drawBeats)
+                        continue;
+
+                    const auto x = secondsToX(t);
+
+                    if (x < inner.getX() || x > inner.getRight())
+                        continue;
+
+                    g.setColour(theme::colours::text().withAlpha(bar ? 0.22f : 0.10f));
+                    g.fillRect(x, inner.getY(), bar ? 1.4f : 1.0f, inner.getHeight());
+                }
+            }
+        }
+    }
+
     if (length > 0.0 && thumbnail.getNumChannels() > 0 && !inner.isEmpty())
     {
         const int channels = juce::jmin(2, thumbnail.getNumChannels());
 
         const float playheadX =
-            inner.getX() + static_cast<float>(juce::jmax(0.0, playNormalised)) * inner.getWidth();
+            secondsToX(juce::jmax(0.0, playNormalised) * length);
 
         const auto centreY = inner.getCentreY();
 
         for (float x = inner.getX(); x < inner.getRight(); x += lanes::barPitch)
         {
             const auto start =
-                static_cast<double>(x - inner.getX()) / static_cast<double>(inner.getWidth()) *
-                length;
+                view.getStart() + static_cast<double>(x - inner.getX()) /
+                                      static_cast<double>(inner.getWidth()) * viewLength;
 
             const auto end = juce::jmax(
                 start + 0.000001,
-                static_cast<double>(x + lanes::barPitch - inner.getX()) /
-                    static_cast<double>(inner.getWidth()) * length);
+                view.getStart() + static_cast<double>(x + lanes::barPitch - inner.getX()) /
+                                      static_cast<double>(inner.getWidth()) * viewLength);
 
             float peak = 0.0f;
 
@@ -191,7 +318,9 @@ void StemLaneWaveform::paint(juce::Graphics& g)
         }
 
         // Shared playhead: every lane draws it at the same x (one clock).
-        if (playNormalised >= 0.0)
+        // Zoomed in it can sit outside the window at either end of the file,
+        // where the view stops following it.
+        if (playNormalised >= 0.0 && playheadX >= inner.getX() && playheadX <= inner.getRight())
         {
             g.setColour(theme::colours::playheadGlow());
             g.fillRect(playheadX - lanes::playheadGlowWidth * 0.5f, inner.getY(),
@@ -220,9 +349,31 @@ void StemLaneWaveform::mouseUp(const juce::MouseEvent& event)
     if (event.getDistanceFromDragStart() >= theme::metrics::waveform::clickVersusDragThreshold)
         return;
 
-    const auto normalised = juce::jlimit(
+    /*
+     * Measured against the same inset rectangle paint() draws into, not the
+     * whole component: at zoom 1 the difference is a pixel, but zoomed in
+     * the well's 6px margin is a meaningful slice of the window.
+     */
+    const auto inner = getLocalBounds().toFloat().reduced(6.0f, 5.0f);
+
+    if (inner.getWidth() <= 0.0f)
+        return;
+
+    const auto across = juce::jlimit(
         0.0, 1.0,
-        static_cast<double>(event.mouseDownPosition.x) / static_cast<double>(getWidth()));
+        static_cast<double>(event.mouseDownPosition.x - inner.getX()) /
+            static_cast<double>(inner.getWidth()));
+
+    const auto length = thumbnail.getTotalLength();
+
+    // Zoomed in, the click lands somewhere in the visible window rather than
+    // somewhere in the file.
+    const auto view = processor.getWaveformViewRange(length);
+
+    const auto normalised =
+        length > 0.0
+            ? juce::jlimit(0.0, 1.0, (view.getStart() + across * view.getLength()) / length)
+            : across;
 
     processor.transportSeekNormalised(normalised);
     repaint();
@@ -634,6 +785,80 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     settingsButton->onClick = [this] { showSettingsMenu(); };
     panelContent.addAndMakeVisible(*settingsButton);
 
+    /*
+     * Deciding which stems a job carries forward is a per-lane checkbox,
+     * which is one click for one change and six for "actually, just the
+     * drums". These two act on every lane at once - adaptive children
+     * included, since they stand in for their parent in the mix - and the
+     * readout beside them says where that left things.
+     */
+    selectAllButton.setComponentID("neutral");
+    selectAllButton.setTooltip("Include every stem");
+    selectAllButton.onClick = [this] { setAllLanesIncluded(true); };
+    panelContent.addAndMakeVisible(selectAllButton);
+
+    deselectAllButton.setComponentID("neutral");
+    deselectAllButton.setTooltip("Exclude every stem");
+    deselectAllButton.onClick = [this] { setAllLanesIncluded(false); };
+    panelContent.addAndMakeVisible(deselectAllButton);
+
+    selectionCountLabel.setFont(theme::fonts::meta());
+    selectionCountLabel.setColour(juce::Label::textColourId, theme::colours::text50());
+    selectionCountLabel.setJustificationType(juce::Justification::centredLeft);
+    panelContent.addAndMakeVisible(selectionCountLabel);
+
+    {
+        // Measure once: the pills and the readout then hold still while the
+        // selection changes underneath them.
+        const juce::Font pillFont{theme::fonts::smallButton()};
+        const juce::Font countFont{theme::fonts::meta()};
+
+        const auto textWidth = [](const juce::Font& font, const juce::String& text)
+        { return juce::roundToInt(juce::GlyphArrangement::getStringWidth(font, text)); };
+
+        selectAllWidth =
+            textWidth(pillFont, selectAllButton.getButtonText()) +
+            2 * theme::metrics::header::selectButtonPadX;
+
+        deselectAllWidth =
+            textWidth(pillFont, deselectAllButton.getButtonText()) +
+            2 * theme::metrics::header::selectButtonPadX;
+
+        // The widest readout is every lane selected with the tree expanded,
+        // which we cannot know here - so measure the widest two-digit form.
+        selectionCountWidth = textWidth(countFont, "88 of 88 selected") + 2;
+    }
+
+    /*
+     * Waveform zoom. A five-minute track across 800 pixels puts a kick and
+     * the snare after it in the same column, so the lanes draw a window of
+     * the file instead of all of it. The magnifier resets to 1x, and the
+     * slider steps through detents so the readout is always a clean
+     * multiplier rather than 3.7x.
+     */
+    zoomResetButton = std::make_unique<widgets::IconButton>(
+        "zoom-reset", [](juce::Rectangle<float> b) { return stemlab::icons::magnifier(b); },
+        static_cast<float>(theme::metrics::header::zoomIcon), true,
+        theme::metrics::lanes::smRadius, false);
+
+    zoomResetButton->setTooltip("Reset waveform zoom");
+    zoomResetButton->onClick = [this] { applyWaveformZoomIndex(0); };
+    panelContent.addAndMakeVisible(*zoomResetButton);
+
+    zoomSlider.setTooltip("Waveform zoom");
+    zoomSlider.onValueChanged = [this](double normalised)
+    {
+        applyWaveformZoomIndex(
+            juce::roundToInt(normalised * static_cast<double>(waveformZoomStepCount - 1)));
+    };
+
+    panelContent.addAndMakeVisible(zoomSlider);
+
+    zoomLabel.setFont(theme::fonts::meta());
+    zoomLabel.setColour(juce::Label::textColourId, theme::colours::text50());
+    zoomLabel.setJustificationType(juce::Justification::centredLeft);
+    panelContent.addAndMakeVisible(zoomLabel);
+
     // -------------------------------------------------------- source strip
 
     fileNameLabel.setFont(theme::fonts::bodyMedium());
@@ -655,8 +880,12 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     {
         switch (processor.getHostIntegration())
         {
+        // Both hosts get the same label: what the button does is pull the
+        // source out of the DAW, and the meta line under it already names
+        // the clip or item it came from. The tooltip keeps the specifics.
         case StemLabAudioProcessor::hostIntegrationAbletonLive:
-            captureButton.setButtonText("Use Live Clip");
+            captureButton.setButtonText("Import from DAW");
+            captureButton.setTooltip("Use the selected clip in Live");
             captureButton.onClick = [this]
             {
                 processor.requestAbletonSourceClip();
@@ -665,7 +894,8 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
             break;
 
         case StemLabAudioProcessor::hostIntegrationReaper:
-            captureButton.setButtonText("Use Selected Item");
+            captureButton.setButtonText("Import from DAW");
+            captureButton.setTooltip("Use the selected item in REAPER");
             captureButton.onClick = [this]
             {
                 processor.requestReaperSourceItem();
@@ -1055,7 +1285,9 @@ void StemLabAudioProcessorEditor::paintPanel(juce::Graphics& g)
 void StemLabAudioProcessorEditor::resized()
 {
     // The host can resize before the constructor finishes building children.
-    if (settingsButton == nullptr)
+    // Both of these are checked because they bracket the header's owned
+    // controls: laying out with either still null would dereference it.
+    if (settingsButton == nullptr || zoomResetButton == nullptr)
         return;
 
     namespace window = theme::metrics::window;
@@ -1091,8 +1323,10 @@ void StemLabAudioProcessorEditor::layoutPanel()
 
     auto inner = panelBounds.reduced(panel::padX, panel::padY);
 
-    // Header: brand glyph, title, then the model selector, the waveform
-    // palette, and the settings icon, right to left.
+    // Header, right to left: the settings icon, the waveform palette, the
+    // model selector, the zoom group, and the lane selection group. The
+    // brand glyph and title take the left, and the title absorbs whatever
+    // is left over between them.
     auto headerRow = inner.removeFromTop(header::settingsButton);
 
     settingsButton->setBounds(headerRow.removeFromRight(header::settingsButton));
@@ -1116,6 +1350,39 @@ void StemLabAudioProcessorEditor::layoutPanel()
     enginePrevButton->setBounds(
         headerRow.removeFromRight(header::stepButton)
             .withSizeKeepingCentre(header::stepButton, header::stepButton));
+
+    headerRow.removeFromRight(header::groupGap);
+
+    // Zoom, laid out right to left so it stays attached to the model group:
+    // readout, track, magnifier.
+    zoomLabel.setBounds(headerRow.removeFromRight(header::zoomLabelWidth));
+
+    headerRow.removeFromRight(header::zoomLabelGap);
+
+    zoomSlider.setBounds(headerRow.removeFromRight(header::zoomTrackWidth)
+                             .withSizeKeepingCentre(header::zoomTrackWidth, header::stepButton));
+
+    headerRow.removeFromRight(header::zoomIconGap);
+
+    zoomResetButton->setBounds(
+        headerRow.removeFromRight(header::stepButton)
+            .withSizeKeepingCentre(header::stepButton, header::stepButton));
+
+    headerRow.removeFromRight(header::groupGap);
+
+    selectionCountLabel.setBounds(headerRow.removeFromRight(selectionCountWidth));
+
+    headerRow.removeFromRight(header::selectCountGap);
+
+    deselectAllButton.setBounds(
+        headerRow.removeFromRight(deselectAllWidth)
+            .withSizeKeepingCentre(deselectAllWidth, header::selectButtonHeight));
+
+    headerRow.removeFromRight(header::selectButtonGap);
+
+    selectAllButton.setBounds(
+        headerRow.removeFromRight(selectAllWidth)
+            .withSizeKeepingCentre(selectAllWidth, header::selectButtonHeight));
 
     headerRow.removeFromRight(header::groupGap);
 
@@ -1395,7 +1662,10 @@ void StemLabAudioProcessorEditor::showRootLayersMenu(int stemIndex)
     const bool supportsSplit = rootSupportsAdaptiveSplit(stemIndex);
     const bool hasChildren = rootHasChildren(stemIndex);
 
-    if (!supportsSplit && !hasChildren)
+    const bool jobDone = processor.hasSuccessfulJob();
+    const bool laneReady = jobDone && processor.getCompletedStemFile(stemIndex).existsAsFile();
+
+    if (!supportsSplit && !hasChildren && !laneReady)
         return;
 
     auto menu = makeMenu();
@@ -1419,12 +1689,18 @@ void StemLabAudioProcessorEditor::showRootLayersMenu(int stemIndex)
                                                                      : "Expand Children");
     }
 
+    if (laneReady)
+    {
+        menu.addSeparator();
+        addMidiMenuItems(menu, stemName);
+    }
+
     auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
 
     auto* target = rootLanes[static_cast<size_t>(stemIndex)].get();
 
     menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(target),
-                       [safeThis, stemIndex](int result)
+                       [safeThis, stemIndex, stemName](int result)
                        {
                            if (safeThis == nullptr || result == 0)
                                return;
@@ -1432,6 +1708,8 @@ void StemLabAudioProcessorEditor::showRootLayersMenu(int stemIndex)
                                safeThis->processor.launchRecursiveStemSplit(stemIndex);
                            else if (result == 2)
                                safeThis->toggleRootExpanded(stemIndex);
+                           else
+                               safeThis->handleMidiMenuResult(result, stemName, stemIndex, {});
                            safeThis->refreshFromProcessor();
                        });
 }
@@ -1473,6 +1751,12 @@ void StemLabAudioProcessorEditor::showChildLayersMenu(const juce::String& itemId
                                                                       : "Collapse Children");
     }
 
+    if (info.file.existsAsFile())
+    {
+        menu.addSeparator();
+        addMidiMenuItems(menu, itemId);
+    }
+
     auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
 
     menu.showMenuAsync(
@@ -1489,6 +1773,10 @@ void StemLabAudioProcessorEditor::showChildLayersMenu(const juce::String& itemId
             else if (result == expandId)
             {
                 safeThis->toggleChildExpanded(itemId);
+            }
+            else
+            {
+                safeThis->handleMidiMenuResult(result, itemId, -1, itemId);
             }
 
             safeThis->refreshFromProcessor();
@@ -1649,6 +1937,46 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
     syncLanes();
 
+    // ------------------------------------------------------------- header
+
+    /*
+     * The lanes only carry stems once a job has produced them, so both
+     * pills and the readout stay dark until then - "0 of 6 selected" over
+     * six empty lanes is noise, not information.
+     */
+    const auto [includedLanes, totalLanes] = laneSelectionCounts();
+
+    const bool lanesLive = jobDone && !engineRunning && !capturing;
+
+    selectAllButton.setEnabled(lanesLive && includedLanes < totalLanes);
+    deselectAllButton.setEnabled(lanesLive && includedLanes > 0);
+
+    selectionCountLabel.setText(lanesLive ? juce::String(includedLanes) + " of " +
+                                                juce::String(totalLanes) + " selected"
+                                          : juce::String(),
+                                juce::dontSendNotification);
+
+    // The zoom can also move from restored state or a second editor, so the
+    // slider and the readout follow the processor rather than the last click.
+    {
+        const auto zoom = processor.getWaveformZoom();
+        const auto index = waveformZoomIndexFor(zoom);
+
+        zoomSlider.setValue(static_cast<double>(index) /
+                            static_cast<double>(waveformZoomStepCount - 1));
+
+        zoomLabel.setText(waveformZoomText(waveformZoomSteps[index]),
+                          juce::dontSendNotification);
+    }
+
+    // Zoom is a view control, not a job control: it stays live whenever
+    // there is a waveform to look at, including while a job runs.
+    const bool haveWaveform = jobDone || captureExists;
+
+    zoomResetButton->setEnabled(haveWaveform);
+    zoomSlider.setEnabled(haveWaveform);
+    zoomLabel.setAlpha(haveWaveform ? 1.0f : theme::metrics::disabledOpacity);
+
     // ------------------------------------------------------- source strip
 
     captureButton.setEnabled(!capturing && !engineRunning &&
@@ -1707,6 +2035,18 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
         if (processor.getCapturedSeconds() > 0.0)
             parts.add(formatSeconds(processor.getCapturedSeconds()));
+
+        // Key/BPM sit with the rest of the source's facts rather than in a
+        // panel of their own. Only while the analysis is on: its "off" text
+        // would otherwise be permanent clutter on a line that is mostly
+        // about the file itself.
+        if (processor.isBeatThisEnabled())
+        {
+            const auto analysis = processor.getSourceAnalysisText();
+
+            if (analysis.isNotEmpty())
+                parts.add(analysis);
+        }
 
         if (!processor.isStandaloneApp())
         {
@@ -2005,6 +2345,99 @@ void StemLabAudioProcessorEditor::chooseJobRootFolder()
                                   });
 }
 
+void StemLabAudioProcessorEditor::addMidiMenuItems(juce::PopupMenu& menu, const juce::String& id)
+{
+    const bool converting = processor.isMidiConversionRunning();
+    const bool haveMidi = processor.hasMidiInfo(id);
+
+    menu.addSectionHeader("MIDI");
+
+    menu.addItem(midiConvertId, haveMidi ? "Re-convert to MIDI" : "Convert to MIDI", !converting);
+
+    if (!haveMidi)
+        return;
+
+    menu.addItem(midiAuditionId,
+                 processor.isMidiAuditioning(id) ? "Stop Audition" : "Audition MIDI");
+
+    menu.addItem(midiSaveId, "Save MIDI...");
+
+#if JUCE_WINDOWS
+    if (processor.getHostIntegration() == StemLabAudioProcessor::hostIntegrationAbletonLive)
+        menu.addItem(midiSendId, "Send MIDI to Ableton");
+#endif
+}
+
+void StemLabAudioProcessorEditor::handleMidiMenuResult(int result, const juce::String& id,
+                                                       int stemIndex, const juce::String& childId)
+{
+    if (result == midiConvertId)
+    {
+        const bool started = childId.isNotEmpty()
+                                 ? processor.launchRecursiveMidiConversion(childId)
+                                 : processor.launchStemMidiConversion(stemIndex);
+
+        if (!started)
+            processor.postUiStatus("Could not start the MIDI conversion");
+
+        return;
+    }
+
+    if (result == midiAuditionId)
+    {
+        if (processor.isMidiAuditioning(id))
+            processor.stopMidiAudition();
+        else
+            processor.auditionMidi(id);
+
+        return;
+    }
+
+    if (result == midiSendId)
+    {
+        processor.sendMidiToAbleton(id);
+        return;
+    }
+
+    if (result != midiSaveId)
+        return;
+
+    const auto info = processor.getMidiInfo(id);
+
+    if (!info.midiFile.existsAsFile())
+    {
+        processor.postUiStatus("That MIDI file is no longer on disk");
+        return;
+    }
+
+    fileChooser = std::make_unique<juce::FileChooser>(
+        "Save MIDI as", juce::File::getSpecialLocation(juce::File::userMusicDirectory)
+                            .getChildFile(info.midiFile.getFileName()),
+        "*.mid");
+
+    auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
+    const auto source = info.midiFile;
+
+    fileChooser->launchAsync(juce::FileBrowserComponent::saveMode |
+                                 juce::FileBrowserComponent::canSelectFiles |
+                                 juce::FileBrowserComponent::warnAboutOverwriting,
+                             [safeThis, source](const juce::FileChooser& chooser)
+                             {
+                                 if (safeThis == nullptr)
+                                     return;
+
+                                 const auto target = chooser.getResult();
+
+                                 if (target == juce::File())
+                                     return;
+
+                                 safeThis->processor.postUiStatus(
+                                     source.copyFileTo(target)
+                                         ? "MIDI saved to " + target.getFileName()
+                                         : "Could not save the MIDI file");
+                             });
+}
+
 juce::PopupMenu StemLabAudioProcessorEditor::makeMenu()
 {
     juce::PopupMenu menu;
@@ -2038,6 +2471,82 @@ void StemLabAudioProcessorEditor::stepSeparatorEngine(int delta)
     // Wrapping, not clamping: an arrow that dead-ends on a list of three is
     // just a button that sometimes does nothing.
     setSeparatorEngine((processor.getSeparatorEngineIndex() + delta + count) % count);
+}
+
+std::pair<int, int> StemLabAudioProcessorEditor::laneSelectionCounts() const
+{
+    int included = 0;
+    int total = 0;
+
+    for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
+    {
+        ++total;
+
+        if (processor.isStemEnabled(i))
+            ++included;
+    }
+
+    /*
+     * Every adaptive child counts, whether or not its lane is on screen: a
+     * collapsed twisty hides the row, not the stem, and the job carries it
+     * forward either way.
+     */
+    for (const auto& item : processor.getRecursiveStemItems())
+    {
+        ++total;
+
+        if (processor.isRecursiveStemEnabled(item.id))
+            ++included;
+    }
+
+    return {included, total};
+}
+
+void StemLabAudioProcessorEditor::setAllLanesIncluded(bool included)
+{
+    for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
+        processor.setStemEnabled(i, included);
+
+    for (const auto& item : processor.getRecursiveStemItems())
+        processor.setRecursiveStemEnabled(item.id, included);
+
+    for (auto& lane : rootLanes)
+        if (lane != nullptr)
+            lane->refresh();
+
+    for (auto& lane : childLanes)
+        if (lane != nullptr)
+            lane->refresh();
+
+    refreshFromProcessor();
+}
+
+void StemLabAudioProcessorEditor::applyWaveformZoomIndex(int index)
+{
+    const auto clamped = juce::jlimit(0, waveformZoomStepCount - 1, index);
+    const auto zoom = waveformZoomSteps[clamped];
+
+    processor.setWaveformZoom(zoom);
+
+    zoomSlider.setValue(static_cast<double>(clamped) /
+                        static_cast<double>(waveformZoomStepCount - 1));
+
+    zoomLabel.setText(waveformZoomText(zoom), juce::dontSendNotification);
+
+    // The lanes only redraw on the timer, which is a whole frame away and
+    // does not run at all in some states; a zoom change has to show now.
+    for (auto& lane : rootLanes)
+        if (lane != nullptr)
+            lane->repaint();
+
+    for (auto& lane : childLanes)
+        if (lane != nullptr)
+            lane->repaint();
+}
+
+void StemLabAudioProcessorEditor::stepWaveformZoom(int delta)
+{
+    applyWaveformZoomIndex(waveformZoomIndexFor(processor.getWaveformZoom()) + delta);
 }
 
 void StemLabAudioProcessorEditor::showEngineMenu()
@@ -2107,6 +2616,76 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
 
     // The separation model and the waveform palette are header controls,
     // not menu items - see showEngineMenu / showWaveformColourMenu.
+
+    // Beat grid drawn behind every lane's waveform.
+    juce::PopupMenu gridMenu;
+
+    gridMenu.addItem(gridModeMenuBase + StemLabAudioProcessor::gridHost, "Follow Host Tempo",
+                     !processor.isStandaloneApp(),
+                     processor.getWaveformGridMode() == StemLabAudioProcessor::gridHost);
+
+    gridMenu.addItem(gridModeMenuBase + StemLabAudioProcessor::gridSource, "Follow Analysed Source",
+                     true,
+                     processor.getWaveformGridMode() == StemLabAudioProcessor::gridSource);
+
+    gridMenu.addItem(gridModeMenuBase + StemLabAudioProcessor::gridManual, "Manual Tempo", true,
+                     processor.getWaveformGridMode() == StemLabAudioProcessor::gridManual);
+
+    menu.addSubMenu("Beat Grid", gridMenu);
+
+    menu.addSeparator();
+
+    menu.addSectionHeader("Source analysis");
+
+    menu.addItem(analysisEnableId,
+                 processor.isBeatThisEnabled() ? "Stop / Disable Key & BPM Analysis"
+                                               : "Analyse Key & BPM",
+                 !processor.isEngineRunning() || processor.isBeatThisEnabled());
+
+    juce::PopupMenu analysisModeMenu;
+
+    analysisModeMenu.addItem(analysisModeMenuBase + StemLabAudioProcessor::analysisFast, "Fast",
+                             true,
+                             processor.getSourceAnalysisMode() == StemLabAudioProcessor::analysisFast);
+
+    analysisModeMenu.addItem(analysisModeMenuBase + StemLabAudioProcessor::analysisAccurate,
+                             "Accurate (loads the Beat This! model)", true,
+                             processor.getSourceAnalysisMode()
+                                 == StemLabAudioProcessor::analysisAccurate);
+
+    menu.addSubMenu("Analysis Quality", analysisModeMenu);
+
+    juce::PopupMenu tempoMenu;
+
+    const auto detected = processor.getDetectedSourceBpm();
+
+    auto tempoLabel = [](const char* name, double bpm)
+    {
+        return bpm > 0.0 ? juce::String(name) + " (" + juce::String(bpm, 1) + " BPM)"
+                         : juce::String(name);
+    };
+
+    tempoMenu.addItem(tempoMenuBase + StemLabAudioProcessor::tempoHalf,
+                      tempoLabel("Half Time", processor.getHalfTimeSourceBpm()), detected > 0.0,
+                      processor.getTempoInterpretation() == StemLabAudioProcessor::tempoHalf);
+
+    tempoMenu.addItem(tempoMenuBase + StemLabAudioProcessor::tempoDetected,
+                      tempoLabel("As Detected", detected), detected > 0.0,
+                      processor.getTempoInterpretation() == StemLabAudioProcessor::tempoDetected);
+
+    tempoMenu.addItem(tempoMenuBase + StemLabAudioProcessor::tempoDouble,
+                      tempoLabel("Double Time", processor.getDoubleTimeSourceBpm()), detected > 0.0,
+                      processor.getTempoInterpretation() == StemLabAudioProcessor::tempoDouble);
+
+    menu.addSubMenu("Tempo Interpretation", tempoMenu, detected > 0.0);
+
+    menu.addItem(analysisForgetId, "Forget Saved Correction For This Source",
+                 processor.getSourceBpm() > 0.0);
+
+    menu.addItem(analysisClearCacheId, "Clear Analysis Cache");
+
+    menu.addSeparator();
+
     menu.addSectionHeader("StemLab engine");
 
     menu.addItem(2, "Choose engine executable...");
@@ -2156,6 +2735,38 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
             else if (result == 5)
             {
                 safeThis->launchAbletonSetup();
+            }
+            else if (result >= gridModeMenuBase && result <= gridModeMenuBase + 2)
+            {
+                const int mode = result - gridModeMenuBase;
+
+                safeThis->processor.setWaveformGridMode(mode);
+
+                const juce::StringArray names{"host tempo", "analysed source", "manual tempo"};
+
+                safeThis->processor.postUiStatus("Beat grid follows " + names[mode]);
+            }
+            else if (result >= analysisModeMenuBase && result <= analysisModeMenuBase + 1)
+            {
+                safeThis->processor.setSourceAnalysisMode(result - analysisModeMenuBase);
+            }
+            else if (result >= tempoMenuBase && result <= tempoMenuBase + 2)
+            {
+                safeThis->processor.setTempoInterpretation(result - tempoMenuBase);
+            }
+            else if (result == analysisEnableId)
+            {
+                safeThis->processor.setBeatThisEnabled(!safeThis->processor.isBeatThisEnabled());
+            }
+            else if (result == analysisForgetId)
+            {
+                if (safeThis->processor.forgetSourceCorrection())
+                    safeThis->processor.postUiStatus("Saved analysis correction removed");
+            }
+            else if (result == analysisClearCacheId)
+            {
+                if (safeThis->processor.clearAnalysisCache())
+                    safeThis->processor.postUiStatus("Clearing the analysis cache...");
             }
 
             safeThis->refreshFromProcessor();

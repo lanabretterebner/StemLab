@@ -5,9 +5,20 @@ param(
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path $PSScriptRoot -Parent
-$VstSource = Join-Path $RepoRoot "plugin\build\StemLabPlugin_artefacts\Release\VST3\StemLab.vst3"
-$RemoteSource = Join-Path $RepoRoot "integrations\ableton\StemLabRemote"
+$PortableVst = Join-Path $RepoRoot "StemLab.vst3"
+$PortableRemote = Join-Path $RepoRoot "StemLabRemote"
+$VstSource = if (Test-Path -LiteralPath $PortableVst -PathType Container) {
+    $PortableVst
+} else {
+    Join-Path $RepoRoot "plugin\build\StemLabPlugin_artefacts\Release\VST3\StemLab.vst3"
+}
+$RemoteSource = if (Test-Path -LiteralPath (Join-Path $PortableRemote "__init__.py") -PathType Leaf) {
+    $PortableRemote
+} else {
+    Join-Path $RepoRoot "integrations\ableton\StemLabRemote"
+}
 $VstDestination = Join-Path $env:CommonProgramFiles "VST3\StemLab.vst3"
+$LegacyVstDestination = Join-Path $env:CommonProgramFiles "VST3\StemLab.vst3"
 
 function Normalize-UserLibrary([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
@@ -100,11 +111,21 @@ if (-not (Test-Administrator)) {
 
 $RemoteRoot = Join-Path $ResolvedUserLibrary "Remote Scripts"
 $RemoteDestination = Join-Path $RemoteRoot "StemLabRemote"
+$LegacyRemoteDestination = Join-Path $RemoteRoot "StemLabRemote"
 $ResolvedRemoteRoot = [System.IO.Path]::GetFullPath($RemoteRoot).TrimEnd('\') + '\'
 $ResolvedRemoteDestination = [System.IO.Path]::GetFullPath($RemoteDestination)
 
 if (-not $ResolvedRemoteDestination.StartsWith($ResolvedRemoteRoot, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Refusing unsafe Remote Script destination: $ResolvedRemoteDestination"
+}
+
+if (Test-Path -LiteralPath $LegacyVstDestination) {
+    Write-Host "Removing legacy VST3..."
+    Remove-Item -LiteralPath $LegacyVstDestination -Recurse -Force -ErrorAction SilentlyContinue
+}
+if (Test-Path -LiteralPath $LegacyRemoteDestination) {
+    Write-Host "Removing legacy Ableton Remote Script..."
+    Remove-Item -LiteralPath $LegacyRemoteDestination -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 Write-Host "Installing StemLab.vst3..."
@@ -117,6 +138,29 @@ New-Item -ItemType Directory -Path $RemoteRoot -Force | Out-Null
 Remove-Item -LiteralPath $RemoteDestination -Recurse -Force -ErrorAction SilentlyContinue
 Copy-Item -LiteralPath $RemoteSource -Destination $RemoteDestination -Recurse -Force
 Remove-Item -LiteralPath (Join-Path $RemoteDestination "__pycache__") -Recurse -Force -ErrorAction SilentlyContinue
+
+# Record the exact engine command for the separately installed VST3. Portable
+# builds point at Engine\python.exe; source-development installs point at the
+# venv worker. This avoids embedding a developer-specific absolute checkout path
+# into the C++ binary.
+$PortableEnginePython = Join-Path $RepoRoot "Engine\python.exe"
+$DevelopmentWorker = Join-Path $RepoRoot ".venv\Scripts\stemlab-plugin-job.exe"
+$EnginePointer = $null
+if (Test-Path -LiteralPath $PortableEnginePython -PathType Leaf) {
+    $EnginePointer = $PortableEnginePython
+}
+elseif (Test-Path -LiteralPath $DevelopmentWorker -PathType Leaf) {
+    $EnginePointer = $DevelopmentWorker
+}
+
+if ($EnginePointer) {
+    $FiStemData = Join-Path $env:LOCALAPPDATA "StemLab"
+    New-Item -ItemType Directory -Path $FiStemData -Force | Out-Null
+    Set-Content `
+        -LiteralPath (Join-Path $FiStemData "portable_engine_path.txt") `
+        -Encoding ASCII `
+        -Value ([System.IO.Path]::GetFullPath($EnginePointer))
+}
 
 $VstModule = Join-Path $VstDestination "Contents\x86_64-win\StemLab.vst3"
 if (-not (Test-Path -LiteralPath $VstModule -PathType Leaf)) {

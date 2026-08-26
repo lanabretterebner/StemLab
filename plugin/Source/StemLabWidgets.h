@@ -192,6 +192,41 @@ namespace stemlab::widgets
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(Scrubber)
     };
 
+    /**
+     * Header zoom slider: a thin track filled up to the knob, dragged or
+     * clicked anywhere along its length.
+     *
+     * The position is normalised; the caller maps it to a zoom factor. That
+     * mapping is exponential rather than linear (see the editor), so the
+     * useful low end of the range is not crammed into the first few pixels.
+     */
+    class ZoomSlider final : public juce::Component,
+                             public juce::SettableTooltipClient
+    {
+    public:
+        ZoomSlider();
+
+        std::function<void(double)> onValueChanged;
+
+        void setValue(double normalised);
+        double getValue() const noexcept { return value; }
+
+        void paint(juce::Graphics&) override;
+        void mouseDown(const juce::MouseEvent&) override;
+        void mouseDrag(const juce::MouseEvent&) override;
+        void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+
+    private:
+        void applyDrag(const juce::MouseEvent&);
+
+        /** Where the knob's centre may travel, in local x. */
+        juce::Range<float> knobTravel() const;
+
+        double value = 0.0;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ZoomSlider)
+    };
+
     /** Two-option segmented control (Original | Stems). */
     class SegmentedControl final : public juce::Component
     {

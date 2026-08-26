@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import os
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -12,9 +12,11 @@ from typing import Callable
 from .audio import STEM_NAMES
 from .device import resolve_torch_device
 from .pretrained import _clear_audio_files, _normalise_input_for_backend
-from .runtime import run_progress_process
+from .runtime import CancellationToken, run_progress_process
 
 DEFAULT_DEMUCS_MODEL = "htdemucs_6s"
+PACKAGED_DEMUCS_SIGNATURE = "5c90dfd2"
+PACKAGED_DEMUCS_FILENAME = "5c90dfd2-34c22ccb.th"
 
 
 class DemucsBackend:
@@ -32,6 +34,7 @@ class DemucsBackend:
         progress_callback: Callable[[float], None] | None = None,
         eta_callback: Callable[[float], None] | None = None,
         download_callback: Callable[[float], None] | None = None,
+        cancellation: CancellationToken | None = None,
     ) -> None:
         """Configure the model, device, logging, and progress callbacks."""
         self.model = model
@@ -40,6 +43,7 @@ class DemucsBackend:
         self.progress_callback = progress_callback
         self.eta_callback = eta_callback
         self.download_callback = download_callback
+        self.cancellation = cancellation
 
     def _log(self, message: str) -> None:
         if self.log_callback:
@@ -66,18 +70,20 @@ class DemucsBackend:
         # but a reused directory can still hold another backend's leftovers.
         _clear_audio_files(output_dir)
 
-        probe = subprocess.run(
+        if self.cancellation:
+            self.cancellation.raise_if_cancelled()
+
+        probe_exit_code = run_progress_process(
             [
                 sys.executable,
                 "-c",
                 "import demucs, sys; sys.stdout.write(getattr(demucs, '__version__', 'ok'))",
             ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            errors="replace",
+            lambda _message: None,
+            lambda _percent: None,
+            cancellation=self.cancellation,
         )
-        if probe.returncode != 0:
+        if probe_exit_code != 0:
             raise RuntimeError(
                 "Demucs is not installed in StemLab's Python environment. "
                 "Run: python -m pip install -e ."
@@ -90,14 +96,29 @@ class DemucsBackend:
                 input_path=input_path,
                 staging_dir=staging,
                 log=self._log,
+                cancellation=self.cancellation,
             )
             raw_output = Path(td) / "demucs_output"
+            model_name = self.model
+            packaged_repo = os.environ.get("STEMLAB_DEMUCS_MODEL_REPO")
+            repo_args: list[str] = []
+            if packaged_repo and self.model == DEFAULT_DEMUCS_MODEL:
+                repo_path = Path(packaged_repo).resolve()
+                checkpoint = repo_path / PACKAGED_DEMUCS_FILENAME
+                if not checkpoint.is_file():
+                    raise RuntimeError(
+                        "Packaged Demucs model is missing: " + str(checkpoint)
+                    )
+                model_name = PACKAGED_DEMUCS_SIGNATURE
+                repo_args = ["--repo", str(repo_path)]
+
             command = [
                 sys.executable,
                 "-m",
                 "demucs.separate",
                 "--name",
-                self.model,
+                model_name,
+                *repo_args,
                 "--device",
                 device,
                 "--out",
@@ -106,7 +127,10 @@ class DemucsBackend:
             ]
 
             self._log("Starting Demucs separation...")
-            self._log(f"Model: {self.model}")
+            if model_name == self.model:
+                self._log(f"Model: {self.model}")
+            else:
+                self._log(f"Model: {self.model} (packaged {model_name})")
             self._log(f"Device: {device}")
             self._progress(0.0)
 
@@ -116,6 +140,7 @@ class DemucsBackend:
                 self._progress,
                 eta=self.eta_callback,
                 download=self.download_callback,
+                cancellation=self.cancellation,
             )
             if exit_code != 0:
                 raise RuntimeError(f"Demucs failed with exit code {exit_code}")
