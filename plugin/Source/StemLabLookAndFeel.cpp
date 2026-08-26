@@ -639,6 +639,32 @@ namespace stemlab::icons
         return p;
     }
 
+    juce::Path magnifier(juce::Rectangle<float> b)
+    {
+        /*
+         * Stroked, unlike the palette beside it: a magnifier is a lens and a
+         * handle, and filling it would turn the lens into a solid dot.
+         * Drawn as an outline path so the caller can stroke it at any size.
+         */
+        const auto size = juce::jmin(b.getWidth(), b.getHeight());
+        const auto lens = size * 0.62f;
+
+        juce::Path p;
+
+        p.addEllipse(b.getX(), b.getY(), lens, lens);
+
+        // The handle leaves the lens at 45 degrees, from just outside its
+        // lower-right edge to the bottom-right corner of the bounds.
+        const auto centre = juce::Point<float>(b.getX() + lens * 0.5f, b.getY() + lens * 0.5f);
+        const auto radius = lens * 0.5f;
+        const auto diagonal = 0.70710678f;
+
+        p.startNewSubPath(centre.x + radius * diagonal, centre.y + radius * diagonal);
+        p.lineTo(b.getX() + size * 0.96f, b.getY() + size * 0.96f);
+
+        return p;
+    }
+
     juce::Path layers(juce::Rectangle<float> b)
     {
         // Diamond on top, two arcs (shallow chevrons) stacked below.

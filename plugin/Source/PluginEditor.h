@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include <vector>
 #include <functional>
+#include <utility>
 #include "PluginProcessor.h"
 #include "StemLabLookAndFeel.h"
 #include "StemLabWidgets.h"
@@ -183,6 +184,18 @@ private:
     void setSeparatorEngine(int index);
     void stepSeparatorEngine(int delta);
 
+    /** Include or exclude every lane, roots and adaptive children alike. */
+    void setAllLanesIncluded(bool included);
+
+    /** How many lanes are included, and how many there are. */
+    std::pair<int, int> laneSelectionCounts() const;
+
+    /** Move the shared waveform zoom by whole detents. */
+    void stepWaveformZoom(int delta);
+
+    /** Push a zoom detent to the processor, the readout and the lanes. */
+    void applyWaveformZoomIndex(int index);
+
     void showRootLayersMenu(int stemIndex);
 
     /** MIDI entries shared by the root and child lane menus. */
@@ -223,9 +236,25 @@ private:
     std::unique_ptr<stemlab::widgets::IconButton> paletteButton;
     std::unique_ptr<stemlab::widgets::IconButton> settingsButton;
 
+    // Which lanes the job carries forward, in one gesture rather than six.
+    juce::TextButton selectAllButton{"Select all"};
+    juce::TextButton deselectAllButton{"Deselect all"};
+    juce::Label selectionCountLabel;
+
+    // Horizontal waveform zoom, shared by every lane.
+    std::unique_ptr<stemlab::widgets::IconButton> zoomResetButton;
+    stemlab::widgets::ZoomSlider zoomSlider;
+    juce::Label zoomLabel;
+
     // Sized once for the longest model name, so switching models does not
     // shuffle the arrows either side of the pill.
     int engineSelectorWidth = 0;
+
+    // Sized once for their own labels and the widest readout, so the header
+    // holds still as lanes are selected and the zoom is stepped.
+    int selectAllWidth = 0;
+    int deselectAllWidth = 0;
+    int selectionCountWidth = 0;
 
     // Source strip.
     juce::Label fileNameLabel;

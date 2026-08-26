@@ -476,6 +476,26 @@ public:
     static constexpr int waveformColourCount = 7;
 
     /**
+     * Horizontal waveform zoom, shared by every lane so they stay in step.
+     *
+     * 1 draws the whole file, as the lanes always did. Above that they draw
+     * a window of it centred on the playhead, which is the only way to see
+     * an individual hit in a five-minute track at 800px wide.
+     */
+    void setWaveformZoom(double zoom);
+    double getWaveformZoom() const noexcept { return waveformZoom.load(); }
+
+    static constexpr double minWaveformZoom = 1.0;
+    static constexpr double maxWaveformZoom = 64.0;
+
+    /**
+     * The seconds a lane draws for a file of totalLengthSeconds at the
+     * current zoom: a window centred on the playhead, clamped so it never
+     * runs past either end of the file.
+     */
+    juce::Range<double> getWaveformViewRange(double totalLengthSeconds) const;
+
+    /**
      * The size the user last left the editor at, as a percentage of its
      * design size. Lives here rather than in the editor so a reopened window
      * comes back the way they left it.
@@ -687,6 +707,7 @@ private:
     std::array<std::atomic<bool>, stemCount> stemEnabled;
     std::atomic<bool> refinementEnabled{true};
     std::atomic<int> separatorEngineIndex{separatorRoFormer};
+    std::atomic<double> waveformZoom{1.0};
     std::atomic<int> waveformColourIndex{0};
     std::atomic<int> editorScalePercent{100};
 

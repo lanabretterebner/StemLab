@@ -4640,6 +4640,39 @@ void StemLabAudioProcessor::setWaveformColourIndex(int index)
     sendChangeMessage();
 }
 
+void StemLabAudioProcessor::setWaveformZoom(double zoom)
+{
+    const auto clamped = juce::jlimit(minWaveformZoom, maxWaveformZoom, zoom);
+
+    if (std::abs(clamped - waveformZoom.load()) < 1.0e-6)
+        return;
+
+    waveformZoom.store(clamped);
+
+    sendChangeMessage();
+}
+
+juce::Range<double> StemLabAudioProcessor::getWaveformViewRange(double totalLengthSeconds) const
+{
+    if (!(totalLengthSeconds > 0.0))
+        return {0.0, 0.0};
+
+    const auto zoom = juce::jlimit(minWaveformZoom, maxWaveformZoom, waveformZoom.load());
+
+    const auto transportLength = getTransportLengthSeconds();
+
+    const auto normalised =
+        transportLength > 0.0
+            ? juce::jlimit(0.0, 1.0, getTransportPositionSeconds() / transportLength)
+            : 0.0;
+
+    // The window itself is plain arithmetic, so it lives in WaveformGrid.h
+    // where the test target can reach it without standing up a processor.
+    const auto window = stemlab::waveform::visibleWindow(totalLengthSeconds, zoom, normalised);
+
+    return {window.start, window.end};
+}
+
 void StemLabAudioProcessor::setEditorScalePercent(int percent)
 {
     // Deliberately no change broadcast: this is written from the editor's
@@ -4718,6 +4751,7 @@ void StemLabAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     rootObject->setProperty("refinement", refinementEnabled.load());
     rootObject->setProperty("separatorEngine", separatorEngineIndex.load());
     rootObject->setProperty("waveformColour", waveformColourIndex.load());
+    rootObject->setProperty("waveformZoom", waveformZoom.load());
     rootObject->setProperty("editorScale", editorScalePercent.load());
 
     rootObject->setProperty("jobRootDirectory", getJobRootDirectory().getFullPathName());
@@ -4795,6 +4829,9 @@ void StemLabAudioProcessor::setStateInformation(const void* data, int sizeInByte
     if (object->hasProperty("waveformColour"))
     {
         setWaveformColourIndex(static_cast<int>(object->getProperty("waveformColour")));
+
+    if (object->hasProperty("waveformZoom"))
+        setWaveformZoom(static_cast<double>(object->getProperty("waveformZoom")));
     }
 
     if (object->hasProperty("editorScale"))

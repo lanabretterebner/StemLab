@@ -108,6 +108,9 @@ namespace stemlab::icons
     /** Waveform colour: an artist's palette. */
     juce::Path palette(juce::Rectangle<float> bounds);
 
+    /** Waveform zoom: a stroked magnifier, lens and handle. */
+    juce::Path magnifier(juce::Rectangle<float> bounds);
+
     /** Per-stem split: stacked layers (diamond top + two arcs below). */
     juce::Path layers(juce::Rectangle<float> bounds);
 }

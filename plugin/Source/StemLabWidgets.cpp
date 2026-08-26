@@ -570,6 +570,109 @@ namespace stemlab::widgets
     void Scrubber::mouseDown(const juce::MouseEvent& event) { applySeek(event); }
     void Scrubber::mouseDrag(const juce::MouseEvent& event) { applySeek(event); }
 
+    // ---------------------------------------------------------- zoom slider
+
+    ZoomSlider::ZoomSlider() { setRepaintsOnMouseActivity(true); }
+
+    void ZoomSlider::setValue(double normalised)
+    {
+        const auto clamped = juce::jlimit(0.0, 1.0, normalised);
+
+        if (std::abs(clamped - value) > 0.0005)
+        {
+            value = clamped;
+            repaint();
+        }
+    }
+
+    juce::Range<float> ZoomSlider::knobTravel() const
+    {
+        namespace header = theme::metrics::header;
+
+        const auto half = static_cast<float>(header::zoomKnob) * 0.5f;
+
+        // The knob is inset by its own radius at each end, so it stays
+        // inside the component at both extremes instead of half hanging off.
+        return {half, juce::jmax(half, static_cast<float>(getWidth()) - half)};
+    }
+
+    void ZoomSlider::paint(juce::Graphics& g)
+    {
+        namespace header = theme::metrics::header;
+
+        const float dim = isEnabled() ? 1.0f : theme::metrics::disabledOpacity;
+
+        const auto travel = knobTravel();
+        const auto knobX = travel.getStart() +
+                           travel.getLength() * static_cast<float>(value);
+
+        auto track = getLocalBounds().toFloat().withSizeKeepingCentre(
+            static_cast<float>(getWidth()), static_cast<float>(header::zoomTrackHeight));
+
+        const auto radius = static_cast<float>(header::zoomTrackHeight) * 0.5f;
+
+        g.setColour(theme::colours::pillTrackOff().withMultipliedAlpha(dim));
+        g.fillRoundedRectangle(track, radius);
+
+        // Fill up to the knob's centre rather than to the pointer, so the
+        // bar and the knob agree at both ends of the travel.
+        g.setColour(theme::colours::accent().withMultipliedAlpha(dim));
+        g.fillRoundedRectangle(track.withWidth(juce::jmax(radius * 2.0f, knobX)), radius);
+
+        const auto knob = juce::Rectangle<float>(static_cast<float>(header::zoomKnob),
+                                                 static_cast<float>(header::zoomKnob))
+                              .withCentre({knobX, getLocalBounds().toFloat().getCentreY()});
+
+        g.setColour(theme::colours::accent300().withMultipliedAlpha(dim));
+        g.fillEllipse(knob);
+    }
+
+    void ZoomSlider::applyDrag(const juce::MouseEvent& event)
+    {
+        // Plain Components still receive mouse events while disabled.
+        if (!isEnabled() || getWidth() <= 0)
+            return;
+
+        const auto travel = knobTravel();
+
+        if (travel.getLength() <= 0.0f)
+            return;
+
+        const auto normalised =
+            juce::jlimit(0.0, 1.0, static_cast<double>((event.position.x - travel.getStart()) /
+                                                       travel.getLength()));
+
+        if (std::abs(normalised - value) < 0.0005)
+            return;
+
+        value = normalised;
+        repaint();
+
+        if (onValueChanged)
+            onValueChanged(value);
+    }
+
+    void ZoomSlider::mouseDown(const juce::MouseEvent& event) { applyDrag(event); }
+    void ZoomSlider::mouseDrag(const juce::MouseEvent& event) { applyDrag(event); }
+
+    void ZoomSlider::mouseWheelMove(const juce::MouseEvent&,
+                                    const juce::MouseWheelDetails& wheel)
+    {
+        if (!isEnabled())
+            return;
+
+        const auto stepped = juce::jlimit(0.0, 1.0, value + wheel.deltaY * 0.5);
+
+        if (std::abs(stepped - value) < 0.0005)
+            return;
+
+        value = stepped;
+        repaint();
+
+        if (onValueChanged)
+            onValueChanged(value);
+    }
+
     // ----------------------------------------------------------- segmented
 
     SegmentedControl::SegmentedControl(const juce::String& first, const juce::String& second)
