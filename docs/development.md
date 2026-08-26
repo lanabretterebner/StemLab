@@ -172,22 +172,11 @@ For C++ changes:
 
 ## Generated Files
 
-These directories are generated and ignored:
-
-```text
-.venv/
-.substem-venv/
-.portable-cache/
-.vs/
-dist/
-plugin/build/
-**/__pycache__/
-*.egg-info/
-```
-
-Edit source files under `stemlab/`, `plugin/Source/`,
-`integrations/ableton/StemLabRemote/`, or `tests/`. Do not edit generated
-copies under `plugin/build`.
+`.venv/`, `.substem-venv/`, `.portable-cache/`, `.vs/`, `dist/`,
+`plugin/build/`, `__pycache__/`, and `*.egg-info/` are generated and
+ignored. Edit sources under `stemlab/`, `plugin/Source/`,
+`integrations/ableton/StemLabRemote/`, or `tests/` - never the copies under
+`plugin/build`.
 
 ## Current Limits
 
