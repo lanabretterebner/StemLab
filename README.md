@@ -28,7 +28,8 @@ scripts and checksum manifests are source-controlled; their generated output is 
 
 ## Set Up Development
 
-StemLab currently targets 64-bit Windows and Python 3.11. Install:
+Windows development targets 64-bit Windows and Python 3.11 (Linux needs
+neither a venv nor system Python - see the next section). Install:
 
 - Visual Studio with **Desktop development with C++** and CMake tools
 - Python 3.11
@@ -198,17 +199,28 @@ occur only while staging a release; the installed runtime uses packaged models.
 On Linux, `./scripts/build_portable.sh --torch-flavor cpu` produces
 `dist/StemLab-0.9.9-Linux-cpu.tar.gz`.
 
+## Documentation
+
+- [docs/development.md](docs/development.md) - architecture, module map,
+  cross-language contracts, and the change checklist
+- [docs/linux.md](docs/linux.md) - Linux build, install, GPU flavors, and
+  the REAPER workflow
+- [docs/ableton.md](docs/ableton.md) - Ableton Live setup and workflow
+  (Windows)
+- [docs/third-party.md](docs/third-party.md) - third-party licenses and
+  attributions
+
 ## Repository Map
 
 ```text
-docs/                    Development, Ableton, and licensing notes
+docs/                    The guides listed above
 integrations/ableton/    Ableton Live control-surface bridge
-plugin/                  JUCE C++ frontend, assets, and CMake definition
-scripts/                 Development setup, build, and install commands
+packaging/               Installer definition and release model manifest
+plugin/                  JUCE C++ frontend, assets, CMake definition, tests
+scripts/                 Development setup, build, install, release commands
 stemlab/                 Python separation and DSP engine
 tests/                   Fast unit tests using generated audio
 pyproject.toml           Python package, commands, and tool settings
-docs/linux.md            Linux build, install, and REAPER guide
 ```
 
 Directories such as `.venv/`, `.portable-cache/`, `plugin/build/`, `dist/`,
