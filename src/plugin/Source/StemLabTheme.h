@@ -324,7 +324,8 @@ namespace stemlab::theme
         inline juce::FontOptions refineLabel() { return make(11.0f, false); }
 
         inline juce::FontOptions meta() { return make(11.0f, false); }
-        inline juce::FontOptions status() { return make(11.5f, false); }
+        inline juce::FontOptions status() { return make(12.5f, false); }
+        inline juce::FontOptions progress() { return make(12.0f, false); }
         inline juce::FontOptions time() { return make(12.0f, false); }
         inline juce::FontOptions footerPath() { return make(12.0f, false); }
         inline juce::FontOptions smallButton() { return make(10.0f, false); }
@@ -578,13 +579,16 @@ namespace stemlab::theme
             constexpr int dividerGap = 8;
             constexpr int height = 34;
             constexpr int gap = 10;
-            constexpr int statusLineHeight = 14;
-            constexpr int statusLineGap = 6;
+            // Status line, gap, and progress row fill the footer height
+            // exactly, so the block sits symmetrically inside it.
+            constexpr int statusLineHeight = 16;
+            constexpr int statusLineGap = 4;
+            constexpr int statusTextGap = 6;
             constexpr int statusRightMargin = 28;
             constexpr float progressHeight = 3.0f;
-            constexpr int progressRowHeight = 12;
-            constexpr int progressLabelWidth = 168;
-            constexpr int progressLabelGap = 8;
+            constexpr int progressRowHeight = 14;
+            constexpr int progressBarWidth = 320;
+            constexpr int progressLabelGap = 10;
             constexpr int folderIcon = 14;
             constexpr int folderIconGap = 6;
             constexpr int pathWidth = 170;
