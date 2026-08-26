@@ -100,15 +100,35 @@ jobs:
           if-no-files-found: error
 
   linux:
-    name: Linux
+    name: Linux (${{ matrix.flavor }})
     runs-on: ubuntu-latest
     needs: metadata
     # The Release plugin build is link-time optimised and the Engine install
     # pulls torch and audio-separator, so this is long by nature.
     timeout-minutes: 120
 
+    strategy:
+      # One flavor failing must not cancel the other three: a rocm wheel
+      # server having a bad day should still leave a cpu bundle to ship.
+      fail-fast: false
+      matrix:
+        flavor: [cpu, cuda, rocm, xpu]
+
     steps:
       - uses: actions/checkout@v4
+
+      # Measured installed sizes of the torch stack: cpu 0.74GB, cuda 4.75GB,
+      # xpu 7.17GB, rocm 15.36GB - the ROCm wheel carries kernels for every
+      # gfx target. The image leaves about 21GB free, which rocm exceeds once
+      # the tarball is written beside the payload. These four are the standard
+      # removals and none of them is used by this build.
+      - name: Free disk space
+        if: matrix.flavor != 'cpu'
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}"
+          df -h /
 
       - name: Install build dependencies
         run: |
@@ -127,16 +147,18 @@ jobs:
           path: .portable-cache
           key: juce-9.0.0-${{ runner.os }}
 
-      # cpu, not auto: --torch-flavor auto resolves against the machine doing
-      # the building, and this machine has no GPU. Naming the bundle "cpu" is
-      # then honest about what is inside it, and a GPU user re-runs
-      # scripts/install_backend.sh with their own flavor.
+      # Never "auto": that resolves against the machine doing the building,
+      # and no runner has a GPU, so every bundle would silently be a cpu one.
+      # Naming each build for the flavor it was compiled against is the whole
+      # point - the filename is the only thing a user has to go on.
       - name: Build the self-contained bundle
-        run: ./scripts/build_portable.sh --torch-flavor cpu
+        run: ./scripts/build_portable.sh --torch-flavor ${{ matrix.flavor }}
 
-      # The same binaries without the 1.8GB Engine, for anyone who already
-      # has a backend installed and only wants the plugin.
+      # The same binaries without the Engine, for anyone who already has a
+      # backend installed. They do not vary with the torch flavor, so one
+      # leg builds them rather than four producing identical copies.
       - name: Package the plugin on its own
+        if: matrix.flavor == 'cpu'
         run: |
           version="${{ needs.metadata.outputs.version }}"
           artefacts="plugin/build/StemLabPlugin_artefacts/Release"
@@ -173,13 +195,38 @@ jobs:
           mkdir -p dist
           tar -C "$(dirname "$staging")" -czf "$PWD/dist/$name.tar.gz" "$name"
 
+      # A GitHub release asset may not exceed 2GiB, and the GPU bundles do:
+      # the cuda, rocm and xpu torch stacks are 4.75GB, 15.36GB and 7.17GB
+      # installed. Splitting is the same answer StemLab.iss already reaches
+      # for on Windows with DiskSpanning; the release notes carry the one
+      # command that puts a bundle back together.
+      - name: Split anything over the release asset limit
+        run: |
+          limit=$((1900 * 1024 * 1024))
+
+          for archive in dist/*.tar.gz; do
+            size="$(stat -c %s "$archive")"
+            if [ "$size" -le "$limit" ]; then
+              continue
+            fi
+
+            echo "Splitting $(basename "$archive") ($size bytes)"
+            split --bytes="$limit" --numeric-suffixes --suffix-length=2 \
+              "$archive" "$archive.part"
+            rm "$archive"
+          done
+
       - name: List what was produced
         run: ls -lh dist/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: linux
-          path: dist/*.tar.gz
+          # One artifact per flavor: v4 artifact names must be unique across
+          # a run, and a shared name would have the legs collide.
+          name: linux-${{ matrix.flavor }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.part*
           if-no-files-found: error
           # Already gzipped. Re-compressing costs minutes and saves nothing.
           compression-level: 0
@@ -329,23 +376,43 @@ jobs:
           | File | What it is |
           | --- | --- |
           | `StemLab-Setup-*.exe` **and** `StemLab-Setup-*.bin` | **Windows installer.** Download every part into the same folder before running the `.exe` - it will not start without its `.bin` slices. Installs the app, the VST3 and the Engine; no Python needed. |
-          | `StemLab-*-Linux-cpu.tar.gz` | **Linux, self-contained.** Extract and run `./install.sh` once. Includes the Engine; no Python needed. |
+          | `StemLab-*-Linux-<flavor>.tar.gz` | **Linux, self-contained.** Extract and run `./install.sh` once. Includes the Engine; no Python needed. Pick the flavor for your hardware - see below. |
           | `StemLab-*-plugin-only.*` | The VST3 and Standalone binaries alone, for anyone who already has an Engine installed. |
           | `stemlab_open-*.whl`, `stemlab_open-*.tar.gz` | The Python package on its own, for command-line use. |
 
           `SHA256SUMS` covers every file above.
 
-          ## About the bundled runtime
+          ## Which Linux flavor
 
-          The Engine in these bundles is built against **CPU torch**. The build
-          machines have no GPU, and a bundle named for hardware it was never
-          built against would be a lie. Separation works as shipped; for NVIDIA,
-          AMD or Intel offload, re-run the backend installer from a checkout
-          with your own flavor:
+          | Flavor | For | Engine size |
+          | --- | --- | ---: |
+          | `cpu` | no GPU offload | ~1.7 GB |
+          | `cuda` | NVIDIA | ~5.7 GB |
+          | `xpu` | Intel Arc / Xe | ~8.1 GB |
+          | `rocm` | AMD (RDNA2+) | ~16 GB |
+
+          Every GPU build also runs on the CPU, so a `cuda` bundle on a machine
+          without an NVIDIA card still separates - just without the offload.
+          Take `cpu` if you want the smallest download and do not need a GPU.
+
+          The Windows installer bundles **CPU torch**. The build machines have
+          no GPU, and naming a bundle for hardware it was never built against
+          would be a lie. For offload there, install the backend yourself from
+          a checkout with `--cuda`, `--rocm` or `--xpu`.
+
+          ## Reassembling a split bundle
+
+          A GitHub release asset cannot exceed 2 GiB, and the GPU bundles do.
+          Those arrive as numbered parts; download every part into one folder
+          and join them before extracting:
 
           ```
-          ./scripts/install_backend.sh --cuda    # or --rocm, --xpu
+          cat StemLab-*-Linux-rocm.tar.gz.part* > StemLab-Linux-rocm.tar.gz
+          tar -xzf StemLab-Linux-rocm.tar.gz
           ```
+
+          The Windows installer is split the same way, by Inno Setup, into
+          `.bin` slices beside the `.exe`.
 
           Model weights download on first use on Linux; the Windows installer
           carries them.
