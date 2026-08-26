@@ -7,6 +7,21 @@ integration on Windows and direct REAPER integration on Linux.
 The repository contains the source-development workflow only - no generated
 builds, model weights, or virtual environments.
 
+## Install
+
+### Linux: [Download Linux Installer](https://github.com/lanabretterebner/StemLab/releases/latest/download/StemLab-Linux-setup.sh)
+
+```bash
+cd Downloads
+chmod +x ./StemLab-Linux-setup.sh
+./StemLab-Linux-setup.sh cpu|xpu|cuda|rocm
+```
+
+    
+### Windows: [Download Windows Installer](https://github.com/lanabretterebner/StemLab/releases/latest/download/StemLab-Windows-setup.ps1)
+
+  Right-click StemLab-Windows-setup.ps1, "Run with PowerShell", and pick a backend (cpu|xpu|cuda)
+  
 ## Features
 
 - JUCE Standalone application and VST3
