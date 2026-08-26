@@ -96,7 +96,7 @@ def _require_separator() -> None:
     if Separator is None:
         raise RuntimeError(
             "Recursive Stem Splitting requires audio-separator. "
-            "Run scripts/setup_dev.ps1, or install StemLab with the recursive extra."
+            "Run scripts/win/setup_dev.ps1, or install StemLab with the recursive extra."
         ) from _AUDIO_SEPARATOR_IMPORT_ERROR
 
 

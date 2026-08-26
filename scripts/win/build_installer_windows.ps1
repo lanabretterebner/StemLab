@@ -8,7 +8,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$RepoRoot = Split-Path $PSScriptRoot -Parent
+$RepoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $DistRoot = Join-Path $RepoRoot "dist"
 
 $VersionMatch = Select-String -LiteralPath (Join-Path $RepoRoot "pyproject.toml") -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1

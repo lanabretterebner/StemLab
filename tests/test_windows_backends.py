@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 needs_powershell = pytest.mark.skipif(
     shutil.which("powershell.exe") is None, reason="requires Windows PowerShell"
 )
-VERIFY_PATH = ROOT / "scripts" / "verify_windows_backend.py"
+VERIFY_PATH = ROOT / "scripts" / "win" / "verify_windows_backend.py"
 SPEC = importlib.util.spec_from_file_location("verify_windows_backend", VERIFY_PATH)
 assert SPEC and SPEC.loader
 VERIFY = importlib.util.module_from_spec(SPEC)
@@ -70,7 +70,7 @@ def test_amd_requires_hip_torch():
 # payload records the torch flavor it actually contains and the installer
 # names itself from that record, so only the dev setup selects a backend.
 @needs_powershell
-@pytest.mark.parametrize("script", ["scripts/setup_dev.ps1"])
+@pytest.mark.parametrize("script", ["scripts/win/setup_dev.ps1"])
 def test_invalid_backend_is_rejected(script: str):
     result = subprocess.run(
         ["powershell.exe", "-NoProfile", "-File", str(ROOT / script), "-Backend", "invalid"],
@@ -85,7 +85,7 @@ def test_invalid_backend_is_rejected(script: str):
 
 @needs_powershell
 def test_backend_output_suffixes_do_not_collide():
-    helper = ROOT / "scripts" / "windows_backend.ps1"
+    helper = ROOT / "scripts" / "win" / "windows_backend.ps1"
     command = (
         f". '{helper}'; "
         "'nvidia','cpu','amd' | ForEach-Object { (Get-StemLabBackendConfiguration $_).Suffix }"

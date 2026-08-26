@@ -35,11 +35,17 @@ juce::File abletonSetupScript()
 
     for (int depth = 0; depth < 6 && root.exists(); ++depth)
     {
-        const auto candidate =
-            root.getChildFile("scripts").getChildFile("install_ableton.ps1");
-
-        if (candidate.existsAsFile())
-            return candidate;
+        // A source checkout keeps it under scripts/win/; the portable
+        // payload's flat scripts/ layout predates that split and is what
+        // installed copies already have.
+        for (const auto& candidate :
+             {root.getChildFile("scripts").getChildFile("win").getChildFile(
+                  "install_ableton.ps1"),
+              root.getChildFile("scripts").getChildFile("install_ableton.ps1")})
+        {
+            if (candidate.existsAsFile())
+                return candidate;
+        }
 
         const auto parent = root.getParentDirectory();
         if (parent == root)
@@ -3319,7 +3325,9 @@ void StemLabAudioProcessorEditor::launchAbletonSetup()
     {
         juce::AlertWindow::showMessageBoxAsync(
             juce::MessageBoxIconType::WarningIcon, "Ableton setup not found",
-            "scripts/install_ableton.ps1 was not found in the StemLab source tree.", "OK",
+            "install_ableton.ps1 was not found beside the app or in the StemLab "
+            "source tree (scripts/win/).",
+            "OK",
             this);
         return;
     }
@@ -3351,7 +3359,7 @@ void StemLabAudioProcessorEditor::launchAbletonSetup()
     {
         juce::AlertWindow::showMessageBoxAsync(
             juce::MessageBoxIconType::WarningIcon, "Could not start Ableton setup",
-            "Run scripts/install_ableton.ps1 from the StemLab source folder instead.", "OK",
+            "Run install_ableton.ps1 from StemLab's scripts folder instead.", "OK",
             this);
     }
 }

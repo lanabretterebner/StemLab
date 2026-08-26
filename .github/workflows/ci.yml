@@ -95,7 +95,7 @@ jobs:
       # Debug build compiles every line just the same, which is what this job
       # is here to check.
       - name: Build
-        run: ./scripts/build_plugin.sh --build-type Debug
+        run: ./scripts/linux/build_plugin.sh --build-type Debug
 
       - name: Tests
         run: ctest --test-dir src/plugin/build --output-on-failure

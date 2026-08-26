@@ -4,7 +4,15 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# This script runs from two layouts: scripts\win\ in a source checkout and
+# scripts\ in the portable payload (whose flat layout predates the split and
+# is what installed copies already have). The root is whichever holds the
+# payload or the repository.
 $RepoRoot = Split-Path $PSScriptRoot -Parent
+if ((Split-Path $PSScriptRoot -Leaf) -ieq "win") {
+    $RepoRoot = Split-Path $RepoRoot -Parent
+}
 $PortableVst = Join-Path $RepoRoot "StemLab.vst3"
 $PortableRemote = Join-Path $RepoRoot "StemLabRemote"
 $DevelopmentVst = Join-Path $RepoRoot "src\plugin\build\StemLabPlugin_artefacts\Release\VST3\StemLab.vst3"

@@ -24,7 +24,7 @@ TORCH_FLAVOR="auto"
 JUCE_SOURCE=""
 MAKE_TARBALL=1
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -96,7 +96,7 @@ FLAVOR_ARGS=()
 
 # --no-pointer: assembling a distributable must not rewire the build
 # machine's own engine discovery.
-"$REPO_ROOT/scripts/install_backend.sh" \
+"$REPO_ROOT/scripts/linux/install_backend.sh" \
     ${FLAVOR_ARGS[@]+"${FLAVOR_ARGS[@]}"} \
     --dest "$DIST_DIR/Engine" \
     --no-pointer

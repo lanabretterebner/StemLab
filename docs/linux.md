@@ -8,7 +8,7 @@ Windows release.
 The quickest path is the self-contained bundle, which includes the Engine:
 
 ```bash
-./scripts/build_portable.sh      # builds dist/StemLab-<version>-Linux/
+./scripts/linux/build_portable.sh      # builds dist/StemLab-<version>-Linux/
 cd dist/StemLab-*-Linux && ./install.sh
 ```
 
@@ -29,7 +29,7 @@ sudo apt install \
   libfreetype-dev libfontconfig1-dev libgl1-mesa-dev
 ```
 
-On Fedora or Arch, just run `./scripts/build_plugin.sh` - it checks every
+On Fedora or Arch, just run `./scripts/linux/build_plugin.sh` - it checks every
 dependency with `pkg-config` first and prints the exact install command for
 your distribution.
 
@@ -39,19 +39,19 @@ builds with `JUCE_WEB_BROWSER=0` and `JUCE_USE_CURL=0`.
 ## 2. Build the plugin
 
 ```bash
-./scripts/build_plugin.sh
+./scripts/linux/build_plugin.sh
 ```
 
 This downloads the pinned JUCE 9.0.0 source into `.portable-cache/` and passes
-it straight to CMake, exactly as `scripts/build_plugin.ps1` does on Windows.
+it straight to CMake, exactly as `scripts/win/build_plugin.ps1` does on Windows.
 Git is not needed for the JUCE step.
 
 Useful flags:
 
 ```bash
-./scripts/build_plugin.sh --juce-source /path/to/JUCE   # reuse a local checkout
-./scripts/build_plugin.sh --build-type Debug
-./scripts/build_plugin.sh --clean
+./scripts/linux/build_plugin.sh --juce-source /path/to/JUCE   # reuse a local checkout
+./scripts/linux/build_plugin.sh --build-type Debug
+./scripts/linux/build_plugin.sh --clean
 ```
 
 Outputs land in:
@@ -64,7 +64,7 @@ src/plugin/build/StemLabPlugin_artefacts/Release/Standalone/StemLab
 ## 3. Install the VST3
 
 ```bash
-./scripts/install_vst3.sh
+./scripts/linux/install_vst3.sh
 ```
 
 That copies the bundle to `~/.vst3/StemLab.vst3` and verifies the module inside
@@ -79,7 +79,7 @@ The plugin shells out to the Python backend. One script sets it up - no venv,
 no system Python, nothing to configure:
 
 ```bash
-./scripts/install_backend.sh
+./scripts/linux/install_backend.sh
 ```
 
 It downloads a relocatable CPython into `~/.local/share/StemLab/Engine`,
@@ -122,7 +122,7 @@ The plugin discovers the engine in this order:
    the plugin binary
 3. `.venv/bin/stemlab-plugin-job` or `venv/bin/stemlab-plugin-job`, searched
    upward from the plugin binary, the repo root, and the working directory
-4. the pointer written by `scripts/install_backend.sh` (and by the Standalone
+4. the pointer written by `scripts/linux/install_backend.sh` (and by the Standalone
    app) at `$XDG_CONFIG_HOME/StemLab/portable_engine_path.txt`
 5. `stemlab-plugin-job` on `$PATH`
 

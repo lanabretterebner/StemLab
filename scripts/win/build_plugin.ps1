@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
-$RepoRoot = Split-Path $PSScriptRoot -Parent
+$RepoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $PluginRoot = Join-Path $RepoRoot "src\plugin"
 $BuildDir = Join-Path $PluginRoot "build"
 $CacheRoot = Join-Path $RepoRoot ".portable-cache"

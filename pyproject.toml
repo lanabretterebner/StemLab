@@ -12,7 +12,7 @@ license = {text = "MIT"}
 dependencies = [
   # Windows setup selects and verifies the backend-specific Torch wheel before
   # installing this project. Transitive Torch requirements are constrained by
-  # requirements/windows-backend-constraints.txt so pip cannot replace it.
+  # scripts/win/windows-backend-constraints.txt so pip cannot replace it.
   "numpy>=1.26",
   "scipy>=1.12",
   "soundfile>=0.12",
