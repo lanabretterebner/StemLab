@@ -887,13 +887,17 @@ void StemLaneComponent::resized()
 
     row.removeFromLeft(lanes::columnGap);
 
+    // The drag handle leads the waveform it carries, rather than sitting
+    // across the lane among the controls that act on playback.
+    dragButton->setBounds(row.removeFromLeft(lanes::smButton)
+                              .withSizeKeepingCentre(lanes::smButton, lanes::smButton));
+
+    row.removeFromLeft(lanes::dragGap);
+
     auto controls = row.removeFromRight(lanes::controlsColumn);
 
     // Controls sit vertically centred: S, M, layers.
     auto centred = controls.withSizeKeepingCentre(controls.getWidth(), lanes::smButton);
-
-    dragButton->setBounds(centred.removeFromLeft(lanes::smButton));
-    centred.removeFromLeft(lanes::smGap);
 
     soloButton.setBounds(centred.removeFromLeft(lanes::smButton));
     centred.removeFromLeft(lanes::smGap);

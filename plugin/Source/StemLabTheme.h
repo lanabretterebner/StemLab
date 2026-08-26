@@ -455,11 +455,17 @@ namespace stemlab::theme
             constexpr int includeColumn = 18;
             constexpr int nameColumn = 92;
 
-            // Four buttons now: drag-out, S, M, and the menu.
-            constexpr int controlsColumn = 106;
+            // S, M and the menu. The drag handle sits on the other side of
+            // the waveform, next to the name it belongs to.
+            constexpr int controlsColumn = 78;
+
+            // Between the drag handle and the waveform it drags.
+            constexpr int dragGap = 8;
             constexpr int columnGap = 12;
 
-            constexpr int rowPadY = 5;
+            // The wells sit close together: this is the whole gap between one
+            // lane's waveform and the next, doubled.
+            constexpr int rowPadY = 2;
             constexpr float rowRadius = 6.0f;
             constexpr int wellHeight = 40;
             constexpr float wellRadius = 6.0f;
@@ -478,8 +484,9 @@ namespace stemlab::theme
             constexpr float wellPadX = 6.0f;
             constexpr float wellPadY = 5.0f;
 
-            // Stereo draws as two half-height waveforms with this between.
-            constexpr float channelGap = 3.0f;
+            // Stereo draws as two half-height waveforms with this between:
+            // enough to read as two channels, not enough to waste the well.
+            constexpr float channelGap = 1.0f;
 
             // Silence still draws a hairline, so an empty stem reads as flat
             // rather than as a lane that failed to load.
