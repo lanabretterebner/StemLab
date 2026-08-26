@@ -77,6 +77,7 @@ constexpr int tempoMenuBase = 420;
 constexpr int analysisEnableId = 430;
 constexpr int analysisForgetId = 431;
 constexpr int analysisClearCacheId = 432;
+constexpr int versionItemId = 440;
 
 // Lane-menu ids for MIDI, above the per-menu action ids.
 constexpr int midiConvertId = 500;
@@ -3285,6 +3286,10 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
     menu.addSeparator();
 
     menu.addItem(4, "Copy diagnostics to clipboard", processor.getEngineLog().isNotEmpty());
+
+    // The version this binary was built as (project VERSION in CMakeLists,
+    // stamped by JUCE). Informational, so never selectable.
+    menu.addItem(versionItemId, "StemLab v" JucePlugin_VersionString, false);
 
     if (processor.isStandaloneApp())
     {

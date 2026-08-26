@@ -2,7 +2,9 @@
   #error SourceDir must be supplied by scripts/win/build_installer_windows.ps1
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.9.9"
+  ; No fallback: a manual compile would silently stamp a stale number.
+  ; build_installer_windows.ps1 reads the real version from pyproject.toml.
+  #error AppVersion must be supplied by scripts/win/build_installer_windows.ps1
 #endif
 #ifndef OutputDir
   #define OutputDir "."

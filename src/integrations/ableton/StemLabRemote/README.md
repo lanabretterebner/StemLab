@@ -1,5 +1,5 @@
-StemLabRemote 0.9.9
-====================
+StemLabRemote
+=============
 
 Invisible Ableton Live background integration for StemLab.
 

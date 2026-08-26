@@ -8,7 +8,7 @@ name: Release
 #
 # Publish by pushing a tag that matches pyproject.toml:
 #
-#   git tag v0.9.9 && git push origin v0.9.9
+#   git tag "v$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)" && git push origin --tags
 #
 # Or run it from the Actions tab to rehearse: with "publish" left off it
 # builds every asset and uploads them as workflow artifacts without creating

@@ -1,6 +1,21 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(StemLabPlugin VERSION 0.9.9 LANGUAGES C CXX)
+# pyproject.toml is the single source of the StemLab version (the release
+# workflow refuses a tag that disagrees with it). Read it here so the plugin
+# binary - JucePlugin_VersionString, the settings-menu version tag, what the
+# host displays - can never drift from a release.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../../pyproject.toml" _stemlab_pyproject)
+if (NOT _stemlab_pyproject MATCHES "\nversion = \"([0-9]+\\.[0-9]+\\.[0-9]+)\"")
+    message(FATAL_ERROR "Could not read a plain X.Y.Z version from pyproject.toml")
+endif()
+set(STEMLAB_VERSION "${CMAKE_MATCH_1}")
+unset(_stemlab_pyproject)
+
+project(StemLabPlugin VERSION ${STEMLAB_VERSION} LANGUAGES C CXX)
+
+# Re-run the configure step when the version bumps.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             "${CMAKE_CURRENT_SOURCE_DIR}/../../pyproject.toml")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
