@@ -3949,6 +3949,10 @@ int StemLabAudioProcessor::saveSelectedStemsTo(const juce::File& destination)
 
     int saved = 0;
 
+    // Saving goes through the same loop-aware render as dragging: with the
+    // loop on, what lands in the folder is the looped section, not the whole
+    // stem. The extension is left to the renderer - a plain copy keeps the
+    // source's, a looped render is always WAV.
     for (int i = 0; i < stemCount; ++i)
     {
         if (!isStemEnabled(i))
@@ -3959,14 +3963,9 @@ int StemLabAudioProcessor::saveSelectedStemsTo(const juce::File& destination)
         if (!source.existsAsFile())
             continue;
 
-        const auto outputName = baseName + "_" + getStemName(i) + source.getFileExtension();
+        const auto target = destination.getChildFile(baseName + "_" + getStemName(i));
 
-        auto target = destination.getChildFile(outputName);
-
-        if (target.existsAsFile())
-            target.deleteFile();
-
-        if (source.copyFileTo(target))
+        if (exportLoopedRegions(source, target).existsAsFile())
             ++saved;
     }
 
@@ -3976,14 +3975,9 @@ int StemLabAudioProcessor::saveSelectedStemsTo(const juce::File& destination)
             continue;
 
         auto safeName = item.id.replace("/", "_").replace("\\", "_");
-        const auto outputName = baseName + "_" + safeName + item.file.getFileExtension();
+        const auto target = destination.getChildFile(baseName + "_" + safeName);
 
-        auto target = destination.getChildFile(outputName);
-
-        if (target.existsAsFile())
-            target.deleteFile();
-
-        if (item.file.copyFileTo(target))
+        if (exportLoopedRegions(item.file, target).existsAsFile())
             ++saved;
     }
 
@@ -3992,22 +3986,28 @@ int StemLabAudioProcessor::saveSelectedStemsTo(const juce::File& destination)
     return saved;
 }
 
+std::vector<stemlab::loops::Region> StemLabAudioProcessor::loopRegionsSnapshot() const
+{
+    const juce::ScopedLock lock(selectionLock);
+    return loopRegionsNormalised;
+}
+
 /*
- * A stem leaves as its whole file unless the lane carries an active
- * selection range, in which case the range is rendered to its own WAV.
- * With no active range the destination is a plain copy, so callers can
- * always hand the returned file away without touching the job's output.
+ * A stem leaves as its whole file unless the playback loop is on, in which
+ * case the loop's regions are rendered back to back into one WAV - the same
+ * merged multi-lane regions the transport plays, so what leaves is what was
+ * heard. With no loop the destination is a plain copy, so callers can always
+ * hand the returned file away without touching the job's output.
  */
-juce::File StemLabAudioProcessor::exportSelectedRegion(const juce::File& source,
-                                                       const juce::File& destination,
-                                                       const juce::String& selectionId)
+juce::File StemLabAudioProcessor::exportLoopedRegions(const juce::File& source,
+                                                      const juce::File& destination)
 {
     if (!source.existsAsFile())
         return {};
 
-    const auto range = getStemSelectionRange(selectionId);
+    const auto regions = loopRegionsSnapshot();
 
-    if (!range.active)
+    if (regions.empty())
     {
         auto target = destination;
 
@@ -4024,13 +4024,6 @@ juce::File StemLabAudioProcessor::exportSelectedRegion(const juce::File& source,
 
     if (reader == nullptr || reader->sampleRate <= 0.0 || reader->lengthInSamples <= 0)
         return {};
-
-    const auto startSample = juce::jlimit<juce::int64>(
-        0, reader->lengthInSamples - 1,
-        static_cast<juce::int64>(std::floor(range.start * reader->lengthInSamples)));
-    const auto endSample = juce::jlimit<juce::int64>(
-        startSample + 1, reader->lengthInSamples,
-        static_cast<juce::int64>(std::ceil(range.end * reader->lengthInSamples)));
 
     auto target = destination.withFileExtension("wav");
 
@@ -4051,15 +4044,41 @@ juce::File StemLabAudioProcessor::exportSelectedRegion(const juce::File& source,
                              .withBitsPerSample(bits > 0 ? bits : 24);
     auto writer = wav.createWriterFor(stream, options);
 
-    if (writer == nullptr ||
-        !writer->writeFromAudioReader(*reader, startSample, endSample - startSample))
+    if (writer == nullptr)
+        return {};
+
+    juce::int64 written = 0;
+
+    for (const auto& region : regions)
     {
-        writer.reset();
+        const auto startSample = juce::jlimit<juce::int64>(
+            0, reader->lengthInSamples,
+            static_cast<juce::int64>(std::floor(region.start * reader->lengthInSamples)));
+        const auto endSample = juce::jlimit<juce::int64>(
+            startSample, reader->lengthInSamples,
+            static_cast<juce::int64>(std::ceil(region.end * reader->lengthInSamples)));
+
+        if (endSample <= startSample)
+            continue;
+
+        if (!writer->writeFromAudioReader(*reader, startSample, endSample - startSample))
+        {
+            writer.reset();
+            target.deleteFile();
+            return {};
+        }
+
+        written += endSample - startSample;
+    }
+
+    writer.reset();
+
+    if (written <= 0)
+    {
         target.deleteFile();
         return {};
     }
 
-    writer.reset();
     return target;
 }
 
@@ -6236,7 +6255,7 @@ void StemLabAudioProcessor::applyPreviewLoopTick()
 juce::File StemLabAudioProcessor::getStemDragFile(const juce::File& source,
                                                   const juce::String& selectionId)
 {
-    if (!getStemSelectionRange(selectionId).active)
+    if (loopRegionsSnapshot().empty())
         return source;
 
     const auto directory = getLastJobDirectory().getChildFile("selected_regions");
@@ -6244,11 +6263,11 @@ juce::File StemLabAudioProcessor::getStemDragFile(const juce::File& source,
 
     const auto safeName = selectionId.replace("/", "_").replace("\\", "_");
 
-    const auto trimmed = exportSelectedRegion(
-        source, directory.getChildFile(safeName + "_selection.wav"), selectionId);
+    const auto trimmed =
+        exportLoopedRegions(source, directory.getChildFile(safeName + "_selection.wav"));
 
     if (!trimmed.existsAsFile())
-        setStatus("Could not export the selected " + selectionId + " range");
+        setStatus("Could not export the looped " + selectionId + " range");
 
     return trimmed;
 }

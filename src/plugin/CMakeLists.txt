@@ -111,8 +111,6 @@ target_sources(StemLabPlugin
         Source/ReaperHost.h
         Source/ReaperBridge.cpp
         Source/ReaperBridge.h
-        Source/LinuxDragSourceGuard.cpp
-        Source/LinuxDragSourceGuard.h
         Source/LinuxSystemCapture.cpp
         Source/LinuxSystemCapture.h
         Source/WaveformGrid.h
@@ -207,14 +205,9 @@ elseif (UNIX AND NOT APPLE)
     # pick up JACK at runtime, or the thread library on some toolchains.
     find_package(Threads REQUIRED)
 
-    # LinuxDragSourceGuard talks straight to Xlib; JUCE pulls X11 in through
-    # its own targets, but our direct calls get their own explicit link.
-    find_package(X11 REQUIRED)
-
     target_link_libraries(StemLabPlugin
         PRIVATE
             Threads::Threads
-            X11::X11
             ${CMAKE_DL_LIBS}
     )
 

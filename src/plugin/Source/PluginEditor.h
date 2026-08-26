@@ -173,7 +173,7 @@ public:
                       std::function<void(const juce::String&)> showChildMenu,
                       std::function<void(int, juce::String)> toggleExpanded);
 
-    ~StemLaneComponent() override { releaseDragSourceGuard(); }
+    ~StemLaneComponent() override = default;
 
     void refresh();
 
@@ -225,9 +225,6 @@ private:
     std::unique_ptr<stemlab::widgets::IconButton> menuButton;
     bool hasChildren = false;
     bool externalDragStarted = false;
-    void* dndSourceGuardToken = nullptr;
-
-    void releaseDragSourceGuard();
 
     std::function<void()> refreshEditor;
     std::function<void(int)> showRootMenu;
@@ -485,9 +482,6 @@ private:
     // over the window cannot reload the source they were split from.
     StemLabSelfFileDragGuard selfFileDragGuard;
     bool footerDragStarted = false;
-    void* dndSourceGuardToken = nullptr;
-
-    void releaseDragSourceGuard();
 
     /** What the action segment last rendered as, so a click acts on the
         state the user actually saw. */
