@@ -4405,10 +4405,31 @@ juce::String StemLabAudioProcessor::getSeparatorEngineId() const
 
 juce::String StemLabAudioProcessor::getSeparatorEngineDisplayName() const
 {
-    switch (getSeparatorEngineIndex())
+    return getSeparatorEngineShortName(getSeparatorEngineIndex());
+}
+
+juce::String StemLabAudioProcessor::getSeparatorEngineShortName(int index)
+{
+    switch (index)
     {
     case separatorDemucs:
         return "Demucs";
+
+    case separatorHybrid:
+        return "Hybrid";
+
+    case separatorRoFormer:
+    default:
+        return "BS-RoFormer";
+    }
+}
+
+juce::String StemLabAudioProcessor::getSeparatorEngineMenuName(int index)
+{
+    switch (index)
+    {
+    case separatorDemucs:
+        return "Demucs (htdemucs_6s)";
 
     case separatorHybrid:
         return "Hybrid (RoFormer + Demucs)";

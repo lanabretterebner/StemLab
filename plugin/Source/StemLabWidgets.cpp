@@ -99,6 +99,90 @@ namespace stemlab::widgets
             g.fillPath(path);
     }
 
+    // ------------------------------------------------------------ selector
+
+    SelectorButton::SelectorButton(const juce::String& name, PathFactory leadingIcon)
+        : juce::Button(name), makeIcon(std::move(leadingIcon))
+    {
+    }
+
+    void SelectorButton::setLabel(const juce::String& newLabel)
+    {
+        if (label != newLabel)
+        {
+            label = newLabel;
+            repaint();
+        }
+    }
+
+    int SelectorButton::getPreferredWidth() const
+    {
+        namespace header = theme::metrics::header;
+
+        const juce::Font font{theme::fonts::bodyMedium()};
+
+        const int textWidth =
+            juce::roundToInt(juce::GlyphArrangement::getStringWidth(font, label)) + 2;
+
+        const int width = header::selectorPadX + header::selectorIcon + header::selectorGap +
+                          textWidth + header::selectorGap + header::selectorCaret +
+                          header::selectorPadX;
+
+        return juce::jmax(header::selectorMinWidth, width);
+    }
+
+    void SelectorButton::paintButton(juce::Graphics& g, bool highlighted, bool down)
+    {
+        namespace header = theme::metrics::header;
+
+        const auto bounds = getLocalBounds().toFloat().reduced(0.5f);
+
+        const bool hover = (highlighted || down) && isEnabled();
+
+        const float dim = isEnabled() ? 1.0f : theme::metrics::disabledOpacity;
+
+        if (hover)
+        {
+            g.setColour(theme::colours::accentTint10());
+            g.fillRoundedRectangle(bounds, header::selectorRadius);
+        }
+
+        g.setColour(theme::colours::outline().withMultipliedAlpha(dim));
+        g.drawRoundedRectangle(bounds, header::selectorRadius, 1.0f);
+
+        auto content = getLocalBounds().reduced(header::selectorPadX, 0);
+
+        const auto iconArea = content.removeFromLeft(header::selectorIcon)
+                                  .toFloat()
+                                  .withSizeKeepingCentre(static_cast<float>(header::selectorIcon),
+                                                         static_cast<float>(header::selectorIcon));
+
+        g.setColour((hover ? theme::colours::accent() : theme::colours::text75())
+                        .withMultipliedAlpha(dim));
+
+        if (makeIcon)
+            g.fillPath(makeIcon(iconArea));
+
+        content.removeFromLeft(header::selectorGap);
+
+        const auto caretArea =
+            content.removeFromRight(header::selectorCaret)
+                .toFloat()
+                .withSizeKeepingCentre(static_cast<float>(header::selectorCaret),
+                                       static_cast<float>(header::selectorCaret) * 0.55f);
+
+        g.setColour(theme::colours::text45().withMultipliedAlpha(dim));
+        g.strokePath(stemlab::icons::chevron(caretArea, stemlab::icons::ChevronDirection::down),
+                     juce::PathStrokeType(1.3f, juce::PathStrokeType::curved,
+                                          juce::PathStrokeType::rounded));
+
+        content.removeFromRight(header::selectorGap);
+
+        g.setColour(theme::colours::text().withMultipliedAlpha(dim));
+        g.setFont(theme::fonts::bodyMedium());
+        g.drawText(label, content, juce::Justification::centredLeft, false);
+    }
+
     // ----------------------------------------------------------- disclosure
 
     DisclosureButton::DisclosureButton() : juce::Button("disclosure")
@@ -136,7 +220,9 @@ namespace stemlab::widgets
         const auto icon = getLocalBounds().toFloat().withSizeKeepingCentre(
             expanded ? span : depth, expanded ? depth : span);
 
-        g.strokePath(stemlab::icons::chevron(icon, expanded),
+        g.strokePath(stemlab::icons::chevron(icon, expanded
+                                                ? stemlab::icons::ChevronDirection::down
+                                                : stemlab::icons::ChevronDirection::right),
                      juce::PathStrokeType(1.5f, juce::PathStrokeType::curved,
                                           juce::PathStrokeType::rounded));
     }

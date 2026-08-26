@@ -35,7 +35,12 @@ StemLabLookAndFeel::StemLabLookAndFeel()
 
     setColour(juce::Label::textColourId, theme::colours::text());
 
-    setColour(juce::PopupMenu::backgroundColourId, theme::colours::surface());
+    /*
+     * Very slightly transparent on purpose: JUCE makes a menu window opaque
+     * when this colour is opaque, and an opaque window cannot have the
+     * rounded corners drawPopupMenuBackgroundWithOptions draws.
+     */
+    setColour(juce::PopupMenu::backgroundColourId, theme::colours::surface().withAlpha(0.99f));
     setColour(juce::PopupMenu::textColourId, theme::colours::text());
     setColour(juce::PopupMenu::headerTextColourId, theme::colours::text50());
     setColour(juce::PopupMenu::highlightedBackgroundColourId, theme::colours::hoverFill());
@@ -213,6 +218,179 @@ void StemLabLookAndFeel::drawScrollbar(juce::Graphics& g, juce::ScrollBar&, int 
     g.fillRoundedRectangle(thumb.toFloat(), 3.0f);
 }
 
+// ============================================================== popup menus
+
+void StemLabLookAndFeel::drawPopupMenuBackgroundWithOptions(juce::Graphics& g, int width,
+                                                            int height,
+                                                            const juce::PopupMenu::Options&)
+{
+    const auto bounds =
+        juce::Rectangle<float>(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height))
+            .reduced(0.5f);
+
+    /*
+     * Rounded corners need the menu window to be non-opaque, which JUCE only
+     * allows where the desktop composites. Without that, rounding would
+     * leave four undrawn wedges, so square is the honest fallback.
+     */
+    if (!juce::Desktop::canUseSemiTransparentWindows())
+    {
+        g.fillAll(theme::colours::surface());
+
+        g.setColour(theme::colours::outline());
+        g.drawRect(bounds, 1.0f);
+        return;
+    }
+
+    g.setColour(theme::colours::surface());
+    g.fillRoundedRectangle(bounds, theme::metrics::menu::radius);
+
+    g.setColour(theme::colours::outline());
+    g.drawRoundedRectangle(bounds, theme::metrics::menu::radius, 1.0f);
+}
+
+void StemLabLookAndFeel::drawPopupMenuItemWithOptions(juce::Graphics& g,
+                                                      const juce::Rectangle<int>& area,
+                                                      bool isHighlighted,
+                                                      const juce::PopupMenu::Item& item,
+                                                      const juce::PopupMenu::Options&)
+{
+    namespace menu = theme::metrics::menu;
+
+    if (item.isSeparator)
+    {
+        auto line = area.withSizeKeepingCentre(area.getWidth() - 2 * menu::padX, 1);
+
+        g.setColour(theme::colours::divider());
+        g.fillRect(line);
+        return;
+    }
+
+    const float dim = item.isEnabled ? 1.0f : theme::metrics::disabledOpacity;
+
+    if (isHighlighted && item.isEnabled)
+    {
+        g.setColour(theme::colours::accentTint10());
+        g.fillRoundedRectangle(area.reduced(menu::rowInsetX, menu::rowInsetY).toFloat(),
+                               menu::rowRadius);
+    }
+
+    auto row = area.reduced(menu::rowInsetX + menu::padX, 0);
+
+    // The tick gutter is reserved whether or not this row is ticked, so
+    // labels line up down the whole menu.
+    const auto tickArea = row.removeFromLeft(menu::tickColumn);
+
+    row.removeFromLeft(menu::tickGap);
+
+    if (item.isTicked)
+    {
+        g.setColour(theme::colours::accent().withMultipliedAlpha(dim));
+
+        g.strokePath(stemlab::icons::check(tickArea.toFloat()
+                                               .withSizeKeepingCentre(
+                                                   static_cast<float>(menu::tickIcon),
+                                                   static_cast<float>(menu::tickIcon) * 0.72f)),
+                     juce::PathStrokeType(1.6f, juce::PathStrokeType::curved,
+                                          juce::PathStrokeType::rounded));
+    }
+
+    const bool hasSubMenu =
+        item.subMenu != nullptr && (item.itemID == 0 || item.subMenu->getNumItems() > 0);
+
+    auto trailing = row.removeFromRight(menu::trailingColumn);
+
+    if (hasSubMenu)
+    {
+        g.setColour(theme::colours::text45().withMultipliedAlpha(dim));
+
+        g.strokePath(
+            stemlab::icons::chevron(trailing.toFloat().withSizeKeepingCentre(
+                                        static_cast<float>(menu::submenuArrow) * 0.6f,
+                                        static_cast<float>(menu::submenuArrow)),
+                                    stemlab::icons::ChevronDirection::right),
+            juce::PathStrokeType(1.3f, juce::PathStrokeType::curved,
+                                 juce::PathStrokeType::rounded));
+    }
+    else if (item.shortcutKeyDescription.isNotEmpty())
+    {
+        g.setColour(theme::colours::text45().withMultipliedAlpha(dim));
+        g.setFont(theme::fonts::meta());
+        g.drawText(item.shortcutKeyDescription, trailing, juce::Justification::centredRight,
+                   false);
+    }
+
+    // A caller-supplied colour wins; the tick otherwise reads as the accent
+    // and the label stays plain text.
+    auto textColour = item.colour != juce::Colour() ? item.colour : theme::colours::text();
+
+    g.setColour(textColour.withMultipliedAlpha(dim));
+    g.setFont(getPopupMenuFont());
+    g.drawText(item.text, row, juce::Justification::centredLeft, true);
+}
+
+void StemLabLookAndFeel::drawPopupMenuSectionHeaderWithOptions(juce::Graphics& g,
+                                                               const juce::Rectangle<int>& area,
+                                                               const juce::String& sectionName,
+                                                               const juce::PopupMenu::Options&)
+{
+    namespace menu = theme::metrics::menu;
+
+    g.setColour(theme::colours::text45());
+    g.setFont(juce::Font(theme::fonts::meta()).withExtraKerningFactor(0.04f));
+
+    g.drawText(sectionName,
+               area.reduced(menu::rowInsetX + menu::padX, 0)
+                   .withTrimmedLeft(menu::tickColumn + menu::tickGap)
+                   .withTrimmedTop(4),
+               juce::Justification::bottomLeft, false);
+}
+
+void StemLabLookAndFeel::getIdealPopupMenuItemSizeWithOptions(const juce::String& text,
+                                                              bool isSeparator,
+                                                              int standardMenuItemHeight,
+                                                              int& idealWidth, int& idealHeight,
+                                                              const juce::PopupMenu::Options&)
+{
+    namespace menu = theme::metrics::menu;
+
+    if (isSeparator)
+    {
+        idealWidth = 50;
+        idealHeight = menu::separatorHeight;
+        return;
+    }
+
+    const juce::Font font{getPopupMenuFont()};
+
+    idealHeight = standardMenuItemHeight > 0 ? standardMenuItemHeight : menu::rowHeight;
+
+    idealWidth = juce::roundToInt(juce::GlyphArrangement::getStringWidth(font, text)) +
+                 menu::rowInsetX * 2 + menu::padX * 2 + menu::tickColumn + menu::tickGap +
+                 menu::trailingColumn;
+}
+
+void StemLabLookAndFeel::getIdealPopupMenuSectionHeaderSizeWithOptions(
+    const juce::String& text, int, int& idealWidth, int& idealHeight,
+    const juce::PopupMenu::Options&)
+{
+    namespace menu = theme::metrics::menu;
+
+    const juce::Font font{theme::fonts::meta()};
+
+    idealHeight = menu::sectionHeaderHeight;
+
+    idealWidth = juce::roundToInt(juce::GlyphArrangement::getStringWidth(font, text)) +
+                 menu::rowInsetX * 2 + menu::padX * 2 + menu::tickColumn + menu::tickGap;
+}
+
+int StemLabLookAndFeel::getPopupMenuBorderSizeWithOptions(const juce::PopupMenu::Options&)
+{
+    return theme::metrics::menu::borderSize;
+}
+
+juce::Font StemLabLookAndFeel::getPopupMenuFont() { return juce::Font(theme::fonts::body()); }
+
 void StemLabLookAndFeel::drawCornerResizer(juce::Graphics& g, int width, int height,
                                            bool mouseOver, bool mouseDown)
 {
@@ -372,26 +550,91 @@ namespace stemlab::icons
         return p;
     }
 
-    juce::Path chevron(juce::Rectangle<float> b, bool pointingDown)
+    juce::Path chevron(juce::Rectangle<float> b, ChevronDirection direction)
     {
         juce::Path p;
 
-        if (pointingDown)
+        if (direction == ChevronDirection::down)
         {
             const float inset = b.getHeight() * 0.20f;
 
             p.startNewSubPath(b.getX(), b.getY() + inset);
             p.lineTo(b.getCentreX(), b.getBottom() - inset);
             p.lineTo(b.getRight(), b.getY() + inset);
-        }
-        else
-        {
-            const float inset = b.getWidth() * 0.20f;
 
-            p.startNewSubPath(b.getX() + inset, b.getY());
-            p.lineTo(b.getRight() - inset, b.getCentreY());
-            p.lineTo(b.getX() + inset, b.getBottom());
+            return p;
         }
+
+        const float inset = b.getWidth() * 0.20f;
+        const bool right = direction == ChevronDirection::right;
+
+        const float tip = right ? b.getRight() - inset : b.getX() + inset;
+        const float tail = right ? b.getX() + inset : b.getRight() - inset;
+
+        p.startNewSubPath(tail, b.getY());
+        p.lineTo(tip, b.getCentreY());
+        p.lineTo(tail, b.getBottom());
+
+        return p;
+    }
+
+    juce::Path sparkle(juce::Rectangle<float> b)
+    {
+        // A four-point star with concave sides: the arms meet the centre
+        // through control points rather than a straight diamond edge.
+        juce::Path p;
+
+        const auto cx = b.getCentreX();
+        const auto cy = b.getCentreY();
+
+        const auto armX = b.getWidth() * 0.5f;
+        const auto armY = b.getHeight() * 0.5f;
+        const auto waist = juce::jmin(armX, armY) * 0.16f;
+
+        p.startNewSubPath(cx, cy - armY);
+        p.quadraticTo(cx + waist, cy - waist, cx + armX, cy);
+        p.quadraticTo(cx + waist, cy + waist, cx, cy + armY);
+        p.quadraticTo(cx - waist, cy + waist, cx - armX, cy);
+        p.quadraticTo(cx - waist, cy - waist, cx, cy - armY);
+        p.closeSubPath();
+
+        return p;
+    }
+
+    juce::Path palette(juce::Rectangle<float> b)
+    {
+        /*
+         * A painter's palette: a rounded blob with a thumb notch bitten out
+         * of the lower right, and three paint wells. Filled, not stroked -
+         * at 15px the wells would otherwise close up into dots.
+         */
+        juce::Path p;
+
+        p.addEllipse(b);
+
+        // The notch, and the wells, are subtracted so the fill reads as a
+        // palette rather than a spotted circle.
+        juce::Path holes;
+
+        const auto thumb = juce::jmin(b.getWidth(), b.getHeight()) * 0.30f;
+
+        holes.addEllipse(b.getRight() - thumb * 1.25f, b.getBottom() - thumb * 1.25f, thumb,
+                         thumb);
+
+        const auto well = juce::jmin(b.getWidth(), b.getHeight()) * 0.15f;
+
+        const float wellX[] = {0.30f, 0.52f, 0.74f};
+        const float wellY[] = {0.52f, 0.28f, 0.34f};
+
+        for (int i = 0; i < 3; ++i)
+        {
+            holes.addEllipse(b.getX() + b.getWidth() * wellX[i] - well * 0.5f,
+                             b.getY() + b.getHeight() * wellY[i] - well * 0.5f, well, well);
+        }
+
+        // Even-odd winding turns the added sub-paths into holes.
+        p.addPath(holes);
+        p.setUsingNonZeroWinding(false);
 
         return p;
     }

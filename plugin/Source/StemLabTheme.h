@@ -333,6 +333,31 @@ namespace stemlab::theme
             constexpr int settingsButton = 32;
             constexpr float settingsRadius = 8.0f;
             constexpr int settingsIcon = 16;
+
+            /*
+                The separation model and the waveform palette sit in the
+                header rather than three levels down a settings menu: they
+                are choices made while working, and the model in particular
+                belongs next to the Separate button that runs it.
+
+                    < [ * Hybrid v ] >   (palette)   (settings)
+            */
+            constexpr int selectorHeight = 30;
+            constexpr float selectorRadius = 8.0f;
+            constexpr int selectorPadX = 10;
+            constexpr int selectorIcon = 13;
+            constexpr int selectorGap = 7;
+            constexpr int selectorCaret = 8;
+            constexpr int selectorMinWidth = 104;
+
+            // The step arrows either side of the selector.
+            constexpr int stepButton = 20;
+            constexpr int stepIcon = 9;
+
+            // Between the selector group, the palette, and the settings icon.
+            constexpr int groupGap = 10;
+            constexpr int paletteButton = 30;
+            constexpr int paletteIcon = 15;
         }
 
         namespace source
@@ -437,6 +462,35 @@ namespace stemlab::theme
             constexpr int saveWidth = 96;
             constexpr int insertWidth = 108;
             constexpr int buttonHeight = 30;
+        }
+
+        namespace menu
+        {
+            /*
+                Popup menus are drawn by StemLabLookAndFeel rather than left
+                to JUCE's stock look: a rounded surface card, rows that
+                highlight as inset pills, and the same check glyph the
+                include checkboxes use.
+            */
+            constexpr float radius = 10.0f;
+            constexpr int borderSize = 6;
+
+            constexpr int rowHeight = 26;
+            constexpr int rowInsetX = 4;
+            constexpr int rowInsetY = 1;
+            constexpr float rowRadius = 6.0f;
+
+            // Left gutter for the tick, right gutter for a submenu arrow or
+            // a shortcut. Both are reserved on every row so labels line up.
+            constexpr int tickColumn = 20;
+            constexpr int tickIcon = 11;
+            constexpr int tickGap = 8;
+            constexpr int trailingColumn = 24;
+            constexpr int submenuArrow = 8;
+
+            constexpr int padX = 10;
+            constexpr int separatorHeight = 9;
+            constexpr int sectionHeaderHeight = 26;
         }
 
         namespace buttons

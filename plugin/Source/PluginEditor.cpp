@@ -62,9 +62,6 @@ juce::String formatSeconds(double seconds)
     return juce::String::formatted("%02d:%02d", minutes, secs);
 }
 
-// Settings-menu ids: 1..5 are the fixed entries, 200+ the separators.
-constexpr int waveformColourMenuBase = 300;
-
 juce::String stemDisplayName(int index)
 {
     const auto name = StemLabAudioProcessor::getStemName(index);
@@ -576,6 +573,58 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     titleLabel.setColour(juce::Label::textColourId, theme::colours::text());
     panelContent.addAndMakeVisible(titleLabel);
 
+    // The separation model and the waveform palette live here rather than
+    // inside the settings menu: both are choices made while working, and the
+    // model belongs beside the Separate button that runs it.
+    enginePrevButton = std::make_unique<widgets::IconButton>(
+        "engine-prev",
+        [](juce::Rectangle<float> b)
+        { return stemlab::icons::chevron(b, stemlab::icons::ChevronDirection::left); },
+        static_cast<float>(theme::metrics::header::stepIcon), true,
+        theme::metrics::lanes::smRadius, false);
+
+    enginePrevButton->setTooltip("Previous separation model");
+    enginePrevButton->onClick = [this] { stepSeparatorEngine(-1); };
+    panelContent.addAndMakeVisible(*enginePrevButton);
+
+    engineSelector = std::make_unique<widgets::SelectorButton>(
+        "engine", [](juce::Rectangle<float> b) { return stemlab::icons::sparkle(b); });
+
+    engineSelector->setTooltip("Separation model");
+    engineSelector->onClick = [this] { showEngineMenu(); };
+
+    // Measure every name up front and keep the widest: the pill then holds
+    // still while the arrows step through the models.
+    for (int i = 0; i < StemLabAudioProcessor::separatorEngineCount; ++i)
+    {
+        engineSelector->setLabel(StemLabAudioProcessor::getSeparatorEngineShortName(i));
+        engineSelectorWidth = juce::jmax(engineSelectorWidth,
+                                         engineSelector->getPreferredWidth());
+    }
+
+    engineSelector->setLabel(processor.getSeparatorEngineDisplayName());
+    panelContent.addAndMakeVisible(*engineSelector);
+
+    engineNextButton = std::make_unique<widgets::IconButton>(
+        "engine-next",
+        [](juce::Rectangle<float> b)
+        { return stemlab::icons::chevron(b, stemlab::icons::ChevronDirection::right); },
+        static_cast<float>(theme::metrics::header::stepIcon), true,
+        theme::metrics::lanes::smRadius, false);
+
+    engineNextButton->setTooltip("Next separation model");
+    engineNextButton->onClick = [this] { stepSeparatorEngine(1); };
+    panelContent.addAndMakeVisible(*engineNextButton);
+
+    paletteButton = std::make_unique<widgets::IconButton>(
+        "waveform-colour", [](juce::Rectangle<float> b) { return stemlab::icons::palette(b); },
+        static_cast<float>(theme::metrics::header::paletteIcon), false,
+        theme::metrics::header::settingsRadius, true, true);
+
+    paletteButton->setTooltip("Waveform colour");
+    paletteButton->onClick = [this] { showWaveformColourMenu(); };
+    panelContent.addAndMakeVisible(*paletteButton);
+
     settingsButton = std::make_unique<widgets::IconButton>(
         "settings", [](juce::Rectangle<float> b) { return stemlab::icons::sliders(b); },
         static_cast<float>(theme::metrics::header::settingsIcon), false,
@@ -1042,10 +1091,33 @@ void StemLabAudioProcessorEditor::layoutPanel()
 
     auto inner = panelBounds.reduced(panel::padX, panel::padY);
 
-    // Header: brand glyph, title, settings icon.
+    // Header: brand glyph, title, then the model selector, the waveform
+    // palette, and the settings icon, right to left.
     auto headerRow = inner.removeFromTop(header::settingsButton);
 
     settingsButton->setBounds(headerRow.removeFromRight(header::settingsButton));
+
+    headerRow.removeFromRight(header::groupGap);
+
+    paletteButton->setBounds(
+        headerRow.removeFromRight(header::paletteButton)
+            .withSizeKeepingCentre(header::paletteButton, header::paletteButton));
+
+    headerRow.removeFromRight(header::groupGap);
+
+    engineNextButton->setBounds(
+        headerRow.removeFromRight(header::stepButton)
+            .withSizeKeepingCentre(header::stepButton, header::stepButton));
+
+    engineSelector->setBounds(
+        headerRow.removeFromRight(engineSelectorWidth)
+            .withSizeKeepingCentre(engineSelectorWidth, header::selectorHeight));
+
+    enginePrevButton->setBounds(
+        headerRow.removeFromRight(header::stepButton)
+            .withSizeKeepingCentre(header::stepButton, header::stepButton));
+
+    headerRow.removeFromRight(header::groupGap);
 
     brandGlyphBounds = headerRow.removeFromLeft(header::glyphSize)
                            .withSizeKeepingCentre(header::glyphSize, header::glyphSize);
@@ -1326,7 +1398,7 @@ void StemLabAudioProcessorEditor::showRootLayersMenu(int stemIndex)
     if (!supportsSplit && !hasChildren)
         return;
 
-    juce::PopupMenu menu;
+    auto menu = makeMenu();
     if (supportsSplit)
     {
         juce::String label = "Adaptive Split";
@@ -1382,7 +1454,7 @@ void StemLabAudioProcessorEditor::showChildLayersMenu(const juce::String& itemId
     if (!found)
         return;
 
-    juce::PopupMenu menu;
+    auto menu = makeMenu();
 
     constexpr int deverbId = 1;
     constexpr int splitFurtherId = 2;
@@ -1777,10 +1849,17 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
         panelContent.repaint(separateControl.getBounds().expanded(14));
     }
 
-    // Tooltip tracks the engine chosen in the settings menu.
+    // The model cannot change under a running job.
+    enginePrevButton->setEnabled(!engineRunning);
+    engineNextButton->setEnabled(!engineRunning);
+    engineSelector->setEnabled(!engineRunning);
+
     if (processor.getSeparatorEngineIndex() != lastSeparatorEngine)
     {
         lastSeparatorEngine = processor.getSeparatorEngineIndex();
+
+        engineSelector->setLabel(processor.getSeparatorEngineDisplayName());
+
         separateControl.setTooltip("Runs after " + processor.getSeparatorEngineDisplayName() +
                                    " separation");
     }
@@ -1926,9 +2005,98 @@ void StemLabAudioProcessorEditor::chooseJobRootFolder()
                                   });
 }
 
-void StemLabAudioProcessorEditor::showSettingsMenu()
+juce::PopupMenu StemLabAudioProcessorEditor::makeMenu()
 {
     juce::PopupMenu menu;
+
+    // A top-level menu window has no parent to inherit from: JUCE reads the
+    // look and feel off the PopupMenu itself, and draws stock JUCE without.
+    menu.setLookAndFeel(&lookAndFeel);
+
+    return menu;
+}
+
+void StemLabAudioProcessorEditor::setSeparatorEngine(int index)
+{
+    if (processor.isEngineRunning() ||
+        !juce::isPositiveAndBelow(index, StemLabAudioProcessor::separatorEngineCount))
+    {
+        return;
+    }
+
+    processor.setSeparatorEngineIndex(index);
+
+    processor.postUiStatus("Separation model: " + processor.getSeparatorEngineDisplayName());
+
+    refreshFromProcessor();
+}
+
+void StemLabAudioProcessorEditor::stepSeparatorEngine(int delta)
+{
+    constexpr int count = StemLabAudioProcessor::separatorEngineCount;
+
+    // Wrapping, not clamping: an arrow that dead-ends on a list of three is
+    // just a button that sometimes does nothing.
+    setSeparatorEngine((processor.getSeparatorEngineIndex() + delta + count) % count);
+}
+
+void StemLabAudioProcessorEditor::showEngineMenu()
+{
+    auto menu = makeMenu();
+
+    for (int i = 0; i < StemLabAudioProcessor::separatorEngineCount; ++i)
+    {
+        menu.addItem(i + 1, StemLabAudioProcessor::getSeparatorEngineMenuName(i),
+                     !processor.isEngineRunning(), processor.getSeparatorEngineIndex() == i);
+    }
+
+    auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
+
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(engineSelector.get()),
+                       [safeThis](int result)
+                       {
+                           if (safeThis == nullptr || result == 0)
+                               return;
+
+                           safeThis->setSeparatorEngine(result - 1);
+                       });
+}
+
+void StemLabAudioProcessorEditor::showWaveformColourMenu()
+{
+    static_assert(StemLabAudioProcessor::waveformColourCount == theme::waveform::paletteCount,
+                  "The persisted waveform-colour range and the palette must stay in step");
+
+    auto menu = makeMenu();
+
+    for (int i = 0; i < theme::waveform::paletteCount; ++i)
+    {
+        menu.addItem(i + 1, theme::waveform::paletteName(i), true,
+                     processor.getWaveformColourIndex() == i);
+    }
+
+    auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
+
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(paletteButton.get()),
+                       [safeThis](int result)
+                       {
+                           if (safeThis == nullptr || result == 0)
+                               return;
+
+                           const int palette = result - 1;
+
+                           safeThis->processor.setWaveformColourIndex(palette);
+
+                           safeThis->processor.postUiStatus(
+                               "Waveform colour: " + theme::waveform::paletteName(palette));
+
+                           safeThis->refreshFromProcessor();
+                       });
+}
+
+void StemLabAudioProcessorEditor::showSettingsMenu()
+{
+    auto menu = makeMenu();
 
     if (processor.isStandaloneApp())
     {
@@ -1937,40 +2105,8 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
         menu.addSeparator();
     }
 
-    menu.addSectionHeader("Separator");
-
-    juce::PopupMenu separatorMenu;
-
-    const juce::StringArray separatorNames{"BS-RoFormer", "Demucs (htdemucs_6s)",
-                                           "Hybrid (RoFormer + Demucs)"};
-
-    for (int i = 0; i < separatorNames.size(); ++i)
-    {
-        separatorMenu.addItem(200 + i, separatorNames[i], !processor.isEngineRunning(),
-                              processor.getSeparatorEngineIndex() == i);
-    }
-
-    menu.addSubMenu("Separation Engine", separatorMenu);
-
-    menu.addSeparator();
-
-    menu.addSectionHeader("Appearance");
-
-    juce::PopupMenu waveformMenu;
-
-    static_assert(StemLabAudioProcessor::waveformColourCount == theme::waveform::paletteCount,
-                  "The persisted waveform-colour range and the palette must stay in step");
-
-    for (int i = 0; i < theme::waveform::paletteCount; ++i)
-    {
-        waveformMenu.addItem(waveformColourMenuBase + i, theme::waveform::paletteName(i), true,
-                             processor.getWaveformColourIndex() == i);
-    }
-
-    menu.addSubMenu("Waveform Colour", waveformMenu);
-
-    menu.addSeparator();
-
+    // The separation model and the waveform palette are header controls,
+    // not menu items - see showEngineMenu / showWaveformColourMenu.
     menu.addSectionHeader("StemLab engine");
 
     menu.addItem(2, "Choose engine executable...");
@@ -2020,23 +2156,6 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
             else if (result == 5)
             {
                 safeThis->launchAbletonSetup();
-            }
-            else if (result >= 200 && result < 200 + StemLabAudioProcessor::separatorEngineCount)
-            {
-                safeThis->processor.setSeparatorEngineIndex(result - 200);
-
-                safeThis->processor.postUiStatus(
-                    "Separator: " + safeThis->processor.getSeparatorEngineDisplayName());
-            }
-            else if (result >= waveformColourMenuBase &&
-                     result < waveformColourMenuBase + theme::waveform::paletteCount)
-            {
-                const int palette = result - waveformColourMenuBase;
-
-                safeThis->processor.setWaveformColourIndex(palette);
-
-                safeThis->processor.postUiStatus("Waveform colour: " +
-                                                 theme::waveform::paletteName(palette));
             }
 
             safeThis->refreshFromProcessor();
