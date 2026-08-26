@@ -128,6 +128,37 @@ def test_eta_is_job_level(tmp_path, fake_backends, engine):
     assert all(value >= 0.0 for value in etas)
 
 
+class _DownloadingBackend(_FakeBackend):
+    """A backend whose model has to download before it can separate."""
+
+    def separate(self, input_path, output_dir):
+        for percent in (0.0, 50.0, 100.0):
+            if self.download_callback:
+                self.download_callback(percent)
+
+        super().separate(input_path, output_dir)
+
+
+def test_first_use_downloads_are_named_and_stay_in_their_sliver(tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline, "RoFormerBackend", _DownloadingBackend)
+    monkeypatch.setattr(pipeline, "DemucsBackend", _DownloadingBackend)
+
+    reports, _ = _run(tmp_path, "roformer", refine=False)
+
+    downloads = [(percent, stage) for percent, stage in reports if "Downloading the" in stage]
+
+    assert downloads, "a first-use model download must be named in the status"
+    assert any("BS-RoFormer model (50%)" in stage for _percent, stage in downloads)
+
+    # The download creeps only the sliver at the bottom of the model band,
+    # so the bar never claims separation progress that has not happened:
+    # even a finished download sits at or below separation's first report.
+    separating = [percent for percent, stage in reports if "separating (" in stage]
+
+    assert separating
+    assert max(percent for percent, _stage in downloads) <= min(separating) + 1e-6
+
+
 def test_job_progress_extends_stage_eta_across_remaining_stages(monkeypatch):
     published: list[float] = []
     clock = {"now": 100.0}
