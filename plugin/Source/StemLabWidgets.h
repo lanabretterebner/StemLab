@@ -251,6 +251,47 @@ namespace stemlab::widgets
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SegmentedControl)
     };
 
+    /**
+     * The footer status indicator: a spinning arc while a job runs, the
+     * check glyph once one has finished, nothing before the first job.
+     * The editor advances the spin from its UI timer via animate().
+     */
+    class StatusIndicator final : public juce::Component
+    {
+    public:
+        enum class State
+        {
+            idle,
+            running,
+            done
+        };
+
+        StatusIndicator() { setInterceptsMouseClicks(false, false); }
+
+        void setState(State newState)
+        {
+            if (state != newState)
+            {
+                state = newState;
+                repaint();
+            }
+        }
+
+        /** One UI-timer tick: keeps the arc turning while running. */
+        void animate()
+        {
+            if (state == State::running)
+                repaint();
+        }
+
+        void paint(juce::Graphics&) override;
+
+    private:
+        State state = State::idle;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StatusIndicator)
+    };
+
     /** 1px divider that fades to transparent over 48px at each end. */
     class FadingDivider final : public juce::Component
     {

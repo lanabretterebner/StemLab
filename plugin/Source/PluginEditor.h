@@ -294,6 +294,7 @@ private:
 
     // Footer.
     stemlab::widgets::FadingDivider footerDivider;
+    stemlab::widgets::StatusIndicator statusIndicator;
     juce::Label statusLabel;
     double progressValue = 0.0;
     juce::ProgressBar progressBar{progressValue};
@@ -309,7 +310,6 @@ private:
     juce::Rectangle<int> brandGlyphBounds;
     juce::Rectangle<int> sourceStripBounds;
     juce::Rectangle<int> sourceDividerBounds;
-    juce::Rectangle<int> statusIconBounds;
     juce::Rectangle<int> folderIconBounds;
 
     std::unique_ptr<juce::FileChooser> fileChooser;

@@ -1014,6 +1014,8 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
     panelContent.addAndMakeVisible(footerDivider);
 
+    panelContent.addAndMakeVisible(statusIndicator);
+
     statusLabel.setFont(theme::fonts::status());
     statusLabel.setColour(juce::Label::textColourId, theme::colours::text50());
     panelContent.addAndMakeVisible(statusLabel);
@@ -1257,16 +1259,6 @@ void StemLabAudioProcessorEditor::paintPanel(juce::Graphics& g)
         }
     }
 
-    // Footer status check icon.
-    if (!statusIconBounds.isEmpty() && processor.hasSuccessfulJob() &&
-        !processor.isEngineRunning())
-    {
-        g.setColour(theme::colours::statusCheck());
-        g.strokePath(stemlab::icons::check(statusIconBounds.toFloat().reduced(1.5f)),
-                     juce::PathStrokeType(1.6f, juce::PathStrokeType::curved,
-                                          juce::PathStrokeType::rounded));
-    }
-
     // Folder icon beside the output path.
     if (!folderIconBounds.isEmpty())
     {
@@ -1501,7 +1493,7 @@ void StemLabAudioProcessorEditor::layoutPanel()
         auto statusArea = row;
 
         auto statusLine = statusArea.removeFromTop(footer::statusLineHeight);
-        statusIconBounds = statusLine.removeFromLeft(footer::statusLineHeight);
+        statusIndicator.setBounds(statusLine.removeFromLeft(footer::statusLineHeight));
         statusLine.removeFromLeft(4);
         statusLabel.setBounds(statusLine);
 
@@ -1890,8 +1882,10 @@ void StemLabAudioProcessorEditor::timerCallback()
         if (lane != nullptr)
             lane->repaint();
 
-    // The record dot's pulse is a function of the clock at paint time; keep
-    // it animating while a recording is running.
+    // The record dot's pulse and the status spinner are functions of the
+    // clock at paint time; keep them animating from the UI timer.
+    statusIndicator.animate();
+
     if (processor.isCapturing())
     {
         recordSystemButton.repaint();
@@ -1912,8 +1906,12 @@ juce::String StemLabAudioProcessorEditor::jobSummaryLine() const
         if (processor.getCompletedStemFile(i).existsAsFile())
             ++readyCount;
 
-    return "Separated " + juce::String(readyCount) + " stems in " +
-           formatSeconds(processor.getEngineElapsedSeconds()) + " · refinement " +
+    const auto duration = processor.getMainJobDurationSeconds() > 0.0
+                              ? processor.getMainJobDurationSeconds()
+                              : processor.getEngineElapsedSeconds();
+
+    return "Separated " + juce::String(readyCount) + " stems in " + formatSeconds(duration) +
+           juce::String::fromUTF8(" \xc2\xb7 refinement ") +
            (processor.isRefinementEnabled() ? "on" : "off");
 }
 
@@ -2188,9 +2186,9 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
     statusLabel.setText(statusText, juce::dontSendNotification);
 
-    // The status check icon is painted by the editor, not a child, so state
-    // flips need an explicit repaint of its little region.
-    panelContent.repaint(statusIconBounds);
+    statusIndicator.setState(engineRunning ? widgets::StatusIndicator::State::running
+                             : jobDone     ? widgets::StatusIndicator::State::done
+                                           : widgets::StatusIndicator::State::idle);
 
     // Same for the accent glows painted behind the primary actions.
     if (separateControl.isSeparateActionEnabled() != lastSeparateGlow)
@@ -2223,9 +2221,20 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     {
         const auto eta = processor.getEngineEstimatedRemainingSeconds();
 
-        progressLabel.setText(juce::String(juce::roundToInt(progressValue * 100.0)) + "% · ETA " +
-                                  (eta >= 0.0 ? formatSeconds(eta) : "--:--"),
-                              juce::dontSendNotification);
+        // "34% · 02:10 · ETA 05:12": how far, how long so far, how much
+        // left. The ETA drops off entirely while there is no estimate to
+        // stand behind, rather than pinning "--:--" next to a live clock.
+        // The separator goes through fromUTF8: JUCE's char* String
+        // constructor mangles a non-ASCII literal into mojibake.
+        const auto dot = juce::String::fromUTF8(" \xc2\xb7 ");
+
+        auto text = juce::String(juce::roundToInt(progressValue * 100.0)) + "%" + dot +
+                    formatSeconds(processor.getEngineElapsedSeconds());
+
+        if (eta >= 0.0)
+            text += dot + "ETA " + formatSeconds(eta);
+
+        progressLabel.setText(text, juce::dontSendNotification);
     }
 
     const auto jobPath = displayPath(processor.getJobRootDirectory());
