@@ -30,9 +30,40 @@ VERSION="@VERSION@"
 
 remote_available() { [[ "$RELEASE_URL" != @* && "$VERSION" != @* ]]; }
 
+RETRY_DELAY="${STEMLAB_SETUP_RETRY_DELAY:-5}"
+
+remote_exists() {
+    # remote_exists <filename>: 0 = there, 44 = definitively not there
+    # (HTTP 404), 1 = cannot tell (network trouble). Probing is how this
+    # script discovers whether a bundle shipped whole or split and where
+    # the parts end, so an expected miss must be quiet - a curl error
+    # splashed for a routine probe reads like the download failed.
+    local code
+    if command -v curl >/dev/null 2>&1; then
+        code="$(curl -sIL -o /dev/null -w '%{http_code}' "$RELEASE_URL/$1" 2>/dev/null)" \
+            || return 1
+        case "$code" in
+            200) return 0 ;;
+            404) return 44 ;;
+            *)   return 1 ;;
+        esac
+    elif command -v wget >/dev/null 2>&1; then
+        # wget cannot cleanly separate a 404 from other server errors; a
+        # spider miss is treated as "not there" and the checksum still
+        # guards the result.
+        if wget -q --spider "$RELEASE_URL/$1" 2>/dev/null; then
+            return 0
+        fi
+        return 44
+    else
+        die "Neither curl nor wget is installed - download the bundle files by hand and re-run this."
+    fi
+}
+
 fetch() {
     # fetch <filename>: download $RELEASE_URL/<filename> into the current
-    # folder, leaving nothing behind on failure.
+    # folder, leaving nothing behind on failure. Only called for files
+    # remote_exists confirmed, so any failure here is a real one.
     local tmp="$1.download"
     if command -v curl >/dev/null 2>&1; then
         curl -fL --retry 3 --progress-bar -o "$tmp" "$RELEASE_URL/$1" \
@@ -45,6 +76,18 @@ fetch() {
     fi
     mv "$tmp" "$1"
 }
+
+# A .download file is another invocation mid-transfer - or the debris of one
+# that died. Joining whatever parts have landed so far while a sibling run is
+# still fetching produces an archive that fails its checksum for no visible
+# reason, so refuse to run over either.
+stray=(*.download)
+if [[ ${#stray[@]} -gt 0 ]]; then
+    die "Found ${stray[*]} here.
+Another run of this script may still be downloading in this folder - wait
+for it to finish. If a run was interrupted, delete the .download files and
+run this again."
+fi
 
 # ------------------------------------------------------------ pick a bundle
 
@@ -101,21 +144,57 @@ fi
 
 # ---------------------------------------------------------------- download
 
+downloaded_here=0
 if [[ $download -eq 1 ]]; then
     echo "Downloading $bundle from"
     echo "  $RELEASE_URL"
-    fetch "$bundle.sha256" \
-        || die "Could not fetch $bundle.sha256 - does this release have a '${1}' bundle?"
-    if ! fetch "$bundle"; then
-        # No whole archive up there means it shipped split; the parts are
-        # numbered from 00 and the first miss is the end of them. A transfer
-        # cut short mid-sequence is caught by the checksum below.
+
+    # The checksum must exist for this to be a real flavor of this release -
+    # but assets of a release published moments ago can 404 for a minute
+    # while they propagate, so a miss earns a few retries before it means
+    # "no such bundle".
+    tries=0
+    until remote_exists "$bundle.sha256"; do
+        status=$?
+        [[ $status -eq 44 ]] || die "Cannot reach $RELEASE_URL right now - check the connection and run this again."
+        tries=$((tries + 1))
+        [[ $tries -lt 4 ]] || die "This release has no $bundle.sha256 - does it carry a '$1' bundle?
+(A release published moments ago can also take a minute to become downloadable.)"
+        echo "$bundle.sha256 is not there (yet) - retrying in ${RETRY_DELAY}s..."
+        sleep "$RETRY_DELAY"
+    done
+    fetch "$bundle.sha256" || die "Downloading $bundle.sha256 failed - run this again to retry."
+
+    remote_exists "$bundle" && whole=0 || whole=$?
+    if [[ $whole -eq 0 ]]; then
+        echo "Fetching $bundle..."
+        fetch "$bundle" || die "Downloading $bundle failed - run this again to retry."
+    elif [[ $whole -eq 44 ]]; then
+        echo "$bundle shipped split into parts; fetching them."
+        # The parts are numbered from 00, and a 404 one past the end is how
+        # the sequence ends. Anything short of a definite 404 is network
+        # trouble and must NOT end the sequence: silently stopping early
+        # would join a truncated archive that fails its checksum for no
+        # visible reason.
         i=0
-        while fetch "$(printf '%s.part%02d' "$bundle" "$i")"; do
+        while :; do
+            name="$(printf '%s.part%02d' "$bundle" "$i")"
+            remote_exists "$name" && st=0 || st=$?
+            if [[ $st -eq 44 ]]; then
+                break
+            elif [[ $st -ne 0 ]]; then
+                die "Lost the connection while checking for $name - run this again to resume."
+            fi
+            echo "Fetching $name..."
+            fetch "$name" || die "Downloading $name failed - run this again to resume."
             i=$((i + 1))
         done
         [[ $i -gt 0 ]] || die "Neither $bundle nor $bundle.part00 exists at $RELEASE_URL."
+        echo "All $i parts fetched."
+    else
+        die "Cannot reach $RELEASE_URL right now - check the connection and run this again."
     fi
+    downloaded_here=1
 fi
 
 # -------------------------------------------------------- join split parts
@@ -143,7 +222,17 @@ if [[ -f "$bundle.sha256" ]]; then
     if ! sha256sum -c "$bundle.sha256"; then
         # A bad join is this script's own product; a bad download is not.
         [[ $joined_here -eq 1 ]] && rm -f "$bundle"
-        die "Checksum mismatch - a part or the archive is damaged. Re-download and run this again."
+        if [[ $downloaded_here -eq 1 ]]; then
+            # These files came from this very run and are proven bad as a
+            # set. Keeping them would make the next run reuse them as-is
+            # and fail the same way forever, so clear them for a fresh
+            # fetch instead.
+            rm -f "$bundle" "$bundle.sha256" ${parts[@]+"${parts[@]}"}
+            die "Checksum mismatch - the downloaded files were damaged, so they were removed.
+Run this again to fetch them fresh."
+        fi
+        die "Checksum mismatch - a part or the archive is damaged.
+Delete $bundle.sha256 and every $bundle.part* here, download them again, then re-run this."
     fi
     # The parts are proven redundant now; dropping them before extraction
     # roughly halves the peak disk this needs.
