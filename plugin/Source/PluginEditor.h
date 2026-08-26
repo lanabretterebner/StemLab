@@ -174,6 +174,15 @@ private:
     void paintPanel(juce::Graphics&);
     void layoutPanel();
 
+    /** A menu window is not a child of the editor, so it would otherwise
+        draw with JUCE's default look. Every popup starts here. */
+    juce::PopupMenu makeMenu();
+
+    void showEngineMenu();
+    void showWaveformColourMenu();
+    void setSeparatorEngine(int index);
+    void stepSeparatorEngine(int delta);
+
     void showRootLayersMenu(int stemIndex);
 
     /** MIDI entries shared by the root and child lane menus. */
@@ -208,7 +217,15 @@ private:
 
     // Header.
     juce::Label titleLabel;
+    std::unique_ptr<stemlab::widgets::IconButton> enginePrevButton;
+    std::unique_ptr<stemlab::widgets::SelectorButton> engineSelector;
+    std::unique_ptr<stemlab::widgets::IconButton> engineNextButton;
+    std::unique_ptr<stemlab::widgets::IconButton> paletteButton;
     std::unique_ptr<stemlab::widgets::IconButton> settingsButton;
+
+    // Sized once for the longest model name, so switching models does not
+    // shuffle the arrows either side of the pill.
+    int engineSelectorWidth = 0;
 
     // Source strip.
     juce::Label fileNameLabel;
