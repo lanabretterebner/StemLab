@@ -779,6 +779,53 @@ namespace stemlab::widgets
             onSelected(index);
     }
 
+    // ------------------------------------------------------------ status
+
+    void StatusIndicator::paint(juce::Graphics& g)
+    {
+        if (state == State::idle)
+            return;
+
+        const auto bounds = getLocalBounds().toFloat();
+        const auto square =
+            bounds.withSizeKeepingCentre(juce::jmin(bounds.getWidth(), bounds.getHeight()),
+                                         juce::jmin(bounds.getWidth(), bounds.getHeight()));
+
+        if (state == State::done)
+        {
+            g.setColour(theme::colours::statusCheck());
+            g.strokePath(stemlab::icons::check(square.reduced(1.5f)),
+                         juce::PathStrokeType(1.6f, juce::PathStrokeType::curved,
+                                              juce::PathStrokeType::rounded));
+            return;
+        }
+
+        /*
+         * The runner: a 270-degree arc chasing its own tail once a second,
+         * over a faint full ring so the shape stays a circle rather than a
+         * flying comma. Driven by wall clock, so the repaint cadence only
+         * affects smoothness, never speed.
+         */
+        const auto ring = square.reduced(1.5f);
+        const auto radius = ring.getWidth() * 0.5f;
+
+        const auto turn =
+            static_cast<float>(juce::Time::getMillisecondCounter() % 1000u) / 1000.0f;
+
+        const auto start = turn * juce::MathConstants<float>::twoPi;
+
+        g.setColour(theme::colours::spinnerTrack());
+        g.drawEllipse(ring, 1.6f);
+
+        juce::Path arc;
+        arc.addCentredArc(ring.getCentreX(), ring.getCentreY(), radius, radius, 0.0f, start,
+                          start + juce::MathConstants<float>::twoPi * 0.75f, true);
+
+        g.setColour(theme::colours::spinner());
+        g.strokePath(arc, juce::PathStrokeType(1.6f, juce::PathStrokeType::curved,
+                                               juce::PathStrokeType::rounded));
+    }
+
     // ------------------------------------------------------------- divider
 
     void FadingDivider::paint(juce::Graphics& g)

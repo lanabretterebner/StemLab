@@ -35,12 +35,7 @@ StemLabLookAndFeel::StemLabLookAndFeel()
 
     setColour(juce::Label::textColourId, theme::colours::text());
 
-    /*
-     * Very slightly transparent on purpose: JUCE makes a menu window opaque
-     * when this colour is opaque, and an opaque window cannot have the
-     * rounded corners drawPopupMenuBackgroundWithOptions draws.
-     */
-    setColour(juce::PopupMenu::backgroundColourId, theme::colours::surface().withAlpha(0.99f));
+    setColour(juce::PopupMenu::backgroundColourId, theme::colours::surface());
     setColour(juce::PopupMenu::textColourId, theme::colours::text());
     setColour(juce::PopupMenu::headerTextColourId, theme::colours::text50());
     setColour(juce::PopupMenu::highlightedBackgroundColourId, theme::colours::hoverFill());
@@ -224,29 +219,17 @@ void StemLabLookAndFeel::drawPopupMenuBackgroundWithOptions(juce::Graphics& g, i
                                                             int height,
                                                             const juce::PopupMenu::Options&)
 {
+    // Square on purpose: rounded corners would need a non-opaque menu
+    // window, which depends on desktop compositing - a look that changes
+    // with the user's window manager is worse than one honest shape.
     const auto bounds =
         juce::Rectangle<float>(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height))
             .reduced(0.5f);
 
-    /*
-     * Rounded corners need the menu window to be non-opaque, which JUCE only
-     * allows where the desktop composites. Without that, rounding would
-     * leave four undrawn wedges, so square is the honest fallback.
-     */
-    if (!juce::Desktop::canUseSemiTransparentWindows())
-    {
-        g.fillAll(theme::colours::surface());
-
-        g.setColour(theme::colours::outline());
-        g.drawRect(bounds, 1.0f);
-        return;
-    }
-
-    g.setColour(theme::colours::surface());
-    g.fillRoundedRectangle(bounds, theme::metrics::menu::radius);
+    g.fillAll(theme::colours::surface());
 
     g.setColour(theme::colours::outline());
-    g.drawRoundedRectangle(bounds, theme::metrics::menu::radius, 1.0f);
+    g.drawRect(bounds, 1.0f);
 }
 
 void StemLabLookAndFeel::drawPopupMenuItemWithOptions(juce::Graphics& g,

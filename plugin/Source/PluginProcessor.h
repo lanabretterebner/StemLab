@@ -351,7 +351,9 @@ public:
     bool hasSuccessfulJob() const noexcept { return engineCompletedSuccessfully.load(); }
 
     double getEngineProgress() const noexcept { return engineProgress.load(); }
+
     double getEngineElapsedSeconds() const noexcept;
+    double getMainJobDurationSeconds() const noexcept { return mainJobDurationSeconds.load(); }
     double getEngineEstimatedRemainingSeconds() const noexcept;
     void refreshEngineProgressFromDisk();
 
@@ -728,12 +730,30 @@ private:
     std::atomic<double> engineStartMs{0.0};
     std::atomic<double> engineProgressUpdateMs{0.0};
     std::atomic<double> lastEngineDurationSeconds{0.0};
+
+    // How long the last successful six-stem job took, untouched by the
+    // shorter adaptive-split jobs that may follow it.
+    std::atomic<double> mainJobDurationSeconds{0.0};
     std::atomic<bool> engineCompletedSuccessfully{false};
 
-    // Engine-reported seconds remaining (STEMLAB_ETA lines) and when the
-    // report arrived; -1 when the engine has not reported one this job.
-    std::atomic<double> engineEtaSeconds{-1.0};
-    std::atomic<double> engineEtaUpdateMs{0.0};
+    /*
+        Engine-reported seconds remaining (STEMLAB_ETA lines) and when the
+        report arrived; -1 when the engine has not reported one this job.
+
+        Guarded by stateLock rather than kept as two atomics: the pair must
+        be read together (a value paired with another report's timestamp
+        counts down from the wrong moment), and the same lock already
+        carries every other engine-reader-to-UI handoff.
+    */
+    double engineEtaSeconds = -1.0;
+    double engineEtaUpdateMs = 0.0;
+
+    // Stage most recently read from stemlab_progress.txt; the poll only
+    // publishes a stage the file actually changed (see the poll).
+    juce::String lastPolledFileStage;
+
+    void storeEngineEta(double seconds) noexcept;
+    void resetEngineEta() noexcept;
 
     // Smoothed progress rate (fraction per second) for the fallback ETA.
     std::atomic<double> engineProgressRate{0.0};

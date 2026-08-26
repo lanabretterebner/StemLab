@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -44,6 +45,98 @@ def resolve_device(device: str) -> str:
         return pick_best_device()
 
     return resolve_torch_device(requested)
+
+
+def _format_clock(seconds: float) -> str:
+    """``195.0`` -> ``"3:15"`` for status labels."""
+    total = max(0, int(seconds + 0.5))
+    return f"{total // 60}:{total % 60:02d}"
+
+
+def _input_duration_seconds(path: Path) -> float | None:
+    """Best-effort source duration for the status line; never fatal."""
+    try:
+        import soundfile as sf
+
+        info = sf.info(str(path))
+        if info.samplerate > 0:
+            return float(info.frames) / float(info.samplerate)
+    except Exception:
+        return None
+    return None
+
+
+class _JobProgress:
+    """One monotonic job bar and one job-level ETA over many stages.
+
+    Each stage owns a band of the bar. Stage-local progress maps into the
+    band; a stage-local ETA (a backend's own estimate) is extended across
+    the stages still to come, assuming their time is proportional to their
+    band width - the same assumption the bar itself makes. Stages whose
+    backend reports no ETA (fusion, refinement, finalizing) infer one from
+    their own elapsed time once they have moved far enough to trust it.
+
+    That job-level number is what STEMLAB_ETA carries now. Previously it
+    was the raw stage estimate, so the countdown hit zero at the end of
+    every model stage and the display lurched at each boundary.
+    """
+
+    def __init__(
+        self,
+        emit: Callable[[float, str], None],
+        emit_eta: Callable[[float], None],
+    ) -> None:
+        self._emit = emit
+        self._emit_eta = emit_eta
+        self._lo = 0.0
+        self._hi = 100.0
+        self._fraction = 0.0
+        self._started = time.monotonic()
+
+    def begin(self, lo: float, hi: float) -> None:
+        self._lo = float(lo)
+        self._hi = float(hi)
+        self._fraction = 0.0
+        self._started = time.monotonic()
+
+    def stage(self, fraction: float, label: str) -> None:
+        # Monotonic within the stage: a backend that rewinds (a second
+        # model pass restarting its bar at 0%) must not rewind the file.
+        self._fraction = max(self._fraction, max(0.0, min(1.0, fraction)))
+        self._emit(self._lo + (self._hi - self._lo) * self._fraction, label)
+
+    def stage_eta(self, stage_remaining: float) -> None:
+        """Extend a backend's stage estimate into a job estimate.
+
+        The stage's total time is simply what it has spent plus what its
+        backend says is left. Deriving it from ``remaining / (1 - f)``
+        instead - the obvious formula - collapses to zero at the end of a
+        stage, which zeroed the whole job ETA while later stages remained.
+        """
+        stage_remaining = max(0.0, float(stage_remaining))
+        width = max(1e-6, self._hi - self._lo)
+
+        elapsed = max(0.0, time.monotonic() - self._started)
+        stage_total = elapsed + stage_remaining
+
+        seconds_per_percent = stage_total / width
+        tail = (100.0 - self._hi) * seconds_per_percent
+
+        self._emit_eta(stage_remaining + max(0.0, tail))
+
+    def elapsed_eta(self) -> None:
+        """Infer a job ETA from stage elapsed time (ETA-less stages)."""
+        elapsed = time.monotonic() - self._started
+
+        if self._fraction < 0.05 or elapsed < 1.0:
+            return
+
+        stage_total = elapsed / self._fraction
+        width = max(1e-6, self._hi - self._lo)
+        seconds_per_percent = stage_total / width
+        tail = (100.0 - self._hi) * seconds_per_percent
+
+        self._emit_eta(max(0.0, stage_total - elapsed) + max(0.0, tail))
 
 
 @dataclass
@@ -103,27 +196,71 @@ def separate(
         log(f"STEMLAB_PROGRESS {percent:.1f} {stage}")
 
     def eta(seconds: float):
-        # Estimated seconds left in the current model stage, straight from
-        # the backend. The plugin counts it down between reports.
+        # Estimated seconds left in the whole job (see _JobProgress); the
+        # plugin counts it down between reports.
         log(f"STEMLAB_ETA {max(0.0, float(seconds)):.0f}")
 
-    def make_download_progress(base_percent: float, stage_name: str):
-        # A one-time model download is its own stage: it creeps the bar
-        # through a narrow band instead of impersonating separation progress
-        # (which follows and would otherwise start from a bar stuck at 80%).
-        def on_download(percent: float):
-            mapped = base_percent + 4.0 * (max(0.0, min(100.0, percent)) / 100.0)
-            progress(mapped, f"Downloading {stage_name} model ({percent:.0f}%)")
-
-        return on_download
+    tracker = _JobProgress(progress, eta)
 
     requested_device = str(device or "").strip().lower()
     device = resolve_device(device)
 
-    progress(5.0, "Preparing")
+    """
+    The bar is a plan, laid out before anything runs: which stages this
+    engine/refinement combination will pass through and how much of the
+    bar each one owns. Without the plan, turning refinement off left the
+    bar parked at 80% while the last fifth of the job flew by, and the
+    hybrid stages were sized identically to a single-model run.
+
+    Stage tuples: (key, lo, hi, step label for the status line).
+    """
+    steps: list[str] = []
+
+    if engine == ENGINE_HYBRID:
+        steps += ["BS-RoFormer", "Demucs", "Fusion"]
+    elif engine == ENGINE_DEMUCS:
+        steps += ["Demucs"]
+    else:
+        steps += ["BS-RoFormer"]
+
+    if refine:
+        steps += ["Refinement"]
+
+    steps += ["Export"]
+
+    step_count = len(steps)
+
+    def step_prefix(name: str) -> str:
+        return f"Step {steps.index(name) + 1}/{step_count}"
+
+    if engine == ENGINE_HYBRID:
+        bands = (
+            {"roformer": (6.0, 33.0), "demucs": (33.0, 60.0), "fusion": (60.0, 72.0),
+             "refine": (72.0, 93.0), "final": (93.0, 95.0)}
+            if refine
+            else {"roformer": (6.0, 39.0), "demucs": (39.0, 72.0), "fusion": (72.0, 92.0),
+                  "final": (92.0, 95.0)}
+        )
+    else:
+        bands = (
+            {"model": (6.0, 74.0), "refine": (74.0, 93.0), "final": (93.0, 95.0)}
+            if refine
+            else {"model": (6.0, 92.0), "final": (92.0, 95.0)}
+        )
+
+    # ------------------------------------------------------------ prepare
+
+    duration = _input_duration_seconds(input_path)
+
+    source_blurb = f"{_format_clock(duration)} of audio" if duration else input_path.name
+
+    progress(2.0, f"Preparing {source_blurb} for {engine} on {device}")
     log(f"Input: {input_path}")
     log(f"Output: {output_dir}")
     log(f"Separation engine: {engine}")
+
+    if duration:
+        log(f"Source duration: {_format_clock(duration)}")
 
     # "gpu" is an accepted alias for cuda, so resolving it is not a
     # downgrade - reporting "not available here" for a working GPU sent
@@ -137,52 +274,58 @@ def separate(
     else:
         log(f"Device: {device}")
 
+    def make_model_stage(band_key: str, step_name: str, display: str):
+        """Adapters wiring one model backend into its band of the plan."""
+        lo, hi = bands[band_key]
+        tracker.begin(lo, hi)
+
+        prefix = step_prefix(step_name)
+
+        tracker.stage(0.0, f"{prefix} · Loading {display} on {device}")
+
+        def on_progress(percent: float):
+            # Separation owns the band above the download sliver, so a
+            # first-run download never overlaps it (the bar used to freeze
+            # through the first stretch of every model stage after one).
+            tracker.stage(0.06 + 0.94 * (percent / 100.0),
+                          f"{prefix} · {display} separating ({percent:.0f}%)")
+
+        def on_download(percent: float):
+            # A one-time model download: name it, and creep the first
+            # sliver of the band instead of impersonating separation.
+            tracker.stage(0.06 * (max(0.0, min(100.0, percent)) / 100.0),
+                          f"{prefix} · Downloading the {display} model ({percent:.0f}%)")
+
+        return on_progress, on_download, tracker.stage_eta
+
     if engine == ENGINE_ROFORMER:
-        progress(10.0, "Loading BS-RoFormer")
+        on_progress, on_download, on_eta = make_model_stage("model", "BS-RoFormer", "BS-RoFormer")
 
-        def on_roformer_progress(percent: float):
-            mapped = 10.0 + (0.70 * percent)
-            progress(
-                mapped,
-                f"BS-RoFormer ({percent:.0f}%)",
-            )
-
-        backend = RoFormerBackend(
+        RoFormerBackend(
             model=model,
             device=device,
             log_callback=log,
-            progress_callback=on_roformer_progress,
-            eta_callback=eta,
-            download_callback=make_download_progress(10.0, "BS-RoFormer"),
+            progress_callback=on_progress,
+            eta_callback=on_eta,
+            download_callback=on_download,
             cancellation=cancellation,
-        )
-
-        backend.separate(
+        ).separate(
             input_path=input_path,
             output_dir=baseline_dir,
         )
 
     elif engine == ENGINE_DEMUCS:
-        progress(10.0, "Loading Demucs")
+        on_progress, on_download, on_eta = make_model_stage("model", "Demucs", "Demucs")
 
-        def on_demucs_progress(percent: float):
-            mapped = 10.0 + (0.70 * percent)
-            progress(
-                mapped,
-                f"Demucs ({percent:.0f}%)",
-            )
-
-        backend = DemucsBackend(
+        DemucsBackend(
             model=demucs_model,
             device=device,
             log_callback=log,
-            progress_callback=on_demucs_progress,
-            eta_callback=eta,
-            download_callback=make_download_progress(10.0, "Demucs"),
+            progress_callback=on_progress,
+            eta_callback=on_eta,
+            download_callback=on_download,
             cancellation=cancellation,
-        )
-
-        backend.separate(
+        ).separate(
             input_path=input_path,
             output_dir=baseline_dir,
         )
@@ -191,63 +334,62 @@ def separate(
         roformer_dir = output_dir / "engines" / "roformer"
         demucs_dir = output_dir / "engines" / "demucs"
 
-        progress(10.0, "Hybrid: loading BS-RoFormer")
-
-        def on_hybrid_roformer(percent: float):
-            mapped = 10.0 + (0.32 * percent)
-            progress(
-                mapped,
-                f"Hybrid - BS-RoFormer ({percent:.0f}%)",
-            )
+        on_progress, on_download, on_eta = make_model_stage(
+            "roformer", "BS-RoFormer", "Hybrid 1/2: BS-RoFormer")
 
         RoFormerBackend(
             model=model,
             device=device,
             log_callback=log,
-            progress_callback=on_hybrid_roformer,
-            eta_callback=eta,
-            download_callback=make_download_progress(10.0, "BS-RoFormer"),
+            progress_callback=on_progress,
+            eta_callback=on_eta,
+            download_callback=on_download,
             cancellation=cancellation,
         ).separate(
             input_path=input_path,
             output_dir=roformer_dir,
         )
 
-        progress(42.0, "Hybrid: loading Demucs")
-
-        def on_hybrid_demucs(percent: float):
-            mapped = 42.0 + (0.32 * percent)
-            progress(
-                mapped,
-                f"Hybrid - Demucs ({percent:.0f}%)",
-            )
+        on_progress, on_download, on_eta = make_model_stage(
+            "demucs", "Demucs", "Hybrid 2/2: Demucs")
 
         DemucsBackend(
             model=demucs_model,
             device=device,
             log_callback=log,
-            progress_callback=on_hybrid_demucs,
-            eta_callback=eta,
-            download_callback=make_download_progress(42.0, "Demucs"),
+            progress_callback=on_progress,
+            eta_callback=on_eta,
+            download_callback=on_download,
             cancellation=cancellation,
         ).separate(
             input_path=input_path,
             output_dir=demucs_dir,
         )
 
-        progress(74.0, "Hybrid: fusing model estimates")
+        fusion_lo, fusion_hi = bands["fusion"]
+        tracker.begin(fusion_lo, fusion_hi)
+
+        fusion_prefix = step_prefix("Fusion")
+
+        tracker.stage(0.0, f"{fusion_prefix} · Fusing the two model estimates")
         log(
             "Running StemLab hybrid spectral fusion. "
             "Models are executed sequentially to keep GPU memory usage lower."
         )
 
         def on_fusion_progress(index: int, total: int, stem: str):
-            fraction = index / max(1, total)
-            mapped = 74.0 + 6.0 * fraction
-            progress(
-                mapped,
-                f"Hybrid fusion - {stem.title()} ({index}/{total})",
-            )
+            total = max(1, total)
+
+            if stem:
+                # Reported at the START of each stem: the label names the
+                # work happening now, the bar carries the work done so far.
+                tracker.stage(index / total,
+                              f"{fusion_prefix} · Fusing {stem.title()} "
+                              f"({index + 1}/{total})")
+            else:
+                tracker.stage(1.0, f"{fusion_prefix} · Fusion complete")
+
+            tracker.elapsed_eta()
 
         fuse_stem_folders(
             roformer_dir=roformer_dir,
@@ -257,25 +399,42 @@ def separate(
             progress_callback=on_fusion_progress,
         )
 
-    progress(80.0, "Separation complete")
-
     if refine:
-        progress(82.0, "Preparing refinement")
+        refine_lo, refine_hi = bands["refine"]
+        tracker.begin(refine_lo, refine_hi)
+
+        refine_prefix = step_prefix("Refinement")
+
+        tracker.stage(0.0, f"{refine_prefix} · Analyzing drums for kick events")
         log("Running StemLab adaptive refinement...")
 
+        def on_refine_stage(label: str):
+            # The pre-loop analysis (drum load, kick detection, reference
+            # build) is the slow silent start of refinement; name it.
+            tracker.stage(0.02, f"{refine_prefix} · {label}")
+            tracker.elapsed_eta()
+
         def on_refine_progress(index: int, total: int, stem: str):
-            fraction = index / max(1, total)
-            mapped = 82.0 + 13.0 * fraction
-            progress(
-                mapped,
-                f"Refining {stem.title()} ({index}/{total})",
-            )
+            total = max(1, total)
+
+            # 10% of the band belongs to the kick analysis before the loop.
+            fraction = 0.10 + 0.90 * (index / total)
+
+            if stem:
+                tracker.stage(fraction,
+                              f"{refine_prefix} · Refining {stem.title()} "
+                              f"({index + 1}/{total})")
+            else:
+                tracker.stage(1.0, f"{refine_prefix} · Refinement complete")
+
+            tracker.elapsed_eta()
 
         stats_by_stem = refine_stem_folder(
             input_dir=baseline_dir,
             output_dir=final_dir,
             cfg=refinement_config,
             progress_callback=on_refine_progress,
+            stage_callback=on_refine_stage,
         )
 
         for stem, stats in stats_by_stem.items():
@@ -288,10 +447,15 @@ def separate(
             )
 
         log("Refinement complete.")
-        progress(95.0, "Finalizing")
     else:
         log("Refinement disabled; baseline stems are final output.")
-        progress(95.0, "Finalizing")
+
+    final_lo, final_hi = bands["final"]
+    tracker.begin(final_lo, final_hi)
+
+    export_prefix = step_prefix("Export")
+
+    tracker.stage(1.0, f"{export_prefix} · Collecting the finished stems")
 
     return PipelineResult(
         baseline_dir=baseline_dir,

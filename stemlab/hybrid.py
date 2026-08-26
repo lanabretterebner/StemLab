@@ -308,7 +308,13 @@ def fuse_stem_folders(
 
     files: list[Path] = []
 
-    for index, stem in enumerate(STEM_NAMES, start=1):
+    for index, stem in enumerate(STEM_NAMES):
+        # Reported at the START of each stem - "index stems done, working
+        # on this one" - so the label always names work in progress rather
+        # than work already finished.
+        if progress_callback:
+            progress_callback(index, len(STEM_NAMES), stem)
+
         roformer_path = find_stem_file(
             roformer_dir,
             stem,
@@ -337,11 +343,7 @@ def fuse_stem_folders(
 
         files.append(output_path)
 
-        if progress_callback:
-            progress_callback(
-                index,
-                len(STEM_NAMES),
-                stem,
-            )
+    if progress_callback:
+        progress_callback(len(STEM_NAMES), len(STEM_NAMES), "")
 
     return files

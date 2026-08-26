@@ -121,6 +121,8 @@ namespace stemlab::theme
         inline juce::Colour progressTrack() { return neutral800(); }
         inline juce::Colour progressFill() { return accent(); }
         inline juce::Colour statusCheck() { return accent(); }
+        inline juce::Colour spinner() { return accent(); }
+        inline juce::Colour spinnerTrack() { return accent().withAlpha(0.18f); }
     }
 
     namespace palette
@@ -542,7 +544,7 @@ namespace stemlab::theme
             constexpr int statusRightMargin = 28;
             constexpr float progressHeight = 3.0f;
             constexpr int progressRowHeight = 12;
-            constexpr int progressLabelWidth = 110;
+            constexpr int progressLabelWidth = 168;
             constexpr int progressLabelGap = 8;
             constexpr int folderIcon = 14;
             constexpr int folderIconGap = 6;
@@ -558,11 +560,10 @@ namespace stemlab::theme
         {
             /*
                 Popup menus are drawn by StemLabLookAndFeel rather than left
-                to JUCE's stock look: a rounded surface card, rows that
+                to JUCE's stock look: a square surface card, rows that
                 highlight as inset pills, and the same check glyph the
                 include checkboxes use.
             */
-            constexpr float radius = 10.0f;
             constexpr int borderSize = 6;
 
             constexpr int rowHeight = 26;

@@ -232,6 +232,59 @@ juce::String timestampForFilename()
 
 double nowMs() { return juce::Time::getMillisecondCounterHiRes(); }
 
+/*
+    Splits a child process's output into lines BEFORE decoding UTF-8.
+
+    The readers used to convert each 4 KB read chunk to a String on its
+    own, so a multibyte character straddling a chunk boundary decoded as
+    replacement garbage. Stage labels carry "·" on every line now, which
+    turned a once-theoretical mojibake into a visible one.
+*/
+struct Utf8LineBuffer
+{
+    std::vector<char> pending;
+
+    template <typename Fn>
+    void feed(const char* bytes, int count, Fn&& onLine)
+    {
+        pending.insert(pending.end(), bytes, bytes + count);
+
+        size_t start = 0;
+
+        for (size_t i = 0; i < pending.size(); ++i)
+        {
+            if (pending[i] != '\n')
+                continue;
+
+            const auto line =
+                juce::String::fromUTF8(pending.data() + start, static_cast<int>(i - start))
+                    .trimEnd();
+
+            if (line.isNotEmpty())
+                onLine(line);
+
+            start = i + 1;
+        }
+
+        pending.erase(pending.begin(), pending.begin() + static_cast<long>(start));
+    }
+
+    template <typename Fn>
+    void flush(Fn&& onLine)
+    {
+        if (pending.empty())
+            return;
+
+        const auto line =
+            juce::String::fromUTF8(pending.data(), static_cast<int>(pending.size())).trim();
+
+        pending.clear();
+
+        if (line.isNotEmpty())
+            onLine(line);
+    }
+};
+
 /**
  * Matches python, pythonw, python3 and versioned names such as python3.11, on
  * either platform, without also matching neighbours like python-config.
@@ -453,35 +506,18 @@ public:
         }
 
         std::array<char, 4096> buffer{};
-        juce::String pendingOutput;
+        Utf8LineBuffer lines;
 
-        auto consumeLines = [&owner = owner, &pendingOutput]
-        {
-            while (true)
-            {
-                const auto newline = pendingOutput.indexOfChar('\n');
-                if (newline < 0)
-                    break;
-
-                auto line = pendingOutput.substring(0, newline).trimEnd();
-                pendingOutput = pendingOutput.substring(newline + 1);
-
-                if (line.isNotEmpty())
-                    owner.handleEngineOutputLine(line);
-            }
-        };
+        auto onLine = [&owner = owner](const juce::String& line)
+        { owner.handleEngineOutputLine(line); };
 
         while (!threadShouldExit())
         {
             const auto bytes = childProcess->readProcessOutput(
-                buffer.data(), static_cast<int>(buffer.size() - 1));
+                buffer.data(), static_cast<int>(buffer.size()));
 
             if (bytes > 0)
-            {
-                buffer[static_cast<size_t>(bytes)] = '\0';
-                pendingOutput += juce::String::fromUTF8(buffer.data(), bytes);
-                consumeLines();
-            }
+                lines.feed(buffer.data(), bytes, onLine);
 
             if (!isChildRunning())
                 break;
@@ -492,18 +528,15 @@ public:
         while (true)
         {
             const auto bytes = childProcess->readProcessOutput(
-                buffer.data(), static_cast<int>(buffer.size() - 1));
+                buffer.data(), static_cast<int>(buffer.size()));
 
             if (bytes <= 0)
                 break;
 
-            buffer[static_cast<size_t>(bytes)] = '\0';
-            pendingOutput += juce::String::fromUTF8(buffer.data(), bytes);
-            consumeLines();
+            lines.feed(buffer.data(), bytes, onLine);
         }
 
-        if (pendingOutput.trim().isNotEmpty())
-            owner.handleEngineOutputLine(pendingOutput.trim());
+        lines.flush(onLine);
 
         juce::uint32 exitCode = 0;
 
@@ -532,6 +565,12 @@ public:
         else if (exitCode == 0 && successMarker.existsAsFile())
         {
             owner.engineCompletedSuccessfully.store(true);
+
+            // The footer summary quotes this; an adaptive split running
+            // later overwrites lastEngineDurationSeconds with its own,
+            // much shorter time.
+            owner.mainJobDurationSeconds.store(elapsed);
+
             owner.setEngineProgress(1.0);
 
             switch (owner.getHostIntegration())
@@ -654,35 +693,18 @@ public:
         }
 
         std::array<char, 4096> buffer{};
-        juce::String pendingOutput;
+        Utf8LineBuffer lines;
 
-        auto consumeLines = [&owner = owner, &pendingOutput]
-        {
-            while (true)
-            {
-                const auto newline = pendingOutput.indexOfChar('\n');
-                if (newline < 0)
-                    break;
-
-                auto line = pendingOutput.substring(0, newline).trimEnd();
-                pendingOutput = pendingOutput.substring(newline + 1);
-
-                if (line.isNotEmpty())
-                    owner.handleEngineOutputLine(line);
-            }
-        };
+        auto onLine = [&owner = owner](const juce::String& line)
+        { owner.handleEngineOutputLine(line); };
 
         while (!threadShouldExit())
         {
             const auto bytes = childProcess->readProcessOutput(
-                buffer.data(), static_cast<int>(buffer.size() - 1));
+                buffer.data(), static_cast<int>(buffer.size()));
 
             if (bytes > 0)
-            {
-                buffer[static_cast<size_t>(bytes)] = '\0';
-                pendingOutput += juce::String::fromUTF8(buffer.data(), bytes);
-                consumeLines();
-            }
+                lines.feed(buffer.data(), bytes, onLine);
 
             if (!isChildRunning())
                 break;
@@ -693,18 +715,15 @@ public:
         while (true)
         {
             const auto bytes = childProcess->readProcessOutput(
-                buffer.data(), static_cast<int>(buffer.size() - 1));
+                buffer.data(), static_cast<int>(buffer.size()));
 
             if (bytes <= 0)
                 break;
 
-            buffer[static_cast<size_t>(bytes)] = '\0';
-            pendingOutput += juce::String::fromUTF8(buffer.data(), bytes);
-            consumeLines();
+            lines.feed(buffer.data(), bytes, onLine);
         }
 
-        if (pendingOutput.trim().isNotEmpty())
-            owner.handleEngineOutputLine(pendingOutput.trim());
+        lines.flush(onLine);
 
         juce::uint32 exitCode = 0;
 
@@ -854,36 +873,25 @@ public:
 
         std::array<char, 4096> buffer{};
         juce::String processOutput;
-        juce::String pendingOutput;
+        Utf8LineBuffer lines;
 
-        auto forwardAnalysisLines = [&]
+        auto onLine = [&owner = owner](const juce::String& line)
+        { owner.handleEngineOutputLine(line); };
+
+        auto consumeChunk = [&](int bytes)
         {
-            while (true)
-            {
-                const auto newline = pendingOutput.indexOfChar('\n');
-                if (newline < 0)
-                    break;
-                const auto line = pendingOutput.substring(0, newline).trimEnd();
-                pendingOutput = pendingOutput.substring(newline + 1);
-                if (line.isNotEmpty())
-                    owner.handleEngineOutputLine(line);
-            }
+            processOutput += juce::String::fromUTF8(buffer.data(), bytes);
+
+            if (kind == sourceAnalysis)
+                lines.feed(buffer.data(), bytes, onLine);
         };
 
         while (!threadShouldExit() && isChildRunning())
         {
             const auto bytes = childProcess->readProcessOutput(
-                buffer.data(), static_cast<int>(buffer.size() - 1));
+                buffer.data(), static_cast<int>(buffer.size()));
             if (bytes > 0)
-            {
-                buffer[static_cast<size_t>(bytes)] = '\0';
-                processOutput += juce::String::fromUTF8(buffer.data(), bytes);
-                if (kind == sourceAnalysis)
-                {
-                    pendingOutput += juce::String::fromUTF8(buffer.data(), bytes);
-                    forwardAnalysisLines();
-                }
-            }
+                consumeChunk(bytes);
             wait(50);
         }
 
@@ -893,20 +901,14 @@ public:
         while (true)
         {
             const auto bytes = childProcess->readProcessOutput(
-                buffer.data(), static_cast<int>(buffer.size() - 1));
+                buffer.data(), static_cast<int>(buffer.size()));
             if (bytes <= 0)
                 break;
-            buffer[static_cast<size_t>(bytes)] = '\0';
-            processOutput += juce::String::fromUTF8(buffer.data(), bytes);
-            if (kind == sourceAnalysis)
-            {
-                pendingOutput += juce::String::fromUTF8(buffer.data(), bytes);
-                forwardAnalysisLines();
-            }
+            consumeChunk(bytes);
         }
 
-        if (kind == sourceAnalysis && pendingOutput.trim().isNotEmpty())
-            owner.handleEngineOutputLine(pendingOutput.trim());
+        if (kind == sourceAnalysis)
+            lines.flush(onLine);
 
         int exitCode = 0;
 
@@ -2945,8 +2947,7 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
     engineStartMs.store(nowMs());
     engineProgressUpdateMs.store(engineStartMs.load());
     lastEngineDurationSeconds.store(0.0);
-    engineEtaSeconds.store(-1.0);
-    engineEtaUpdateMs.store(0.0);
+    resetEngineEta();
     engineProgressRate.store(0.0);
     engineCancelRequested.store(false);
 
@@ -3295,8 +3296,7 @@ bool StemLabAudioProcessor::launchRecursiveStemSplit(int rootStemIndex)
     engineStartMs.store(nowMs());
     engineProgressUpdateMs.store(engineStartMs.load());
     lastEngineDurationSeconds.store(0.0);
-    engineEtaSeconds.store(-1.0);
-    engineEtaUpdateMs.store(0.0);
+    resetEngineEta();
     engineProgressRate.store(0.0);
     engineCancelRequested.store(false);
 
@@ -3399,8 +3399,7 @@ bool StemLabAudioProcessor::launchRecursiveAction(const juce::String& itemId,
     engineStartMs.store(nowMs());
     engineProgressUpdateMs.store(engineStartMs.load());
     lastEngineDurationSeconds.store(0.0);
-    engineEtaSeconds.store(-1.0);
-    engineEtaUpdateMs.store(0.0);
+    resetEngineEta();
     engineProgressRate.store(0.0);
     engineCancelRequested.store(false);
 
@@ -3452,13 +3451,20 @@ double StemLabAudioProcessor::getEngineEstimatedRemainingSeconds() const noexcep
 
     const auto now = nowMs();
 
-    // Prefer the engine's own estimate (BS-RoFormer reports one per model
-    // chunk, tqdm bars carry one) and count it down locally between reports
-    // so the display keeps moving even when the engine is quiet for a while.
-    const auto reportedEta = engineEtaSeconds.load();
-    const auto reportedAtMs = engineEtaUpdateMs.load();
+    // Prefer the engine's own estimate - a job-level number since the
+    // pipeline learned to extend stage estimates across the stages still
+    // to come - and count it down locally between reports so the display
+    // keeps moving even when the engine is quiet for a while.
+    double reportedEta = -1.0;
+    double reportedAtMs = 0.0;
 
-    if (reportedEta >= 0.0 && reportedAtMs > 0.0 && now - reportedAtMs < 120000.0)
+    {
+        const juce::ScopedLock lock(stateLock);
+        reportedEta = engineEtaSeconds;
+        reportedAtMs = engineEtaUpdateMs;
+    }
+
+    if (reportedEta >= 0.0 && reportedAtMs > 0.0 && now - reportedAtMs < 300000.0)
     {
         const auto countdown = reportedEta - (now - reportedAtMs) / 1000.0;
 
@@ -3483,6 +3489,12 @@ double StemLabAudioProcessor::getEngineEstimatedRemainingSeconds() const noexcep
 
     const auto estimateAtUpdate = (1.0 - progress) / rate;
     const auto estimate = estimateAtUpdate - (now - updated) / 1000.0;
+
+    // A projection that has counted below zero is stale, not "almost
+    // done": clamping it used to pin the display at 00:00 for minutes.
+    if (estimate <= 0.0)
+        return -1.0;
+
     return juce::jlimit(0.0, 24.0 * 60.0 * 60.0, estimate);
 }
 
@@ -3576,12 +3588,17 @@ void StemLabAudioProcessor::refreshEngineProgressFromDisk()
 
     setEngineProgress(juce::jlimit(0.0, 1.0, percent / 100.0));
 
-    if (stage.isNotEmpty())
+    /*
+        Forward the stage only when the file itself moved on. Re-asserting
+        it whenever it merely differed from the current status let this
+        20 Hz poll overwrite anything the stdout path had just published -
+        "Cancelling...", a "Failed - ..." reason - with a stale stage for
+        as long as the file sat unchanged.
+    */
+    if (stage.isNotEmpty() && stage != lastPolledFileStage)
     {
-        const auto current = getStatus();
-
-        if (current != stage)
-            setStatus(stage);
+        lastPolledFileStage = stage;
+        setStatus(stage);
     }
 }
 
@@ -3638,9 +3655,24 @@ void StemLabAudioProcessor::setEngineProgress(double progress)
         // Smoothed progress-per-second for the fallback ETA. Only the
         // thread that won the exchange above gets here for this step, so
         // the delta and the interval always belong together.
-        if (previousUpdate > 0.0 && now > previousUpdate)
+        //
+        // Stage boundaries land as one large instantaneous step (a model
+        // finishing hands its whole remaining band over at once). Folding
+        // that step into the rate would briefly claim the job runs orders
+        // of magnitude faster than it does, so big jumps leave the rate
+        // alone - the bar still moves, only the estimator ignores it.
+        const auto delta = next - current;
+        const auto intervalSeconds = (now - previousUpdate) / 1000.0;
+
+        // The launch sequence bumps the bar a point or two within
+        // milliseconds; folding those hops in seeded the estimator with a
+        // rate hundreds of times too fast, and the ETA read 00:00 for the
+        // rest of the job while the EMA slowly recovered. Real reports are
+        // never that close together, so a minimum interval filters the
+        // synthetic ones.
+        if (previousUpdate > 0.0 && intervalSeconds >= 0.5 && delta < 0.08)
         {
-            const auto instantRate = (next - current) / ((now - previousUpdate) / 1000.0);
+            const auto instantRate = delta / intervalSeconds;
             const auto smoothed = engineProgressRate.load();
 
             engineProgressRate.store(smoothed <= 0.0 ? instantRate
@@ -3649,6 +3681,20 @@ void StemLabAudioProcessor::setEngineProgress(double progress)
     }
 
     sendChangeMessage();
+}
+
+void StemLabAudioProcessor::storeEngineEta(double seconds) noexcept
+{
+    const juce::ScopedLock lock(stateLock);
+    engineEtaSeconds = juce::jmax(0.0, seconds);
+    engineEtaUpdateMs = nowMs();
+}
+
+void StemLabAudioProcessor::resetEngineEta() noexcept
+{
+    const juce::ScopedLock lock(stateLock);
+    engineEtaSeconds = -1.0;
+    engineEtaUpdateMs = 0.0;
 }
 
 void StemLabAudioProcessor::handleEngineOutputLine(const juce::String& line)
@@ -3660,8 +3706,7 @@ void StemLabAudioProcessor::handleEngineOutputLine(const juce::String& line)
         const auto seconds =
             line.fromFirstOccurrenceOf("STEMLAB_ETA ", false, false).trim().getDoubleValue();
 
-        engineEtaSeconds.store(juce::jmax(0.0, seconds));
-        engineEtaUpdateMs.store(nowMs());
+        storeEngineEta(seconds);
         sendChangeMessage();
         return;
     }
@@ -3680,23 +3725,22 @@ void StemLabAudioProcessor::handleEngineOutputLine(const juce::String& line)
 
     if (line.startsWithIgnoreCase("STEMLAB_PROGRESS "))
     {
-        auto tokens = juce::StringArray::fromTokens(line, " ", "\"");
+        // "STEMLAB_PROGRESS <percent> <stage text...>". The stage is
+        // everything after the number - searching for the number's text
+        // inside the line would find it again inside a stage like
+        // "Refining Drums (2/6)" whenever the digits happened to match.
+        const auto payload =
+            line.fromFirstOccurrenceOf("STEMLAB_PROGRESS ", false, true).trimStart();
 
-        if (tokens.size() >= 2)
-        {
-            sawEngineProgressProtocol.store(true);
+        const auto percent = juce::jlimit(0.0, 100.0, payload.getDoubleValue());
 
-            const auto percent = juce::jlimit(0, 100, tokens[1].getIntValue());
+        sawEngineProgressProtocol.store(true);
+        setEngineProgress(percent / 100.0);
 
-            setEngineProgress(percent / 100.0);
+        const auto stage = payload.fromFirstOccurrenceOf(" ", false, false).trim();
 
-            if (tokens.size() >= 3)
-            {
-                auto stage = line.fromFirstOccurrenceOf(tokens[1], false, false).trim();
-
-                setStatus(stage);
-            }
-        }
+        if (stage.isNotEmpty())
+            setStatus(stage);
 
         return;
     }
@@ -4950,6 +4994,8 @@ void StemLabAudioProcessor::startSourceAnalysis(const juce::File& source)
     engineStartMs.store(nowMs());
     engineProgressUpdateMs.store(engineStartMs.load());
     lastEngineDurationSeconds.store(0.0);
+    resetEngineEta();
+    engineProgressRate.store(0.0);
     sourceBpm.store(-1.0);
     sourceDetectedBpm.store(-1.0);
     sourceHalfBpm.store(-1.0);
