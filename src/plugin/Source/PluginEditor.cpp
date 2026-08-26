@@ -1984,6 +1984,9 @@ void StemLabAudioProcessorEditor::layoutStatusArea()
     // Everything anchors on the area's left edge: the spinner sits flush
     // with the progress bar below it and the text runs left from there.
     // With no progress row the status line centres vertically instead.
+    if (progressVisible)
+        area.removeFromTop(footer::statusTopInset);
+
     auto statusLine =
         progressVisible
             ? area.removeFromTop(footer::statusLineHeight)
@@ -1998,12 +2001,30 @@ void StemLabAudioProcessorEditor::layoutStatusArea()
 
     area.removeFromTop(footer::statusLineGap);
 
-    auto progressRow = area.removeFromTop(footer::progressRowHeight);
+    // withHeight rather than removeFromTop: the inset pushed the row's
+    // tail past the nominal footer height, and removeFromTop would clamp
+    // the row (and mis-centre the track) instead of letting the readout's
+    // descender overhang into the empty padding below.
+    auto progressRow = area.withHeight(footer::progressRowHeight);
 
-    progressBar.setBounds(progressRow.removeFromLeft(
-        juce::jmin(footer::progressBarWidth,
-                   progressRow.getWidth() - footer::progressLabelGap)));
+    // The readout's room comes off the top - sized to its current text and
+    // rounded up in coarse steps so the bar end does not creep as the clock
+    // ticks - and the bar takes what is left, up to its full width. Sizing
+    // the bar first squeezed the readout to zero wherever the footer's
+    // buttons leave the status area narrow.
+    const juce::Font progressFont{theme::fonts::progress()};
 
+    const int labelWidth =
+        juce::roundToInt(juce::GlyphArrangement::getStringWidth(
+            progressFont, progressLabel.getText())) + 2;
+
+    const int reserved =
+        ((labelWidth + footer::progressLabelGap + 23) / 24) * 24;
+
+    const int barWidth = juce::jlimit(0, footer::progressBarWidth,
+                                      progressRow.getWidth() - reserved);
+
+    progressBar.setBounds(progressRow.removeFromLeft(barWidth));
     progressRow.removeFromLeft(footer::progressLabelGap);
     progressLabel.setBounds(progressRow);
 }
