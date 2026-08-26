@@ -308,6 +308,7 @@ private:
     juce::Rectangle<int> panelBounds;
     juce::Rectangle<int> brandGlyphBounds;
     juce::Rectangle<int> sourceStripBounds;
+    juce::Rectangle<int> sourceDividerBounds;
     juce::Rectangle<int> statusIconBounds;
     juce::Rectangle<int> folderIconBounds;
 

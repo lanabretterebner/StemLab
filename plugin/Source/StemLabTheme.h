@@ -401,6 +401,19 @@ namespace stemlab::theme
             constexpr int recordButtonWidth = 108;
             constexpr int recordDot = 10;
 
+            /*
+                A hairline in the gap before the Separate control, splitting
+                the strip into the sources you can pick and the action that
+                consumes one:
+
+                    song.wav   [Import from DAW] [Record PC] | [Refine|Separate]
+
+                Shorter than the buttons either side, so it reads as a
+                separator rather than a fourth control.
+            */
+            constexpr int dividerWidth = 1;
+            constexpr int dividerHeight = 22;
+
             // The Separate split control.
             constexpr int separateMinWidth = 260;
             constexpr int separateHeight = 36;
