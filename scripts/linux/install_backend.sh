@@ -34,7 +34,7 @@ REINSTALL=0
 WRITE_POINTER=1
 DEST=""
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in

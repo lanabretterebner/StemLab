@@ -14,9 +14,9 @@ No Max for Live device or MIDI port is required.
 From the source repository:
 
 ```powershell
-.\scripts\setup_dev.ps1
-.\scripts\build_plugin.ps1
-.\scripts\install_ableton.ps1
+.\scripts\win\setup_dev.ps1
+.\scripts\win\build_plugin.ps1
+.\scripts\win\install_ableton.ps1
 ```
 
 The final command installs:
@@ -33,7 +33,7 @@ If automatic User Library detection fails, locate it with **Browser > User
 Library > Show in Explorer**, then run:
 
 ```powershell
-.\scripts\install_ableton.ps1 -UserLibrary "C:\full\path\to\User Library"
+.\scripts\win\install_ableton.ps1 -UserLibrary "C:\full\path\to\User Library"
 ```
 
 Save and close Ableton before installing; the script refuses to force-close it.

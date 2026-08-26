@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
-$RepoRoot = Split-Path $PSScriptRoot -Parent
+$RepoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $DistRoot = Join-Path $RepoRoot "dist"
 $CacheRoot = Join-Path $RepoRoot ".portable-cache"
 
@@ -107,7 +107,7 @@ if (-not $SkipPluginBuild) {
     Write-Host "Building the Standalone and VST3 targets..." -ForegroundColor Cyan
     $BuildArgs = @{}
     if ($CleanPlugin) { $BuildArgs.Clean = $true }
-    & (Join-Path $RepoRoot "scripts\build_plugin.ps1") @BuildArgs
+    & (Join-Path $PSScriptRoot "build_plugin.ps1") @BuildArgs
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
@@ -196,7 +196,7 @@ Copy-Item -LiteralPath $Standalone -Destination (Join-Path $OutputDirectory "Ste
 Invoke-Robocopy $Vst3 (Join-Path $OutputDirectory "StemLab.vst3")
 Invoke-Robocopy (Join-Path $RepoRoot "src\integrations\ableton\StemLabRemote") (Join-Path $OutputDirectory "StemLabRemote") @("/XD", "__pycache__")
 New-Item -ItemType Directory -Path (Join-Path $OutputDirectory "scripts") -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\install_ableton.ps1") -Destination (Join-Path $OutputDirectory "scripts\install_ableton.ps1") -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "install_ableton.ps1") -Destination (Join-Path $OutputDirectory "scripts\install_ableton.ps1") -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "LICENSE") -Destination $OutputDirectory -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "docs\third-party.md") -Destination (Join-Path $OutputDirectory "THIRD_PARTY.md") -Force
 # The installer definition's SetupIconFile reads this out of the payload.
@@ -235,7 +235,7 @@ try {
 
     $env:STEMLAB_ENGINE_DIR = $Engine
     try {
-        & $EnginePython (Join-Path $RepoRoot "scripts\smoke_portable.py")
+        & $EnginePython (Join-Path $PSScriptRoot "smoke_portable.py")
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
     finally {

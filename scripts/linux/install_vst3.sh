@@ -12,7 +12,7 @@ set -euo pipefail
 BUILD_TYPE="Release"
 DEST_DIR="${HOME}/.vst3"
 
-PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../src/plugin" && pwd)"
+PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../src/plugin" && pwd)"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in

@@ -3,9 +3,9 @@ from pathlib import Path, PureWindowsPath
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ISS = (ROOT / "scripts" / "StemLab.iss").read_text(encoding="utf-8")
-BUILDER = (ROOT / "scripts" / "build_installer_windows.ps1").read_text(encoding="utf-8")
-ABLETON_INSTALLER = (ROOT / "scripts" / "install_ableton.ps1").read_text(encoding="utf-8")
+ISS = (ROOT / "scripts" / "win" / "StemLab.iss").read_text(encoding="utf-8")
+BUILDER = (ROOT / "scripts" / "win" / "build_installer_windows.ps1").read_text(encoding="utf-8")
+ABLETON_INSTALLER = (ROOT / "scripts" / "win" / "install_ableton.ps1").read_text(encoding="utf-8")
 
 
 def test_flavor_variants_share_one_uninstall_identity():

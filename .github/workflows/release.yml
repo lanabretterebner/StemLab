@@ -140,7 +140,7 @@ jobs:
             libxcursor-dev libxcomposite-dev libxrender-dev \
             libfreetype-dev libfontconfig1-dev libgl1-mesa-dev libpulse-dev
 
-      # scripts/build_plugin.sh downloads JUCE into here on a cold run.
+      # scripts/linux/build_plugin.sh downloads JUCE into here on a cold run.
       - name: Cache JUCE
         uses: actions/cache@v4
         with:
@@ -152,7 +152,7 @@ jobs:
       # Naming each build for the flavor it was compiled against is the whole
       # point - the filename is the only thing a user has to go on.
       - name: Build the self-contained bundle
-        run: ./scripts/build_portable.sh --torch-flavor ${{ matrix.flavor }}
+        run: ./scripts/linux/build_portable.sh --torch-flavor ${{ matrix.flavor }}
 
       # The same binaries without the Engine, for anyone who already has a
       # backend installed. They do not vary with the torch flavor, so one
@@ -186,8 +186,8 @@ jobs:
 
           To build an Engine from a checkout of the repository:
 
-            ./scripts/install_backend.sh          # auto-detect GPU
-            ./scripts/install_backend.sh --cpu    # or --cuda, --rocm, --xpu
+            ./scripts/linux/install_backend.sh          # auto-detect GPU
+            ./scripts/linux/install_backend.sh --cpu    # or --cuda, --rocm, --xpu
           EOF
 
           # Absolute output path: -C moves tar into the staging directory, so
@@ -324,7 +324,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      # scripts/setup_dev.ps1 creates the venv with "py -3.11", which reads the
+      # scripts/win/setup_dev.ps1 creates the venv with "py -3.11", which reads the
       # registry and so cannot see the interpreter setup-python unpacked.
       # Creating the venv here first makes the script adopt it instead.
       - name: Create the development environment
@@ -378,7 +378,7 @@ jobs:
           PIP_CONSTRAINT: torch-constraints.txt
         # -SkipTorchInstall: the flavor torch installed above must survive;
         # setup_dev would otherwise replace it with its default backend build.
-        run: .\scripts\setup_dev.ps1 -SkipTorchInstall
+        run: .\scripts\win\setup_dev.ps1 -SkipTorchInstall
 
       # The venv is what the Engine is copied from, so a substitution here
       # ships a broken bundle. Checking beats trusting the constraint, and
@@ -409,7 +409,7 @@ jobs:
       # so the asset name comes from the bundle rather than from this label.
       - name: Build the portable payload and the installer
         shell: pwsh
-        run: .\scripts\build_installer_windows.ps1 -Backend nvidia -SkipTests
+        run: .\scripts\win\build_installer_windows.ps1 -SkipTests
 
       - name: Report disk use
         if: always()

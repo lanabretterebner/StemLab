@@ -10,7 +10,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$RepoRoot = Split-Path $PSScriptRoot -Parent
+$RepoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 . (Join-Path $PSScriptRoot "windows_backend.ps1")
 $BackendConfiguration = Get-StemLabBackendConfiguration $Backend
 
@@ -66,7 +66,7 @@ if ($SkipTorchInstall) {
 }
 else {
     & $Python -m pip install -e "$RepoRoot[dev,recursive]" `
-        --constraint (Join-Path $RepoRoot "requirements\windows-backend-constraints.txt")
+        --constraint (Join-Path $PSScriptRoot "windows-backend-constraints.txt")
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     # Verify once more after resolving every transitive dependency.

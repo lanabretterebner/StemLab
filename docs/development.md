@@ -13,13 +13,13 @@ on `PATH`. From the repository root, choose a runtime backend - NVIDIA is
 the recommended default:
 
 ```powershell
-.\scripts\setup_dev.ps1 -Backend nvidia   # recommended/default
-.\scripts\setup_dev.ps1 -Backend cpu      # universal fallback, slower
-.\scripts\setup_dev.ps1 -Backend amd      # AMD ROCm, experimental
+.\scripts\win\setup_dev.ps1 -Backend nvidia   # recommended/default
+.\scripts\win\setup_dev.ps1 -Backend cpu      # universal fallback, slower
+.\scripts\win\setup_dev.ps1 -Backend amd      # AMD ROCm, experimental
 
-.\scripts\build_plugin.ps1   # Standalone + VST3
+.\scripts\win\build_plugin.ps1   # Standalone + VST3
 & ".\src\plugin\build\StemLabPlugin_artefacts\Release\Standalone\StemLab.exe"
-.\scripts\install_ableton.ps1   # VST3 + Ableton Remote Script
+.\scripts\win\install_ableton.ps1   # VST3 + Ableton Remote Script
 ```
 
 NVIDIA and CPU setup create `.venv`. AMD setup creates a separate
@@ -38,16 +38,16 @@ See [ableton.md](ableton.md) for the Ableton setup and workflow.
 No venv or system Python needed. Everything in one bundle:
 
 ```bash
-./scripts/build_portable.sh
+./scripts/linux/build_portable.sh
 cd dist/StemLab-*-Linux && ./install.sh
 ```
 
 Or piece by piece:
 
 ```bash
-./scripts/build_plugin.sh        # Standalone + VST3
-./scripts/install_vst3.sh        # -> ~/.vst3
-./scripts/install_backend.sh     # Engine (--cuda / --rocm / --xpu / --cpu)
+./scripts/linux/build_plugin.sh        # Standalone + VST3
+./scripts/linux/install_vst3.sh        # -> ~/.vst3
+./scripts/linux/install_backend.sh     # Engine (--cuda / --rocm / --xpu / --cpu)
 ```
 
 See [linux.md](linux.md) for dependencies, GPU flavors, and the REAPER
@@ -210,7 +210,7 @@ For C++ changes:
 
 1. Keep UI edits in `PluginEditor`; take visual values from `StemLabTheme.h`.
 2. Keep state, jobs, manifests, and monitoring edits in `PluginProcessor`.
-3. Build with `.\scripts\build_plugin.ps1` (Linux: `./scripts/build_plugin.sh`).
+3. Build with `.\scripts\win\build_plugin.ps1` (Linux: `./scripts/linux/build_plugin.sh`).
 4. Run the plugin unit tests via CTest when `Waveform*` helpers change.
 5. Smoke-test the Standalone app.
 
@@ -227,9 +227,9 @@ platforms, plus `rocm` on Linux only - PyTorch publishes no ROCm wheel for
 Windows. Each is named for the torch build it actually contains, read out of
 the assembled Engine rather than from what the build was asked for.
 
-Locally: `.\scripts\build_portable_windows.ps1` then
-`.\scripts\build_installer_windows.ps1 -SkipPortableBuild` on Windows;
-`./scripts/build_portable.sh --torch-flavor cpu` on Linux.
+Locally: `.\scripts\win\build_portable_windows.ps1` then
+`.\scripts\win\build_installer_windows.ps1 -SkipPortableBuild` on Windows;
+`./scripts/linux/build_portable.sh --torch-flavor cpu` on Linux.
 
 No bundle carries model weights. Each model downloads the first time it is
 used, is rejected unless it matches a recorded length and digest, and is

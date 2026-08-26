@@ -4931,7 +4931,7 @@ juce::String StemLabAudioProcessor::discoverEngineCommand() const
         return found;
     }
 
-    // The Standalone portable app and scripts/install_backend.sh write this
+    // The Standalone portable app and scripts/linux/install_backend.sh write this
     // pointer. The VST3 can then reuse the Engine from the extracted release
     // or the installed backend instead of requiring a second copy.
     {
