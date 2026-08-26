@@ -562,8 +562,15 @@ namespace stemlab::theme
             constexpr int dividerGap = 8;
             constexpr int height = 34;
             constexpr int gap = 10;
-            // Status line, gap, and progress row fill the footer height
-            // exactly, so the block sits symmetrically inside it.
+            /*
+                The status block shifts down by statusTopInset while the
+                progress row shows: the thin track sits centred in its row,
+                so without the shift the text's clearance above is visibly
+                smaller than the track's clearance below. The readout's
+                descender dips past the footer row into the panel padding,
+                which is empty.
+            */
+            constexpr int statusTopInset = 2;
             constexpr int statusLineHeight = 16;
             constexpr int statusLineGap = 4;
             constexpr int statusTextGap = 6;
