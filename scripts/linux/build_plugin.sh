@@ -197,4 +197,4 @@ if [[ -f "$ARTEFACTS/Standalone/StemLab" ]]; then
 fi
 echo
 echo "Install the plugin into ~/.vst3 with:"
-echo "  $REPO_ROOT/scripts/install_vst3.sh"
+echo "  $REPO_ROOT/scripts/linux/install_vst3.sh"

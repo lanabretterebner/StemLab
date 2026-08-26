@@ -94,7 +94,7 @@ function Download-VerifiedFile(
     }
 }
 
-Assert-File $DevPython "StemLab's Python environment is missing. Run .\scripts\setup_dev.ps1 first."
+Assert-File $DevPython "StemLab's Python environment is missing. Run .\scripts\win\setup_dev.ps1 first."
 Assert-Directory $VenvSitePackages "StemLab's Python site-packages directory is missing."
 
 if (-not $SkipTests) {
