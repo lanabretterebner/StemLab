@@ -29,27 +29,9 @@ sudo apt install \
   libfreetype-dev libfontconfig1-dev libgl1-mesa-dev
 ```
 
-**Fedora**
-
-```bash
-sudo dnf install gcc-c++ cmake pkgconf-pkg-config curl unzip \
-  alsa-lib-devel jack-audio-connection-kit-devel \
-  libX11-devel libXext-devel libXi-devel libXrandr-devel libXinerama-devel \
-  libXcursor-devel libXcomposite-devel libXrender-devel \
-  freetype-devel fontconfig-devel mesa-libGL-devel
-```
-
-**Arch**
-
-```bash
-sudo pacman -S --needed base-devel cmake pkgconf curl unzip \
-  alsa-lib jack2 libx11 libxext libxi libxrandr libxinerama \
-  libxcursor libxcomposite libxrender freetype2 fontconfig mesa
-```
-
-`scripts/build_plugin.sh` checks for all of these with `pkg-config` before configuring,
-and prints the exact install command for your distribution if anything is
-missing.
+On Fedora or Arch, just run `./scripts/build_plugin.sh` - it checks every
+dependency with `pkg-config` first and prints the exact install command for
+your distribution.
 
 `libwebkit2gtk` and `libcurl` are deliberately **not** required: the plugin
 builds with `JUCE_WEB_BROWSER=0` and `JUCE_USE_CURL=0`.
@@ -126,7 +108,7 @@ Adaptive/recursive splitting runs through onnxruntime, which has no
 ROCm/XPU build on PyPI - on those flavors the recursive stage runs on CPU
 while the main separation offloads.
 
-Developers who prefer a venv can still use one - `python3 -m venv .venv &&
+Developers can use a plain venv instead - `python3 -m venv .venv &&
 .venv/bin/pip install -e .` next to the repository is found automatically.
 
 The plugin discovers the engine in this order:
@@ -145,12 +127,9 @@ necessarily inherit your shell's `PATH`. If discovery picks the wrong one, set
 it explicitly under **Settings > Choose StemLab engine**, or export
 `STEMLAB_ENGINE` before starting the host.
 
-`ffmpeg` is used to normalise compressed input. The system package is fine —
-install it with your package manager.
-
-The installer also sets up adaptive/recursive stem splitting (the per-stem
-"split further" actions) with the CPU or GPU build of `audio-separator`
-matching your torch flavor.
+`ffmpeg` (any system package) is used to normalise compressed input. The
+installer also sets up adaptive stem splitting with the `audio-separator`
+build matching your torch flavor.
 
 ## Where StemLab writes files
 
@@ -246,22 +225,12 @@ leave a separation running in the background.
 
 ## Wayland
 
-JUCE renders through X11. Under a Wayland session the plugin and standalone app
-run via XWayland, which works but is worth knowing when you file a bug.
+JUCE renders through X11; under Wayland everything runs via XWayland -
+worth knowing when you file a bug.
 
 ## Verifying a build
 
 ```bash
-# The bundle should contain a loadable module:
-ls plugin/build/StemLabPlugin_artefacts/Release/VST3/StemLab.vst3/Contents/x86_64-linux/
-
-# Nothing should be unresolved:
 ldd plugin/build/StemLabPlugin_artefacts/Release/VST3/StemLab.vst3/Contents/x86_64-linux/StemLab.so | grep "not found"
-
-# Backend tests:
 python3 -m pytest tests -q
 ```
-
-The repository also contains no-hardware harnesses used during the port
-(fake VST3 host, REAPER selftest hooks via `STEMLAB_REAPER_SELFTEST`); see
-the pull-request history for how they are driven.
