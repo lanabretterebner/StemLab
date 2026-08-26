@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "HostIntegrationPolicy.h"
+#include "LoopRegions.h"
 
 namespace stemlab::reaper
 {
@@ -447,6 +448,9 @@ public:
     void clearStemSelectionRange(const juce::String& id);
     void clearAllStemSelectionRanges();
 
+    /** The lane's stem file, trimmed to its highlighted range when one is set. */
+    juce::File getStemDragFile(const juce::File& source, const juce::String& selectionId);
+
     bool launchStemMidiConversion(int stemIndex);
     bool launchRecursiveMidiConversion(const juce::String& itemId);
     bool isMidiConversionRunning() const noexcept;
@@ -595,7 +599,8 @@ private:
 
     /** Which lane a highlighted range applies to, in Lanes terms. */
     juce::String getCurrentPreviewSelectionId() const;
-    void updatePreviewLoopForId(const juce::String& id);
+    void rebuildLoopRegions();
+    void applyPreviewLoopTick();
 
     using MonitorFlags = StemLabLaneMonitorFlags;
 
@@ -719,14 +724,19 @@ private:
     mutable juce::CriticalSection selectionLock;
     std::map<juce::String, StemLabSelectionRange> stemSelections;
 
-    /** Which lane's range the transport is currently looping, if any. */
-    juce::String loopSelectionId;
+    // Every lane's highlighted range takes part in the playback loop,
+    // merged into sorted disjoint regions (normalised 0..1). Guarded by
+    // selectionLock; enforced by loopTimer on the message thread.
+    std::vector<stemlab::loops::Region> loopRegionsNormalised;
+    bool previewLoopWasPlaying = false; // message thread only
 
-    // Looping the monitored lane over its highlighted range. Read on the
-    // audio thread, written from the message thread.
-    std::atomic<bool> previewLoopEnabled{false};
-    std::atomic<double> previewLoopStart{0.0};
-    std::atomic<double> previewLoopEnd{0.0};
+    struct LoopTimer final : juce::Timer
+    {
+        explicit LoopTimer(StemLabAudioProcessor& ownerIn) : owner(ownerIn) {}
+        void timerCallback() override { owner.applyPreviewLoopTick(); }
+        StemLabAudioProcessor& owner;
+    };
+    LoopTimer loopTimer{*this};
 
     std::atomic<bool> abletonBridgeActive{false};
 

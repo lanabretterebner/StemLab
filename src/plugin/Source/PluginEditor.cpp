@@ -1,7 +1,10 @@
 #include "PluginEditor.h"
+#include "LinuxDragSourceGuard.h"
 #include "StemLabPaths.h"
 #include "StemLabTheme.h"
 #include "BinaryData.h"
+
+#include <utility>
 
 #include <algorithm>
 
@@ -889,11 +892,35 @@ void StemLaneComponent::mouseDrag(const juce::MouseEvent& event)
     if (event.getDistanceFromDragStart() < theme::metrics::waveform::clickVersusDragThreshold)
         return;
 
+    // A highlighted range means this drag carries that range, not the whole
+    // stem - the same rule the footer's Drag Stems pill already follows.
+    const auto selectionId =
+        isChildLane() ? childId : StemLabAudioProcessor::getStemName(stemIndex);
+    const auto dragFile = processor.getStemDragFile(laneFile, selectionId);
+
+    if (!dragFile.existsAsFile())
+        return;
+
+    if (auto* peer = getPeer(); peer != nullptr && dndSourceGuardToken == nullptr)
+        dndSourceGuardToken = stemlab::linuxdnd::suppressDropTarget(peer->getNativeHandle());
+
     externalDragStarted = juce::DragAndDropContainer::performExternalDragDropOfFiles(
-        juce::StringArray{laneFile.getFullPathName()}, false, this);
+        juce::StringArray{dragFile.getFullPathName()}, false, this);
+
+    if (!externalDragStarted)
+        releaseDragSourceGuard();
 }
 
-void StemLaneComponent::mouseUp(const juce::MouseEvent&) { externalDragStarted = false; }
+void StemLaneComponent::mouseUp(const juce::MouseEvent&)
+{
+    externalDragStarted = false;
+    releaseDragSourceGuard();
+}
+
+void StemLaneComponent::releaseDragSourceGuard()
+{
+    stemlab::linuxdnd::restoreDropTarget(std::exchange(dndSourceGuardToken, nullptr));
+}
 
 void StemLaneComponent::refresh()
 {
@@ -1021,6 +1048,10 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     namespace window = theme::metrics::window;
 
     setLookAndFeel(&lookAndFeel);
+
+    // Clicking anywhere in the interface focuses the editor, so Esc can
+    // reach keyPressed and clear the loop ranges.
+    setWantsKeyboardFocus(true);
 
     /*
      * The interface scales instead of reflowing: one design-size layout in
@@ -1511,6 +1542,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
 StemLabAudioProcessorEditor::~StemLabAudioProcessorEditor()
 {
+    releaseDragSourceGuard();
     setLookAndFeel(nullptr);
     processor.removeChangeListener(this);
     stopTimer();
@@ -1533,10 +1565,16 @@ bool StemLabAudioProcessorEditor::isInterestedInFileDrag(const juce::StringArray
 
     for (const auto& path : files)
     {
-        // Files of our own in-flight outbound drag are not an invitation
-        // to reload the source they were split from.
-        if (!selfFileDragGuard.shouldIgnore(path) && isSupportedAudioFile(juce::File(path)))
+        const juce::File candidate(path);
+
+        // Files of our own in-flight outbound drag - and anything else this
+        // job produced - are not an invitation to reload the source they
+        // were split from.
+        if (!selfFileDragGuard.shouldIgnore(path) && isSupportedAudioFile(candidate) &&
+            !candidate.isAChildOf(processor.getLastJobDirectory()))
+        {
             return true;
+        }
     }
 
     return false;
@@ -1551,6 +1589,9 @@ void StemLabAudioProcessorEditor::startSelectedStemsDrag()
 
     selfFileDragGuard.begin(files);
 
+    if (auto* peer = getPeer(); peer != nullptr && dndSourceGuardToken == nullptr)
+        dndSourceGuardToken = stemlab::linuxdnd::suppressDropTarget(peer->getNativeHandle());
+
     auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
 
     const bool started = juce::DragAndDropContainer::performExternalDragDropOfFiles(
@@ -1564,6 +1605,7 @@ void StemLabAudioProcessorEditor::startSelectedStemsDrag()
     if (!started)
     {
         selfFileDragGuard.clear();
+        releaseDragSourceGuard();
         processor.postUiStatus("Could not start the stem drag");
     }
 }
@@ -1586,7 +1628,29 @@ void StemLabAudioProcessorEditor::mouseDrag(const juce::MouseEvent& event)
     startSelectedStemsDrag();
 }
 
-void StemLabAudioProcessorEditor::mouseUp(const juce::MouseEvent&) { footerDragStarted = false; }
+void StemLabAudioProcessorEditor::mouseUp(const juce::MouseEvent&)
+{
+    footerDragStarted = false;
+    releaseDragSourceGuard();
+}
+
+void StemLabAudioProcessorEditor::releaseDragSourceGuard()
+{
+    stemlab::linuxdnd::restoreDropTarget(std::exchange(dndSourceGuardToken, nullptr));
+}
+
+bool StemLabAudioProcessorEditor::keyPressed(const juce::KeyPress& key)
+{
+    // One key to sweep every lane's loop range away, however many lanes
+    // were dragged over - the double-click escape only clears one.
+    if (key == juce::KeyPress::escapeKey)
+    {
+        processor.clearAllStemSelectionRanges();
+        return true;
+    }
+
+    return false;
+}
 
 void StemLabAudioProcessorEditor::filesDropped(const juce::StringArray& files, int, int)
 {

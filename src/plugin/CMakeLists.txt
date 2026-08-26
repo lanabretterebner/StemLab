@@ -111,6 +111,8 @@ target_sources(StemLabPlugin
         Source/ReaperHost.h
         Source/ReaperBridge.cpp
         Source/ReaperBridge.h
+        Source/LinuxDragSourceGuard.cpp
+        Source/LinuxDragSourceGuard.h
         Source/LinuxSystemCapture.cpp
         Source/LinuxSystemCapture.h
         Source/WaveformGrid.h
@@ -152,6 +154,13 @@ if (BUILD_TESTING)
     target_include_directories(StemLabWaveformAnalysisTests PRIVATE Source)
     target_compile_features(StemLabWaveformAnalysisTests PRIVATE cxx_std_20)
     add_test(NAME StemLabWaveformAnalysisTests COMMAND StemLabWaveformAnalysisTests)
+
+    # The multi-lane loop policy: which ranges merge, where playback jumps.
+    add_executable(StemLabLoopRegionsTests
+        Tests/LoopRegionsTests.cpp Source/LoopRegions.h)
+    target_include_directories(StemLabLoopRegionsTests PRIVATE Source)
+    target_compile_features(StemLabLoopRegionsTests PRIVATE cxx_std_20)
+    add_test(NAME StemLabLoopRegionsTests COMMAND StemLabLoopRegionsTests)
 
     # Upstream's host-capture pass: the self-drag guard plus a real
     # processor capturing processBlock audio, so this one links the plugin.
@@ -198,9 +207,14 @@ elseif (UNIX AND NOT APPLE)
     # pick up JACK at runtime, or the thread library on some toolchains.
     find_package(Threads REQUIRED)
 
+    # LinuxDragSourceGuard talks straight to Xlib; JUCE pulls X11 in through
+    # its own targets, but our direct calls get their own explicit link.
+    find_package(X11 REQUIRED)
+
     target_link_libraries(StemLabPlugin
         PRIVATE
             Threads::Threads
+            X11::X11
             ${CMAKE_DL_LIBS}
     )
 
