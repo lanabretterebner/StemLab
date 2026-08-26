@@ -171,6 +171,51 @@ int main()
         assert(brightnessForCentroid(0.0) == 0.5f);
     }
 
+    // ------------------------------------------------------ the band split
+
+    {
+        // 100Hz per bin: bin 1 (100Hz) is low, bin 2 (200Hz) sits exactly on
+        // the crossover and is mid, bin 20 (2000Hz) likewise opens the highs.
+        std::vector<float> magnitudes(32, 0.0f);
+
+        magnitudes[1] = 1.0f;
+        auto bands = bandLevelsForSpectrum(magnitudes.data(), 32, 100.0);
+        assert(bands.low == 1.0f && bands.mid == 0.0f && bands.high == 0.0f);
+
+        magnitudes[1] = 0.0f;
+        magnitudes[2] = 1.0f;
+        bands = bandLevelsForSpectrum(magnitudes.data(), 32, 100.0);
+        assert(bands.low == 0.0f && bands.mid == 1.0f && bands.high == 0.0f);
+
+        magnitudes[2] = 0.0f;
+        magnitudes[20] = 1.0f;
+        bands = bandLevelsForSpectrum(magnitudes.data(), 32, 100.0);
+        assert(bands.low == 0.0f && bands.mid == 0.0f && bands.high == 1.0f);
+
+        // Shares follow amplitude, not power: a band at half the magnitude
+        // (a quarter of the energy) reads as half the dominant one.
+        magnitudes[1] = 1.0f;
+        magnitudes[20] = 0.5f;
+        bands = bandLevelsForSpectrum(magnitudes.data(), 32, 100.0);
+        assert(bands.low == 1.0f);
+        assert(std::abs(bands.high - 0.5f) < 1.0e-6f);
+
+        // DC is not bass: bin 0 must not count toward the low band.
+        std::vector<float> withOffset(32, 0.0f);
+        withOffset[0] = 50.0f;
+        withOffset[20] = 1.0f;
+        bands = bandLevelsForSpectrum(withOffset.data(), 32, 100.0);
+        assert(bands.low == 0.0f && bands.high == 1.0f);
+
+        // Silence has no opinion, and nonsense does not read off the end.
+        std::vector<float> silent(32, 0.0f);
+        bands = bandLevelsForSpectrum(silent.data(), 32, 100.0);
+        assert(bands.low == 0.0f && bands.mid == 0.0f && bands.high == 0.0f);
+
+        bands = bandLevelsForSpectrum(nullptr, 32, 100.0);
+        assert(bands.low == 0.0f && bands.mid == 0.0f && bands.high == 0.0f);
+    }
+
     // ------------------------------------------------- end-to-end analysis
 
     {
@@ -193,6 +238,31 @@ int main()
         // Profile geometry lines up with the audio it came from.
         assert(std::abs(low.lengthSeconds - 1.0) < 0.01);
         assert(low.secondsPerFrame > 0.0);
+
+        // Band shares ride along, one per frame.
+        assert(low.bands.size() == low.brightness.size());
+    }
+
+    {
+        // Pure tones land their band share in the right band, with the
+        // dominant band pinned to 1 and the others down at leakage level.
+        constexpr double rate = 44100.0;
+
+        const auto bass = analyseMono(sine(80.0, rate, 0.5).data(),
+                                      static_cast<std::size_t>(rate * 0.5), rate);
+        const auto vocal = analyseMono(sine(800.0, rate, 0.5).data(),
+                                       static_cast<std::size_t>(rate * 0.5), rate);
+        const auto hat = analyseMono(sine(5000.0, rate, 0.5).data(),
+                                     static_cast<std::size_t>(rate * 0.5), rate);
+
+        const auto& bassMid = bass.bands[bass.bands.size() / 2];
+        assert(bassMid.low == 1.0f && bassMid.mid < 0.3f && bassMid.high < 0.3f);
+
+        const auto& vocalMid = vocal.bands[vocal.bands.size() / 2];
+        assert(vocalMid.mid == 1.0f && vocalMid.low < 0.3f && vocalMid.high < 0.3f);
+
+        const auto& hatMid = hat.bands[hat.bands.size() / 2];
+        assert(hatMid.high == 1.0f && hatMid.low < 0.3f && hatMid.mid < 0.3f);
     }
 
     {
@@ -207,6 +277,10 @@ int main()
 
         assert(!profile.isEmpty());
         assert(profile.brightness.back() > 0.75f);
+
+        // The band balance holds through the gap the same way.
+        assert(profile.bands.back().high == 1.0f);
+        assert(profile.bands.back().low < 0.3f);
     }
 
     {
@@ -338,6 +412,20 @@ int main()
 
         // No profile is a neutral mid-hue, so an unanalysed lane is calm.
         assert(brightnessAt(SpectralProfile{}, 1.0) == 0.5f);
+
+        profile.bands = {{1.0f, 0.1f, 0.2f}, {0.3f, 1.0f, 0.4f}, {0.5f, 0.6f, 1.0f}};
+
+        assert(bandsAt(profile, 0.0).low == 1.0f);
+        assert(bandsAt(profile, 1.5).mid == 1.0f);
+        assert(bandsAt(profile, 2.7).high == 1.0f);
+
+        // Past either end clamps to the nearest frame.
+        assert(bandsAt(profile, -10.0).low == 1.0f);
+        assert(bandsAt(profile, 900.0).high == 1.0f);
+
+        // No profile is an even balance - white, not a flashing primary.
+        const auto neutral = bandsAt(SpectralProfile{}, 1.0);
+        assert(neutral.low == 1.0f && neutral.mid == 1.0f && neutral.high == 1.0f);
     }
 
     return 0;

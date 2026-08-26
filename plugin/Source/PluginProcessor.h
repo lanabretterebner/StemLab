@@ -485,8 +485,9 @@ public:
     int getWaveformColourIndex() const noexcept { return waveformColourIndex.load(); }
 
     /** Number of selectable lane waveform palettes; the index persists in
-        plugin state, so this must stay in step with the theme's palette. */
-    static constexpr int waveformColourCount = 7;
+        plugin state, so this must stay in step with the theme's palette.
+        State saved when the solid fills existed clamps into range here. */
+    static constexpr int waveformColourCount = 5;
 
     /**
      * Which palette a fresh instance starts on: Spectrum, index 2.
