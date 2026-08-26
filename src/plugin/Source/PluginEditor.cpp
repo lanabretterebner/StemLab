@@ -660,6 +660,34 @@ void StemLaneWaveform::mouseDoubleClick(const juce::MouseEvent&)
     }
 }
 
+void StemLaneWaveform::mouseWheelMove(const juce::MouseEvent& event,
+                                      const juce::MouseWheelDetails& wheel)
+{
+    // With nothing to zoom the wheel keeps its stock meaning and scrolls
+    // the lane list.
+    if (!isEnabled() || profile == nullptr || onZoomStep == nullptr ||
+        wheel.deltaY == 0.0f)
+    {
+        Component::mouseWheelMove(event, wheel);
+        return;
+    }
+
+    // A mouse notch is ~0.1, a trackpad tick far less; gather deltas until
+    // they amount to a whole notch, so a notch steps one detent and a
+    // trackpad swipe is not a leap to either end of the range.
+    constexpr float notch = 0.1f;
+
+    wheelAccumulator += wheel.deltaY;
+
+    const auto steps = static_cast<int>(wheelAccumulator / notch);
+
+    if (steps != 0)
+    {
+        wheelAccumulator -= static_cast<float>(steps) * notch;
+        onZoomStep(steps);
+    }
+}
+
 // ======================================================================== lane
 
 StemLaneComponent::StemLaneComponent(StemLabAudioProcessor& processorIn, int stemIndexIn,
@@ -812,6 +840,12 @@ void StemLaneComponent::setChildState(bool laneHasChildren, bool expanded)
 
     twisty.setExpanded(expanded);
     twisty.setVisible(laneHasChildren);
+}
+
+void StemLaneComponent::setZoomStepHandler(std::function<void(int)> handler)
+{
+    if (waveform != nullptr)
+        waveform->onZoomStep = std::move(handler);
 }
 
 void StemLaneComponent::setChildInfo(const StemLabRecursiveStemInfo& info)
@@ -1322,6 +1356,9 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
             [this](const juce::String& id) { showChildLayersMenu(id); },
             [this](int stemIndex, juce::String id) { toggleLaneExpanded(stemIndex, id); });
 
+        rootLanes[static_cast<size_t>(i)]->setZoomStepHandler(
+            [this](int delta) { stepWaveformZoom(delta); });
+
         laneContent.addAndMakeVisible(*rootLanes[static_cast<size_t>(i)]);
     }
 
@@ -1364,9 +1401,9 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
     panelContent.addAndMakeVisible(progressBar);
 
-    progressLabel.setFont(theme::fonts::meta());
+    progressLabel.setFont(theme::fonts::progress());
     progressLabel.setColour(juce::Label::textColourId, theme::colours::text45());
-    progressLabel.setJustificationType(juce::Justification::centredRight);
+    progressLabel.setJustificationType(juce::Justification::centredLeft);
     panelContent.addAndMakeVisible(progressLabel);
 
     pathLabel.setFont(theme::fonts::footerPath());
@@ -1910,20 +1947,11 @@ void StemLabAudioProcessorEditor::layoutPanel()
 
         row.removeFromRight(footer::statusRightMargin);
 
-        // Left block: status line above, progress row below.
-        auto statusArea = row;
-
-        auto statusLine = statusArea.removeFromTop(footer::statusLineHeight);
-        statusIndicator.setBounds(statusLine.removeFromLeft(footer::statusLineHeight));
-        statusLine.removeFromLeft(4);
-        statusLabel.setBounds(statusLine);
-
-        statusArea.removeFromTop(footer::statusLineGap);
-
-        auto progressRow = statusArea.removeFromTop(footer::progressRowHeight);
-        progressLabel.setBounds(progressRow.removeFromRight(footer::progressLabelWidth));
-        progressRow.removeFromRight(footer::progressLabelGap);
-        progressBar.setBounds(progressRow);
+        // Left block: status line above, progress row below. Both centre on
+        // their current text, so the placement lives in layoutStatusArea(),
+        // which reruns on every status refresh.
+        statusAreaBounds = row;
+        layoutStatusArea();
     }
 
     // Transport.
@@ -1948,6 +1976,80 @@ void StemLabAudioProcessorEditor::layoutPanel()
     // Lanes take everything that remains.
     laneViewport.setBounds(inner);
     layoutLanes();
+}
+
+void StemLabAudioProcessorEditor::layoutStatusArea()
+{
+    namespace footer = theme::metrics::footer;
+
+    if (statusAreaBounds.isEmpty())
+        return;
+
+    auto area = statusAreaBounds;
+
+    const bool progressVisible = progressBar.isVisible();
+
+    // Status line: spinner + text centred as one group. The width is
+    // measured with the animated trailing dots stripped so the group does
+    // not wander as they cycle; the dots grow into slack reserved on the
+    // right instead. With no progress row below, the line centres
+    // vertically in the footer.
+    auto statusLine =
+        progressVisible
+            ? area.removeFromTop(footer::statusLineHeight)
+            : area.withSizeKeepingCentre(area.getWidth(), footer::statusLineHeight);
+
+    {
+        const juce::Font statusFont{theme::fonts::status()};
+
+        const auto baseText = statusLabel.getText().trimCharactersAtEnd(".");
+
+        const int dotSlack = juce::roundToInt(
+            juce::GlyphArrangement::getStringWidth(statusFont, "..."));
+
+        const int textWidth = juce::jmin(
+            statusLine.getWidth() - footer::statusLineHeight - footer::statusTextGap
+                - dotSlack,
+            juce::roundToInt(
+                juce::GlyphArrangement::getStringWidth(statusFont, baseText)) + 1);
+
+        auto group = statusLine.withSizeKeepingCentre(
+            footer::statusLineHeight + footer::statusTextGap + textWidth,
+            statusLine.getHeight());
+
+        statusIndicator.setBounds(group.removeFromLeft(footer::statusLineHeight));
+        group.removeFromLeft(footer::statusTextGap);
+        statusLabel.setBounds(group.withWidth(textWidth + dotSlack));
+    }
+
+    if (!progressVisible)
+        return;
+
+    area.removeFromTop(footer::statusLineGap);
+
+    auto progressRow = area.removeFromTop(footer::progressRowHeight);
+
+    // Bar and readout sit next to each other and centre as one block. The
+    // readout's slot is quantised so the block does not shift every time
+    // the clock ticks over to a string of a slightly different width.
+    const juce::Font progressFont{theme::fonts::progress()};
+
+    const int labelWidth =
+        juce::roundToInt(juce::GlyphArrangement::getStringWidth(
+            progressFont, progressLabel.getText())) + 2;
+
+    const int labelSlot = ((labelWidth + 11) / 12) * 12;
+
+    const int barWidth =
+        juce::jmin(footer::progressBarWidth,
+                   progressRow.getWidth() - labelSlot - footer::progressLabelGap);
+
+    auto group = progressRow.withSizeKeepingCentre(
+        barWidth + footer::progressLabelGap + labelSlot, progressRow.getHeight());
+
+    progressBar.setBounds(group.removeFromLeft(barWidth));
+    group.removeFromLeft(footer::progressLabelGap);
+    progressLabel.setBounds(group);
 }
 
 void StemLabAudioProcessorEditor::layoutLanes()
@@ -2059,6 +2161,7 @@ void StemLabAudioProcessorEditor::syncLanes()
 
             lane->setChildInfo(item);
             lane->setChildState(item.hasChildren, isLaneExpanded(-1, item.id));
+            lane->setZoomStepHandler([this](int delta) { stepWaveformZoom(delta); });
             laneContent.addAndMakeVisible(*lane);
             childLanes.push_back(std::move(lane));
         }
@@ -2714,6 +2817,9 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
         progressLabel.setText(text, juce::dontSendNotification);
     }
+
+    // The status block centres on its text, so it follows every refresh.
+    layoutStatusArea();
 
     const auto jobPath = displayPath(processor.getJobRootDirectory());
 

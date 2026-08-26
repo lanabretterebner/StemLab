@@ -32,11 +32,16 @@ public:
         ("vocals", "drums", ...); a child lane uses its root's. */
     void setStemIdentity(const juce::String& stemName);
 
+    /** Steps the shared waveform zoom by whole detents; wheel events over
+        the well land here instead of scrolling the lane list. */
+    std::function<void(int)> onZoomStep;
+
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
     void mouseDrag(const juce::MouseEvent&) override;
     void mouseUp(const juce::MouseEvent&) override;
     void mouseDoubleClick(const juce::MouseEvent&) override;
+    void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
 private:
     /** One drawn column: the shape of the audio under it, per channel, and
@@ -85,6 +90,10 @@ private:
     double selectionAnchor = 0.0;
     double selectionHead = 0.0;
 
+    /** Wheel deltas gathered until they amount to a whole zoom detent, so
+        trackpads with fine deltas still step at a usable rate. */
+    float wheelAccumulator = 0.0f;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StemLaneWaveform)
 };
 
@@ -116,6 +125,10 @@ public:
     /** Drives the disclosure twisty: shown only when there is something to
         collapse, pointing down while those children are on screen. */
     void setChildState(bool hasChildren, bool expanded);
+
+    /** Forwards wheel-zoom from this lane's waveform well to the editor's
+        shared zoom stepper. */
+    void setZoomStepHandler(std::function<void(int)> handler);
 
     bool isChildLane() const noexcept { return childId.isNotEmpty(); }
     juce::String getChildId() const { return childId; }
@@ -229,6 +242,10 @@ private:
     /** Draws and lays out the panel in its own (design-size) coordinates. */
     void paintPanel(juce::Graphics&);
     void layoutPanel();
+
+    /** Centres the footer status line and progress row around their current
+        text, so it runs on every status refresh, not just on resize. */
+    void layoutStatusArea();
 
     /** A menu window is not a child of the editor, so it would otherwise
         draw with JUCE's default look. Every popup starts here. */
@@ -375,6 +392,7 @@ private:
     juce::Rectangle<int> sourceStripBounds;
     juce::Rectangle<int> sourceDividerBounds;
     juce::Rectangle<int> folderIconBounds;
+    juce::Rectangle<int> statusAreaBounds;
 
     std::unique_ptr<juce::FileChooser> fileChooser;
     std::unique_ptr<juce::FileChooser> audioFileChooser;
