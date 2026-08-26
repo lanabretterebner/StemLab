@@ -12,9 +12,9 @@
 
 /**
  * One lane's waveform well: rounded ground-coloured well, 2px rounded bars
- * from the real audio peaks (played portion in accent, unplayed neutral),
- * and the shared playhead. Clicks seek the shared transport; dragging
- * exports the stem file to any DAW or file manager.
+ * from the real audio peaks in the selected palette's full colour, and the
+ * shared playhead. Clicks seek the shared transport; dragging exports the
+ * stem file to any DAW or file manager.
  */
 class StemLaneWaveform final : public juce::Component
 {

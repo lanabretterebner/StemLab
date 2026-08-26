@@ -437,12 +437,13 @@ void StemLaneWaveform::paint(juce::Graphics& g)
         const auto centreY = top + channelHeight * 0.5f;
         const auto halfHeight = channelHeight * 0.5f;
 
+        // The whole waveform draws in its full palette colour: position is
+        // the playhead's job, and dimming everything ahead of it greyed
+        // most of the picture out for most of every playback.
         for (std::size_t i = 0; i < columns.size(); ++i)
         {
             const auto& column = columns[i];
             const auto x = inner.getX() + static_cast<float>(i);
-
-            const bool played = playNormalised >= 0.0 && x < playheadX;
 
             const auto lowest = juce::jlimit(-1.0f, 1.0f, column.minimum[channel]);
             const auto highest = juce::jlimit(-1.0f, 1.0f, column.maximum[channel]);
@@ -494,8 +495,7 @@ void StemLaneWaveform::paint(juce::Graphics& g)
 
                     const auto half = halfExtent * bar.share;
 
-                    g.setColour(played ? bar.colour
-                                       : theme::waveform::dimmedUnplayed(bar.colour));
+                    g.setColour(bar.colour);
                     g.fillRect(x, centre - half, 1.0f, half * 2.0f);
                 }
 
@@ -507,18 +507,10 @@ void StemLaneWaveform::paint(juce::Graphics& g)
             if (mutedAppearance)
                 colour = theme::colours::waveMuted();
             else if (palette == theme::waveform::paletteRgb)
-            {
                 colour = theme::waveform::rgbColour(column.bands.low, column.bands.mid,
                                                     column.bands.high);
-
-                if (!played)
-                    colour = theme::waveform::dimmedUnplayed(colour);
-            }
-            else if (played)
-                colour = theme::waveform::playedColour(palette, stemIdentity, column.brightness);
             else
-                colour =
-                    theme::waveform::unplayedColour(palette, stemIdentity, column.brightness);
+                colour = theme::waveform::playedColour(palette, stemIdentity, column.brightness);
 
             g.setColour(colour);
             g.fillRect(x, topY, 1.0f, bottomY - topY);
@@ -2645,28 +2637,37 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
         lastStatusChangeMs = nowMs;
     }
 
-    const bool showSummary =
-        jobDone && !engineRunning && nowMs - lastStatusChangeMs > 5000;
+    /*
+     * "Busy" is wider than the engine: source analysis (Beat This!
+     * downloads and inference), MIDI conversion, captures, and cache
+     * maintenance all narrate on this line too. The summary must not
+     * shoulder past a quiet stretch of any of them, and the spinner must
+     * not claim idle - or worse, done - while one is still working.
+     */
+    const bool busy = processor.isBackgroundWorkRunning();
+
+    const bool showSummary = jobDone && !busy && nowMs - lastStatusChangeMs > 5000;
 
     auto statusText = showSummary ? jobSummaryLine() : rawStatus;
 
-    // Animated dots make long silent model phases (imports, first-run
-    // downloads, big CPU chunks) visibly alive instead of frozen.
-    if (engineRunning)
+    // Animated dots make long silent phases (imports, first-run downloads,
+    // big CPU chunks, model inference) visibly alive instead of frozen.
+    // Wall-clock phase: the engine's elapsed clock stands still for the
+    // non-engine work this also covers.
+    if (busy)
     {
         statusText = statusText.trimCharactersAtEnd(".");
 
-        const auto phase =
-            1 + (static_cast<int>(processor.getEngineElapsedSeconds() * 2.0) % 3);
+        const auto phase = 1 + static_cast<int>((nowMs / 500u) % 3u);
 
         statusText += juce::String::repeatedString(".", phase);
     }
 
     statusLabel.setText(statusText, juce::dontSendNotification);
 
-    statusIndicator.setState(engineRunning ? widgets::StatusIndicator::State::running
-                             : jobDone     ? widgets::StatusIndicator::State::done
-                                           : widgets::StatusIndicator::State::idle);
+    statusIndicator.setState(busy      ? widgets::StatusIndicator::State::running
+                             : jobDone ? widgets::StatusIndicator::State::done
+                                       : widgets::StatusIndicator::State::idle);
 
     // Same for the accent glows painted behind the primary actions.
     if (separateControl.isSeparateActionEnabled() != lastSeparateGlow)

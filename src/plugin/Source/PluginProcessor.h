@@ -342,6 +342,23 @@ public:
 
     bool isCapturing() const noexcept { return capturing.load(); }
 
+    bool isSourceAnalysisRunning() const noexcept { return sourceAnalysisRunning.load(); }
+
+    /**
+     * Any background work the status line is narrating: a separation or
+     * adaptive job, source analysis (Beat This! downloads and inference,
+     * cache maintenance), MIDI conversion, an active capture, or an
+     * awaited Live clip. The editor's activity indicator and status
+     * animation follow this rather than the engine alone, so none of
+     * these runs behind an "idle" spinner.
+     */
+    bool isBackgroundWorkRunning() const noexcept
+    {
+        return isEngineRunning() || isSourceAnalysisRunning() || isMidiConversionRunning() ||
+               isCapturing() || isAwaitingAbletonSourceClip() ||
+               abletonBridgeWaitStartMs.load() > 0.0;
+    }
+
     double getCapturedSeconds() const noexcept;
     juce::File getCaptureFile() const;
     double getCaptureStartPpq() const noexcept { return captureStartPpq.load(); }

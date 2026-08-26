@@ -99,7 +99,6 @@ namespace stemlab::theme
 
         // Stem lanes.
         inline juce::Colour laneWell() { return ground(); }
-        inline juce::Colour waveUnplayed() { return neutral700(); }
         inline juce::Colour wavePlayed() { return accent(); }
         inline juce::Colour waveMuted() { return neutral800(); }
         inline juce::Colour playhead() { return accent(); }
@@ -169,9 +168,9 @@ namespace stemlab::theme
 
             The redesign shipped with a single accent waveform, which lost
             the one thing colour was carrying: which lane you are looking at
-            in a tall adaptive tree. Index 0 is that accent look, unchanged;
-            the rest colour the whole lane, dimming the unplayed portion of
-            their own hue instead of falling back to neutral.
+            in a tall adaptive tree. Index 0 is that accent look; every
+            palette colours the whole lane at full strength - playback
+            position is the playhead's job, not a brightness split.
 
             Beyond the accent and the per-stem identity colours, every
             palette is driven by the audio itself: Spectrum sweeps a hue
@@ -236,22 +235,6 @@ namespace stemlab::theme
             default:
                 return colours::wavePlayed();
             }
-        }
-
-        /** The one dimming rule every palette shares for its unplayed
-            portion, so RGB and 3-Band bars fade exactly like the rest. */
-        inline juce::Colour dimmedUnplayed(juce::Colour played)
-        {
-            return played.withMultipliedSaturation(0.55f).withMultipliedBrightness(0.45f);
-        }
-
-        inline juce::Colour unplayedColour(int index, const juce::String& stemName,
-                                           float brightness)
-        {
-            if (juce::jlimit(0, paletteCount - 1, index) == 0)
-                return colours::waveUnplayed();
-
-            return dimmedUnplayed(playedColour(index, stemName, brightness));
         }
 
         /*
