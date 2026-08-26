@@ -214,12 +214,30 @@ class TestCancelWatchdog:
         job_dir.mkdir()
 
         armed = job_dir / "armed.txt"
+        # What the job saw of its own parent, so that a survival is a report
+        # rather than a bare "assert not True". Which half is wrong - the
+        # parent it identified, or its ability to watch that parent - is the
+        # whole question, and neither is visible from the outside.
+        job_diagnosis = job_dir / "job_diagnosis.json"
+        launcher_diagnosis = job_dir / "launcher_diagnosis.json"
 
         job_script = tmp_path / "job_script.py"
         job_script.write_text(
-            "import time\n"
+            "import json, os, sys, time\n"
             "from pathlib import Path\n"
             "from stemlab.runtime import start_cancel_watchdog\n"
+            "seen = {'platform': sys.platform, 'pid': os.getpid(),\n"
+            "        'getppid': os.getppid()}\n"
+            "if sys.platform == 'win32':\n"
+            "    import ctypes\n"
+            "    synchronize = 0x00100000\n"
+            "    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)\n"
+            "    kernel32.OpenProcess.restype = ctypes.c_void_p\n"
+            "    handle = kernel32.OpenProcess(synchronize, False,\n"
+            "                                  os.getppid())\n"
+            "    seen['open_process'] = handle or 0\n"
+            "    seen['last_error'] = ctypes.get_last_error()\n"
+            f"Path({str(job_diagnosis)!r}).write_text(json.dumps(seen))\n"
             f"start_cancel_watchdog({str(job_dir)!r})\n"
             f"Path({str(armed)!r}).write_text('armed', encoding='utf-8')\n"
             "time.sleep(30)\n",
@@ -228,7 +246,7 @@ class TestCancelWatchdog:
 
         launcher_script = tmp_path / "launcher_script.py"
         launcher_script.write_text(
-            "import subprocess, sys, time\n"
+            "import json, os, subprocess, sys, time\n"
             "from pathlib import Path\n"
             # The job must not inherit this process's stdout: the pipe would
             # stay open for as long as the job lives, and the caller reading
@@ -237,6 +255,9 @@ class TestCancelWatchdog:
             "                         stdout=subprocess.DEVNULL,\n"
             "                         stderr=subprocess.DEVNULL)\n"
             "print(child.pid, flush=True)\n"
+            f"Path({str(launcher_diagnosis)!r}).write_text(\n"
+            "    json.dumps({'launcher_pid': os.getpid(),\n"
+            "                'job_pid': child.pid}))\n"
             f"armed = Path({str(armed)!r})\n"
             "deadline = time.monotonic() + 30.0\n"
             "while not armed.exists() and time.monotonic() < deadline:\n"
@@ -254,13 +275,29 @@ class TestCancelWatchdog:
         def job_alive() -> bool:
             return pid_alive(job_pid)
 
+        def diagnosis() -> str:
+            parts = []
+            for label, path in (
+                ("launcher", launcher_diagnosis),
+                ("job", job_diagnosis),
+            ):
+                try:
+                    parts.append(f"{label}={path.read_text()}")
+                except OSError:
+                    parts.append(f"{label}=<not written>")
+            return "; ".join(parts)
+
         try:
             assert armed.exists(), "the job never armed its watchdog"
 
             deadline = time.monotonic() + 15.0
             while job_alive() and time.monotonic() < deadline:
                 time.sleep(0.1)
-            assert not job_alive()
+
+            assert not job_alive(), (
+                "the orphaned job outlived its launcher: the watchdog never "
+                f"saw the parent die. {diagnosis()}"
+            )
         finally:
             if job_alive():
                 os.kill(job_pid, KILL_SIGNAL)
