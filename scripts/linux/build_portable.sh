@@ -67,7 +67,7 @@ echo "Building StemLab $VERSION for Linux (torch flavor: $TORCH_FLAVOR)..."
 BUILD_ARGS=()
 [[ -n "$JUCE_SOURCE" ]] && BUILD_ARGS+=(--juce-source "$JUCE_SOURCE")
 
-"$REPO_ROOT/scripts/build_plugin.sh" ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}
+"$REPO_ROOT/scripts/linux/build_plugin.sh" ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}
 
 ARTEFACTS="$REPO_ROOT/src/plugin/build/StemLabPlugin_artefacts/Release"
 
@@ -150,7 +150,7 @@ StemLab $VERSION for Linux (self-contained, torch flavor: $RESOLVED_FLAVOR)
 GPU support baked into this bundle: $RESOLVED_FLAVOR
   cuda = NVIDIA, rocm = AMD (RDNA2+), xpu = Intel Arc/Xe, cpu = none.
 If it does not match your GPU, separation still works on CPU - rebuild or
-re-run scripts/install_backend.sh with the right flavor for full speed.
+re-run scripts/linux/install_backend.sh with the right flavor for full speed.
 
 1. Run ./install.sh once. It installs the VST3 to ~/.vst3 and points plugin
    discovery at the bundled Engine.

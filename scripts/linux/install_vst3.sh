@@ -3,9 +3,9 @@
 # Install the freshly built StemLab VST3 bundle for the current user.
 #
 # Usage:
-#   ./scripts/install_vst3.sh
-#   ./scripts/install_vst3.sh --build-type Debug
-#   ./scripts/install_vst3.sh --prefix /usr/local/lib/vst3   # system-wide
+#   ./scripts/linux/install_vst3.sh
+#   ./scripts/linux/install_vst3.sh --build-type Debug
+#   ./scripts/linux/install_vst3.sh --prefix /usr/local/lib/vst3   # system-wide
 
 set -euo pipefail
 
@@ -37,7 +37,7 @@ if [[ ! -d "$SOURCE" ]]; then
     echo "Build StemLab first. Could not find the VST3 bundle at:" >&2
     echo "  $PLUGIN_ROOT/build/StemLabPlugin_artefacts/$BUILD_TYPE/VST3/StemLab.vst3" >&2
     echo >&2
-    echo "Run: $(dirname "$PLUGIN_ROOT")/scripts/build_plugin.sh" >&2
+    echo "Run: $(dirname "$PLUGIN_ROOT")/scripts/linux/build_plugin.sh" >&2
     exit 1
 fi
 
