@@ -186,7 +186,7 @@ configure. Add StemLab to any track and the buttons become:
 Items whose take is trimmed or rate-shifted are re-created with the same
 trim and rate, so the inserted stems play exactly in sync with the item you
 selected. In-project and section sources (glued/reversed items, project-in-
-project) need a render/glue first - the status line says so.
+project) need a render/glue first - the readout in the header says so.
 
 ### What Insert Stems does to the project
 

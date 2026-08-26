@@ -385,15 +385,21 @@ namespace stemlab::theme
             /*
                 Which stems the job carries forward is a per-lane checkbox,
                 which is fine for one change and tedious for six. The two
-                pills act on every lane at once and the readout beside them
-                says where that left things:
+                pills act on every lane at once, and the readout to their
+                left answers for whatever the user changed last - model,
+                palette, transport, a rejected click - before settling back
+                on where the selection stands:
 
-                    [Select all] [Deselect all]  5 of 6 selected
+                    5 of 6 selected  [Select all] [Deselect all]
+
+                The bottom status line is the other half of that split: it
+                reports only the work the plugin is doing.
             */
             constexpr int selectButtonHeight = 22;
             constexpr int selectButtonPadX = 12;
             constexpr int selectButtonGap = 6;
             constexpr int selectCountGap = 10;
+            constexpr int userStatusHeight = 16;
 
             /*
                 Waveform zoom, sitting between that group and the model:
