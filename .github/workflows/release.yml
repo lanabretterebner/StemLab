@@ -1,0 +1,396 @@
+name: Release
+
+# Releases were built by hand on a developer machine and uploaded by hand.
+# That makes a release depend on whatever happened to be installed on that
+# machine - which torch flavor the venv held, which model files were already
+# cached - and none of it is recorded anywhere. This builds the same
+# artifacts the release scripts build, from a clean checkout, on every tag.
+#
+# Publish by pushing a tag that matches pyproject.toml:
+#
+#   git tag v0.9.9 && git push origin v0.9.9
+#
+# Or run it from the Actions tab to rehearse: with "publish" left off it
+# builds every asset and uploads them as workflow artifacts without creating
+# a release. That is how to check a change to the packaging scripts.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Create the GitHub release (off: build the assets only)"
+        type: boolean
+        default: false
+
+# A release must never be cancelled halfway by a later push.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    name: Metadata
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      publish: ${{ steps.resolve.outputs.publish }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # pyproject.toml is the single source of the version: the portable
+      # builders and the Inno Setup output name both read it. A tag that
+      # disagreed would produce a v1.2.3 release full of 0.9.9 files, so
+      # disagreement fails here rather than getting papered over.
+      - name: Resolve and check the version
+        id: resolve
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)"
+          if [ -z "$version" ]; then
+            echo "Could not read version from pyproject.toml" >&2
+            exit 1
+          fi
+
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            if [ "${{ github.ref_name }}" != "v$version" ]; then
+              echo "Tag ${{ github.ref_name }} does not match pyproject.toml version $version." >&2
+              echo "Expected the tag to be v$version." >&2
+              exit 1
+            fi
+            publish=true
+          else
+            publish="${{ inputs.publish }}"
+          fi
+
+          {
+            echo "version=$version"
+            echo "tag=v$version"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "StemLab $version (publish: $publish)"
+
+  python:
+    name: Python distributions
+    runs-on: ubuntu-latest
+    needs: metadata
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Build the wheel and sdist
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-dist
+          path: dist/*
+          if-no-files-found: error
+
+  linux:
+    name: Linux
+    runs-on: ubuntu-latest
+    needs: metadata
+    # The Release plugin build is link-time optimised and the Engine install
+    # pulls torch and audio-separator, so this is long by nature.
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config \
+            libasound2-dev libjack-jackd2-dev \
+            libx11-dev libxext-dev libxi-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxcomposite-dev libxrender-dev \
+            libfreetype-dev libfontconfig1-dev libgl1-mesa-dev libpulse-dev
+
+      # scripts/build_plugin.sh downloads JUCE into here on a cold run.
+      - name: Cache JUCE
+        uses: actions/cache@v4
+        with:
+          path: .portable-cache
+          key: juce-9.0.0-${{ runner.os }}
+
+      # cpu, not auto: --torch-flavor auto resolves against the machine doing
+      # the building, and this machine has no GPU. Naming the bundle "cpu" is
+      # then honest about what is inside it, and a GPU user re-runs
+      # scripts/install_backend.sh with their own flavor.
+      - name: Build the self-contained bundle
+        run: ./scripts/build_portable.sh --torch-flavor cpu
+
+      # The same binaries without the 1.8GB Engine, for anyone who already
+      # has a backend installed and only wants the plugin.
+      - name: Package the plugin on its own
+        run: |
+          version="${{ needs.metadata.outputs.version }}"
+          artefacts="plugin/build/StemLabPlugin_artefacts/Release"
+          name="StemLab-$version-Linux-plugin-only"
+
+          # One directory inside the archive, so extracting it does not
+          # scatter a .vst3 bundle across whatever folder the user was in.
+          staging="$(mktemp -d)/$name"
+          mkdir -p "$staging"
+
+          cp -r "$artefacts/VST3/StemLab.vst3" "$staging/"
+          cp "$artefacts/Standalone/StemLab" "$staging/"
+          cp LICENSE "$staging/"
+
+          cat > "$staging/README.txt" <<EOF
+          StemLab $version - VST3 and Standalone for Linux, without the Engine.
+
+          This archive holds the binaries only. StemLab cannot separate
+          anything until a Python Engine is installed and discoverable - if
+          you do not already have one, download the self-contained bundle
+          instead of this archive.
+
+            StemLab.vst3    copy to ~/.vst3/ and rescan plug-ins in your DAW
+            StemLab         the standalone application
+
+          To build an Engine from a checkout of the repository:
+
+            ./scripts/install_backend.sh          # auto-detect GPU
+            ./scripts/install_backend.sh --cpu    # or --cuda, --rocm, --xpu
+          EOF
+
+          # Absolute output path: -C moves tar into the staging directory, so
+          # a relative -f would land the archive in there with the payload.
+          mkdir -p dist
+          tar -C "$(dirname "$staging")" -czf "$PWD/dist/$name.tar.gz" "$name"
+
+      - name: List what was produced
+        run: ls -lh dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          # Already gzipped. Re-compressing costs minutes and saves nothing.
+          compression-level: 0
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    needs: metadata
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The payload, the installer's compressed copy of it and the model cache
+      # together need more room than the image leaves free. The Android SDK is
+      # the largest thing on the disk that this build cannot use.
+      - name: Free disk space
+        shell: pwsh
+        run: |
+          Get-PSDrive C | Format-Table Name, Used, Free
+          Remove-Item -Recurse -Force "C:\Android" -ErrorAction SilentlyContinue
+          Get-PSDrive C | Format-Table Name, Used, Free
+
+      # ffmpeg is copied into the Engine for MP3/OGG/AIFF input; Inno Setup
+      # compiles the installer. Neither ships with the runner image. They land
+      # on PATH for later steps, which start from the updated machine PATH.
+      - name: Install packaging tools
+        shell: pwsh
+        run: |
+          choco install -y --no-progress ffmpeg innosetup
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # scripts/setup_dev.ps1 creates the venv with "py -3.11", which reads the
+      # registry and so cannot see the interpreter setup-python unpacked.
+      # Creating the venv here first makes the script adopt it instead.
+      - name: Create the development environment
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # This installs the dependency set the released Engine is made of: the
+      # portable builder assembles the Engine by copying this venv's
+      # site-packages. It runs the Python test suite as its last step.
+      - name: Install dependencies and run the tests
+        shell: pwsh
+        run: .\scripts\setup_dev.ps1
+
+      # -SkipTests because the step above already ran them against this exact
+      # tree. The script builds the plugin, assembles the portable payload
+      # (Engine, models, ffmpeg, Ableton bridge) and compiles the installer.
+      - name: Build the portable payload and the installer
+        shell: pwsh
+        run: .\build_installer_windows.ps1 -SkipTests
+
+      - name: Package the plugin on its own
+        shell: pwsh
+        run: |
+          $version = "${{ needs.metadata.outputs.version }}"
+          $artefacts = "plugin\build\StemLabPlugin_artefacts\Release"
+          $name = "StemLab-$version-Windows-plugin-only"
+
+          # One folder inside the archive, so extracting it does not scatter a
+          # .vst3 bundle across whatever folder the user was in.
+          $staging = Join-Path $env:RUNNER_TEMP "plugin-only"
+          $payload = Join-Path $staging $name
+
+          Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $payload -Force | Out-Null
+
+          Copy-Item -Recurse "$artefacts\VST3\StemLab.vst3" $payload
+          Copy-Item "$artefacts\Standalone\StemLab.exe" $payload
+          Copy-Item "LICENSE" $payload
+
+          @(
+            "StemLab $version - VST3 and Standalone for Windows, without the Engine.",
+            "",
+            "This archive holds the binaries only. StemLab cannot separate",
+            "anything until a Python Engine is installed and discoverable - if",
+            "you do not already have one, run the installer instead of using",
+            "this archive.",
+            "",
+            "  StemLab.vst3   copy to C:\Program Files\Common Files\VST3\",
+            "  StemLab.exe    the standalone application"
+          ) | Set-Content -Path (Join-Path $payload "README.txt") -Encoding UTF8
+
+          Compress-Archive -Path $payload `
+            -DestinationPath "dist\$name.zip" `
+            -Force
+
+      - name: List what was produced
+        shell: pwsh
+        run: Get-ChildItem dist | Format-Table Name, Length
+
+      # The installer, not the portable folder: the installer already carries
+      # the whole payload, so uploading both would double a multi-gigabyte
+      # transfer to say the same thing twice. DiskSpanning in StemLab.iss
+      # splits the output, so the .bin slices are part of the release - the
+      # setup .exe will not run without them.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/StemLab-Setup-*.exe
+            dist/StemLab-Setup-*.bin
+            dist/StemLab-*-Windows-plugin-only.zip
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    name: Publish
+    runs-on: ubuntu-latest
+    needs: [metadata, python, linux, windows]
+    if: needs.metadata.outputs.publish == 'true'
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Checksum every asset
+        working-directory: assets
+        run: |
+          # Written outside the directory first: a redirect straight into it
+          # races the find, which would then hash a half-written SHA256SUMS.
+          sums="$RUNNER_TEMP/SHA256SUMS"
+          find . -maxdepth 1 -type f -printf '%P\0' \
+            | sort -z \
+            | xargs -0 sha256sum > "$sums"
+          mv "$sums" SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Write the release notes
+        run: |
+          cat > release-notes.md <<'NOTES'
+          ## Which download
+
+          | File | What it is |
+          | --- | --- |
+          | `StemLab-Setup-*.exe` **and** `StemLab-Setup-*.bin` | **Windows installer.** Download every part into the same folder before running the `.exe` - it will not start without its `.bin` slices. Installs the app, the VST3 and the Engine; no Python needed. |
+          | `StemLab-*-Linux-cpu.tar.gz` | **Linux, self-contained.** Extract and run `./install.sh` once. Includes the Engine; no Python needed. |
+          | `StemLab-*-plugin-only.*` | The VST3 and Standalone binaries alone, for anyone who already has an Engine installed. |
+          | `stemlab_open-*.whl`, `stemlab_open-*.tar.gz` | The Python package on its own, for command-line use. |
+
+          `SHA256SUMS` covers every file above.
+
+          ## About the bundled runtime
+
+          The Engine in these bundles is built against **CPU torch**. The build
+          machines have no GPU, and a bundle named for hardware it was never
+          built against would be a lie. Separation works as shipped; for NVIDIA,
+          AMD or Intel offload, re-run the backend installer from a checkout
+          with your own flavor:
+
+          ```
+          ./scripts/install_backend.sh --cuda    # or --rocm, --xpu
+          ```
+
+          Model weights download on first use on Linux; the Windows installer
+          carries them.
+          NOTES
+
+          # GitHub's own generated notes - the commit and contributor list -
+          # appended below the hand-written part. This needs the tag to exist
+          # on the remote, which it does for a tag push but need not for a
+          # manual run, so a failure here costs the changelog and nothing else.
+          if gh api "repos/${{ github.repository }}/releases/generate-notes" \
+               -f tag_name="${{ needs.metadata.outputs.tag }}" \
+               --jq .body > generated-notes.md 2>/dev/null; then
+            printf '\n---\n\n' >> release-notes.md
+            cat generated-notes.md >> release-notes.md
+          else
+            echo "Skipping the generated changelog: the tag is not on the remote yet."
+          fi
+
+          cat release-notes.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Created as a draft and flipped at the end, so a failed upload leaves an
+      # unpublished draft to delete rather than a public release missing half
+      # its files.
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ needs.metadata.outputs.tag }}" \
+            --title "StemLab ${{ needs.metadata.outputs.version }}" \
+            --target "${{ github.sha }}" \
+            --notes-file release-notes.md \
+            --draft
+
+      - name: Upload the assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ needs.metadata.outputs.tag }}" \
+            assets/* --clobber
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "${{ needs.metadata.outputs.tag }}" \
+            --draft=false --latest
