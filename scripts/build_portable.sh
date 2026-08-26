@@ -156,9 +156,14 @@ re-run scripts/install_backend.sh with the right flavor for full speed.
    discovery at the bundled Engine.
 2. Rescan plug-ins in your DAW, or launch ./StemLab for the standalone app.
 
-Everything StemLab needs is in this folder - no Python, venv, or model
-runtime to install. Keep the folder where it is (or re-run ./install.sh
-after moving it).
+Everything StemLab needs to run is in this folder - no Python, venv, or
+model runtime to install. Keep the folder where it is (or re-run
+./install.sh after moving it).
+
+Model weights are not included. Each downloads the first time you use the
+model that needs it, is checked against a recorded digest before it is
+trusted, and is named in the status area while it downloads. The first
+separation is therefore slower than the ones after it.
 
 ffmpeg from your distribution is used for MP3/OGG/AIFF input:
   sudo apt install ffmpeg    (or your distribution's equivalent)

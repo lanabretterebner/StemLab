@@ -56,8 +56,10 @@ accompany any redistribution of the font files.
 ## Beat This!
 
 Optional beat/downbeat analysis uses Beat This! 1.1.0 and the upstream
-`small0` and `final0` checkpoints. Beat This! is MIT licensed. Release staging
-validates the exact files listed in `packaging/models.json`.
+`small0` and `final0` checkpoints. Beat This! is MIT licensed. The checkpoints
+are not redistributed: each is downloaded from its upstream host the first
+time it is used, and is rejected unless it matches the length and SHA-256
+recorded in `stemlab/beat_tracking.py`.
 
 ## Python / ML runtime
 

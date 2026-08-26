@@ -160,8 +160,10 @@ Use `--engine roformer`, `--engine demucs`, or `--engine hybrid`. Add
 `--no-refine` to keep the raw model output.
 
 Beat This! is off by default in the app and never blocks separation when
-disabled. Fast uses `small0`; Accurate uses `final0`. Release builds stage both
-checkpoints locally and validate their sizes and SHA-256 hashes.
+disabled. Fast uses `small0`; Accurate uses `final0`. Both are downloaded the
+first time they are used and rejected unless they match the length and
+SHA-256 recorded in `stemlab/beat_tracking.py`; the app names the download in
+its status area while it runs.
 
 ## Build A Release
 
@@ -192,8 +194,14 @@ To build a release locally instead, on Windows:
 ```
 
 Outputs are `dist\StemLab-Portable-0.9.9` and
-`dist\StemLab-Setup-0.9.9.exe` (plus installer data slices). Model downloads
-occur only while staging a release; the installed runtime uses packaged models.
+`dist\StemLab-Setup-0.9.9.exe` (plus installer data slices).
+
+Neither bundle carries model weights. Every model downloads the first time it
+is used and is verified against a recorded digest before it is trusted, and
+the plugin names the download in its status area. Staging weights into the
+installer used to make a release depend on whatever the build machine had
+cached, which is how two dead download URLs went unnoticed until a cold
+build tried them.
 
 On Linux, `./scripts/build_portable.sh --torch-flavor cpu` produces
 `dist/StemLab-0.9.9-Linux-cpu.tar.gz`.
