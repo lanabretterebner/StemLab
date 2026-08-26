@@ -11,9 +11,10 @@
 #
 # Given a flavor (cpu, cuda, rocm, xpu) it downloads that bundle's pieces
 # from the release it shipped with. Either way it then joins split .partNN
-# files, verifies the archive against its .sha256, extracts it, runs the
-# bundle's own install.sh, and deletes the archive and parts. The extracted
-# folder stays - the installed plugin runs the Engine from it.
+# files, verifies the archive against its .sha256, installs the app and the
+# Engine into /opt/StemLab (override with STEMLAB_INSTALL_DIR), registers
+# the VST3 for the current user, and removes every downloaded file - the
+# archive, its parts, the checksum, and this script itself.
 
 set -euo pipefail
 shopt -s nullglob
@@ -156,6 +157,9 @@ fi
 
 # ----------------------------------------------------- extract and install
 
+INSTALL_DIR="${STEMLAB_INSTALL_DIR:-/opt/StemLab}"
+parent_dir="$(dirname "$INSTALL_DIR")"
+
 # The tarball holds exactly one folder, named like itself.
 folder="${bundle%.tar.gz}"
 
@@ -164,16 +168,46 @@ tar -xzf "$bundle"
 
 [[ -f "$folder/install.sh" ]] || die "The archive did not contain $folder/install.sh - it is not a StemLab Linux bundle."
 
+# Placing the payload under /opt usually needs root, but everything
+# per-user - the VST3 copy, the engine pointer - must NOT run as root, so
+# only the file moves go through sudo and install.sh runs as the invoking
+# user afterwards.
+priv=()
+if [[ ! -d "$parent_dir" || ! -w "$parent_dir" || ( -e "$INSTALL_DIR" && ! -w "$INSTALL_DIR" ) ]]; then
+    command -v sudo >/dev/null 2>&1 || die "Installing to $INSTALL_DIR needs root.
+Re-run as root, or point STEMLAB_INSTALL_DIR at a folder you can write."
+    echo "Placing StemLab in $INSTALL_DIR (sudo may ask for your password)..."
+    priv=(sudo)
+fi
+
+if [[ -e "$INSTALL_DIR" ]]; then
+    # Only reached with the verified replacement already extracted.
+    echo "Replacing the previous install at $INSTALL_DIR..."
+    "${priv[@]}" rm -rf "$INSTALL_DIR"
+fi
+"${priv[@]}" mkdir -p "$parent_dir"
+"${priv[@]}" mv "$folder" "$INSTALL_DIR"
+
 echo "Installing..."
-bash "$folder/install.sh"
+bash "$INSTALL_DIR/install.sh"
 
 # ----------------------------------------------------------------- tidy up
 
-rm -f "$bundle"
+# Everything the setup needed is spent now: the archive, its parts, the
+# checksum, the reassembly note - and this script, which shipped with the
+# release it just installed. A clean folder is the point of a one-download
+# install. The source-checkout copy (unbaked placeholders) is the one copy
+# that is not a download, so it stays.
+rm -f "$bundle" "$bundle.sha256" "$bundle.README.txt"
 if [[ ${#parts[@]} -gt 0 ]]; then
     rm -f "${parts[@]}"
 fi
+if remote_available; then
+    rm -f "${BASH_SOURCE[0]##*/}"
+fi
 
 echo
-echo "Removed $bundle and its parts. Keep the $folder folder: the plugin"
-echo "runs the Engine from it."
+echo "StemLab is installed in $INSTALL_DIR."
+echo "  Standalone app: $INSTALL_DIR/StemLab"
+echo "  VST3:           already registered for your user - rescan in your DAW"
+echo "Removed the downloaded files, this script included."
