@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 
+#include <cmath>
 #include <optional>
 
 /*
@@ -172,17 +173,27 @@ namespace stemlab::theme
             the rest colour the whole lane, dimming the unplayed portion of
             their own hue instead of falling back to neutral.
 
+            Beyond the accent and the per-stem identity colours, every
+            palette is driven by the audio itself: Spectrum sweeps a hue
+            from the spectral centroid, and RGB / 3-Band paint the DJ-
+            deck-style low/mid/high balance. The solid single-colour fills
+            that used to sit here said nothing a lane name did not.
+
             The index persists in plugin state, so the order of these must
             stay stable.
         */
-        constexpr int paletteCount = 7;
+        constexpr int paletteCount = 5;
+
+        // The two palettes the painter has to treat specially: RGB blends
+        // one colour per bar from the band balance, 3-Band nests one bar
+        // per band.
+        constexpr int paletteRgb = 3;
+        constexpr int paletteThreeBand = 4;
 
         inline juce::String paletteName(int index)
         {
             static const char* const names[paletteCount] = {
-                "Nocturne Accent", "Stem Colours", "Spectrum",
-                "Solid Blue",      "Solid Green",  "Solid Amber",
-                "Solid Magenta"};
+                "Nocturne Accent", "Stem Colours", "Spectrum", "RGB", "3-Band"};
 
             return names[juce::jlimit(0, paletteCount - 1, index)];
         }
@@ -221,19 +232,17 @@ namespace stemlab::theme
                 return juce::Colour::fromHSV(
                     0.72f - 0.62f * juce::jlimit(0.0f, 1.0f, brightness), 0.55f, 0.98f, 1.0f);
 
-            case 3:
-                return juce::Colour(0xff4ea8ff);
-            case 4:
-                return juce::Colour(0xff46e797);
-            case 5:
-                return juce::Colour(0xffffb454);
-            case 6:
-                return juce::Colour(0xffef6bb4);
-
             case 0:
             default:
                 return colours::wavePlayed();
             }
+        }
+
+        /** The one dimming rule every palette shares for its unplayed
+            portion, so RGB and 3-Band bars fade exactly like the rest. */
+        inline juce::Colour dimmedUnplayed(juce::Colour played)
+        {
+            return played.withMultipliedSaturation(0.55f).withMultipliedBrightness(0.45f);
         }
 
         inline juce::Colour unplayedColour(int index, const juce::String& stemName,
@@ -242,10 +251,29 @@ namespace stemlab::theme
             if (juce::jlimit(0, paletteCount - 1, index) == 0)
                 return colours::waveUnplayed();
 
-            return playedColour(index, stemName, brightness)
-                .withMultipliedSaturation(0.55f)
-                .withMultipliedBrightness(0.45f);
+            return dimmedUnplayed(playedColour(index, stemName, brightness));
         }
+
+        /*
+            rekordbox-style RGB: the low band drives blue, the mid green,
+            the high red, so a kick reads blue, a vocal reads green into
+            yellow, and a full mix washes toward white. The gamma lifts the
+            quieter bands - band shares of a real mix rarely pass 0.5, and
+            linearly that would leave every bar a saturated primary.
+        */
+        inline juce::Colour rgbColour(float low, float mid, float high)
+        {
+            const auto lift = [](float share)
+            { return std::pow(juce::jlimit(0.0f, 1.0f, share), 0.6f); };
+
+            return juce::Colour::fromFloatRGBA(lift(high), lift(mid), lift(low), 1.0f);
+        }
+
+        // 3-Band's fixed band colours, rekordbox-style: blue lows, amber
+        // mids, near-white highs.
+        inline juce::Colour bandLowColour() { return juce::Colour(0xff4472ff); }
+        inline juce::Colour bandMidColour() { return juce::Colour(0xffffb454); }
+        inline juce::Colour bandHighColour() { return juce::Colour(0xfff0f4ff); }
     }
 
     namespace fonts

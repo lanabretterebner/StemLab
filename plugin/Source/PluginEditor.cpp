@@ -3,6 +3,8 @@
 #include "StemLabTheme.h"
 #include "BinaryData.h"
 
+#include <algorithm>
+
 #if defined(JucePlugin_Build_Standalone) && JucePlugin_Build_Standalone
 #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
 #endif
@@ -242,6 +244,8 @@ void StemLaneWaveform::refreshColumns(juce::Rectangle<float> inner, double viewS
 
         column.brightness =
             stemlab::waveform::brightnessAt(profile->spectrum, (from + to) * 0.5);
+
+        column.bands = stemlab::waveform::bandsAt(profile->spectrum, (from + to) * 0.5);
     }
 }
 
@@ -432,15 +436,7 @@ void StemLaneWaveform::paint(juce::Graphics& g)
             const auto& column = columns[i];
             const auto x = inner.getX() + static_cast<float>(i);
 
-            juce::Colour colour;
-
-            if (mutedAppearance)
-                colour = theme::colours::waveMuted();
-            else if (playNormalised >= 0.0 && x < playheadX)
-                colour = theme::waveform::playedColour(palette, stemIdentity, column.brightness);
-            else
-                colour =
-                    theme::waveform::unplayedColour(palette, stemIdentity, column.brightness);
+            const bool played = playNormalised >= 0.0 && x < playheadX;
 
             const auto lowest = juce::jlimit(-1.0f, 1.0f, column.minimum[channel]);
             const auto highest = juce::jlimit(-1.0f, 1.0f, column.maximum[channel]);
@@ -456,6 +452,67 @@ void StemLaneWaveform::paint(juce::Graphics& g)
                 topY = centre - lanes::waveMinHeight * 0.5f;
                 bottomY = centre + lanes::waveMinHeight * 0.5f;
             }
+
+            /*
+             * 3-Band draws one bar per band, nested: the dominant band (a
+             * share of 1) owns the column's full extent and the others
+             * scale within it, drawn strongest-first so each remains
+             * visible inside the last. A kick column reads as blue with a
+             * thin core, a hi-hat column as white through and through.
+             */
+            if (!mutedAppearance && palette == theme::waveform::paletteThreeBand)
+            {
+                struct BandBar
+                {
+                    float share;
+                    juce::Colour colour;
+                };
+
+                BandBar bars[3] = {{column.bands.low, theme::waveform::bandLowColour()},
+                                   {column.bands.mid, theme::waveform::bandMidColour()},
+                                   {column.bands.high, theme::waveform::bandHighColour()}};
+
+                std::sort(std::begin(bars), std::end(bars),
+                          [](const BandBar& a, const BandBar& b) { return a.share > b.share; });
+
+                const auto centre = (topY + bottomY) * 0.5f;
+                const auto halfExtent = (bottomY - topY) * 0.5f;
+
+                for (const auto& bar : bars)
+                {
+                    // An inaudible band draws nothing: forcing a hairline
+                    // here would etch a white core through every pure-bass
+                    // bar. The silence hairline is the outer clamp's job.
+                    if (bar.share <= 0.04f)
+                        continue;
+
+                    const auto half = halfExtent * bar.share;
+
+                    g.setColour(played ? bar.colour
+                                       : theme::waveform::dimmedUnplayed(bar.colour));
+                    g.fillRect(x, centre - half, 1.0f, half * 2.0f);
+                }
+
+                continue;
+            }
+
+            juce::Colour colour;
+
+            if (mutedAppearance)
+                colour = theme::colours::waveMuted();
+            else if (palette == theme::waveform::paletteRgb)
+            {
+                colour = theme::waveform::rgbColour(column.bands.low, column.bands.mid,
+                                                    column.bands.high);
+
+                if (!played)
+                    colour = theme::waveform::dimmedUnplayed(colour);
+            }
+            else if (played)
+                colour = theme::waveform::playedColour(palette, stemIdentity, column.brightness);
+            else
+                colour =
+                    theme::waveform::unplayedColour(palette, stemIdentity, column.brightness);
 
             g.setColour(colour);
             g.fillRect(x, topY, 1.0f, bottomY - topY);

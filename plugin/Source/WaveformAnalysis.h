@@ -40,7 +40,23 @@ constexpr std::size_t spectrumMaxFrames = 30000;
 constexpr double spectrumLowHz = 60.0;
 constexpr double spectrumHighHz = 8000.0;
 
-/** Per-frame spectral brightness for one audio file. */
+/** Crossovers for the three-band split behind the RGB and 3-Band palettes:
+    kick and bass below, vocals and most instruments in the middle, cymbals
+    and air on top - the classic DJ-waveform carve. */
+constexpr double bandLowCrossoverHz = 200.0;
+constexpr double bandHighCrossoverHz = 2000.0;
+
+/** One frame's low/mid/high balance, each 0..1 with the dominant band at 1
+    - shares of the loudest band, not absolute levels, because colour only
+    needs the ratio and painting then never has to renormalise. */
+struct BandLevels
+{
+    float low = 1.0f;
+    float mid = 1.0f;
+    float high = 1.0f;
+};
+
+/** Per-frame spectral brightness and band balance for one audio file. */
 struct SpectralProfile
 {
     double lengthSeconds = 0.0;
@@ -48,6 +64,9 @@ struct SpectralProfile
 
     /** 0 (bass-heavy) to 1 (bright), one entry per analysis frame. */
     std::vector<float> brightness;
+
+    /** Band shares, one entry per analysis frame, aligned with brightness. */
+    std::vector<BandLevels> bands;
 
     bool isEmpty() const { return brightness.empty(); }
 };
@@ -134,6 +153,43 @@ inline double spectralCentroid(const float* magnitudes, int binCount, double bin
     return weighted / total;
 }
 
+/**
+ * Low/mid/high balance of one magnitude spectrum.
+ *
+ * Energy is summed per band (bin 0 skipped, as for the centroid) and scaled
+ * so the loudest band reads 1. The ratios come back through a square root:
+ * colour tracks amplitude, not power, so a band 6dB down reads half as
+ * strong rather than a quarter. A frame with no energy returns all zeros,
+ * which the caller treats as "no opinion" rather than as a colour.
+ */
+inline BandLevels bandLevelsForSpectrum(const float* magnitudes, int binCount,
+                                        double binWidthHz)
+{
+    if (magnitudes == nullptr || binCount < 2 || !(binWidthHz > 0.0))
+        return {0.0f, 0.0f, 0.0f};
+
+    double energy[3] = {0.0, 0.0, 0.0};
+
+    for (int bin = 1; bin < binCount; ++bin)
+    {
+        const double hz = static_cast<double>(bin) * binWidthHz;
+        const double magnitude = static_cast<double>(magnitudes[bin]);
+
+        const int band = hz < bandLowCrossoverHz ? 0 : hz < bandHighCrossoverHz ? 1 : 2;
+
+        energy[band] += magnitude * magnitude;
+    }
+
+    const auto top = std::max({energy[0], energy[1], energy[2]});
+
+    if (top <= 1.0e-12)
+        return {0.0f, 0.0f, 0.0f};
+
+    return {static_cast<float>(std::sqrt(energy[0] / top)),
+            static_cast<float>(std::sqrt(energy[1] / top)),
+            static_cast<float>(std::sqrt(energy[2] / top))};
+}
+
 /** Place a centroid on the 0..1 colour ramp, logarithmically - an octave is
     an octave whether it sits at 100Hz or at 4kHz. */
 inline float brightnessForCentroid(double centroidHz)
@@ -191,7 +247,10 @@ inline SpectralProfile analyseMono(const float* samples, std::size_t sampleCount
     std::vector<std::complex<float>> frame(spectrumFftSize);
     std::vector<float> magnitudes(spectrumFftSize / 2 + 1);
 
+    // Silent frames inherit both measures, same reasoning for both: a gap
+    // between two hi-hat hits must not flash a wrong colour.
     float previousBrightness = 0.5f;
+    BandLevels previousBands;
 
     for (std::size_t start = 0; start < sampleCount; start += hop)
     {
@@ -219,6 +278,14 @@ inline SpectralProfile analyseMono(const float* samples, std::size_t sampleCount
             previousBrightness = brightnessForCentroid(centroid);
 
         profile.brightness.push_back(previousBrightness);
+
+        const auto bands = bandLevelsForSpectrum(magnitudes.data(),
+                                                 static_cast<int>(magnitudes.size()), binWidth);
+
+        if (bands.low > 0.0f || bands.mid > 0.0f || bands.high > 0.0f)
+            previousBands = bands;
+
+        profile.bands.push_back(previousBands);
     }
 
     return profile;
@@ -398,5 +465,21 @@ inline float brightnessAt(const SpectralProfile& profile, double seconds)
         frame, 0, static_cast<long long>(profile.brightness.size()) - 1);
 
     return profile.brightness[static_cast<std::size_t>(clamped)];
+}
+
+/** Band balance at a time in the file; the neutral default (every band at 1)
+    when there is no profile yet, so an unanalysed lane draws in one calm
+    colour rather than flashing. */
+inline BandLevels bandsAt(const SpectralProfile& profile, double seconds)
+{
+    if (profile.bands.empty() || !(profile.secondsPerFrame > 0.0))
+        return {};
+
+    const auto frame = static_cast<long long>(seconds / profile.secondsPerFrame);
+
+    const auto clamped =
+        std::clamp<long long>(frame, 0, static_cast<long long>(profile.bands.size()) - 1);
+
+    return profile.bands[static_cast<std::size_t>(clamped)];
 }
 }

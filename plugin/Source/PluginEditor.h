@@ -45,6 +45,7 @@ private:
         float minimum[2] = {0.0f, 0.0f};
         float maximum[2] = {0.0f, 0.0f};
         float brightness = 0.5f;
+        stemlab::waveform::BandLevels bands;
     };
 
     /** Rebuild the column cache if the view, the size or the file moved. */
