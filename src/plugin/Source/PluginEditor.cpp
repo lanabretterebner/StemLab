@@ -3169,10 +3169,15 @@ void StemLabAudioProcessorEditor::showWaveformColourMenu()
 
     auto menu = makeMenu();
 
-    for (int i = 0; i < theme::waveform::paletteCount; ++i)
+    // The menu's order and spelling are the design's: Spectrum, RGB,
+    // 3-Band, Stem Color, Nocturne. Persisted indices stay put; only the
+    // listing order differs from them.
+    static constexpr int menuPalettes[] = {2, 3, 4, 1, 0};
+
+    for (const int palette : menuPalettes)
     {
-        menu.addItem(i + 1, theme::waveform::paletteName(i), true,
-                     processor.getWaveformColourIndex() == i);
+        menu.addItem(palette + 1, theme::waveform::paletteName(palette), true,
+                     processor.getWaveformColourIndex() == palette);
     }
 
     auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);

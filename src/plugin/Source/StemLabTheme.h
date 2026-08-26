@@ -192,7 +192,7 @@ namespace stemlab::theme
         inline juce::String paletteName(int index)
         {
             static const char* const names[paletteCount] = {
-                "Nocturne Accent", "Stem Colours", "Spectrum", "RGB", "3-Band"};
+                "Nocturne", "Stem Color", "Spectrum", "RGB", "3-Band"};
 
             return names[juce::jlimit(0, paletteCount - 1, index)];
         }
@@ -201,7 +201,7 @@ namespace stemlab::theme
          * The played-portion colour of one waveform bar.
          *
          * @param index      selected palette
-         * @param stemName   identity key ("vocals"...) for Stem Colours
+         * @param stemName   identity key ("vocals"...) for Stem Color
          * @param brightness 0..1 spectral brightness of the audio under this
          *                   bar, for Spectrum; 0.5 means "not analysed yet"
          */
@@ -597,24 +597,24 @@ namespace stemlab::theme
                 highlight as inset pills, and the same check glyph the
                 include checkboxes use.
             */
-            constexpr int borderSize = 6;
+            constexpr int borderSize = 4;
 
-            constexpr int rowHeight = 26;
+            constexpr int rowHeight = 23;
             constexpr int rowInsetX = 4;
             constexpr int rowInsetY = 1;
             constexpr float rowRadius = 6.0f;
 
-            // Left gutter for the tick, right gutter for a submenu arrow or
-            // a shortcut. Both are reserved on every row so labels line up.
-            constexpr int tickColumn = 20;
+            // Left gutter for the tick, right gutter for a submenu arrow.
+            // Both are reserved on every row so labels line up.
+            constexpr int tickColumn = 16;
             constexpr int tickIcon = 11;
-            constexpr int tickGap = 8;
-            constexpr int trailingColumn = 24;
+            constexpr int tickGap = 6;
+            constexpr int trailingColumn = 12;
             constexpr int submenuArrow = 8;
 
-            constexpr int padX = 10;
-            constexpr int separatorHeight = 9;
-            constexpr int sectionHeaderHeight = 26;
+            constexpr int padX = 8;
+            constexpr int separatorHeight = 7;
+            constexpr int sectionHeaderHeight = 22;
         }
 
         namespace buttons

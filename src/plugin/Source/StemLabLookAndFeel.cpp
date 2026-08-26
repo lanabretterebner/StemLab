@@ -587,52 +587,31 @@ namespace stemlab::icons
     juce::Path palette(juce::Rectangle<float> b)
     {
         /*
-         * A painter's palette: an oval body, a thumb hole, and three wells.
-         *
-         * Everything subtracted stays inside the outline. Even-odd winding
-         * fills any region an odd number of subpaths cover, so a hole that
-         * crosses the edge leaves the part of itself lying outside the body
-         * filled - a stray crescent hanging off the side.
-         *
-         * What fixes the "ugly circle" is proportion, not a bite: an oval
-         * rather than a disc, a thumb hole big enough to read as one, and
-         * wells that survive the downscale to 15px.
+         * Material Symbols "palette" (Apache 2.0; see docs/third-party.md):
+         * the familiar painter's palette with a thumb cup and four paint
+         * wells, scaled from its 24x24 viewBox into the requested bounds.
+         * Even-odd winding knocks the wells out of the body regardless of
+         * subpath direction.
          */
-        const auto size = juce::jmin(b.getWidth(), b.getHeight());
-
-        // Wider than tall: a perfect circle reads as a dot, not a palette.
-        const auto body = juce::Rectangle<float>(size, size * 0.88f)
-                              .withCentre(b.getCentre());
-
-        juce::Path p;
-        p.addEllipse(body);
-
-        juce::Path holes;
-
-        // The thumb hole, low and to the right, well inside the outline.
-        const auto thumb = size * 0.30f;
-
-        holes.addEllipse(body.getX() + body.getWidth() * 0.74f - thumb * 0.5f,
-                         body.getY() + body.getHeight() * 0.66f - thumb * 0.5f, thumb, thumb);
-
-        // Three wells along the upper arc, large enough to survive the
-        // downscale to icon size.
-        const auto well = size * 0.155f;
-
-        const float wellX[] = {0.26f, 0.47f, 0.70f};
-        const float wellY[] = {0.52f, 0.28f, 0.33f};
-
-        for (int i = 0; i < 3; ++i)
+        static const juce::Path glyph = []
         {
-            holes.addEllipse(body.getX() + body.getWidth() * wellX[i] - well * 0.5f,
-                             body.getY() + body.getHeight() * wellY[i] - well * 0.5f, well,
-                             well);
-        }
+            auto p = juce::Drawable::parseSVGPath(
+                "M12 22C6.49 22 2 17.51 2 12S6.49 2 12 2s10 4.04 10 9c0 "
+                "3.31-2.69 6-6 6h-1.77c-.28 0-.5.22-.5.5 0 "
+                ".12.05.23.13.33.41.47.64 1.06.64 1.67A2.5 2.5 0 0 1 12 "
+                "22zm-5.5-9c.83 0 1.5-.67 1.5-1.5S7.33 10 6.5 10 5 10.67 5 "
+                "11.5 5.67 13 6.5 13zm3-4C10.33 9 11 8.33 11 7.5S10.33 6 9.5 "
+                "6 8 6.67 8 7.5 8.67 9 9.5 9zm5 0c.83 0 1.5-.67 "
+                "1.5-1.5S15.33 6 14.5 6 13 6.67 13 7.5 13.67 9 14.5 9zm3 "
+                "4c.83 0 1.5-.67 1.5-1.5S18.33 10 17.5 10 16 10.67 16 "
+                "11.5s.67 1.5 1.5 1.5z");
 
-        // Even-odd winding turns the added sub-paths into holes.
-        p.addPath(holes);
-        p.setUsingNonZeroWinding(false);
+            p.setUsingNonZeroWinding(false);
+            return p;
+        }();
 
+        auto p = glyph;
+        p.applyTransform(glyph.getTransformToScaleToFit(b, true));
         return p;
     }
 

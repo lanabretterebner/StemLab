@@ -28,7 +28,7 @@ public:
         root lane, the item id for an adaptive child. */
     void setSelectionId(const juce::String& id);
 
-    /** Which stem identity this lane draws under the Stem Colours palette
+    /** Which stem identity this lane draws under the Stem Color palette
         ("vocals", "drums", ...); a child lane uses its root's. */
     void setStemIdentity(const juce::String& stemName);
 
