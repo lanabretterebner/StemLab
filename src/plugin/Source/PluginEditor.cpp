@@ -1947,9 +1947,9 @@ void StemLabAudioProcessorEditor::layoutPanel()
 
         row.removeFromRight(footer::statusRightMargin);
 
-        // Left block: status line above, progress row below. Both centre on
-        // their current text, so the placement lives in layoutStatusArea(),
-        // which reruns on every status refresh.
+        // Left block: status line above, progress row below. The rows
+        // rearrange when a job starts or ends, so the placement lives in
+        // layoutStatusArea(), which reruns on every status refresh.
         statusAreaBounds = row;
         layoutStatusArea();
     }
@@ -1989,38 +1989,17 @@ void StemLabAudioProcessorEditor::layoutStatusArea()
 
     const bool progressVisible = progressBar.isVisible();
 
-    // Status line: spinner + text centred as one group. The width is
-    // measured with the animated trailing dots stripped so the group does
-    // not wander as they cycle; the dots grow into slack reserved on the
-    // right instead. With no progress row below, the line centres
-    // vertically in the footer.
+    // Everything anchors on the area's left edge: the spinner sits flush
+    // with the progress bar below it and the text runs left from there.
+    // With no progress row the status line centres vertically instead.
     auto statusLine =
         progressVisible
             ? area.removeFromTop(footer::statusLineHeight)
             : area.withSizeKeepingCentre(area.getWidth(), footer::statusLineHeight);
 
-    {
-        const juce::Font statusFont{theme::fonts::status()};
-
-        const auto baseText = statusLabel.getText().trimCharactersAtEnd(".");
-
-        const int dotSlack = juce::roundToInt(
-            juce::GlyphArrangement::getStringWidth(statusFont, "..."));
-
-        const int textWidth = juce::jmin(
-            statusLine.getWidth() - footer::statusLineHeight - footer::statusTextGap
-                - dotSlack,
-            juce::roundToInt(
-                juce::GlyphArrangement::getStringWidth(statusFont, baseText)) + 1);
-
-        auto group = statusLine.withSizeKeepingCentre(
-            footer::statusLineHeight + footer::statusTextGap + textWidth,
-            statusLine.getHeight());
-
-        statusIndicator.setBounds(group.removeFromLeft(footer::statusLineHeight));
-        group.removeFromLeft(footer::statusTextGap);
-        statusLabel.setBounds(group.withWidth(textWidth + dotSlack));
-    }
+    statusIndicator.setBounds(statusLine.removeFromLeft(footer::statusLineHeight));
+    statusLine.removeFromLeft(footer::statusTextGap);
+    statusLabel.setBounds(statusLine);
 
     if (!progressVisible)
         return;
@@ -2029,27 +2008,12 @@ void StemLabAudioProcessorEditor::layoutStatusArea()
 
     auto progressRow = area.removeFromTop(footer::progressRowHeight);
 
-    // Bar and readout sit next to each other and centre as one block. The
-    // readout's slot is quantised so the block does not shift every time
-    // the clock ticks over to a string of a slightly different width.
-    const juce::Font progressFont{theme::fonts::progress()};
-
-    const int labelWidth =
-        juce::roundToInt(juce::GlyphArrangement::getStringWidth(
-            progressFont, progressLabel.getText())) + 2;
-
-    const int labelSlot = ((labelWidth + 11) / 12) * 12;
-
-    const int barWidth =
+    progressBar.setBounds(progressRow.removeFromLeft(
         juce::jmin(footer::progressBarWidth,
-                   progressRow.getWidth() - labelSlot - footer::progressLabelGap);
+                   progressRow.getWidth() - footer::progressLabelGap)));
 
-    auto group = progressRow.withSizeKeepingCentre(
-        barWidth + footer::progressLabelGap + labelSlot, progressRow.getHeight());
-
-    progressBar.setBounds(group.removeFromLeft(barWidth));
-    group.removeFromLeft(footer::progressLabelGap);
-    progressLabel.setBounds(group);
+    progressRow.removeFromLeft(footer::progressLabelGap);
+    progressLabel.setBounds(progressRow);
 }
 
 void StemLabAudioProcessorEditor::layoutLanes()
@@ -2818,7 +2782,8 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
         progressLabel.setText(text, juce::dontSendNotification);
     }
 
-    // The status block centres on its text, so it follows every refresh.
+    // The status block rearranges when the progress row appears or goes,
+    // so it follows every refresh.
     layoutStatusArea();
 
     const auto jobPath = displayPath(processor.getJobRootDirectory());
