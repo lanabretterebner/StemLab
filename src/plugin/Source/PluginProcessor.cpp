@@ -5090,7 +5090,7 @@ juce::String StemLabAudioProcessor::getSeparatorEngineShortName(int index)
 
     case separatorRoFormer:
     default:
-        return "BS-RoFormer";
+        return "RoFormer";
     }
 }
 
