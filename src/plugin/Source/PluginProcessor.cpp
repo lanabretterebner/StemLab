@@ -3708,17 +3708,19 @@ void StemLabAudioProcessor::refreshEngineProgressFromDisk()
     setEngineProgress(juce::jlimit(0.0, 1.0, percent / 100.0));
 
     /*
-        Forward the stage only when the file itself moved on. Re-asserting
-        it whenever it merely differed from the current status let this
-        20 Hz poll overwrite anything the stdout path had just published -
-        "Cancelling...", a "Failed - ..." reason - with a stale stage for
-        as long as the file sat unchanged.
+        The stage reclaims the status line whenever it shows something
+        else. Forwarding it only when the file moved on let anything that
+        narrates concurrently - an analysis restarted from a menu, cache
+        maintenance - hold the line until the engine's next stage change,
+        which mid-Demucs can be minutes away. The two engine statuses that
+        must outlive the stage stay safe: "Cancelling..." is behind the
+        cancel-flag guard here, and a failure reason is published after
+        the process exits, when this poll no longer runs.
     */
-    if (stage.isNotEmpty() && stage != lastPolledFileStage)
-    {
-        lastPolledFileStage = stage;
+    lastPolledFileStage = stage;
+
+    if (stage.isNotEmpty() && !engineCancelRequested.load() && stage != getStatus())
         setStatus(stage);
-    }
 }
 
 juce::String StemLabAudioProcessor::getStatus() const
