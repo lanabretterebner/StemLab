@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 import sys
 import time
@@ -15,6 +17,48 @@ from stemlab.runtime import (
     looks_like_download,
     tqdm_remaining_seconds,
 )
+
+
+def pid_alive(pid: int) -> bool:
+    """Is this process still running?
+
+    os.kill(pid, 0) is the POSIX idiom and is wrong on Windows, where os.kill
+    calls TerminateProcess for any signal it does not recognise - signal 0
+    included. It does not ask a question there, it tries to kill, and CPython
+    surfaces that as a SystemError rather than an answer.
+    """
+    if sys.platform == "win32":
+        import ctypes
+
+        query_limited_information = 0x1000
+        still_active = 259
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(query_limited_information, False, pid)
+        if not handle:
+            return False
+
+        try:
+            code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == still_active
+        finally:
+            kernel32.CloseHandle(handle)
+
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Alive, just not ours to signal.
+        return True
+    return True
+
+
+# SIGKILL does not exist on Windows; SIGTERM is what os.kill maps to
+# TerminateProcess there, which is the same unconditional stop.
+KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
 
 
 class TestPercentParsing:
@@ -166,9 +210,6 @@ class TestCancelWatchdog:
         # the time the watchdog records the parent it is meant to watch - and
         # no change is ever observed. A plugin dying mid-job is the case this
         # protects, and a plugin is alive while its job starts up.
-        import os
-        import signal
-
         job_dir = tmp_path / "job"
         job_dir.mkdir()
 
@@ -211,11 +252,7 @@ class TestCancelWatchdog:
         job_pid = int(launcher.stdout.strip())
 
         def job_alive() -> bool:
-            try:
-                os.kill(job_pid, 0)
-            except ProcessLookupError:
-                return False
-            return True
+            return pid_alive(job_pid)
 
         try:
             assert armed.exists(), "the job never armed its watchdog"
@@ -226,15 +263,13 @@ class TestCancelWatchdog:
             assert not job_alive()
         finally:
             if job_alive():
-                os.kill(job_pid, signal.SIGKILL)
+                os.kill(job_pid, KILL_SIGNAL)
 
     def test_named_parent_death_stops_the_job(self, tmp_path: Path):
         # What the plugin actually uses: it exports its own pid, so the job
         # watches a named process rather than watching for reparenting. This
         # has no startup race - the pid is meaningful whether or not the
         # parent is still alive when the watchdog reads it.
-        import os
-
         job_dir = tmp_path / "job"
         job_dir.mkdir()
 
