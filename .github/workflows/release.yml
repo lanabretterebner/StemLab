@@ -205,6 +205,10 @@ jobs:
           limit=$((1900 * 1024 * 1024))
 
           for archive in dist/*.tar.gz; do
+            # The digest of the whole archive, recorded before any split, so
+            # a reassembled download can be checked against what was built.
+            sha256sum "$archive" | sed 's|dist/||' > "$archive.sha256"
+
             size="$(stat -c %s "$archive")"
             if [ "$size" -le "$limit" ]; then
               continue
@@ -213,6 +217,25 @@ jobs:
             echo "Splitting $(basename "$archive") ($size bytes)"
             split --bytes="$limit" --numeric-suffixes --suffix-length=2 \
               "$archive" "$archive.part"
+
+            # The parts must explain themselves. The reassembly command lives
+            # in the release notes, but a rehearsal publishes no release - its
+            # artifacts hand someone numbered slices with no note, and a slice
+            # opened on its own is a valid gzip prefix that dies mid-archive,
+            # which reads exactly like a corrupt download.
+            name="$(basename "$archive")"
+            cat > "$archive.README.txt" <<EOF
+          $name was split because a GitHub release asset cannot exceed 2 GiB.
+          Each .partNN is a slice, not an archive - opening one on its own
+          fails partway through and looks like a corrupt download.
+
+          Put every part in one folder, join them, verify, then extract:
+
+            cat $name.part* > $name
+            sha256sum -c $name.sha256
+            tar -xzf $name
+          EOF
+
             rm "$archive"
           done
 
@@ -227,6 +250,8 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.tar.gz.part*
+            dist/*.tar.gz.sha256
+            dist/*.README.txt
           if-no-files-found: error
           # Already gzipped. Re-compressing costs minutes and saves nothing.
           compression-level: 0
@@ -499,8 +524,9 @@ jobs:
           ## Reassembling a split bundle
 
           A GitHub release asset cannot exceed 2 GiB, and the GPU bundles do.
-          Those arrive as numbered parts; download every part into one folder
-          and join them before extracting:
+          Those arrive as numbered parts beside a `.sha256` for the joined
+          file and a `README.txt` repeating these steps; download every part
+          into one folder and join them before extracting:
 
           ```
           cat StemLab-*-Linux-rocm.tar.gz.part* > StemLab-Linux-rocm.tar.gz
