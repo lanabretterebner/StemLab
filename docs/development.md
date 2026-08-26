@@ -10,7 +10,7 @@ From the repository root on Windows:
 ```powershell
 .\scripts\setup_dev.ps1
 .\scripts\build_plugin.ps1
-& ".\plugin\build\StemLabPlugin_artefacts\Release\Standalone\StemLab.exe"
+& ".\src\plugin\build\StemLabPlugin_artefacts\Release\Standalone\StemLab.exe"
 ```
 
 On Linux, `./scripts/build_plugin.sh` builds the plugin and
@@ -61,7 +61,7 @@ PluginProcessor sends manifest path over localhost UDP
 
 ## C++ Plugin
 
-### `plugin/Source/PluginEditor.h/.cpp`
+### `src/plugin/Source/PluginEditor.h/.cpp`
 
 Owns the visible UI (the Nocturne 1a "Lanes" panel):
 
@@ -72,13 +72,13 @@ Owns the visible UI (the Nocturne 1a "Lanes" panel):
   button clicks into processor calls.
 
 Use this area for labels, menus, and layout. Colors, fonts, and dimensions
-live as named tokens in `plugin/Source/StemLabTheme.h`; stock-widget drawing
-and icons live in `plugin/Source/StemLabLookAndFeel.*`, and the custom
+live as named tokens in `src/plugin/Source/StemLabTheme.h`; stock-widget drawing
+and icons live in `src/plugin/Source/StemLabLookAndFeel.*`, and the custom
 Nocturne widgets (checkbox, split control, scrubber, segmented control, ...)
-in `plugin/Source/StemLabWidgets.*`. Keep file processing and
+in `src/plugin/Source/StemLabWidgets.*`. Keep file processing and
 model-selection logic in the processor/Python layer.
 
-### `plugin/Source/PluginProcessor.h/.cpp`
+### `src/plugin/Source/PluginProcessor.h/.cpp`
 
 Owns application state and external work:
 
@@ -93,12 +93,12 @@ JUCE callbacks such as `processBlock`, `prepareToPlay`, and
 `getStateInformation` are framework entry points. Keep their real-time and
 threading constraints in mind when editing them.
 
-### `plugin/Source/Waveform*.h/.cpp`
+### `src/plugin/Source/Waveform*.h/.cpp`
 
 Pure helpers behind the lanes: `WaveformGrid.h` (beat-grid math),
 `WaveformAnalysis.h` (JUCE-free spectral analysis), and `WaveformCache.*`
 (peak caching for lane drawing). The first two are exercised directly by
-`plugin/Tests/` via CTest (`BUILD_TESTING`), without standing up a plugin.
+`src/plugin/Tests/` via CTest (`BUILD_TESTING`), without standing up a plugin.
 
 ## Python Engine
 
@@ -173,10 +173,10 @@ For C++ changes:
 ## Generated Files
 
 `.venv/`, `.substem-venv/`, `.portable-cache/`, `.vs/`, `dist/`,
-`plugin/build/`, `__pycache__/`, and `*.egg-info/` are generated and
-ignored. Edit sources under `stemlab/`, `plugin/Source/`,
-`integrations/ableton/StemLabRemote/`, or `tests/` - never the copies under
-`plugin/build`.
+`src/plugin/build/`, `__pycache__/`, and `*.egg-info/` are generated and
+ignored. Edit sources under `src/stemlab/`, `src/plugin/Source/`,
+`src/integrations/ableton/StemLabRemote/`, or `tests/` - never the copies under
+`src/plugin/build`.
 
 ## Current Limits
 
@@ -187,5 +187,5 @@ ignored. Edit sources under `stemlab/`, `plugin/Source/`,
 - Guitar/piano/other adaptive splitting is DSP-based and experimental.
 - Source-count estimates are recursion heuristics, not literal musician counts.
 - `PluginProcessor.cpp`, `PluginEditor.cpp`, and
-  `integrations/ableton/StemLabRemote/__init__.py`
+  `src/integrations/ableton/StemLabRemote/__init__.py`
   remain the largest modules and should be split one responsibility at a time.

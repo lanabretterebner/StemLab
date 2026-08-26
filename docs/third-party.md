@@ -39,9 +39,9 @@ upstream licensing/terms.
 ## Inter font
 
 The plugin interface embeds the Inter typeface (static Regular and Medium
-instances under `plugin/Resources/fonts/`), copyright The Inter Project
+instances under `src/plugin/Resources/fonts/`), copyright The Inter Project
 Authors, licensed under the SIL Open Font License 1.1. The full license text
-ships beside the font files as `plugin/Resources/fonts/OFL.txt` and must
+ships beside the font files as `src/plugin/Resources/fonts/OFL.txt` and must
 accompany any redistribution of the font files.
 
 ## Beat This!
@@ -50,7 +50,7 @@ Optional beat/downbeat analysis uses Beat This! 1.1.0 and the upstream
 `small0` and `final0` checkpoints. Beat This! is MIT licensed. The checkpoints
 are not redistributed: each is downloaded from its upstream host the first
 time it is used, and is rejected unless it matches the length and SHA-256
-recorded in `stemlab/beat_tracking.py`.
+recorded in `src/stemlab/beat_tracking.py`.
 
 ## Python / ML runtime
 

@@ -14,7 +14,7 @@ __pycache__/
 .vs/
 .vscode/
 .idea/
-plugin/build/
+src/plugin/build/
 build/
 dist/
 .portable-cache/

@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path $PSScriptRoot -Parent
 $PortableVst = Join-Path $RepoRoot "StemLab.vst3"
 $PortableRemote = Join-Path $RepoRoot "StemLabRemote"
-$DevelopmentVst = Join-Path $RepoRoot "plugin\build\StemLabPlugin_artefacts\Release\VST3\StemLab.vst3"
+$DevelopmentVst = Join-Path $RepoRoot "src\plugin\build\StemLabPlugin_artefacts\Release\VST3\StemLab.vst3"
 $VstSource = if (Test-Path -LiteralPath $PortableVst -PathType Container) {
     $PortableVst
 } elseif (Test-Path -LiteralPath $DevelopmentVst -PathType Container) {
@@ -18,7 +18,7 @@ $VstSource = if (Test-Path -LiteralPath $PortableVst -PathType Container) {
 $RemoteSource = if (Test-Path -LiteralPath (Join-Path $PortableRemote "__init__.py") -PathType Leaf) {
     $PortableRemote
 } else {
-    Join-Path $RepoRoot "integrations\ableton\StemLabRemote"
+    Join-Path $RepoRoot "src\integrations\ableton\StemLabRemote"
 }
 $VstDestination = Join-Path $env:CommonProgramFiles "VST3\StemLab.vst3"
 $LegacyVstDestination = Join-Path $env:CommonProgramFiles "VST3\StemLab.vst3"

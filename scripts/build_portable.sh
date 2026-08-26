@@ -69,7 +69,7 @@ BUILD_ARGS=()
 
 "$REPO_ROOT/scripts/build_plugin.sh" ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}
 
-ARTEFACTS="$REPO_ROOT/plugin/build/StemLabPlugin_artefacts/Release"
+ARTEFACTS="$REPO_ROOT/src/plugin/build/StemLabPlugin_artefacts/Release"
 
 [[ -f "$ARTEFACTS/Standalone/StemLab" ]] || {
     echo "Standalone build missing at $ARTEFACTS/Standalone/StemLab" >&2

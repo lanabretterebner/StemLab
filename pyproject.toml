@@ -39,7 +39,7 @@ stemlab-source-analysis = "stemlab.source_analysis:main"
 stemlab-midi-job = "stemlab.midi:main"
 
 [tool.setuptools.packages.find]
-where = ["."]
+where = ["src"]
 include = ["stemlab*"]
 
 [tool.pytest.ini_options]
@@ -55,4 +55,4 @@ select = ["E4", "E7", "E9", "F", "B"]
 [tool.ruff.lint.per-file-ignores]
 # Ableton loads this module inside Live and supplies dynamic API attributes that
 # static lint rules cannot see.
-"integrations/ableton/StemLabRemote/__init__.py" = ["ALL"]
+"src/integrations/ableton/StemLabRemote/__init__.py" = ["ALL"]
