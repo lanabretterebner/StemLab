@@ -229,7 +229,16 @@ jobs:
           Each .partNN is a slice, not an archive - opening one on its own
           fails partway through and looks like a corrupt download.
 
-          Put every part in one folder, join them, verify, then extract:
+          Easiest: download StemLab-Linux-setup.sh from the same place into
+          this folder and run
+
+            bash StemLab-Linux-setup.sh
+
+          It joins the parts, verifies them, extracts the bundle, runs its
+          installer, and deletes the archive when done.
+
+          By hand instead: put every part in one folder, join them, verify,
+          then extract:
 
             cat $name.part* > $name
             sha256sum -c $name.sha256
@@ -238,6 +247,13 @@ jobs:
 
             rm "$archive"
           done
+
+          # The one-step setup script ships beside the bundles, tied to this
+          # release so it can download the other assets itself: on a real
+          # release it is the only file anyone needs.
+          sed -e "s|@RELEASE_URL@|https://github.com/${{ github.repository }}/releases/download/${{ needs.metadata.outputs.tag }}|" \
+              -e "s|@VERSION@|${{ needs.metadata.outputs.version }}|" \
+              scripts/StemLab-Linux-setup.sh > dist/StemLab-Linux-setup.sh
 
       - name: List what was produced
         run: ls -lh dist/
@@ -252,6 +268,7 @@ jobs:
             dist/*.tar.gz.part*
             dist/*.tar.gz.sha256
             dist/*.README.txt
+            dist/StemLab-Linux-setup.sh
           if-no-files-found: error
           # Already gzipped. Re-compressing costs minutes and saves nothing.
           compression-level: 0
@@ -494,7 +511,8 @@ jobs:
           | File | What it is |
           | --- | --- |
           | `StemLab-Setup-*-<flavor>.exe` **and** its `.bin` slices | **Windows installer.** Download every part into the same folder before running the `.exe` - it will not start without its `.bin` slices. Installs the app, the VST3 and the Engine; no Python needed. Pick the flavor for your hardware. |
-          | `StemLab-*-Linux-<flavor>.tar.gz` | **Linux, self-contained.** Extract and run `./install.sh` once. Includes the Engine; no Python needed. Pick the flavor for your hardware - see below. |
+          | `StemLab-Linux-setup.sh` | **Linux - the only file you need.** Run `bash StemLab-Linux-setup.sh <flavor>` (e.g. `xpu`) and it downloads that bundle from this release, verifies it, extracts it, installs it, and deletes the archive. |
+          | `StemLab-*-Linux-<flavor>.tar.gz` | **Linux, self-contained.** What the script above fetches; grab it by hand if you prefer (every `.partNN`, if split, plus the `.sha256`). Includes the Engine; no Python needed. Pick the flavor for your hardware - see below. |
           | `StemLab-*-plugin-only.*` | The VST3 and Standalone binaries alone, for anyone who already has an Engine installed. |
           | `stemlab_open-*.whl`, `stemlab_open-*.tar.gz` | The Python package on its own, for command-line use. |
 
@@ -525,12 +543,19 @@ jobs:
 
           A GitHub release asset cannot exceed 2 GiB, and the GPU bundles do.
           Those arrive as numbered parts beside a `.sha256` for the joined
-          file and a `README.txt` repeating these steps; download every part
-          into one folder and join them before extracting:
+          file and a `README.txt` repeating these steps. Download every part
+          into one folder and either run the setup script there:
 
           ```
-          cat StemLab-*-Linux-rocm.tar.gz.part* > StemLab-Linux-rocm.tar.gz
-          tar -xzf StemLab-Linux-rocm.tar.gz
+          bash StemLab-Linux-setup.sh
+          ```
+
+          or join, verify, and extract by hand:
+
+          ```
+          cat StemLab-<version>-Linux-rocm.tar.gz.part* > StemLab-<version>-Linux-rocm.tar.gz
+          sha256sum -c StemLab-<version>-Linux-rocm.tar.gz.sha256
+          tar -xzf StemLab-<version>-Linux-rocm.tar.gz
           ```
 
           The Windows installers are split the same way, by Inno Setup, into
