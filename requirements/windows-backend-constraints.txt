@@ -1,0 +1,6 @@
+# Keep transitive requirements (notably audio-separator[gpu]) from replacing
+# the backend selected by scripts/setup_dev.ps1. PEP 440 exact public-version
+# matching accepts the official +cu128, +cpu, and +rocm7.2.1 local builds.
+torch==2.9.1
+torchaudio==2.9.1
+torchvision==0.24.1

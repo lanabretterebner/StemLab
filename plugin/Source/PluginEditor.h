@@ -4,6 +4,7 @@
 #include <vector>
 #include <functional>
 #include "PluginProcessor.h"
+#include "SelfFileDragGuard.h"
 
 
 /** Toggle used for export selection. Right-click invokes a separate solo callback. */
@@ -151,6 +152,7 @@ private:
 
     void chooseEngineExecutable();
     void chooseStandaloneAudioFile();
+    void chooseHostAudioFile();
     void chooseSaveFolder();
     void chooseJobRootFolder();
     void showSettingsMenu();
@@ -159,6 +161,7 @@ private:
     void showStandaloneAudioSettings();
     void showFirstRunWelcome();
     void launchAbletonSetup();
+    void startExternalStemDrag(juce::Component* source);
     void refreshFromProcessor();
     void syncRecursiveRows();
     void showRootRecursiveMenu(int stemIndex);
@@ -178,11 +181,13 @@ private:
     juce::TextButton settingsButton{"Settings"};
 
     juce::TextButton captureButton{"Capture"};
+    juce::TextButton importFromPcButton{"Import from PC"};
     juce::TextButton recordInputButton{"Record Input"};
     juce::TextButton recordSystemButton{"Record System"};
     juce::TextButton stopButton{"Stop"};
     juce::TextButton playButton{"Play"};
     juce::Label captureTimeLabel;
+    juce::TextButton analysisDetailsButton{"Analysis Details"};
 
     juce::ToggleButton refinementButton{"FI-STEM refinement"};
     juce::ToggleButton beatThisButton{"Beat This! analysis"};
@@ -216,6 +221,7 @@ private:
 
     juce::TextButton saveSelectedButton{"Save Selected..."};
     juce::TextButton sendSelectedButton{"Send Selected"};
+    juce::TextButton dragSelectedButton{"Drag Selected"};
     juce::TextButton retryImportButton{"Retry"};
     juce::TextButton openJobButton{"Choose File Location"};
 
@@ -226,6 +232,8 @@ private:
     std::unique_ptr<juce::FileChooser> outputFolderChooser;
     std::unique_ptr<juce::FileChooser> jobFolderChooser;
 
+    StemLabSelfFileDragGuard selfFileDragGuard;
+    bool audioFileChooserActive = false;
     bool dragActive = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StemLabAudioProcessorEditor)

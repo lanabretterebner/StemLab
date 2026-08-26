@@ -25,28 +25,43 @@ scripts and checksum manifests are source-controlled; their generated output is 
 
 ## Set Up Development
 
-FI-STEM currently targets 64-bit Windows and Python 3.11. Install:
+FI-STEM currently targets 64-bit Windows. NVIDIA and CPU builds use Python
+3.11; experimental AMD development uses Python 3.12. Install:
 
 - Visual Studio with **Desktop development with C++** and CMake tools
-- Python 3.11
+- Python 3.11 (NVIDIA/CPU), or Python 3.12 for experimental AMD ROCm
 - FFmpeg on `PATH` when working with compressed audio
-- An NVIDIA/CUDA setup for practical model inference
+- A compatible NVIDIA GPU/driver for recommended GPU inference
 
-From an ordinary PowerShell window in the repository root:
+From an ordinary PowerShell window in the repository root, choose a runtime
+backend. NVIDIA is the recommended default:
 
 ```powershell
-.\scripts\setup_dev.ps1
+# NVIDIA — recommended/default
+.\scripts\setup_dev.ps1 -Backend nvidia
+
+# CPU — universal fallback, but slower
+.\scripts\setup_dev.ps1 -Backend cpu
+
+# AMD ROCm — experimental
+.\scripts\setup_dev.ps1 -Backend amd
 ```
 
-This creates `.venv`, installs FI-STEM plus its development/recursive
-dependencies, and runs the unit tests. The first install is large because the
-audio backends depend on PyTorch and pretrained-model tooling.
+NVIDIA and CPU setup create `.venv`. AMD setup creates a separate `.venv-amd`
+and never converts an existing Python 3.11 environment. Setup installs and
+verifies a pinned backend-specific PyTorch build before installing FI-STEM plus
+its development/recursive dependencies, then runs the unit tests. A separate
+CUDA Toolkit is not required because the NVIDIA wheel packages its CUDA runtime.
 
 To reuse a different environment:
 
 ```powershell
-.\scripts\setup_dev.ps1 -EnvironmentPath C:\path\to\venv
+.\scripts\setup_dev.ps1 -Backend nvidia -EnvironmentPath C:\path\to\venv
 ```
+
+AMD ROCm 7.2.1 support is experimental and currently requires Windows 11,
+Python 3.12, AMD's supported 26.2.2 driver, and hardware listed in AMD's current
+compatibility matrix. Not every AMD GPU is supported.
 
 ## Build And Run
 
@@ -138,16 +153,36 @@ checkpoints locally and validate their sizes and SHA-256 hashes.
 
 ## Build A Release
 
-Build the portable folder and then the Inno Setup installer:
+Build one backend per portable folder and installer. NVIDIA is recommended and
+is the default when `-Backend` is omitted:
 
 ```powershell
-.\build_portable_windows.ps1
-.\build_installer_windows.ps1 -SkipPortableBuild
+# NVIDIA — recommended/default
+.\scripts\setup_dev.ps1 -Backend nvidia
+.\build_installer_windows.ps1 -Backend nvidia
+
+# CPU
+.\scripts\setup_dev.ps1 -Backend cpu
+.\build_installer_windows.ps1 -Backend cpu
+
+# AMD — experimental
+.\scripts\setup_dev.ps1 -Backend amd
+.\build_installer_windows.ps1 -Backend amd
 ```
 
-Outputs are `dist\FI-STEM-Portable-0.9.9` and
-`dist\FI-STEM-Setup-0.9.9.exe` (plus installer data slices). Model downloads
-occur only while staging a release; the installed runtime uses packaged models.
+NVIDIA outputs are `dist\FI-STEM-Portable-0.9.9-NVIDIA` and
+`dist\FI-STEM-Setup-0.9.9-NVIDIA.exe` (plus matching installer data slices).
+CPU outputs use the `CPU` suffix. Each portable root includes
+`RUNTIME_BACKEND.txt` with the packaged Python, Torch, CUDA/HIP, and build
+details. Model downloads occur only while staging a release; the installed
+runtime uses packaged models.
+
+AMD development setup and ROCm/HIP validation are implemented. AMD portable and
+installer commands currently stop with a concise error because the existing
+release architecture has only a checksum-pinned Python 3.11 embedded runtime;
+it would be unsafe to claim a portable Python 3.12 ROCm payload until that
+separate runtime is reproducibly packaged. NVIDIA and CPU releases are fully
+supported.
 
 ## Repository Map
 

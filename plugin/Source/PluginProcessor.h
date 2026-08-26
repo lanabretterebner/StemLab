@@ -7,6 +7,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "HostIntegrationPolicy.h"
+
 class StemLabEngineThread;
 class StemLabRecursiveThread;
 class StemLabSystemLoopbackThread;
@@ -94,7 +96,8 @@ public:
     {
         recordingNone = 0,
         recordingInput = 1,
-        recordingSystem = 2
+        recordingSystem = 2,
+        recordingHost = 3
     };
 
     enum SourceAnalysisMode
@@ -161,6 +164,8 @@ public:
 
     bool setStandaloneInputFile(const juce::File& file);
     bool isStandaloneApp() const noexcept;
+    bool isAbletonHost() const noexcept;
+    stemlab::host::UiMode getHostUiMode() const noexcept;
 
     /** Ask FI-STEM Remote for Ableton's selected Arrangement audio clip. */
     bool requestAbletonSourceClip();
@@ -173,6 +178,14 @@ public:
     /** Start/stop recording the Standalone app's selected physical input. */
     bool startStandaloneRecording();
     void stopStandaloneRecording();
+
+    /** Explicitly capture VST3 input audio in non-Ableton hosts. */
+    bool startHostAudioCapture();
+    void stopHostAudioCapture();
+    bool isHostAudioCapturing() const noexcept
+    {
+        return standaloneRecordingMode.load() == recordingHost && capturing.load();
+    }
 
     /** Start/stop Windows WASAPI loopback recording of the default output. */
     bool startSystemAudioRecording();
@@ -298,6 +311,8 @@ public:
 
     /** Copy selected completed stems to a Standalone export directory. */
     int saveSelectedStemsTo(const juce::File& destination);
+    /** Return selected WAVs, rendering existing waveform ranges when needed. */
+    juce::StringArray getSelectedStemFilesForDrag();
     juce::File getCompletedStemFile(int index) const;
 
     /** Override or query the executable used for the main Python worker. */
@@ -369,6 +384,10 @@ private:
     void appendEngineLog(const juce::String&);
     bool sendAbletonBridgeNotification(const juce::File& manifestFile);
     bool sendAbletonControlMessage(const juce::String& message);
+
+    bool startThreadedInputCapture(const juce::String& prefix, double sampleRate, int channels,
+                                   double startPpq, int recordingMode,
+                                   const juce::String& recordingStatus);
 
     juce::File createRecordingFile(const juce::String& prefix) const;
     juce::File createJobDirectory() const;

@@ -61,15 +61,28 @@ target_sources(FIStemPlugin
         Source/PluginProcessor.h
         Source/PluginEditor.cpp
         Source/PluginEditor.h
+        Source/HostIntegrationPolicy.h
+        Source/SelfFileDragGuard.h
         Source/WaveformGrid.h
 )
 
 include(CTest)
 if (BUILD_TESTING)
-    add_executable(FIStemWaveformGridTests Tests/WaveformGridTests.cpp Source/WaveformGrid.h)
+    add_executable(FIStemWaveformGridTests Tests/WaveformGridTests.cpp
+                   Source/HostIntegrationPolicy.h Source/WaveformGrid.h)
     target_include_directories(FIStemWaveformGridTests PRIVATE Source)
     target_compile_features(FIStemWaveformGridTests PRIVATE cxx_std_20)
     add_test(NAME FIStemWaveformGridTests COMMAND FIStemWaveformGridTests)
+
+    add_executable(FIStemHostCaptureTests Tests/HostCaptureTests.cpp Source/SelfFileDragGuard.h)
+    target_include_directories(FIStemHostCaptureTests PRIVATE Source
+                               "${CMAKE_CURRENT_BINARY_DIR}/FIStemPlugin_artefacts/JuceLibraryCode"
+                               "${CMAKE_CURRENT_BINARY_DIR}/juce_binarydata_FIStemAssets/JuceLibraryCode")
+    target_compile_features(FIStemHostCaptureTests PRIVATE cxx_std_20)
+    target_link_libraries(FIStemHostCaptureTests PRIVATE FIStemPlugin juce::juce_audio_utils
+                                                        juce::juce_audio_formats
+                                                        juce::juce_gui_extra)
+    add_test(NAME FIStemHostCaptureTests COMMAND FIStemHostCaptureTests)
 endif()
 
 target_compile_definitions(FIStemPlugin

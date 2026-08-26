@@ -1,5 +1,7 @@
 param(
-    [string]$EnvironmentPath = ".venv",
+    [ValidateSet("nvidia", "cpu", "amd")]
+    [string]$Backend = "nvidia",
+    [string]$EnvironmentPath = "",
     [string]$FfmpegPath = "",
     [bool]$DownloadModels = $true,
     [switch]$SkipPortableBuild,
@@ -10,15 +12,22 @@ param(
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = [System.IO.Path]::GetFullPath($PSScriptRoot)
+. (Join-Path $RepoRoot "scripts\windows_backend.ps1")
+$BackendConfiguration = Get-FIStemBackendConfiguration $Backend
 $DistRoot = Join-Path $RepoRoot "dist"
 
 $VersionMatch = Select-String -LiteralPath (Join-Path $RepoRoot "pyproject.toml") -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
 if (-not $VersionMatch) { throw "Could not read FI-STEM version from pyproject.toml." }
 $Version = $VersionMatch.Matches[0].Groups[1].Value
-$PortableRoot = Join-Path $DistRoot "FI-STEM-Portable-$Version"
+$PortableRoot = Join-Path $DistRoot "FI-STEM-Portable-$Version-$($BackendConfiguration.Suffix)"
+
+if ($Backend -eq "amd") {
+    throw "AMD ROCm installer packaging is not yet available: the verified portable build requires a reproducible Python 3.12 ROCm payload. AMD development setup is supported with .\scripts\setup_dev.ps1 -Backend amd."
+}
 
 if (-not $SkipPortableBuild) {
     $PortableArgs = @{
+        Backend = $Backend
         EnvironmentPath = $EnvironmentPath
         OutputDirectory = $PortableRoot
         DownloadModels = $DownloadModels
@@ -34,6 +43,11 @@ if (-not $SkipPortableBuild) {
 
 if (-not (Test-Path -LiteralPath (Join-Path $PortableRoot "FI-STEM.exe") -PathType Leaf)) {
     throw "Portable payload is missing: $PortableRoot"
+}
+
+$PortableVst3Module = Join-Path $PortableRoot "FI-STEM.vst3\Contents\x86_64-win\FI-STEM.vst3"
+if (-not (Test-Path -LiteralPath $PortableVst3Module -PathType Leaf)) {
+    throw "Portable VST3 module is missing: $PortableVst3Module"
 }
 
 $IsccCandidates = @()
@@ -81,7 +95,8 @@ if ($LASTEXITCODE -ne 0) {
 
 $IsccExitCode = 1
 try {
-    & $Iscc "/DSourceDir=$InnoSourceDir" "/DAppVersion=$Version" "/DOutputDir=$DistRoot" $Iss
+    & $Iscc "/DSourceDir=$InnoSourceDir" "/DAppVersion=$Version" `
+        "/DBackendSuffix=$($BackendConfiguration.Suffix)" "/DOutputDir=$DistRoot" $Iss
     $IsccExitCode = $LASTEXITCODE
 }
 finally {
@@ -89,7 +104,7 @@ finally {
 }
 if ($IsccExitCode -ne 0) { exit $IsccExitCode }
 
-$Setup = Join-Path $DistRoot "FI-STEM-Setup-$Version.exe"
+$Setup = Join-Path $DistRoot "FI-STEM-Setup-$Version-$($BackendConfiguration.Suffix).exe"
 if (-not (Test-Path -LiteralPath $Setup -PathType Leaf)) {
     throw "Inno Setup completed without producing: $Setup"
 }
@@ -97,6 +112,6 @@ if (-not (Test-Path -LiteralPath $Setup -PathType Leaf)) {
 Write-Host ""
 Write-Host "Installer build complete." -ForegroundColor Green
 Write-Host "  $Setup"
-Get-ChildItem -LiteralPath $DistRoot -Filter "FI-STEM-Setup-$Version-*.bin" -ErrorAction SilentlyContinue | ForEach-Object {
+Get-ChildItem -LiteralPath $DistRoot -Filter "FI-STEM-Setup-$Version-$($BackendConfiguration.Suffix)-*.bin" -ErrorAction SilentlyContinue | ForEach-Object {
     Write-Host "  $($_.FullName)"
 }

@@ -70,3 +70,5 @@ Thumbs.db
 /StemLab-Setup-*.exe
 /StemLab-Setup-*.bin
 /FFMPEG_BUILD_INFO.txt
+
+.venv-nvidia-clean/

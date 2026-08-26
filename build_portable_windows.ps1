@@ -1,5 +1,7 @@
 param(
-    [string]$EnvironmentPath = ".venv",
+    [ValidateSet("nvidia", "cpu", "amd")]
+    [string]$Backend = "nvidia",
+    [string]$EnvironmentPath = "",
     [string]$OutputDirectory = "",
     [string]$FfmpegPath = "",
     [bool]$DownloadModels = $true,
@@ -12,17 +14,20 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
 $RepoRoot = [System.IO.Path]::GetFullPath($PSScriptRoot)
+. (Join-Path $RepoRoot "scripts\windows_backend.ps1")
+$BackendConfiguration = Get-FIStemBackendConfiguration $Backend
 $DistRoot = Join-Path $RepoRoot "dist"
 $CacheRoot = Join-Path $RepoRoot ".portable-cache"
 $Manifest = Join-Path $RepoRoot "packaging\models.json"
 $StageScript = Join-Path $RepoRoot "scripts\stage_models.py"
+$VerifyBackend = Join-Path $RepoRoot "scripts\verify_windows_backend.py"
 
 $VersionMatch = Select-String -LiteralPath (Join-Path $RepoRoot "pyproject.toml") -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
 if (-not $VersionMatch) { throw "Could not read FI-STEM version from pyproject.toml." }
 $Version = $VersionMatch.Matches[0].Groups[1].Value
 
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
-    $OutputDirectory = Join-Path $DistRoot "FI-STEM-Portable-$Version"
+    $OutputDirectory = Join-Path $DistRoot "FI-STEM-Portable-$Version-$($BackendConfiguration.Suffix)"
 }
 elseif (-not [System.IO.Path]::IsPathRooted($OutputDirectory)) {
     $OutputDirectory = Join-Path $RepoRoot $OutputDirectory
@@ -32,6 +37,14 @@ $OutputDirectory = [System.IO.Path]::GetFullPath($OutputDirectory)
 $DistPrefix = [System.IO.Path]::GetFullPath($DistRoot).TrimEnd('\') + '\'
 if (-not (($OutputDirectory.TrimEnd('\') + '\').StartsWith($DistPrefix, [StringComparison]::OrdinalIgnoreCase))) {
     throw "Portable output must be under the repository dist directory: $DistRoot"
+}
+
+if ($Backend -eq "amd") {
+    throw "AMD ROCm release packaging is not yet available: FI-STEM's verified portable engine embeds Python 3.11, while AMD ROCm 7.2.1 requires a separate Python 3.12 runtime. AMD development setup is supported with .\scripts\setup_dev.ps1 -Backend amd."
+}
+
+if ([string]::IsNullOrWhiteSpace($EnvironmentPath)) {
+    $EnvironmentPath = $BackendConfiguration.DefaultEnvironment
 }
 
 if ([System.IO.Path]::IsPathRooted($EnvironmentPath)) {
@@ -101,6 +114,10 @@ Assert-File $DevPython "FI-STEM's Python environment is missing. Run .\scripts\s
 Assert-Directory $VenvSitePackages "FI-STEM's Python site-packages directory is missing."
 Assert-File $Manifest "The release model manifest is missing."
 Assert-File $StageScript "The model staging helper is missing."
+
+Write-Host "Verifying the source environment backend..." -ForegroundColor Cyan
+& $DevPython $VerifyBackend --backend $Backend
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 if (-not $SkipTests) {
     Write-Host "Running the Python regression suite..." -ForegroundColor Cyan
@@ -234,7 +251,11 @@ Assert-File $EnginePython "The embedded Python runtime was not assembled correct
 Write-Host "Verifying isolated portable imports..." -ForegroundColor Cyan
 Push-Location $OutputDirectory
 try {
-    & $EnginePython -c "import stemlab, torch, beat_this, demucs, audio_separator, mido; print('Portable imports OK; CUDA:', torch.cuda.is_available())"
+    & $EnginePython -c "import stemlab, torch, beat_this, demucs, audio_separator, mido; print('Portable imports OK')"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    & $EnginePython $VerifyBackend --backend $Backend `
+        --metadata-file (Join-Path $OutputDirectory "RUNTIME_BACKEND.txt")
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     $env:STEMLAB_ENGINE_DIR = $Engine
