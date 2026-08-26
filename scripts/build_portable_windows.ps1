@@ -152,6 +152,19 @@ Set-Content -LiteralPath (Join-Path $Engine "python311._pth") -Encoding ASCII -V
 $EngineSitePackages = Join-Path $Engine "Lib\site-packages"
 Invoke-Robocopy $VenvSitePackages $EngineSitePackages @("/XD", "__pycache__")
 
+# Some wheels install runtime DLLs beside site-packages rather than inside
+# it: Intel's sycl/opencl runtimes (dependencies of xpu torch) land in the
+# venv's Library\bin via the wheel data scheme, and torch's own DLL loader
+# searches sys.exec_prefix\Library\bin for them. Copying site-packages
+# alone ships c10_xpu.dll without the DLLs it links against, and the Engine
+# dies on import with WinError 126. Absent for flavors that install no such
+# wheels, hence the guard.
+$VenvLibrary = Join-Path $Environment "Library"
+if (Test-Path -LiteralPath $VenvLibrary -PathType Container) {
+    Write-Host "Copying runtime DLLs from the environment's Library directory..."
+    Invoke-Robocopy $VenvLibrary (Join-Path $Engine "Library")
+}
+
 # Development installs are editable and point back into the source checkout.
 # Remove only the legacy editable bootstrap, then copy the real package tree.
 Get-ChildItem -LiteralPath $EngineSitePackages -Force -ErrorAction SilentlyContinue | Where-Object {

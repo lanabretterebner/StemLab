@@ -294,18 +294,33 @@ PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install \
     ${TORCH_ARGS[@]+"${TORCH_ARGS[@]}"} \
     "torch==$TORCH_VERSION" "torchaudio==$TORCH_VERSION"
 
+# Everything installed from here on resolves against PyPI, and one of those
+# resolutions replaces torch if nothing stops it: audio-separator depends on
+# onnx2torch, which depends on torchvision, and the newest torchvision pins
+# the exact newest torch - so pip upgrades torch to PyPI's build, which on
+# Linux is the CUDA one, whatever flavor was just installed. A constraints
+# file makes pip backtrack torchvision to one that matches the torch already
+# here instead. Base versions on purpose: "torch==2.11.0" is satisfied by
+# the installed 2.11.0+cpu, while "torch==2.11.0+cpu" names a wheel PyPI
+# does not carry and would fail the resolve outright.
+TORCH_CONSTRAINTS="$DEST/.stemlab-torch-constraints.txt"
+printf 'torch==%s\ntorchaudio==%s\n' "$TORCH_VERSION" "$TORCH_VERSION" \
+    > "$TORCH_CONSTRAINTS"
+
 # Recursive/adaptive stem splitting needs audio-separator. The project's own
 # "recursive" extra pins the CUDA onnxruntime unconditionally, so install the
 # flavor-matched build here instead: CUDA gets the GPU runtime; every other
 # flavor gets the CPU runtime (onnxruntime has no PyPI build for ROCm/XPU, so
 # the recursive stage runs on CPU there - the main separation still offloads).
 if [[ "$TORCH_FLAVOR" == "cuda" ]]; then
-    PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install "audio-separator[gpu]==0.44.5"
+    PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install \
+        -c "$TORCH_CONSTRAINTS" "audio-separator[gpu]==0.44.5"
 else
-    PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install "audio-separator[cpu]==0.44.5"
+    PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install \
+        -c "$TORCH_CONSTRAINTS" "audio-separator[cpu]==0.44.5"
 fi
 
-PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install "$REPO_ROOT"
+PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install -c "$TORCH_CONSTRAINTS" "$REPO_ROOT"
 
 printf '%s\n' "$TORCH_FLAVOR" > "$FLAVOR_FILE"
 
