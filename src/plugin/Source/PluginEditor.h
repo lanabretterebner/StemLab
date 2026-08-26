@@ -116,6 +116,8 @@ public:
                       std::function<void(const juce::String&)> showChildMenu,
                       std::function<void(int, juce::String)> toggleExpanded);
 
+    ~StemLaneComponent() override { releaseDragSourceGuard(); }
+
     void refresh();
 
     /** What a lane menu anchors to, so it opens under the button that
@@ -158,6 +160,9 @@ private:
     std::unique_ptr<stemlab::widgets::IconButton> menuButton;
     bool hasChildren = false;
     bool externalDragStarted = false;
+    void* dndSourceGuardToken = nullptr;
+
+    void releaseDragSourceGuard();
 
     std::function<void()> refreshEditor;
     std::function<void(int)> showRootMenu;
@@ -220,6 +225,9 @@ public:
     // drag from here, the same way the lane handles do.
     void mouseDrag(const juce::MouseEvent&) override;
     void mouseUp(const juce::MouseEvent&) override;
+
+    // Esc clears every lane's loop range at once.
+    bool keyPressed(const juce::KeyPress&) override;
 
 private:
     /** Every selected stem as one external drag, selection ranges included. */
@@ -405,6 +413,9 @@ private:
     // over the window cannot reload the source they were split from.
     StemLabSelfFileDragGuard selfFileDragGuard;
     bool footerDragStarted = false;
+    void* dndSourceGuardToken = nullptr;
+
+    void releaseDragSourceGuard();
 
     /** What the action segment last rendered as, so a click acts on the
         state the user actually saw. */

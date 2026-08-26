@@ -4070,8 +4070,6 @@ juce::StringArray StemLabAudioProcessor::getSelectedStemFilesForDrag()
     if (isEngineRunning() || !hasSuccessfulJob())
         return files;
 
-    const auto selectedRegionDirectory = getLastJobDirectory().getChildFile("selected_regions");
-
     for (int i = 0; i < stemCount; ++i)
     {
         if (!isStemEnabled(i))
@@ -4082,21 +4080,10 @@ juce::StringArray StemLabAudioProcessor::getSelectedStemFilesForDrag()
         if (!source.existsAsFile())
             continue;
 
-        const auto id = getStemName(i);
-        auto dragFile = source;
-
-        if (getStemSelectionRange(id).active)
-        {
-            selectedRegionDirectory.createDirectory();
-            dragFile = exportSelectedRegion(
-                source, selectedRegionDirectory.getChildFile(id + "_selection.wav"), id);
-        }
+        const auto dragFile = getStemDragFile(source, getStemName(i));
 
         if (!dragFile.existsAsFile())
-        {
-            setStatus("Could not export selected " + id + " range");
             return {};
-        }
 
         files.addIfNotAlreadyThere(dragFile.getFullPathName());
     }
@@ -4106,22 +4093,10 @@ juce::StringArray StemLabAudioProcessor::getSelectedStemFilesForDrag()
         if (!item.selected || !item.file.existsAsFile())
             continue;
 
-        auto dragFile = item.file;
-
-        if (getStemSelectionRange(item.id).active)
-        {
-            selectedRegionDirectory.createDirectory();
-            const auto safeName = item.id.replace("/", "_").replace("\\", "_");
-            dragFile = exportSelectedRegion(
-                item.file, selectedRegionDirectory.getChildFile(safeName + "_selection.wav"),
-                item.id);
-        }
+        const auto dragFile = getStemDragFile(item.file, item.id);
 
         if (!dragFile.existsAsFile())
-        {
-            setStatus("Could not export selected " + item.label + " range");
             return {};
-        }
 
         files.addIfNotAlreadyThere(dragFile.getFullPathName());
     }
@@ -5763,42 +5738,25 @@ void StemLabAudioProcessor::setStemSelectionRange(const juce::String& id, double
     }
 
     /*
-     * The lane you just swept becomes the one driving the loop.
-     *
-     * Upstream keyed this off whichever lane was being previewed, which in
-     * the Lanes interface means the soloed one - so dragging a range on any
-     * other lane stored it and looped nothing. The transport here is shared
-     * by every lane, so a loop is a property of the transport, and the last
-     * range drawn is the one that owns it.
+     * Every lane's range takes part in the loop. Upstream keyed the loop off
+     * whichever lane was being previewed, and an earlier pass here off the
+     * last range drawn; both threw ranges away. The transport is shared by
+     * every lane, so the loop is the merged set of all of them: overlapping
+     * ranges play through as one stretch, gaps are skipped.
      */
-    {
-        const juce::ScopedLock lock(selectionLock);
-        loopSelectionId = range.active ? id : juce::String();
-    }
-
-    updatePreviewLoopForId(id);
+    rebuildLoopRegions();
 
     sendChangeMessage();
 }
 
 void StemLabAudioProcessor::clearStemSelectionRange(const juce::String& id)
 {
-    bool ownedLoop = false;
-
     {
         const juce::ScopedLock lock(selectionLock);
         stemSelections.erase(id.toStdString());
-
-        ownedLoop = loopSelectionId == id;
-
-        if (ownedLoop)
-            loopSelectionId = juce::String();
     }
 
-    // Only the lane that set the loop can take it away; clearing some other
-    // lane's leftover range must not stop playback looping.
-    if (ownedLoop)
-        updatePreviewLoopForId(id);
+    rebuildLoopRegions();
 
     sendChangeMessage();
 }
@@ -5808,11 +5766,10 @@ void StemLabAudioProcessor::clearAllStemSelectionRanges()
     {
         const juce::ScopedLock lock(selectionLock);
         stemSelections.clear();
-        loopSelectionId = juce::String();
     }
-    previewLoopEnabled.store(false);
-    previewLoopStart.store(0.0);
-    previewLoopEnd.store(0.0);
+
+    rebuildLoopRegions();
+
     sendChangeMessage();
 }
 
@@ -6186,26 +6143,112 @@ juce::String StemLabAudioProcessor::getCurrentPreviewSelectionId() const
     return {};
 }
 
-void StemLabAudioProcessor::updatePreviewLoopForId(const juce::String& id)
+void StemLabAudioProcessor::rebuildLoopRegions()
 {
-    // The Lanes transport is shared, so the loop follows whichever transport
-    // is currently monitoring rather than a dedicated preview player.
-    const auto range = getStemSelectionRange(id);
+    // Message thread only: mouse gestures and the Esc key are the writers,
+    // and the timer that enforces the result runs here too.
+    std::vector<stemlab::loops::Region> regions;
+
+    {
+        const juce::ScopedLock lock(selectionLock);
+
+        for (const auto& [id, range] : stemSelections)
+        {
+            juce::ignoreUnused(id);
+
+            if (range.active)
+                regions.push_back({range.start, range.end});
+        }
+    }
+
+    auto merged = stemlab::loops::mergeRegions(std::move(regions));
+
+    {
+        const juce::ScopedLock lock(selectionLock);
+        loopRegionsNormalised = merged;
+    }
+
+    if (merged.empty())
+    {
+        loopTimer.stopTimer();
+        previewLoopWasPlaying = false;
+        return;
+    }
+
+    loopTimer.startTimer(30);
+
+    // Sweeping a range pulls the playhead into the loop right away, playing
+    // or paused, so pressing play always starts inside what was chosen.
     auto& transport = activeTransport();
     const auto length = transport.getLengthInSeconds();
-    const bool enabled = range.active && length > 0.0 && range.length() * length >= 0.02;
 
-    previewLoopEnabled.store(enabled);
-    previewLoopStart.store(enabled ? range.start * length : 0.0);
-    previewLoopEnd.store(enabled ? range.end * length : 0.0);
+    if (length > 0.0)
+        if (const auto target =
+                stemlab::loops::repositionFor(merged, transport.getCurrentPosition() / length))
+            transport.setPosition(*target * length);
+}
 
-    if (!enabled)
+void StemLabAudioProcessor::applyPreviewLoopTick()
+{
+    std::vector<stemlab::loops::Region> merged;
+
+    {
+        const juce::ScopedLock lock(selectionLock);
+        merged = loopRegionsNormalised;
+    }
+
+    auto& transport = activeTransport();
+    const auto length = transport.getLengthInSeconds();
+
+    if (merged.empty() || length <= 0.0)
         return;
 
-    const auto position = transport.getCurrentPosition();
-    const auto start = previewLoopStart.load();
-    const auto end = previewLoopEnd.load();
+    // A region too small to hold even one tick would pin the transport.
+    merged.erase(std::remove_if(merged.begin(), merged.end(),
+                                [length](const stemlab::loops::Region& region)
+                                { return (region.end - region.start) * length < 0.02; }),
+                 merged.end());
 
-    if (position < start || position >= end)
-        transport.setPosition(start);
+    if (merged.empty())
+        return;
+
+    const bool playing = transport.isPlaying();
+
+    if (playing)
+    {
+        if (const auto target =
+                stemlab::loops::repositionFor(merged, transport.getCurrentPosition() / length))
+            transport.setPosition(*target * length);
+    }
+    else if (previewLoopWasPlaying && transport.hasStreamFinished())
+    {
+        // The last region reaches the end of the file: the transport stops
+        // itself there, so looping means starting again from the first one.
+        transport.setPosition(merged.front().start * length);
+        transport.start();
+        previewLoopWasPlaying = true;
+        return;
+    }
+
+    previewLoopWasPlaying = playing;
+}
+
+juce::File StemLabAudioProcessor::getStemDragFile(const juce::File& source,
+                                                  const juce::String& selectionId)
+{
+    if (!getStemSelectionRange(selectionId).active)
+        return source;
+
+    const auto directory = getLastJobDirectory().getChildFile("selected_regions");
+    directory.createDirectory();
+
+    const auto safeName = selectionId.replace("/", "_").replace("\\", "_");
+
+    const auto trimmed = exportSelectedRegion(
+        source, directory.getChildFile(safeName + "_selection.wav"), selectionId);
+
+    if (!trimmed.existsAsFile())
+        setStatus("Could not export the selected " + selectionId + " range");
+
+    return trimmed;
 }
