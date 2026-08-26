@@ -237,7 +237,7 @@ jobs:
       # (Engine, models, ffmpeg, Ableton bridge) and compiles the installer.
       - name: Build the portable payload and the installer
         shell: pwsh
-        run: .\build_installer_windows.ps1 -SkipTests
+        run: .\scripts\build_installer_windows.ps1 -SkipTests
 
       - name: Package the plugin on its own
         shell: pwsh

@@ -11,7 +11,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
-$RepoRoot = [System.IO.Path]::GetFullPath($PSScriptRoot)
+$RepoRoot = Split-Path $PSScriptRoot -Parent
 $DistRoot = Join-Path $RepoRoot "dist"
 $CacheRoot = Join-Path $RepoRoot ".portable-cache"
 $Manifest = Join-Path $RepoRoot "packaging\models.json"

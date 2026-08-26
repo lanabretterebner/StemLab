@@ -9,7 +9,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$RepoRoot = [System.IO.Path]::GetFullPath($PSScriptRoot)
+$RepoRoot = Split-Path $PSScriptRoot -Parent
 $DistRoot = Join-Path $RepoRoot "dist"
 
 $VersionMatch = Select-String -LiteralPath (Join-Path $RepoRoot "pyproject.toml") -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
@@ -28,7 +28,7 @@ if (-not $SkipPortableBuild) {
     if ($SkipTests) { $PortableArgs.SkipTests = $true }
     if ($CleanPlugin) { $PortableArgs.CleanPlugin = $true }
 
-    & (Join-Path $RepoRoot "build_portable_windows.ps1") @PortableArgs
+    & (Join-Path $PSScriptRoot "build_portable_windows.ps1") @PortableArgs
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
