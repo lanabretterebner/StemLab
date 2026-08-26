@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import locale
 import os
+import queue
 import re
 import subprocess
 import sys
 import threading
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
@@ -37,13 +38,12 @@ _RF_TOTAL_RE = re.compile(
 )
 _RF_REMAINING_RE = re.compile(rb"Estimated time remaining:\s*(\d+(?:\.\d+)?)\s*seconds")
 
-# The exit code a job dies with when the plugin cancels it. Distinguishes a
-# user's cancel from a genuine failure in the JUCE-side exit handling.
+# Exit code a job dies with when the plugin cancels it, distinguishing a
+# user's cancel from a genuine failure on the JUCE side.
 CANCEL_EXIT_CODE = 75
 
-# The exit code when the job shut itself down because the plugin process
-# disappeared (host closed or crashed mid-job). Nobody is usually left to
-# read it; it exists for post-mortem clarity.
+# Exit code when the job shut itself down because the plugin process
+# disappeared (host closed or crashed mid-job).
 ORPHAN_EXIT_CODE = 76
 
 CANCEL_FILE = "stemlab_cancel.txt"
@@ -59,6 +59,44 @@ _active_processes_lock = threading.Lock()
 _shutdown_in_progress = threading.Event()
 
 
+def _configure_packaged_models() -> None:
+    """Point third-party backends at release-local model caches when present."""
+    engine = Path(sys.executable).resolve().parent
+    caches = engine / "ModelCaches"
+    if not caches.is_dir():
+        return
+    os.environ.setdefault("BS_ROFORMER_MODELS_PATH", str(caches / "bs-roformer-infer"))
+    demucs_repo = caches / "demucs"
+    if (demucs_repo / "5c90dfd2-34c22ccb.th").is_file():
+        os.environ.setdefault("STEMLAB_DEMUCS_MODEL_REPO", str(demucs_repo))
+    os.environ.setdefault("HF_HOME", str(caches / "huggingface"))
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+    os.environ.setdefault("STEMLAB_RECURSIVE_MODEL_DIR", str(engine / "Models" / "Recursive"))
+
+
+_configure_packaged_models()
+
+
+class JobCancelled(RuntimeError):
+    """Raised when the user cancels one specific StemLab worker job."""
+
+
+@dataclass(frozen=True)
+class CancellationToken:
+    """Cooperative cancellation backed by a per-job sentinel file."""
+
+    path: Path | None = None
+
+    @property
+    def requested(self) -> bool:
+        return self.path is not None and self.path.exists()
+
+    def raise_if_cancelled(self) -> None:
+        if self.requested:
+            raise JobCancelled("StemLab job cancelled")
+
+
 def configure_utf8_stdio() -> None:
     """Force UTF-8, line-buffered stdout/stderr for JUCE ChildProcess readers."""
     try:
@@ -66,6 +104,19 @@ def configure_utf8_stdio() -> None:
         sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
     except Exception:
         pass
+
+
+def child_process_env() -> dict[str, str]:
+    """Return an inherited environment that forces Python child CLIs to UTF-8.
+
+    The Windows portable runtime can otherwise inherit a legacy console encoding
+    such as cp1252.  Some third-party model CLIs print Unicode status symbols
+    (for example ``✓``), which can crash the child before inference even starts.
+    """
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
 
 
 def last_progress_percent(raw: bytes) -> float | None:
@@ -178,15 +229,12 @@ def _make_parent_death_check() -> Callable[[], bool]:
 def start_cancel_watchdog(job_dir: str | Path) -> None:
     """Shut the whole job down on a plugin cancel or a vanished plugin.
 
-    The JUCE plugin cannot see this process's children, so a direct kill from
-    the host side would orphan the torch subprocess at full CPU. Instead the
-    plugin writes ``stemlab_cancel.txt`` into the job directory and this
-    watchdog takes the job down from the inside, model children included.
-
-    The same watchdog also notices when the launching process itself has
-    died - the plugin was unloaded without a clean shutdown, or the host
-    closed or crashed mid-job - and shuts down the same way, so a separation
-    can never keep burning CPU with nobody left to collect it.
+    CancellationToken already gives a clean cooperative stop wherever the
+    job reaches a checkpoint. This is the backstop for where it cannot: a
+    model child can sit inside torch for minutes without reaching one, and
+    nothing cooperative runs at all once the plugin is gone. The watchdog
+    kills the registered model subprocesses and this process together, so a
+    separation can never keep burning CPU with nobody left to collect it.
 
     Any sentinel seen is honored, even one written before this thread
     started: a cancel clicked while the interpreter was still importing must
@@ -255,8 +303,9 @@ def run_progress_process(
     eta: Callable[[float], None] | None = None,
     download: Callable[[float], None] | None = None,
     log_progress_lines: bool = True,
+    cancellation: CancellationToken | None = None,
 ) -> int:
-    """Run a model CLI while forwarding CR/LF progress output.
+    """Run a model CLI while forwarding progress and honoring cancellation.
 
     ``progress`` receives separation percentages. ``download`` receives
     percentages from byte-transfer bars (one-time model downloads) so callers
@@ -266,21 +315,25 @@ def run_progress_process(
     "Estimated time remaining" lines (its chunk loop prints no percentages,
     so those lines are also converted into ``progress`` calls here).
     """
+    if cancellation:
+        cancellation.raise_if_cancelled()
+
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         bufsize=0,
+        env=child_process_env(),
     )
     assert process.stdout is not None
 
     with _active_processes_lock:
         _active_processes.append(process)
 
-    # A shutdown that snapshotted the registry just before this append would
-    # _exit without ever seeing this child, leaving a fresh torch process
-    # running with nobody attached. shut_down sets the flag before it
-    # snapshots, so checking it here covers the opposite ordering too.
+    # A watchdog shutdown that snapshotted the registry just before this
+    # append would _exit without ever seeing this child, leaving a fresh
+    # torch process running with nobody attached. shut_down sets the flag
+    # before it snapshots, so checking it here covers the other ordering.
     if _shutdown_in_progress.is_set():
         try:
             process.terminate()
@@ -290,7 +343,7 @@ def run_progress_process(
     last_reported = -1
     last_download_reported = -1
     roformer_total: float | None = None
-    encoding = locale.getpreferredencoding(False) or "utf-8"
+    encoding = "utf-8"
 
     def report_progress(percent: float) -> None:
         nonlocal last_reported
@@ -347,19 +400,54 @@ def run_progress_process(
         if text and (log_progress_lines or not handled_progress):
             log(text)
 
+    segments: queue.Queue[bytes | None] = queue.Queue()
+
+    def read_output() -> None:
+        try:
+            drain_cr_lf_stream(process.stdout, segments.put)
+        finally:
+            segments.put(None)
+
+    reader = threading.Thread(target=read_output, name="StemLab process output", daemon=True)
+    reader.start()
+
     try:
-        drain_cr_lf_stream(process.stdout, consume_segment)
+        reader_finished = False
+        while not reader_finished or process.poll() is None:
+            if cancellation and cancellation.requested:
+                process.terminate()
+                try:
+                    process.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2.0)
+                raise JobCancelled("StemLab job cancelled")
+
+            try:
+                segment = segments.get(timeout=0.10)
+            except queue.Empty:
+                continue
+
+            if segment is None:
+                reader_finished = True
+            else:
+                consume_segment(segment)
+
+        reader.join(timeout=1.0)
         code = process.wait()
 
-        # If the child died because the watchdog is cancelling the job,
-        # park this thread until the watchdog's _exit lands - otherwise the
-        # caller reports a phantom model failure in the cancel's last
-        # milliseconds.
+        # If the child died because the watchdog is taking the job down,
+        # park until its _exit lands - otherwise the caller reports a
+        # phantom model failure in the cancel's last milliseconds.
         while _shutdown_in_progress.is_set():
             time.sleep(0.25)
 
         return code
     finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=2.0)
+
         with _active_processes_lock:
             if process in _active_processes:
                 _active_processes.remove(process)

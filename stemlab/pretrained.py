@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 from .device import resolve_torch_device
-from .runtime import run_progress_process
+from .runtime import CancellationToken, run_progress_process
 
 DEFAULT_MODEL = "roformer-model-bs-roformer-sw-by-jarredou"
 
@@ -87,6 +87,7 @@ def _normalise_input_for_backend(
     staging_dir: Path,
     log: Callable[[str], None],
     passthrough_extensions: set[str] | None = None,
+    cancellation: CancellationToken | None = None,
 ) -> Path:
     """Return audio the separator can decode, converting when it cannot.
 
@@ -128,31 +129,28 @@ def _normalise_input_for_backend(
 
     staged = staging_dir / f"{input_path.stem}_stemlab_input.wav"
     log(f"Converting {extension or 'input audio'} to WAV for the separator...")
-    completed = subprocess.run(
-        [
-            ffmpeg,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-i",
-            str(input_path),
-            "-vn",
-            "-ac",
-            "2",
-            "-c:a",
-            "pcm_s24le",
-            str(staged),
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        errors="replace",
+    command = [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(input_path),
+        "-vn",
+        "-ac",
+        "2",
+        "-c:a",
+        "pcm_s24le",
+        str(staged),
+    ]
+    exit_code = run_progress_process(
+        command,
+        log,
+        lambda _percent: None,
+        cancellation=cancellation,
     )
-    if completed.returncode != 0 or not staged.exists():
-        details = (completed.stdout or "").strip()
-        if details:
-            raise RuntimeError("FFmpeg could not convert the input audio: " + details)
+    if exit_code != 0 or not staged.exists():
         raise RuntimeError("FFmpeg could not convert the input audio.")
     return staged
 
@@ -168,6 +166,7 @@ class RoFormerBackend:
         progress_callback: Callable[[float], None] | None = None,
         eta_callback: Callable[[float], None] | None = None,
         download_callback: Callable[[float], None] | None = None,
+        cancellation: CancellationToken | None = None,
     ) -> None:
         """Configure the model, device, logging, and progress callbacks."""
         self.model = model
@@ -176,6 +175,7 @@ class RoFormerBackend:
         self.progress_callback = progress_callback
         self.eta_callback = eta_callback
         self.download_callback = download_callback
+        self.cancellation = cancellation
 
     def _log(self, message: str) -> None:
         if self.log_callback:
@@ -211,6 +211,7 @@ class RoFormerBackend:
                 log=self._log,
                 # The upstream CLI only ever discovers "*.wav".
                 passthrough_extensions={".wav"},
+                cancellation=self.cancellation,
             )
             command = [
                 sys.executable,
@@ -238,6 +239,7 @@ class RoFormerBackend:
                 eta=self.eta_callback,
                 download=self.download_callback,
                 log_progress_lines=False,
+                cancellation=self.cancellation,
             )
             if return_code != 0:
                 raise subprocess.CalledProcessError(return_code, command)

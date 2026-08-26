@@ -63,4 +63,10 @@ Thumbs.db
 /StemLabRemote/
 /StemLab-Setup-*.exe
 /StemLab-Setup-*.bin
+# Legacy pre-rebrand payload names.
+/StemLab.exe
+/StemLab.vst3/
+/StemLabRemote/
+/StemLab-Setup-*.exe
+/StemLab-Setup-*.bin
 /FFMPEG_BUILD_INFO.txt

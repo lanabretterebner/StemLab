@@ -12,6 +12,7 @@ from .hybrid import fuse_stem_folders
 from .pretrained import DEFAULT_MODEL, RoFormerBackend
 from .refinement.kick import KickRefinementConfig
 from .refinement.pipeline import refine_stem_folder
+from .runtime import CancellationToken
 
 ENGINE_ROFORMER = "roformer"
 ENGINE_DEMUCS = "demucs"
@@ -65,6 +66,7 @@ def separate(
     refinement_config: KickRefinementConfig | None = None,
     log_callback: Callable[[str], None] | None = None,
     progress_callback: Callable[[float, str], None] | None = None,
+    cancellation: CancellationToken | None = None,
 ) -> PipelineResult:
     """Run the selected model engine and optional kick-bleed refinement.
 
@@ -90,6 +92,9 @@ def separate(
             print(message, flush=True)
 
     def progress(percent: float, stage: str):
+        if cancellation:
+            cancellation.raise_if_cancelled()
+
         percent = max(0.0, min(100.0, float(percent)))
 
         if progress_callback:
@@ -149,6 +154,7 @@ def separate(
             progress_callback=on_roformer_progress,
             eta_callback=eta,
             download_callback=make_download_progress(10.0, "BS-RoFormer"),
+            cancellation=cancellation,
         )
 
         backend.separate(
@@ -173,6 +179,7 @@ def separate(
             progress_callback=on_demucs_progress,
             eta_callback=eta,
             download_callback=make_download_progress(10.0, "Demucs"),
+            cancellation=cancellation,
         )
 
         backend.separate(
@@ -200,6 +207,7 @@ def separate(
             progress_callback=on_hybrid_roformer,
             eta_callback=eta,
             download_callback=make_download_progress(10.0, "BS-RoFormer"),
+            cancellation=cancellation,
         ).separate(
             input_path=input_path,
             output_dir=roformer_dir,
@@ -221,6 +229,7 @@ def separate(
             progress_callback=on_hybrid_demucs,
             eta_callback=eta,
             download_callback=make_download_progress(42.0, "Demucs"),
+            cancellation=cancellation,
         ).separate(
             input_path=input_path,
             output_dir=demucs_dir,

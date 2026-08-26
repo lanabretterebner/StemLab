@@ -64,6 +64,18 @@ juce::String formatSeconds(double seconds)
 
 // Settings-menu ids: 1..5 are the fixed entries, 200+ the separators.
 constexpr int waveformColourMenuBase = 300;
+constexpr int gridModeMenuBase = 400;
+constexpr int analysisModeMenuBase = 410;
+constexpr int tempoMenuBase = 420;
+constexpr int analysisEnableId = 430;
+constexpr int analysisForgetId = 431;
+constexpr int analysisClearCacheId = 432;
+
+// Lane-menu ids for MIDI, above the per-menu action ids.
+constexpr int midiConvertId = 500;
+constexpr int midiAuditionId = 501;
+constexpr int midiSaveId = 502;
+constexpr int midiSendId = 503;
 
 juce::String stemDisplayName(int index)
 {
@@ -138,6 +150,50 @@ void StemLaneWaveform::paint(juce::Graphics& g)
     const auto inner = full.reduced(6.0f, 5.0f);
 
     const int palette = processor.getWaveformColourIndex();
+
+    // Beat grid behind the waveform: bars read stronger than beats, and the
+    // whole thing stays subordinate to the audio it sits behind.
+    if (length > 0.0 && !inner.isEmpty())
+    {
+        const auto grid = processor.getWaveformGridInfo();
+
+        if (grid.bpm > 0.0)
+        {
+            const auto secondsPerBeat = 60.0 / grid.bpm;
+            const auto beatsPerBar = juce::jmax(1, grid.numerator);
+
+            if (secondsPerBeat > 0.0 && secondsPerBeat * beatsPerBar * 3.0 < length)
+            {
+                const auto pixelsPerSecond =
+                    static_cast<double>(inner.getWidth()) / juce::jmax(1.0e-6, length);
+
+                // Thin out beat lines that would be closer than a few pixels.
+                const bool drawBeats = secondsPerBeat * pixelsPerSecond >= 7.0;
+
+                int beatIndex = 0;
+
+                for (double t = grid.barOne; t < length; t += secondsPerBeat, ++beatIndex)
+                {
+                    if (t < 0.0)
+                        continue;
+
+                    const bool bar = (beatIndex % beatsPerBar) == 0;
+
+                    if (!bar && !drawBeats)
+                        continue;
+
+                    const auto x =
+                        inner.getX() + static_cast<float>(t * pixelsPerSecond);
+
+                    if (x < inner.getX() || x > inner.getRight())
+                        continue;
+
+                    g.setColour(theme::colours::text().withAlpha(bar ? 0.22f : 0.10f));
+                    g.fillRect(x, inner.getY(), bar ? 1.4f : 1.0f, inner.getHeight());
+                }
+            }
+        }
+    }
 
     if (length > 0.0 && thumbnail.getNumChannels() > 0 && !inner.isEmpty())
     {
@@ -1323,7 +1379,10 @@ void StemLabAudioProcessorEditor::showRootLayersMenu(int stemIndex)
     const bool supportsSplit = rootSupportsAdaptiveSplit(stemIndex);
     const bool hasChildren = rootHasChildren(stemIndex);
 
-    if (!supportsSplit && !hasChildren)
+    const bool jobDone = processor.hasSuccessfulJob();
+    const bool laneReady = jobDone && processor.getCompletedStemFile(stemIndex).existsAsFile();
+
+    if (!supportsSplit && !hasChildren && !laneReady)
         return;
 
     juce::PopupMenu menu;
@@ -1347,12 +1406,18 @@ void StemLabAudioProcessorEditor::showRootLayersMenu(int stemIndex)
                                                                      : "Expand Children");
     }
 
+    if (laneReady)
+    {
+        menu.addSeparator();
+        addMidiMenuItems(menu, stemName);
+    }
+
     auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
 
     auto* target = rootLanes[static_cast<size_t>(stemIndex)].get();
 
     menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(target),
-                       [safeThis, stemIndex](int result)
+                       [safeThis, stemIndex, stemName](int result)
                        {
                            if (safeThis == nullptr || result == 0)
                                return;
@@ -1360,6 +1425,8 @@ void StemLabAudioProcessorEditor::showRootLayersMenu(int stemIndex)
                                safeThis->processor.launchRecursiveStemSplit(stemIndex);
                            else if (result == 2)
                                safeThis->toggleRootExpanded(stemIndex);
+                           else
+                               safeThis->handleMidiMenuResult(result, stemName, stemIndex, {});
                            safeThis->refreshFromProcessor();
                        });
 }
@@ -1401,6 +1468,12 @@ void StemLabAudioProcessorEditor::showChildLayersMenu(const juce::String& itemId
                                                                       : "Collapse Children");
     }
 
+    if (info.file.existsAsFile())
+    {
+        menu.addSeparator();
+        addMidiMenuItems(menu, itemId);
+    }
+
     auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
 
     menu.showMenuAsync(
@@ -1417,6 +1490,10 @@ void StemLabAudioProcessorEditor::showChildLayersMenu(const juce::String& itemId
             else if (result == expandId)
             {
                 safeThis->toggleChildExpanded(itemId);
+            }
+            else
+            {
+                safeThis->handleMidiMenuResult(result, itemId, -1, itemId);
             }
 
             safeThis->refreshFromProcessor();
@@ -1635,6 +1712,18 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
         if (processor.getCapturedSeconds() > 0.0)
             parts.add(formatSeconds(processor.getCapturedSeconds()));
+
+        // Key/BPM sit with the rest of the source's facts rather than in a
+        // panel of their own. Only while the analysis is on: its "off" text
+        // would otherwise be permanent clutter on a line that is mostly
+        // about the file itself.
+        if (processor.isBeatThisEnabled())
+        {
+            const auto analysis = processor.getSourceAnalysisText();
+
+            if (analysis.isNotEmpty())
+                parts.add(analysis);
+        }
 
         if (!processor.isStandaloneApp())
         {
@@ -1926,6 +2015,99 @@ void StemLabAudioProcessorEditor::chooseJobRootFolder()
                                   });
 }
 
+void StemLabAudioProcessorEditor::addMidiMenuItems(juce::PopupMenu& menu, const juce::String& id)
+{
+    const bool converting = processor.isMidiConversionRunning();
+    const bool haveMidi = processor.hasMidiInfo(id);
+
+    menu.addSectionHeader("MIDI");
+
+    menu.addItem(midiConvertId, haveMidi ? "Re-convert to MIDI" : "Convert to MIDI", !converting);
+
+    if (!haveMidi)
+        return;
+
+    menu.addItem(midiAuditionId,
+                 processor.isMidiAuditioning(id) ? "Stop Audition" : "Audition MIDI");
+
+    menu.addItem(midiSaveId, "Save MIDI...");
+
+#if JUCE_WINDOWS
+    if (processor.getHostIntegration() == StemLabAudioProcessor::hostIntegrationAbletonLive)
+        menu.addItem(midiSendId, "Send MIDI to Ableton");
+#endif
+}
+
+void StemLabAudioProcessorEditor::handleMidiMenuResult(int result, const juce::String& id,
+                                                       int stemIndex, const juce::String& childId)
+{
+    if (result == midiConvertId)
+    {
+        const bool started = childId.isNotEmpty()
+                                 ? processor.launchRecursiveMidiConversion(childId)
+                                 : processor.launchStemMidiConversion(stemIndex);
+
+        if (!started)
+            processor.postUiStatus("Could not start the MIDI conversion");
+
+        return;
+    }
+
+    if (result == midiAuditionId)
+    {
+        if (processor.isMidiAuditioning(id))
+            processor.stopMidiAudition();
+        else
+            processor.auditionMidi(id);
+
+        return;
+    }
+
+    if (result == midiSendId)
+    {
+        processor.sendMidiToAbleton(id);
+        return;
+    }
+
+    if (result != midiSaveId)
+        return;
+
+    const auto info = processor.getMidiInfo(id);
+
+    if (!info.midiFile.existsAsFile())
+    {
+        processor.postUiStatus("That MIDI file is no longer on disk");
+        return;
+    }
+
+    fileChooser = std::make_unique<juce::FileChooser>(
+        "Save MIDI as", juce::File::getSpecialLocation(juce::File::userMusicDirectory)
+                            .getChildFile(info.midiFile.getFileName()),
+        "*.mid");
+
+    auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
+    const auto source = info.midiFile;
+
+    fileChooser->launchAsync(juce::FileBrowserComponent::saveMode |
+                                 juce::FileBrowserComponent::canSelectFiles |
+                                 juce::FileBrowserComponent::warnAboutOverwriting,
+                             [safeThis, source](const juce::FileChooser& chooser)
+                             {
+                                 if (safeThis == nullptr)
+                                     return;
+
+                                 const auto target = chooser.getResult();
+
+                                 if (target == juce::File())
+                                     return;
+
+                                 safeThis->processor.postUiStatus(
+                                     source.copyFileTo(target)
+                                         ? "MIDI saved to " + target.getFileName()
+                                         : "Could not save the MIDI file");
+                             });
+}
+
 void StemLabAudioProcessorEditor::showSettingsMenu()
 {
     juce::PopupMenu menu;
@@ -1968,6 +2150,73 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
     }
 
     menu.addSubMenu("Waveform Colour", waveformMenu);
+
+    // Beat grid drawn behind every lane's waveform.
+    juce::PopupMenu gridMenu;
+
+    gridMenu.addItem(gridModeMenuBase + StemLabAudioProcessor::gridHost, "Follow Host Tempo",
+                     !processor.isStandaloneApp(),
+                     processor.getWaveformGridMode() == StemLabAudioProcessor::gridHost);
+
+    gridMenu.addItem(gridModeMenuBase + StemLabAudioProcessor::gridSource, "Follow Analysed Source",
+                     true,
+                     processor.getWaveformGridMode() == StemLabAudioProcessor::gridSource);
+
+    gridMenu.addItem(gridModeMenuBase + StemLabAudioProcessor::gridManual, "Manual Tempo", true,
+                     processor.getWaveformGridMode() == StemLabAudioProcessor::gridManual);
+
+    menu.addSubMenu("Beat Grid", gridMenu);
+
+    menu.addSeparator();
+
+    menu.addSectionHeader("Source analysis");
+
+    menu.addItem(analysisEnableId,
+                 processor.isBeatThisEnabled() ? "Stop / Disable Key & BPM Analysis"
+                                               : "Analyse Key & BPM",
+                 !processor.isEngineRunning() || processor.isBeatThisEnabled());
+
+    juce::PopupMenu analysisModeMenu;
+
+    analysisModeMenu.addItem(analysisModeMenuBase + StemLabAudioProcessor::analysisFast, "Fast",
+                             true,
+                             processor.getSourceAnalysisMode() == StemLabAudioProcessor::analysisFast);
+
+    analysisModeMenu.addItem(analysisModeMenuBase + StemLabAudioProcessor::analysisAccurate,
+                             "Accurate (loads the Beat This! model)", true,
+                             processor.getSourceAnalysisMode()
+                                 == StemLabAudioProcessor::analysisAccurate);
+
+    menu.addSubMenu("Analysis Quality", analysisModeMenu);
+
+    juce::PopupMenu tempoMenu;
+
+    const auto detected = processor.getDetectedSourceBpm();
+
+    auto tempoLabel = [](const char* name, double bpm)
+    {
+        return bpm > 0.0 ? juce::String(name) + " (" + juce::String(bpm, 1) + " BPM)"
+                         : juce::String(name);
+    };
+
+    tempoMenu.addItem(tempoMenuBase + StemLabAudioProcessor::tempoHalf,
+                      tempoLabel("Half Time", processor.getHalfTimeSourceBpm()), detected > 0.0,
+                      processor.getTempoInterpretation() == StemLabAudioProcessor::tempoHalf);
+
+    tempoMenu.addItem(tempoMenuBase + StemLabAudioProcessor::tempoDetected,
+                      tempoLabel("As Detected", detected), detected > 0.0,
+                      processor.getTempoInterpretation() == StemLabAudioProcessor::tempoDetected);
+
+    tempoMenu.addItem(tempoMenuBase + StemLabAudioProcessor::tempoDouble,
+                      tempoLabel("Double Time", processor.getDoubleTimeSourceBpm()), detected > 0.0,
+                      processor.getTempoInterpretation() == StemLabAudioProcessor::tempoDouble);
+
+    menu.addSubMenu("Tempo Interpretation", tempoMenu, detected > 0.0);
+
+    menu.addItem(analysisForgetId, "Forget Saved Correction For This Source",
+                 processor.getSourceBpm() > 0.0);
+
+    menu.addItem(analysisClearCacheId, "Clear Analysis Cache");
 
     menu.addSeparator();
 
@@ -2037,6 +2286,38 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
 
                 safeThis->processor.postUiStatus("Waveform colour: " +
                                                  theme::waveform::paletteName(palette));
+            }
+            else if (result >= gridModeMenuBase && result <= gridModeMenuBase + 2)
+            {
+                const int mode = result - gridModeMenuBase;
+
+                safeThis->processor.setWaveformGridMode(mode);
+
+                const juce::StringArray names{"host tempo", "analysed source", "manual tempo"};
+
+                safeThis->processor.postUiStatus("Beat grid follows " + names[mode]);
+            }
+            else if (result >= analysisModeMenuBase && result <= analysisModeMenuBase + 1)
+            {
+                safeThis->processor.setSourceAnalysisMode(result - analysisModeMenuBase);
+            }
+            else if (result >= tempoMenuBase && result <= tempoMenuBase + 2)
+            {
+                safeThis->processor.setTempoInterpretation(result - tempoMenuBase);
+            }
+            else if (result == analysisEnableId)
+            {
+                safeThis->processor.setBeatThisEnabled(!safeThis->processor.isBeatThisEnabled());
+            }
+            else if (result == analysisForgetId)
+            {
+                if (safeThis->processor.forgetSourceCorrection())
+                    safeThis->processor.postUiStatus("Saved analysis correction removed");
+            }
+            else if (result == analysisClearCacheId)
+            {
+                if (safeThis->processor.clearAnalysisCache())
+                    safeThis->processor.postUiStatus("Clearing the analysis cache...");
             }
 
             safeThis->refreshFromProcessor();

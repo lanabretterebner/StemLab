@@ -55,6 +55,9 @@ class RecursiveChild:
 
 def default_model_dir() -> Path:
     """Return the per-user cache directory for recursive model files."""
+    packaged = os.environ.get("STEMLAB_RECURSIVE_MODEL_DIR")
+    if packaged:
+        return Path(packaged)
     local = os.environ.get("LOCALAPPDATA")
     if local:
         return Path(local) / "StemLab" / "Models" / "Recursive"

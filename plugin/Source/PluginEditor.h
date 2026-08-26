@@ -175,6 +175,11 @@ private:
     void layoutPanel();
 
     void showRootLayersMenu(int stemIndex);
+
+    /** MIDI entries shared by the root and child lane menus. */
+    void addMidiMenuItems(juce::PopupMenu& menu, const juce::String& id);
+    void handleMidiMenuResult(int result, const juce::String& id, int stemIndex,
+                              const juce::String& childId);
     void showChildLayersMenu(const juce::String& itemId);
     bool rootSupportsAdaptiveSplit(int stemIndex) const;
     bool rootHasChildren(int stemIndex) const;
