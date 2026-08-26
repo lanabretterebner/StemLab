@@ -10,6 +10,7 @@ from pathlib import Path
 from stemlab.runtime import (
     CANCEL_EXIT_CODE,
     CANCEL_FILE,
+    ORPHAN_EXIT_CODE,
     last_progress_percent,
     looks_like_download,
     tqdm_remaining_seconds,
@@ -157,32 +158,55 @@ class TestCancelWatchdog:
         # An intermediate process launches the watchdog-carrying job and then
         # exits, exactly like a plugin instance vanishing mid-separation. The
         # job must notice the reparenting and stop on its own.
+        #
+        # The launcher waits for the job to signal that its watchdog is armed
+        # before exiting. Without that the test races itself: the launcher is
+        # gone within a millisecond of spawning, long before the job's
+        # interpreter has booted, so the reparenting has already happened by
+        # the time the watchdog records the parent it is meant to watch - and
+        # no change is ever observed. A plugin dying mid-job is the case this
+        # protects, and a plugin is alive while its job starts up.
         import os
         import signal
 
         job_dir = tmp_path / "job"
         job_dir.mkdir()
 
+        armed = job_dir / "armed.txt"
+
         job_script = tmp_path / "job_script.py"
         job_script.write_text(
             "import time\n"
+            "from pathlib import Path\n"
             "from stemlab.runtime import start_cancel_watchdog\n"
             f"start_cancel_watchdog({str(job_dir)!r})\n"
+            f"Path({str(armed)!r}).write_text('armed', encoding='utf-8')\n"
             "time.sleep(30)\n",
             encoding="utf-8",
         )
+
         launcher_script = tmp_path / "launcher_script.py"
         launcher_script.write_text(
-            "import subprocess, sys\n"
-            f"child = subprocess.Popen([sys.executable, {str(job_script)!r}])\n"
-            "print(child.pid, flush=True)\n",
+            "import subprocess, sys, time\n"
+            "from pathlib import Path\n"
+            # The job must not inherit this process's stdout: the pipe would
+            # stay open for as long as the job lives, and the caller reading
+            # it would wait on the job rather than on the launcher.
+            f"child = subprocess.Popen([sys.executable, {str(job_script)!r}],\n"
+            "                         stdout=subprocess.DEVNULL,\n"
+            "                         stderr=subprocess.DEVNULL)\n"
+            "print(child.pid, flush=True)\n"
+            f"armed = Path({str(armed)!r})\n"
+            "deadline = time.monotonic() + 30.0\n"
+            "while not armed.exists() and time.monotonic() < deadline:\n"
+            "    time.sleep(0.05)\n",
             encoding="utf-8",
         )
 
         launcher = subprocess.run(
             [sys.executable, str(launcher_script)],
             stdout=subprocess.PIPE,
-            timeout=15,
+            timeout=60,
         )
         job_pid = int(launcher.stdout.strip())
 
@@ -194,13 +218,57 @@ class TestCancelWatchdog:
             return True
 
         try:
-            deadline = time.monotonic() + 5.0
+            assert armed.exists(), "the job never armed its watchdog"
+
+            deadline = time.monotonic() + 15.0
             while job_alive() and time.monotonic() < deadline:
                 time.sleep(0.1)
             assert not job_alive()
         finally:
             if job_alive():
                 os.kill(job_pid, signal.SIGKILL)
+
+    def test_named_parent_death_stops_the_job(self, tmp_path: Path):
+        # What the plugin actually uses: it exports its own pid, so the job
+        # watches a named process rather than watching for reparenting. This
+        # has no startup race - the pid is meaningful whether or not the
+        # parent is still alive when the watchdog reads it.
+        import os
+
+        job_dir = tmp_path / "job"
+        job_dir.mkdir()
+
+        # A parent that is already gone: the job must stop rather than run on
+        # believing someone is still waiting for it.
+        doomed = subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(0)"])
+        doomed.wait()
+
+        environment = dict(os.environ)
+        environment["STEMLAB_PARENT_PID"] = str(doomed.pid)
+
+        job = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import time\n"
+                "from stemlab.runtime import start_cancel_watchdog\n"
+                f"start_cancel_watchdog({str(job_dir)!r})\n"
+                "time.sleep(30)\n",
+            ],
+            env=environment,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        try:
+            deadline = time.monotonic() + 15.0
+            while job.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.1)
+
+            assert job.poll() == ORPHAN_EXIT_CODE
+        finally:
+            if job.poll() is None:
+                job.kill()
 
     def test_pre_existing_sentinel_still_cancels(self, tmp_path: Path):
         job_dir = tmp_path / "job"
