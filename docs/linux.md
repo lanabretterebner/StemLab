@@ -57,8 +57,8 @@ Useful flags:
 Outputs land in:
 
 ```text
-plugin/build/StemLabPlugin_artefacts/Release/VST3/StemLab.vst3
-plugin/build/StemLabPlugin_artefacts/Release/Standalone/StemLab
+src/plugin/build/StemLabPlugin_artefacts/Release/VST3/StemLab.vst3
+src/plugin/build/StemLabPlugin_artefacts/Release/Standalone/StemLab
 ```
 
 ## 3. Install the VST3
@@ -235,6 +235,6 @@ worth knowing when you file a bug.
 ## Verifying a build
 
 ```bash
-ldd plugin/build/StemLabPlugin_artefacts/Release/VST3/StemLab.vst3/Contents/x86_64-linux/StemLab.so | grep "not found"
+ldd src/plugin/build/StemLabPlugin_artefacts/Release/VST3/StemLab.vst3/Contents/x86_64-linux/StemLab.so | grep "not found"
 python3 -m pytest tests -q
 ```

@@ -161,7 +161,7 @@ jobs:
         if: matrix.flavor == 'cpu'
         run: |
           version="${{ needs.metadata.outputs.version }}"
-          artefacts="plugin/build/StemLabPlugin_artefacts/Release"
+          artefacts="src/plugin/build/StemLabPlugin_artefacts/Release"
           name="StemLab-$version-Linux-plugin-only"
 
           # One directory inside the archive, so extracting it does not
@@ -382,7 +382,7 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ needs.metadata.outputs.version }}"
-          $artefacts = "plugin\build\StemLabPlugin_artefacts\Release"
+          $artefacts = "src\plugin\build\StemLabPlugin_artefacts\Release"
           $name = "StemLab-$version-Windows-plugin-only"
 
           # One folder inside the archive, so extracting it does not scatter a

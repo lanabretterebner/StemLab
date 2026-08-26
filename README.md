@@ -33,17 +33,17 @@ Building, running, testing, and releasing are covered in `docs/`:
 ## Repository Map
 
 ```text
-docs/                    The guides listed above
-integrations/ableton/    Ableton Live control-surface bridge
-packaging/               Installer definition and release model manifest
-plugin/                  JUCE C++ frontend, assets, CMake definition, tests
-scripts/                 Development setup, build, install, release commands
-stemlab/                 Python separation and DSP engine
-tests/                   Fast unit tests using generated audio
-pyproject.toml           Python package, commands, and tool settings
+docs/                        The guides listed above
+packaging/                   Installer definition
+scripts/                     Development setup, build, install, release commands
+src/integrations/ableton/    Ableton Live control-surface bridge
+src/plugin/                  JUCE C++ frontend, assets, CMake definition, tests
+src/stemlab/                 Python separation and DSP engine
+tests/                       Fast unit tests using generated audio
+pyproject.toml               Python package, commands, and tool settings
 ```
 
-Generated directories (`.venv/`, `.portable-cache/`, `plugin/build/`,
+Generated directories (`.venv/`, `.portable-cache/`, `src/plugin/build/`,
 `dist/`, ...) are ignored by Git.
 
 ## License

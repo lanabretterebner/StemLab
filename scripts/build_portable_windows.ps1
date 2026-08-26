@@ -111,8 +111,8 @@ if (-not $SkipPluginBuild) {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-$Standalone = Join-Path $RepoRoot "plugin\build\StemLabPlugin_artefacts\Release\Standalone\StemLab.exe"
-$Vst3 = Join-Path $RepoRoot "plugin\build\StemLabPlugin_artefacts\Release\VST3\StemLab.vst3"
+$Standalone = Join-Path $RepoRoot "src\plugin\build\StemLabPlugin_artefacts\Release\Standalone\StemLab.exe"
+$Vst3 = Join-Path $RepoRoot "src\plugin\build\StemLabPlugin_artefacts\Release\VST3\StemLab.vst3"
 Assert-File $Standalone "The Standalone build is missing."
 Assert-Directory $Vst3 "The VST3 build is missing."
 
@@ -173,7 +173,7 @@ Get-ChildItem -LiteralPath $EngineSitePackages -Force -ErrorAction SilentlyConti
     $_.Name -like "stemlab_open-*.dist-info" -or
     $_.Name -like "fi_stem_open-*.dist-info"
 } | Remove-Item -Recurse -Force
-Invoke-Robocopy (Join-Path $RepoRoot "stemlab") (Join-Path $EngineSitePackages "stemlab") @("/XD", "__pycache__")
+Invoke-Robocopy (Join-Path $RepoRoot "src\stemlab") (Join-Path $EngineSitePackages "stemlab") @("/XD", "__pycache__")
 
 Copy-Item -LiteralPath $FfmpegPath -Destination (Join-Path $Engine "ffmpeg.exe") -Force
 $FfmpegInfo = & $FfmpegPath -version 2>&1 | Select-Object -First 8
@@ -194,13 +194,13 @@ Set-Content -LiteralPath (Join-Path $OutputDirectory "FFMPEG_BUILD_INFO.txt") -E
 Write-Host "Copying application and Ableton integration..." -ForegroundColor Cyan
 Copy-Item -LiteralPath $Standalone -Destination (Join-Path $OutputDirectory "StemLab.exe") -Force
 Invoke-Robocopy $Vst3 (Join-Path $OutputDirectory "StemLab.vst3")
-Invoke-Robocopy (Join-Path $RepoRoot "integrations\ableton\StemLabRemote") (Join-Path $OutputDirectory "StemLabRemote") @("/XD", "__pycache__")
+Invoke-Robocopy (Join-Path $RepoRoot "src\integrations\ableton\StemLabRemote") (Join-Path $OutputDirectory "StemLabRemote") @("/XD", "__pycache__")
 New-Item -ItemType Directory -Path (Join-Path $OutputDirectory "scripts") -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\install_ableton.ps1") -Destination (Join-Path $OutputDirectory "scripts\install_ableton.ps1") -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "LICENSE") -Destination $OutputDirectory -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "docs\third-party.md") -Destination (Join-Path $OutputDirectory "THIRD_PARTY.md") -Force
 # The installer definition's SetupIconFile reads this out of the payload.
-Copy-Item -LiteralPath (Join-Path $RepoRoot "plugin\Resources\StemLabIcon.ico") -Destination (Join-Path $OutputDirectory "StemLabIcon.ico") -Force
+Copy-Item -LiteralPath (Join-Path $RepoRoot "src\plugin\Resources\StemLabIcon.ico") -Destination (Join-Path $OutputDirectory "StemLabIcon.ico") -Force
 
 $EnginePython = Join-Path $Engine "python.exe"
 Assert-File $EnginePython "The embedded Python runtime was not assembled correctly."

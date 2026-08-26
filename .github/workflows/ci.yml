@@ -98,4 +98,4 @@ jobs:
         run: ./scripts/build_plugin.sh --build-type Debug
 
       - name: Tests
-        run: ctest --test-dir plugin/build --output-on-failure
+        run: ctest --test-dir src/plugin/build --output-on-failure

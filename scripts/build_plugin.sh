@@ -20,7 +20,7 @@ JUCE_SOURCE=""
 CLEAN=0
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PLUGIN_ROOT="$REPO_ROOT/plugin"
+PLUGIN_ROOT="$REPO_ROOT/src/plugin"
 BUILD_DIR="$PLUGIN_ROOT/build"
 CACHE_ROOT="$REPO_ROOT/.portable-cache"
 
