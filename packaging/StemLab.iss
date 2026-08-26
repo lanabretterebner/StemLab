@@ -26,7 +26,6 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir={#OutputDir}
 OutputBaseFilename=StemLab-Setup-{#AppVersion}
-SetupIconFile={#SourceDir}\StemLabIcon.ico
 Compression=lzma2/max
 SolidCompression=yes
 DiskSpanning=yes

@@ -56,8 +56,6 @@ if (NOT STEMLAB_VST3_SDK_DIR)
 endif()
 
 juce_add_plugin(StemLabPlugin
-    ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/Resources/StemLabIcon.png"
-    ICON_SMALL "${CMAKE_CURRENT_SOURCE_DIR}/Resources/StemLabIcon.png"
     COMPANY_NAME "StemLab"
     BUNDLE_ID "org.stemlab.audio"
     PLUGIN_MANUFACTURER_CODE StLb
@@ -75,7 +73,6 @@ juce_add_plugin(StemLabPlugin
 
 juce_add_binary_data(StemLabAssets
     SOURCES
-        Resources/StemLabIcon.png
         Resources/fonts/Inter-Regular.ttf
         Resources/fonts/Inter-Medium.ttf
 )
