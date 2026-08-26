@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -265,15 +266,11 @@ class TestCancelWatchdog:
             encoding="utf-8",
         )
 
-        launcher = subprocess.run(
+        subprocess.run(
             [sys.executable, str(launcher_script)],
             stdout=subprocess.PIPE,
             timeout=60,
         )
-        job_pid = int(launcher.stdout.strip())
-
-        def job_alive() -> bool:
-            return pid_alive(job_pid)
 
         def diagnosis() -> str:
             parts = []
@@ -287,20 +284,127 @@ class TestCancelWatchdog:
                     parts.append(f"{label}=<not written>")
             return "; ".join(parts)
 
+        assert armed.exists(), f"the job never armed its watchdog. {diagnosis()}"
+
+        # Take the job's word for its own pid and its own parent rather than
+        # Popen's. On Windows a venv's Scripts\python.exe is a launcher stub
+        # that runs the real interpreter as a child, so Popen reports the
+        # stub: the job runs one level deeper, and the process it watches is
+        # the stub rather than the launcher. Watching Popen's pid there meant
+        # watching the wrong process, and waiting for the launcher to die
+        # meant waiting on a process the job had never heard of.
+        seen = json.loads(job_diagnosis.read_text())
+        job_pid = seen["pid"]
+        parent_pid = seen["getppid"]
+
+        def job_alive() -> bool:
+            return pid_alive(job_pid)
+
         try:
-            assert armed.exists(), "the job never armed its watchdog"
+            # Whatever the job called its parent is what has to die for this
+            # to mean anything. On POSIX that is the launcher and it is
+            # already gone, so this does nothing; on Windows it is the stub,
+            # which outlives the launcher because it is waiting on the job.
+            if pid_alive(parent_pid):
+                os.kill(parent_pid, KILL_SIGNAL)
 
             deadline = time.monotonic() + 15.0
             while job_alive() and time.monotonic() < deadline:
                 time.sleep(0.1)
 
             assert not job_alive(), (
-                "the orphaned job outlived its launcher: the watchdog never "
-                f"saw the parent die. {diagnosis()}"
+                "the job outlived the parent it was watching: the watchdog "
+                f"never saw that parent die. {diagnosis()}"
             )
         finally:
             if job_alive():
                 os.kill(job_pid, KILL_SIGNAL)
+
+    def test_a_live_intermediate_parent_keeps_the_job_running(self, tmp_path: Path):
+        # The shape that cost three CI rounds to find. On Windows a venv's
+        # Scripts\python.exe is a launcher stub that runs the real interpreter
+        # as a child, so the tree is launcher -> stub -> job and the stub sits
+        # there waiting on the job. The job's parent is the stub, not the
+        # launcher, and the stub outlives the launcher by definition.
+        #
+        # The watchdog is right to keep going there: a parent it can still see
+        # is a parent that has not died. What is wrong is any test that spawns
+        # through an intermediate and then expects the launcher's exit to be
+        # noticed. Standing the intermediate up explicitly puts that on both
+        # platforms, so this cannot go back to being a Windows-only discovery
+        # made during a release.
+        job_dir = tmp_path / "job"
+        job_dir.mkdir()
+
+        armed = job_dir / "armed.txt"
+        job_diagnosis = job_dir / "job_diagnosis.json"
+
+        job_script = tmp_path / "job_script.py"
+        job_script.write_text(
+            "import json, os, sys, time\n"
+            "from pathlib import Path\n"
+            "from stemlab.runtime import start_cancel_watchdog\n"
+            "seen = {'pid': os.getpid(), 'getppid': os.getppid()}\n"
+            f"Path({str(job_diagnosis)!r}).write_text(json.dumps(seen))\n"
+            f"start_cancel_watchdog({str(job_dir)!r})\n"
+            f"Path({str(armed)!r}).write_text('armed', encoding='utf-8')\n"
+            "time.sleep(30)\n",
+            encoding="utf-8",
+        )
+
+        # Stands in for the venv launcher stub: spawn the job, then wait on it.
+        stub_script = tmp_path / "stub_script.py"
+        stub_script.write_text(
+            "import subprocess, sys\n"
+            f"child = subprocess.Popen([sys.executable, {str(job_script)!r}],\n"
+            "                         stdout=subprocess.DEVNULL,\n"
+            "                         stderr=subprocess.DEVNULL)\n"
+            "child.wait()\n",
+            encoding="utf-8",
+        )
+
+        launcher_script = tmp_path / "launcher_script.py"
+        launcher_script.write_text(
+            "import subprocess, sys, time\n"
+            "from pathlib import Path\n"
+            f"subprocess.Popen([sys.executable, {str(stub_script)!r}],\n"
+            "                 stdout=subprocess.DEVNULL,\n"
+            "                 stderr=subprocess.DEVNULL)\n"
+            f"armed = Path({str(armed)!r})\n"
+            "deadline = time.monotonic() + 30.0\n"
+            "while not armed.exists() and time.monotonic() < deadline:\n"
+            "    time.sleep(0.05)\n",
+            encoding="utf-8",
+        )
+
+        subprocess.run([sys.executable, str(launcher_script)], timeout=60)
+
+        assert armed.exists(), "the job never armed its watchdog"
+        seen = json.loads(job_diagnosis.read_text())
+        job_pid = seen["pid"]
+        stub_pid = seen["getppid"]
+
+        def job_alive() -> bool:
+            return pid_alive(job_pid)
+
+        try:
+            # The launcher is gone. The stub is not, so neither is the job.
+            time.sleep(2.0)
+            assert pid_alive(stub_pid), "the stub should still be waiting"
+            assert job_alive(), (
+                "the job stopped while the process it watches was still alive"
+            )
+
+            os.kill(stub_pid, KILL_SIGNAL)
+
+            deadline = time.monotonic() + 15.0
+            while job_alive() and time.monotonic() < deadline:
+                time.sleep(0.1)
+            assert not job_alive(), "the job outlived the parent it was watching"
+        finally:
+            for pid in (job_pid, stub_pid):
+                if pid_alive(pid):
+                    os.kill(pid, KILL_SIGNAL)
 
     def test_named_parent_death_stops_the_job(self, tmp_path: Path):
         # What the plugin actually uses: it exports its own pid, so the job
