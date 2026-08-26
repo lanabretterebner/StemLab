@@ -21,21 +21,12 @@ included by current JUCE releases has separate terms.
 ## BS-RoFormer
 
 StemLab can use `bs-roformer-infer` as a pretrained BS-RoFormer inference
-backend.
+backend (upstream: OpenMIRLab/bs-roformer-infer, lucidrains' BS-RoFormer,
+ZFTurbo's Music-Source-Separation-Training).
 
-Relevant upstream projects include:
-
-- OpenMIRLab / bs-roformer-infer
-- BS-RoFormer by Phil Wang / lucidrains
-- Music-Source-Separation-Training by ZFTurbo
-- Band-Split RoPE Transformer research
-
-StemLab does not commit pretrained checkpoint bytes to this repository.
-Checkpoints are downloaded separately and may have their own attribution,
-redistribution, or usage terms.
-
-Review the terms associated with any checkpoint before redistributing or
-mirroring its weights.
+No checkpoint bytes are committed to this repository. Checkpoints are
+downloaded separately and may carry their own attribution, redistribution,
+or usage terms - review them before redistributing or mirroring weights.
 
 ## Demucs
 
@@ -71,9 +62,8 @@ Those packages retain their respective upstream licenses.
 
 ## FFmpeg
 
-FFmpeg licensing obligations depend on the configuration of the specific FFmpeg
-binary being redistributed. Before publishing a binary release, verify the
-license/build configuration of the FFmpeg executable you ship and include any
-required notices or corresponding-source obligations.
+FFmpeg licensing depends on the build configuration of the binary being
+redistributed. Verify the executable you ship and include any required
+notices or corresponding-source obligations.
 
 This file is informational and is not legal advice.

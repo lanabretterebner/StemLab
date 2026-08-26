@@ -319,8 +319,13 @@ namespace stemlab::theme
 
                 880x564 is the content stack exactly - panel::padY either
                 side of a header, source strip, six lanes, transport and
-                footer. Adaptive child lanes scroll within the lanes region
-                rather than growing the window.
+                footer. The six root lanes and the lanes viewport are the
+                same height BY CONSTRUCTION: whatever the chrome does not
+                use, wellHeight absorbs, so there is never a dead band
+                between the last lane and the transport. Re-run the sum
+                after touching any vertical metric. Adaptive child lanes
+                scroll within the lanes region rather than growing the
+                window.
             */
             constexpr int groundMargin = 0;
             constexpr int width = 880 + 2 * groundMargin;
@@ -339,8 +344,8 @@ namespace stemlab::theme
         namespace panel
         {
             constexpr int padX = 22;
-            constexpr int padY = 20;
-            constexpr int stackGap = 14;
+            constexpr int padY = 14;
+            constexpr int stackGap = 10;
         }
 
         namespace header
@@ -380,15 +385,21 @@ namespace stemlab::theme
             /*
                 Which stems the job carries forward is a per-lane checkbox,
                 which is fine for one change and tedious for six. The two
-                pills act on every lane at once and the readout beside them
-                says where that left things:
+                pills act on every lane at once, and the readout to their
+                left answers for whatever the user changed last - model,
+                palette, transport, a rejected click - before settling back
+                on where the selection stands:
 
-                    [Select all] [Deselect all]  5 of 6 selected
+                    5 of 6 selected  [Select all] [Deselect all]
+
+                The bottom status line is the other half of that split: it
+                reports only the work the plugin is doing.
             */
             constexpr int selectButtonHeight = 22;
             constexpr int selectButtonPadX = 12;
             constexpr int selectButtonGap = 6;
             constexpr int selectCountGap = 10;
+            constexpr int userStatusHeight = 16;
 
             /*
                 Waveform zoom, sitting between that group and the model:
@@ -411,9 +422,9 @@ namespace stemlab::theme
         {
             constexpr float radius = 8.0f;
             constexpr int padX = 12;
-            constexpr int padY = 10;
+            constexpr int padY = 8;
             constexpr int gap = 12;
-            constexpr int height = 56;
+            constexpr int height = 52;
 
             constexpr int captureButtonWidth = 132;
             constexpr int recordButtonWidth = 108;
@@ -469,7 +480,7 @@ namespace stemlab::theme
             // lane's waveform and the next, halved.
             constexpr int rowPadY = 1;
             constexpr float rowRadius = 6.0f;
-            constexpr int wellHeight = 40;
+            constexpr int wellHeight = 54;
             constexpr float wellRadius = 6.0f;
 
             constexpr int checkbox = 15;
@@ -536,7 +547,7 @@ namespace stemlab::theme
         namespace footer
         {
             constexpr int dividerFade = 48;
-            constexpr int dividerGap = 12;
+            constexpr int dividerGap = 8;
             constexpr int height = 34;
             constexpr int gap = 10;
             constexpr int statusLineHeight = 14;

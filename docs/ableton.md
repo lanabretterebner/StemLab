@@ -56,13 +56,11 @@ rescan VST3 plug-ins.
 1. Put StemLab on an audio track.
 2. Select an Arrangement audio clip.
 3. Click **Use Live Clip** in StemLab.
-4. Choose an engine and click **Separate**.
-5. Audition and select completed stems.
-6. Click **Send Selected**.
+4. Click **Separate** (pick a different engine under Settings first if you
+   want one; while the job runs the same control reads **Cancel**).
+5. Audition the lanes - solo/mute per stem, A/B **Original | Stems**.
+6. Click **Send Stems**.
 
 `StemLabRemote` creates the selected stems as Arrangement tracks beneath the
-source track.
-
-With the editor focused, `V` asks `StemLabRemote` to toggle Live's transport.
-VST3 playhead APIs are read-only in this workflow, so the shortcut requires the
-Remote Script. Unhandled keys are returned to Live.
+source track. **Retry** re-asks the Remote Script for the import if Live was
+busy the first time.

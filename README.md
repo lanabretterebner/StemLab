@@ -4,60 +4,43 @@ StemLab is a Windows and Linux application and VST3 for separating music into
 vocals, drums, bass, guitar, piano, and other stems, with direct Ableton Live
 integration on Windows and direct REAPER integration on Linux.
 
-The repository contains the source-development workflow. It deliberately does
-not contain generated builds, model weights, or virtual environments. Release
-scripts and checksum manifests are source-controlled; their generated output is not.
+The repository contains the source-development workflow only - no generated
+builds, model weights, or virtual environments.
 
 ## Features
 
 - JUCE Standalone application and VST3
-- BS-RoFormer, Demucs `htdemucs_6s`, and hybrid separation
-- Optional kick-bleed refinement
-- Adaptive vocal, drum, and foreground stem trees
-- File, physical-input, and system-audio capture (WASAPI loopback on Windows,
-  PipeWire/PulseAudio monitor on Linux)
-- Waveform preview and selective export
-- Optional Beat This! key/BPM analysis (Fast by default, Accurate available)
-- Per-stem MIDI export and a source-derived beat grid
-- Direct import into Ableton through `StemLabRemote` (Windows)
-- In-process REAPER integration on Linux - no scripts or extensions to install
-- Drag-and-drop stem export into any DAW or file manager
+- BS-RoFormer, Demucs `htdemucs_6s`, and hybrid separation, with optional
+  refinement and adaptive per-stem splitting
+- File, physical-input, and system-audio capture
+- Lane-based audition: per-stem solo/mute, one shared transport, A/B
+  against the original
+- Live progress, ETA, and a Cancel that stops the whole job
+- Optional key/BPM analysis, per-stem MIDI export, and a beat grid
+- Insert into REAPER / send to Ableton / save or drag stems anywhere
 - NVIDIA CUDA, AMD ROCm, and Intel XPU offload with runtime CPU fallback
-- Live progress and ETA during separation, with a Cancel button that stops
-  the whole job - closing the host mid-job cannot leave workers running
 
-## Set Up Development
+## Windows
 
-StemLab currently targets 64-bit Windows and Python 3.11. Install:
-
-- Visual Studio with **Desktop development with C++** and CMake tools
-- Python 3.11
-- FFmpeg on `PATH` when working with compressed audio
-- An NVIDIA/CUDA setup for practical model inference
-
-From an ordinary PowerShell window in the repository root:
+Requires Visual Studio (Desktop development with C++ and CMake tools),
+Python 3.11, and FFmpeg on `PATH`. From the repository root:
 
 ```powershell
-.\scripts\setup_dev.ps1
+.\scripts\setup_dev.ps1      # venv, dependencies, unit tests
+.\scripts\build_plugin.ps1   # Standalone + VST3
+& ".\plugin\build\StemLabPlugin_artefacts\Release\Standalone\StemLab.exe"
+.\scripts\install_ableton.ps1   # VST3 + Ableton Remote Script
 ```
 
-This creates `.venv`, installs StemLab plus its development/recursive
-dependencies, and runs the unit tests. The first install is large because the
-audio backends depend on PyTorch and pretrained-model tooling.
-
-To reuse a different environment:
-
-```powershell
-.\scripts\setup_dev.ps1 -EnvironmentPath C:\path\to\venv
-```
+See [docs/ableton.md](docs/ableton.md) for the Ableton setup and workflow.
 
 ## Linux
 
-Linux builds natively and needs no venv or system Python for the backend:
+No venv or system Python needed. Everything in one bundle:
 
 ```bash
-./scripts/build_portable.sh               # everything in one folder,
-cd dist/StemLab-*-Linux && ./install.sh   # Engine included - no extra steps
+./scripts/build_portable.sh
+cd dist/StemLab-*-Linux && ./install.sh
 ```
 
 Or piece by piece:
@@ -65,163 +48,68 @@ Or piece by piece:
 ```bash
 ./scripts/build_plugin.sh        # Standalone + VST3
 ./scripts/install_vst3.sh        # -> ~/.vst3
-./scripts/install_backend.sh     # Engine + auto-discovery (supports
-                                 # --cuda / --rocm / --xpu / --cpu)
+./scripts/install_backend.sh     # Engine (--cuda / --rocm / --xpu / --cpu)
 ```
 
-Inside REAPER, StemLab talks to the host directly: **Use Selected Item** reads
-the selected arrangement item and **Insert Stems** creates colour-coded stem
-tracks under the source track, aligned with the original selection. See
-`docs/linux.md` for dependencies, the REAPER workflow, and where StemLab
-writes files.
-
-## Build And Run
-
-Build the Standalone application and VST3:
-
-```powershell
-.\scripts\build_plugin.ps1
-```
-
-The script finds Visual Studio, downloads the pinned JUCE source when needed,
-and performs an incremental Release build. Use `-Clean` only when you need to
-discard the CMake build directory.
-
-Run the Standalone app:
-
-```powershell
-& ".\plugin\build\StemLabPlugin_artefacts\Release\Standalone\StemLab.exe"
-```
-
-Install the development VST3 and Ableton Remote Script:
-
-```powershell
-.\scripts\install_ableton.ps1
-```
-
-The installer asks for administrator permission to copy the VST3 into the
-standard Windows plug-in folder. It never closes Ableton automatically.
-
-See [docs/ableton.md](docs/ableton.md) for Ableton configuration.
+See [docs/linux.md](docs/linux.md) for dependencies, GPU flavors, and the
+REAPER workflow.
 
 ## Test
 
-`tests/` is the unit-test suite and should stay in source control. Run it after
-every behavior change:
-
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m pytest -q    # python3 -m pytest tests -q on Linux
 ```
 
-The tests use synthetic audio, so they do not download model weights or require
-Ableton.
-
-## How It Fits Together
-
-```text
-JUCE button / host audio
-        |
-        v
-PluginEditor -> PluginProcessor -> stemlab-plugin-job
-                                      |
-                                      v
-                                  pipeline.py
-                           /          |          \
-                    RoFormer       Demucs       Hybrid
-                           \          |          /
-                                      v
-                                  WAV stems
-                                      |
-                        Plugin preview / StemLabRemote
-```
-
-- `PluginEditor` owns controls, layout, and waveforms.
-- `PluginProcessor` owns capture, playback, child processes, and bridge state.
-- `stemlab/plugin_job.py` translates between JUCE arguments and Python.
-- `stemlab/pipeline.py` chooses the separation engine and optional refinement.
-- `stemlab/recursive.py` routes adaptive child-stem operations.
-- `stemlab/source_analysis.py` provides optional original-source key/BPM analysis.
-- `stemlab/midi.py` transcribes one completed stem at a time.
-- `StemLabRemote` is the only code allowed to manipulate Ableton tracks/clips.
-
-The module and runtime reference is in [docs/development.md](docs/development.md).
+The tests use synthetic audio; they download no models and need no DAW.
 
 ## Command Line
 
-After setup, separation can also run without the JUCE app:
-
 ```powershell
-.\.venv\Scripts\stemlab-separate.exe `
-    --input "song.wav" `
-    --output ".\output"
+.\.venv\Scripts\stemlab-separate.exe --input "song.wav" --output ".\output"
 ```
 
-Use `--engine roformer`, `--engine demucs`, or `--engine hybrid`. Add
-`--no-refine` to keep the raw model output.
-
-Beat This! is off by default in the app and never blocks separation when
-disabled. Fast uses `small0`; Accurate uses `final0`. Both are downloaded the
-first time they are used and rejected unless they match the length and
-SHA-256 recorded in `stemlab/beat_tracking.py`; the app names the download in
-its status area while it runs.
+Use `--engine roformer|demucs|hybrid`; add `--no-refine` to keep the raw
+model output.
 
 ## Build A Release
 
 Push a tag matching the version in `pyproject.toml` and
-`.github/workflows/release.yml` builds and publishes everything:
+`.github/workflows/release.yml` builds, checksums, and publishes every
+asset (Windows installer, Linux bundle, plugin binaries, wheel/sdist). A
+mismatched tag fails the run. Run the workflow manually with **publish**
+off to test packaging changes.
 
-```bash
-git tag v0.9.9 && git push origin v0.9.9
-```
+Locally: `.\scripts\build_portable_windows.ps1` then
+`.\scripts\build_installer_windows.ps1 -SkipPortableBuild` on Windows;
+`./scripts/build_portable.sh --torch-flavor cpu` on Linux.
 
-It produces the Windows installer, the self-contained Linux bundle, the
-plugin binaries on their own for both platforms, and the Python wheel and
-sdist, checksums them, and attaches them to a GitHub release. A tag that
-disagrees with `pyproject.toml` fails the run rather than shipping
-mislabelled files. Run the workflow from the Actions tab with **publish**
-left off to build every asset without releasing - use that to check a
-change to the packaging scripts.
+No bundle carries model weights. Each model downloads the first time it is
+used, is rejected unless it matches a recorded length and digest, and is
+named in the status area while it runs.
 
-The bundled Engine is built against CPU torch, because the build machines
-have no GPU. Users on NVIDIA, AMD, or Intel hardware re-run
-`scripts/install_backend.sh` with `--cuda`, `--rocm`, or `--xpu`.
+## Documentation
 
-To build a release locally instead, on Windows:
-
-```powershell
-.\scripts\build_portable_windows.ps1
-.\scripts\build_installer_windows.ps1 -SkipPortableBuild
-```
-
-Outputs are `dist\StemLab-Portable-0.9.9` and
-`dist\StemLab-Setup-0.9.9.exe` (plus installer data slices).
-
-Neither bundle carries model weights. Every model downloads the first time it
-is used and is verified against a recorded digest before it is trusted, and
-the plugin names the download in its status area. Staging weights into the
-installer used to make a release depend on whatever the build machine had
-cached, which is how two dead download URLs went unnoticed until a cold
-build tried them.
-
-On Linux, `./scripts/build_portable.sh --torch-flavor cpu` produces
-`dist/StemLab-0.9.9-Linux-cpu.tar.gz`.
+- [docs/development.md](docs/development.md) - architecture, module map,
+  contracts, change checklist
+- [docs/linux.md](docs/linux.md) - Linux build, install, GPU flavors, REAPER
+- [docs/ableton.md](docs/ableton.md) - Ableton Live setup and workflow
+- [docs/third-party.md](docs/third-party.md) - third-party licenses
 
 ## Repository Map
 
 ```text
-docs/                    Development, Ableton, and licensing notes
+docs/                    The guides listed above
 integrations/ableton/    Ableton Live control-surface bridge
-plugin/                  JUCE C++ frontend, assets, and CMake definition
-scripts/                 Development setup, build, and install commands
+packaging/               Installer definition and release model manifest
+plugin/                  JUCE C++ frontend, assets, CMake definition, tests
+scripts/                 Development setup, build, install, release commands
 stemlab/                 Python separation and DSP engine
 tests/                   Fast unit tests using generated audio
 pyproject.toml           Python package, commands, and tool settings
-docs/linux.md            Linux build, install, and REAPER guide
 ```
 
-Directories such as `.venv/`, `.portable-cache/`, `plugin/build/`, `dist/`,
-`__pycache__/`, and `.vs/` are generated locally and ignored by Git. Edit only
-the source files listed above.
+Generated directories (`.venv/`, `.portable-cache/`, `plugin/build/`,
+`dist/`, ...) are ignored by Git.
 
 ## License
 

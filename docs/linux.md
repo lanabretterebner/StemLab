@@ -29,27 +29,9 @@ sudo apt install \
   libfreetype-dev libfontconfig1-dev libgl1-mesa-dev
 ```
 
-**Fedora**
-
-```bash
-sudo dnf install gcc-c++ cmake pkgconf-pkg-config curl unzip \
-  alsa-lib-devel jack-audio-connection-kit-devel \
-  libX11-devel libXext-devel libXi-devel libXrandr-devel libXinerama-devel \
-  libXcursor-devel libXcomposite-devel libXrender-devel \
-  freetype-devel fontconfig-devel mesa-libGL-devel
-```
-
-**Arch**
-
-```bash
-sudo pacman -S --needed base-devel cmake pkgconf curl unzip \
-  alsa-lib jack2 libx11 libxext libxi libxrandr libxinerama \
-  libxcursor libxcomposite libxrender freetype2 fontconfig mesa
-```
-
-`scripts/build_plugin.sh` checks for all of these with `pkg-config` before configuring,
-and prints the exact install command for your distribution if anything is
-missing.
+On Fedora or Arch, just run `./scripts/build_plugin.sh` - it checks every
+dependency with `pkg-config` first and prints the exact install command for
+your distribution.
 
 `libwebkit2gtk` and `libcurl` are deliberately **not** required: the plugin
 builds with `JUCE_WEB_BROWSER=0` and `JUCE_USE_CURL=0`.
@@ -126,7 +108,7 @@ Adaptive/recursive splitting runs through onnxruntime, which has no
 ROCm/XPU build on PyPI - on those flavors the recursive stage runs on CPU
 while the main separation offloads.
 
-Developers who prefer a venv can still use one - `python3 -m venv .venv &&
+Developers can use a plain venv instead - `python3 -m venv .venv &&
 .venv/bin/pip install -e .` next to the repository is found automatically.
 
 The plugin discovers the engine in this order:
@@ -145,12 +127,9 @@ necessarily inherit your shell's `PATH`. If discovery picks the wrong one, set
 it explicitly under **Settings > Choose StemLab engine**, or export
 `STEMLAB_ENGINE` before starting the host.
 
-`ffmpeg` is used to normalise compressed input. The system package is fine —
-install it with your package manager.
-
-The installer also sets up adaptive/recursive stem splitting (the per-stem
-"split further" actions) with the CPU or GPU build of `audio-separator`
-matching your torch flavor.
+`ffmpeg` (any system package) is used to normalise compressed input. The
+installer also sets up adaptive stem splitting with the `audio-separator`
+build matching your torch flavor.
 
 ## Where StemLab writes files
 
@@ -177,16 +156,17 @@ configure. Add StemLab to any track and the buttons become:
 1. Select an audio item in the arrangement.
 2. **Use Selected Item** - StemLab reads the item's audio file, timeline
    position, and take geometry (trim offset, play rate).
-3. **Separate All Stems**, then audition the results.
+3. **Separate**, then audition the lanes (solo/mute per stem, A/B
+   **Original | Stems**).
 4. **Insert Stems** - one new track per selected stem appears directly under
    the source track, colour-coded, aligned with the original item, in a
-   single undo block. **Save Selected...** also works if you would rather
-   place the files yourself.
+   single undo block. **Save Stems** also works if you would rather place
+   the files yourself.
 
 Items whose take is trimmed or rate-shifted are re-created with the same
 trim and rate, so the inserted stems play exactly in sync with the item you
 selected. In-project and section sources (glued/reversed items, project-in-
-project) need a render/glue first - the status line says so.
+project) need a render/glue first - the readout in the header says so.
 
 ### What Insert Stems does to the project
 
@@ -207,7 +187,7 @@ project) need a render/glue first - the status line says so.
 
 Requires REAPER 5.02 or later (the API handshake); tested against 7.42. If a
 future or heavily stripped REAPER stops exposing a function StemLab needs,
-the plugin falls back to the Select File / Save Selected workflow and lists
+the plugin falls back to the Select File / Save Stems workflow and lists
 what was missing under **Settings > Copy diagnostics**.
 
 ## Differences from the Windows build
@@ -222,7 +202,7 @@ missing instead of recording.
 **Ableton Live integration does not apply.** Live has no Linux build, so the
 *Install / Repair Ableton Integration* menu entry is hidden. In hosts other
 than REAPER the plugin offers the same local-file workflow as the Standalone
-app: drop or select a file, separate, audition, **Save Selected...**.
+app: drop or select a file, separate, audition, **Save Stems**.
 
 **A GPU is optional.** The plugin asks the backend for the best device and
 the backend probes at run time (CUDA/ROCm, then XPU, then CPU), logging which
@@ -238,29 +218,19 @@ still seeks; drag exports.
 **Progress, ETA, and Cancel.** During a job the status line, the bar, and
 the ETA all update live — a one-time model download shows as its own stage,
 and BS-RoFormer's per-chunk time estimates feed the ETA directly. While a
-job runs, **Separate All Stems** becomes **Cancel**: the engine shuts down
+job runs, **Separate** becomes **Cancel**: the engine shuts down
 its own model workers, so nothing keeps burning CPU. The same watchdog fires
 if the plugin or the whole host disappears mid-job — closing REAPER cannot
 leave a separation running in the background.
 
 ## Wayland
 
-JUCE renders through X11. Under a Wayland session the plugin and standalone app
-run via XWayland, which works but is worth knowing when you file a bug.
+JUCE renders through X11; under Wayland everything runs via XWayland -
+worth knowing when you file a bug.
 
 ## Verifying a build
 
 ```bash
-# The bundle should contain a loadable module:
-ls plugin/build/StemLabPlugin_artefacts/Release/VST3/StemLab.vst3/Contents/x86_64-linux/
-
-# Nothing should be unresolved:
 ldd plugin/build/StemLabPlugin_artefacts/Release/VST3/StemLab.vst3/Contents/x86_64-linux/StemLab.so | grep "not found"
-
-# Backend tests:
 python3 -m pytest tests -q
 ```
-
-The repository also contains no-hardware harnesses used during the port
-(fake VST3 host, REAPER selftest hooks via `STEMLAB_REAPER_SELFTEST`); see
-the pull-request history for how they are driven.

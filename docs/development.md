@@ -5,7 +5,7 @@ easy to verify.
 
 ## Setup
 
-From the repository root:
+From the repository root on Windows:
 
 ```powershell
 .\scripts\setup_dev.ps1
@@ -13,11 +13,17 @@ From the repository root:
 & ".\plugin\build\StemLabPlugin_artefacts\Release\Standalone\StemLab.exe"
 ```
 
+On Linux, `./scripts/build_plugin.sh` builds the plugin and
+`./scripts/install_backend.sh` sets up the engine - [linux.md](linux.md)
+covers dependencies and flags.
+
 Run the Python tests with:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
 ```
+
+(`python3 -m pytest tests -q` on Linux.)
 
 `tests/` contains unit tests for behavior that should remain stable. Keep them
 green before and after code changes.
@@ -36,12 +42,14 @@ PluginEditor button callback
     -> optional refinement
     -> WAV files + JSON manifest
     -> PluginProcessor notices completion
-    -> PluginEditor refreshes waveforms and buttons
+    -> PluginEditor refreshes the lanes and footer
 ```
 
-Model inference runs in a child process so the audio/UI threads stay responsive.
+Model inference runs in a child process so the audio/UI threads stay
+responsive. While a job runs the Separate control reads **Cancel**, which
+asks the engine's watchdog to shut the whole job down.
 
-When **Send Selected** is used in Ableton:
+When **Send Stems** is used in Ableton:
 
 ```text
 PluginProcessor sends manifest path over localhost UDP
@@ -75,26 +83,38 @@ model-selection logic in the processor/Python layer.
 Owns application state and external work:
 
 - captures host, physical-input, or system-loopback audio;
-- launches and monitors Python jobs;
+- launches and monitors Python jobs (progress, ETA, cancel watchdog);
 - reads manifests/progress files;
-- previews completed audio;
+- runs the shared monitoring transport: the per-stem mix with lane
+  solo/mute, the Original | Stems A/B switch, and child-stem audition;
 - communicates with `StemLabRemote`.
 
 JUCE callbacks such as `processBlock`, `prepareToPlay`, and
 `getStateInformation` are framework entry points. Keep their real-time and
 threading constraints in mind when editing them.
 
+### `plugin/Source/Waveform*.h/.cpp`
+
+Pure helpers behind the lanes: `WaveformGrid.h` (beat-grid math),
+`WaveformAnalysis.h` (JUCE-free spectral analysis), and `WaveformCache.*`
+(peak caching for lane drawing). The first two are exercised directly by
+`plugin/Tests/` via CTest (`BUILD_TESTING`), without standing up a plugin.
+
 ## Python Engine
 
 | Module | Responsibility |
 | --- | --- |
 | `audio.py` | Shared WAV/FLAC loading, saving, resampling, and stem lookup |
+| `cli.py` | `stemlab-separate` / `stemlab-refine` / `stemlab-models` entries |
 | `pipeline.py` | Public router for RoFormer, Demucs, hybrid, and refinement |
 | `pretrained.py` | BS-RoFormer process adapter |
+| `bs_roformer_cli.py` | Relocatable launcher for `bs-roformer-infer` |
 | `demucs_backend.py` | Demucs process adapter and output normalization |
 | `hybrid.py` | Spectral fusion of model estimates |
+| `device.py` | Device selection for PyTorch backends (CUDA/XPU/CPU) |
 | `plugin_job.py` | JUCE command arguments, progress files, Ableton manifest |
-| `runtime.py` | Child-process output and progress handling |
+| `recursive_job.py` | JUCE command bridge for adaptive stem jobs |
+| `runtime.py` | Child-process output, progress/ETA, and cancel watchdog |
 | `analysis_cache.py` | Local SQLite analysis/MIDI cache and corrections |
 | `beat_tracking.py` | Offline Beat This! inference and beat interpretation |
 | `source_analysis.py` | Optional source key/BPM analysis |
@@ -144,29 +164,19 @@ For Python changes:
 
 For C++ changes:
 
-1. Keep UI edits in `PluginEditor`.
-2. Keep state, jobs, manifests, and audio-preview edits in `PluginProcessor`.
-3. Build with `.\scripts\build_plugin.ps1`.
-4. Smoke-test the Standalone app.
+1. Keep UI edits in `PluginEditor`; take visual values from `StemLabTheme.h`.
+2. Keep state, jobs, manifests, and monitoring edits in `PluginProcessor`.
+3. Build with `.\scripts\build_plugin.ps1` (Linux: `./scripts/build_plugin.sh`).
+4. Run the plugin unit tests via CTest when `Waveform*` helpers change.
+5. Smoke-test the Standalone app.
 
 ## Generated Files
 
-These directories are generated and ignored:
-
-```text
-.venv/
-.substem-venv/
-.portable-cache/
-.vs/
-dist/
-plugin/build/
-**/__pycache__/
-*.egg-info/
-```
-
-Edit source files under `stemlab/`, `plugin/Source/`,
-`integrations/ableton/StemLabRemote/`, or `tests/`. Do not edit generated
-copies under `plugin/build`.
+`.venv/`, `.substem-venv/`, `.portable-cache/`, `.vs/`, `dist/`,
+`plugin/build/`, `__pycache__/`, and `*.egg-info/` are generated and
+ignored. Edit sources under `stemlab/`, `plugin/Source/`,
+`integrations/ableton/StemLabRemote/`, or `tests/` - never the copies under
+`plugin/build`.
 
 ## Current Limits
 
