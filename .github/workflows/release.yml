@@ -232,23 +232,42 @@ jobs:
           compression-level: 0
 
   windows:
-    name: Windows
+    name: Windows (${{ matrix.flavor }})
     runs-on: windows-latest
     needs: metadata
     timeout-minutes: 180
 
+    strategy:
+      # As on Linux: one flavor failing should still leave the others to ship.
+      fail-fast: false
+      matrix:
+        # No rocm. PyTorch publishes no Windows wheel for it - the rocm index
+        # carries Linux wheels only - so an AMD Windows bundle cannot be
+        # built, rather than being merely undesirable.
+        include:
+          - flavor: cpu
+            index: https://download.pytorch.org/whl/cpu
+          - flavor: cuda
+            index: https://download.pytorch.org/whl/cu128
+          - flavor: xpu
+            index: https://download.pytorch.org/whl/xpu
+
     steps:
       - uses: actions/checkout@v4
 
-      # The payload, the installer's compressed copy of it and the model cache
-      # together need more room than the image leaves free. The Android SDK is
-      # the largest thing on the disk that this build cannot use.
+      # The venv, the Engine copied out of it, and the installer's compressed
+      # copy of that are three copies of the same multi-gigabyte tree, and a
+      # GPU torch build is several times the size of the cpu one. The Android
+      # SDK is the largest thing on the image this build cannot use.
+      #
+      # Both drives are reported because the workspace is on D: while the
+      # tools are on C:, so "out of space" can mean either one.
       - name: Free disk space
         shell: pwsh
         run: |
-          Get-PSDrive C | Format-Table Name, Used, Free
+          Get-PSDrive C, D | Format-Table Name, Used, Free
           Remove-Item -Recurse -Force "C:\Android" -ErrorAction SilentlyContinue
-          Get-PSDrive C | Format-Table Name, Used, Free
+          Get-PSDrive C, D | Format-Table Name, Used, Free
 
       # ffmpeg is copied into the Engine for MP3/OGG/AIFF input; Inno Setup
       # compiles the installer. Neither ships with the runner image. They land
@@ -272,6 +291,25 @@ jobs:
           python -m venv .venv
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # PyPI's Windows torch is the cpu build, so left alone every flavor
+      # would produce the same bundle under three different names. Installing
+      # the flavor first means the editable install below finds the
+      # requirement already satisfied and leaves it alone. torchaudio comes
+      # from the same index for the same reason it does on Linux: demucs
+      # needs it, and resolved on its own it would arrive mismatched.
+      - name: Install ${{ matrix.flavor }} torch
+        shell: pwsh
+        run: |
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          .\.venv\Scripts\python.exe -m pip install `
+            --index-url "${{ matrix.index }}" "torch>=2.4" torchaudio
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          .\.venv\Scripts\python.exe -c "import torch; print('torch build:', torch.__version__)"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       # This installs the dependency set the released Engine is made of: the
       # portable builder assembles the Engine by copying this venv's
       # site-packages. It runs the Python test suite as its last step.
@@ -281,12 +319,23 @@ jobs:
 
       # -SkipTests because the step above already ran them against this exact
       # tree. The script builds the plugin, assembles the portable payload
-      # (Engine, models, ffmpeg, Ableton bridge) and compiles the installer.
+      # (Engine, ffmpeg, Ableton bridge) and compiles the installer. The
+      # installer names itself for the torch build it finds in the payload,
+      # so the asset name comes from the bundle rather than from this label.
       - name: Build the portable payload and the installer
         shell: pwsh
         run: .\scripts\build_installer_windows.ps1 -SkipTests
 
+      - name: Report disk use
+        if: always()
+        shell: pwsh
+        run: Get-PSDrive C, D | Format-Table Name, Used, Free
+
+      # The binaries do not vary with the torch flavor, so one leg builds
+      # them rather than three producing identical copies that would then
+      # collide on the artifact name.
       - name: Package the plugin on its own
+        if: matrix.flavor == 'cpu'
         shell: pwsh
         run: |
           $version = "${{ needs.metadata.outputs.version }}"
@@ -332,7 +381,8 @@ jobs:
       # setup .exe will not run without them.
       - uses: actions/upload-artifact@v4
         with:
-          name: windows
+          # One artifact per flavor: v4 names must be unique across a run.
+          name: windows-${{ matrix.flavor }}
           path: |
             dist/StemLab-Setup-*.exe
             dist/StemLab-Setup-*.bin
@@ -375,30 +425,33 @@ jobs:
 
           | File | What it is |
           | --- | --- |
-          | `StemLab-Setup-*.exe` **and** `StemLab-Setup-*.bin` | **Windows installer.** Download every part into the same folder before running the `.exe` - it will not start without its `.bin` slices. Installs the app, the VST3 and the Engine; no Python needed. |
+          | `StemLab-Setup-*-<flavor>.exe` **and** its `.bin` slices | **Windows installer.** Download every part into the same folder before running the `.exe` - it will not start without its `.bin` slices. Installs the app, the VST3 and the Engine; no Python needed. Pick the flavor for your hardware. |
           | `StemLab-*-Linux-<flavor>.tar.gz` | **Linux, self-contained.** Extract and run `./install.sh` once. Includes the Engine; no Python needed. Pick the flavor for your hardware - see below. |
           | `StemLab-*-plugin-only.*` | The VST3 and Standalone binaries alone, for anyone who already has an Engine installed. |
           | `stemlab_open-*.whl`, `stemlab_open-*.tar.gz` | The Python package on its own, for command-line use. |
 
           `SHA256SUMS` covers every file above.
 
-          ## Which Linux flavor
+          ## Which flavor
 
-          | Flavor | For | Engine size |
-          | --- | --- | ---: |
-          | `cpu` | no GPU offload | ~1.7 GB |
-          | `cuda` | NVIDIA | ~5.7 GB |
-          | `xpu` | Intel Arc / Xe | ~8.1 GB |
-          | `rocm` | AMD (RDNA2+) | ~16 GB |
+          | Flavor | For | Linux | Windows |
+          | --- | --- | :---: | :---: |
+          | `cpu` | no GPU offload | yes | yes |
+          | `cuda` | NVIDIA | yes | yes |
+          | `xpu` | Intel Arc / Xe | yes | yes |
+          | `rocm` | AMD (RDNA2+) | yes | **no** |
+
+          There is no AMD build for Windows because PyTorch publishes no ROCm
+          wheel for it. AMD cards on Windows should take `cpu`.
 
           Every GPU build also runs on the CPU, so a `cuda` bundle on a machine
           without an NVIDIA card still separates - just without the offload.
           Take `cpu` if you want the smallest download and do not need a GPU.
 
-          The Windows installer bundles **CPU torch**. The build machines have
-          no GPU, and naming a bundle for hardware it was never built against
-          would be a lie. For offload there, install the backend yourself from
-          a checkout with `--cuda`, `--rocm` or `--xpu`.
+          Each bundle is named for the torch build it actually contains, read
+          out of the assembled Engine rather than from what the build was
+          asked for, so a filename cannot claim hardware support the payload
+          does not have.
 
           ## Reassembling a split bundle
 
@@ -411,8 +464,9 @@ jobs:
           tar -xzf StemLab-Linux-rocm.tar.gz
           ```
 
-          The Windows installer is split the same way, by Inno Setup, into
-          `.bin` slices beside the `.exe`.
+          The Windows installers are split the same way, by Inno Setup, into
+          `.bin` slices beside each `.exe`. Those are named for their own
+          installer, so slices from different flavors never mix.
 
           Model weights download on first use on Linux; the Windows installer
           carries them.
