@@ -1234,6 +1234,12 @@ void StemLabAudioProcessorEditor::paintPanel(juce::Graphics& g)
     g.setColour(theme::colours::ground());
     g.fillRoundedRectangle(sourceStripBounds.toFloat(), theme::metrics::source::radius);
 
+    if (!sourceDividerBounds.isEmpty())
+    {
+        g.setColour(theme::colours::divider());
+        g.fillRect(sourceDividerBounds);
+    }
+
     // Accent glows behind the enabled primary actions. Drawn here, in the
     // parent, because a shadow painted inside a component is clipped to its
     // own bounds.
@@ -1407,7 +1413,11 @@ void StemLabAudioProcessorEditor::layoutPanel()
             separateArea.withSizeKeepingCentre(separateArea.getWidth(),
                                                source::separateHeight));
 
-        strip.removeFromRight(source::gap + source::separateExtraLeftGap);
+        // The hairline lives in the gap that already separated the sources
+        // from the action, so nothing either side of it moves.
+        sourceDividerBounds = strip.removeFromRight(source::gap + source::separateExtraLeftGap)
+                                  .withSizeKeepingCentre(source::dividerWidth,
+                                                         source::dividerHeight);
 
         if (processor.isStandaloneApp())
         {
