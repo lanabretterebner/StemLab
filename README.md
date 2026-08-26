@@ -83,6 +83,10 @@ Locally: `.\scripts\build_portable_windows.ps1` then
 `.\scripts\build_installer_windows.ps1 -SkipPortableBuild` on Windows;
 `./scripts/build_portable.sh --torch-flavor cpu` on Linux.
 
+No bundle carries model weights. Each model downloads the first time it is
+used, is rejected unless it matches a recorded length and digest, and is
+named in the status area while it runs.
+
 ## Documentation
 
 - [docs/development.md](docs/development.md) - architecture, module map,

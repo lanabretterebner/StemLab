@@ -2,7 +2,6 @@ param(
     [string]$EnvironmentPath = ".venv",
     [string]$OutputDirectory = "",
     [string]$FfmpegPath = "",
-    [bool]$DownloadModels = $true,
     [switch]$SkipPluginBuild,
     [switch]$SkipTests,
     [switch]$CleanPlugin
@@ -14,8 +13,6 @@ $ProgressPreference = "SilentlyContinue"
 $RepoRoot = Split-Path $PSScriptRoot -Parent
 $DistRoot = Join-Path $RepoRoot "dist"
 $CacheRoot = Join-Path $RepoRoot ".portable-cache"
-$Manifest = Join-Path $RepoRoot "packaging\models.json"
-$StageScript = Join-Path $RepoRoot "scripts\stage_models.py"
 
 $VersionMatch = Select-String -LiteralPath (Join-Path $RepoRoot "pyproject.toml") -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
 if (-not $VersionMatch) { throw "Could not read StemLab version from pyproject.toml." }
@@ -99,8 +96,6 @@ function Download-VerifiedFile(
 
 Assert-File $DevPython "StemLab's Python environment is missing. Run .\scripts\setup_dev.ps1 first."
 Assert-Directory $VenvSitePackages "StemLab's Python site-packages directory is missing."
-Assert-File $Manifest "The release model manifest is missing."
-Assert-File $StageScript "The model staging helper is missing."
 
 if (-not $SkipTests) {
     Write-Host "Running the Python regression suite..." -ForegroundColor Cyan
@@ -176,46 +171,12 @@ Set-Content -LiteralPath (Join-Path $OutputDirectory "FFMPEG_BUILD_INFO.txt") -E
     $FfmpegInfo
 )
 
-$PersistentModelEngine = Join-Path $CacheRoot "release-model-engine"
-$SourceRoots = @(
-    $PersistentModelEngine,
-    (Join-Path $env:LOCALAPPDATA "StemLab\Models"),
-    (Join-Path $env:LOCALAPPDATA "StemLab\Models"), # legacy cache fallback
-    (Join-Path $env:USERPROFILE ".cache\bs-roformer-infer"),
-    (Join-Path $env:USERPROFILE ".cache\torch\hub\checkpoints"),
-    (Join-Path $env:USERPROFILE ".cache\audio-separator")
-)
-if ($env:BS_ROFORMER_MODELS_PATH) { $SourceRoots += $env:BS_ROFORMER_MODELS_PATH }
-if ($env:STEMLAB_RECURSIVE_MODEL_DIR) { $SourceRoots += $env:STEMLAB_RECURSIVE_MODEL_DIR }
-$SourceRoots = $SourceRoots | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique
-
-if ($DownloadModels) {
-    # Download/copy once into a persistent checksum-verified cache. dist/ is
-    # intentionally disposable, so downloading directly into it would force
-    # multi-gigabyte model downloads on every rebuild.
-    $CacheStageArgs = @("--manifest", $Manifest, "--engine", $PersistentModelEngine)
-    foreach ($Root in $SourceRoots) {
-        if ([System.IO.Path]::GetFullPath($Root) -ne [System.IO.Path]::GetFullPath($PersistentModelEngine)) {
-            $CacheStageArgs += @("--source-root", $Root)
-        }
-    }
-    $CacheStageArgs += "--download-missing"
-
-    Write-Host "Updating the persistent verified model cache..." -ForegroundColor Cyan
-    & $DevPython $StageScript @CacheStageArgs
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-    if (-not ($SourceRoots -contains $PersistentModelEngine)) {
-        $SourceRoots = @($PersistentModelEngine) + $SourceRoots
-    }
-}
-
-$StageArgs = @("--manifest", $Manifest, "--engine", $Engine)
-foreach ($Root in $SourceRoots) { $StageArgs += @("--source-root", $Root) }
-
-Write-Host "Staging and verifying release model assets..." -ForegroundColor Cyan
-& $DevPython $StageScript @StageArgs
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+# Model weights are not staged into the bundle. Each downloads the first
+# time its model is used, is verified against the digest recorded beside
+# it, and the plugin names the download in its status area while it runs
+# - the same as the Linux bundle. Staging made a release depend on
+# whatever the build machine happened to have cached, which is what hid
+# two dead download URLs for as long as that cache stayed warm.
 
 Write-Host "Copying application and Ableton integration..." -ForegroundColor Cyan
 Copy-Item -LiteralPath $Standalone -Destination (Join-Path $OutputDirectory "StemLab.exe") -Force
@@ -225,7 +186,6 @@ New-Item -ItemType Directory -Path (Join-Path $OutputDirectory "scripts") -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\install_ableton.ps1") -Destination (Join-Path $OutputDirectory "scripts\install_ableton.ps1") -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "LICENSE") -Destination $OutputDirectory -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "docs\third-party.md") -Destination (Join-Path $OutputDirectory "THIRD_PARTY.md") -Force
-Copy-Item -LiteralPath $Manifest -Destination (Join-Path $OutputDirectory "models.json") -Force
 
 $EnginePython = Join-Path $Engine "python.exe"
 Assert-File $EnginePython "The embedded Python runtime was not assembled correctly."

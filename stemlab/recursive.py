@@ -17,6 +17,7 @@ from typing import Callable, Iterable
 from .adaptive.analysis import analyse_audio, assess_children
 from .adaptive.foreground import split_foreground
 from .adaptive.policy import MAX_ADAPTIVE_DEPTH, should_offer_split
+from .runtime import report_downloads
 
 try:
     from audio_separator.separator import Separator
@@ -62,6 +63,33 @@ def default_model_dir() -> Path:
     if local:
         return Path(local) / "StemLab" / "Models" / "Recursive"
     return Path.home() / ".stemlab" / "models" / "recursive"
+
+
+def _load_model(
+    separator: "Separator",
+    model_filename: str,
+    display: str,
+    progress: ProgressCallback | None,
+) -> None:
+    """Load a recursive model, naming its first-use download as it happens.
+
+    These models are fetched the first time they are used - the release
+    bundles carry the Engine, not the weights. audio-separator downloads
+    inside this call, so without this the status area would sit on "Loading
+    ..." for the length of a multi-hundred-megabyte transfer with a frozen
+    bar behind it.
+    """
+
+    def on_download(percent: float) -> None:
+        if progress:
+            bounded = max(0.0, min(100.0, percent))
+            progress(
+                4.0 + 7.0 * (bounded / 100.0),
+                f"Downloading the {display} model ({bounded:.0f}%)",
+            )
+
+    with report_downloads(on_download if progress else None):
+        separator.load_model(model_filename=model_filename)
 
 
 def _require_separator() -> None:
@@ -278,7 +306,7 @@ def split_drums(
         progress(4.0, "Loading recursive drum model")
 
     separator = _separator(output_dir, model_dir)
-    separator.load_model(model_filename=DRUM_MODEL)
+    _load_model(separator, DRUM_MODEL, "drum separation", progress)
 
     if progress:
         progress(12.0, "Splitting drum components")
@@ -352,7 +380,7 @@ def split_vocals(
         progress(4.0, "Loading lead/backing vocal model")
 
     separator = _separator(output_dir, model_dir)
-    separator.load_model(model_filename=VOCAL_MODEL)
+    _load_model(separator, VOCAL_MODEL, "lead/backing vocal", progress)
 
     if progress:
         progress(12.0, "Splitting lead and backing vocals")
@@ -531,7 +559,7 @@ def deverb_vocal(
         progress(4.0, "Loading vocal de-reverb model")
 
     separator = _separator(output_dir, model_dir)
-    separator.load_model(model_filename=DEVERB_MODEL)
+    _load_model(separator, DEVERB_MODEL, "vocal de-reverb", progress)
 
     if progress:
         progress(12.0, "Removing vocal reverb")

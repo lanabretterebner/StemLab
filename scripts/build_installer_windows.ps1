@@ -1,7 +1,6 @@
 param(
     [string]$EnvironmentPath = ".venv",
     [string]$FfmpegPath = "",
-    [bool]$DownloadModels = $true,
     [switch]$SkipPortableBuild,
     [switch]$SkipPluginBuild,
     [switch]$SkipTests,
@@ -21,7 +20,6 @@ if (-not $SkipPortableBuild) {
     $PortableArgs = @{
         EnvironmentPath = $EnvironmentPath
         OutputDirectory = $PortableRoot
-        DownloadModels = $DownloadModels
     }
     if ($FfmpegPath) { $PortableArgs.FfmpegPath = $FfmpegPath }
     if ($SkipPluginBuild) { $PortableArgs.SkipPluginBuild = $true }
