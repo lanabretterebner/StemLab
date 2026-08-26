@@ -19,7 +19,15 @@ from stemlab.runtime import CancellationToken, JobCancelled
 def test_packaged_fast_and_accurate_models_resolve_without_network(tmp_path, monkeypatch):
     payloads = {"fast": b"small model", "accurate": b"accurate model"}
     specs = {
-        mode: ModelSpec(name, len(payload), hashlib.sha256(payload).hexdigest())
+        # A url the spec could download from, deliberately unreachable: the
+        # point of this test is that resolving a checkpoint already on disk
+        # never reaches for it.
+        mode: ModelSpec(
+            name,
+            len(payload),
+            hashlib.sha256(payload).hexdigest(),
+            f"https://models.invalid/{name}.ckpt",
+        )
         for (mode, name), payload in zip(
             (("fast", "small0"), ("accurate", "final0")),
             payloads.values(),

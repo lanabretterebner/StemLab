@@ -6,6 +6,8 @@ import hashlib
 import os
 import sys
 import threading
+import urllib.parse
+import urllib.request
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -25,18 +27,26 @@ class ModelSpec:
     name: str
     size: int
     sha256: str
+    url: str
 
+
+# The size and digest are the whole security story for these files: they are
+# fetched over the network on first use, so nothing is trusted until it
+# hashes to the value recorded here.
+_BEAT_THIS_HOST = "https://cloud.cp.jku.at/public.php/dav/files/7ik4RrBKTS273gp"
 
 MODEL_SPECS = {
     "fast": ModelSpec(
         "small0",
         8_451_101,
         "6074be2c4d490c5f6101fcc374a1ec72ae93456e23bb6019783b849f5dc7d47b",
+        f"{_BEAT_THIS_HOST}/small0.ckpt",
     ),
     "accurate": ModelSpec(
         "final0",
         81_058_141,
         "8c328b45f59d8dd3dff219253ff6a8d6482be57d0133a29140e2febbf8eb8331",
+        f"{_BEAT_THIS_HOST}/final0.ckpt",
     ),
 }
 
@@ -119,6 +129,147 @@ def resolve_packaged_model(mode: str, model_dir: str | Path | None = None) -> Pa
     raise FileNotFoundError(
         f"The packaged Beat This! {spec.name} model is missing. Checked:\n  {locations}"
     )
+
+
+def _writable_model_directory() -> Path:
+    """Pick where a downloaded checkpoint should land.
+
+    The same preference order resolve_packaged_model searches, so whatever
+    this writes is what that finds. In a portable bundle the first writable
+    candidate is the Engine's own Models directory, which keeps the bundle
+    self-contained after the first run; on a system-wide install it falls
+    through to the per-user cache.
+    """
+    failures: list[str] = []
+
+    for directory in _candidate_model_directories():
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            probe = directory / ".stemlab-write-test"
+            probe.touch()
+            probe.unlink()
+        except OSError as exc:
+            failures.append(f"{directory}: {exc}")
+            continue
+        return directory.resolve()
+
+    locations = "\n  ".join(failures) or "no candidate directories"
+    raise RuntimeError(
+        f"Nowhere to store the Beat This! model. Tried:\n  {locations}"
+    )
+
+
+def download_packaged_model(
+    mode: str,
+    model_dir: str | Path | None = None,
+    *,
+    progress: Callable[[float, str], None] | None = None,
+    cancellation: CancellationToken | None = None,
+) -> Path:
+    """Fetch a Beat This! checkpoint and verify it before it is usable.
+
+    ``progress`` receives the fraction of the download completed, 0.0 to
+    1.0, matching what the rest of this module reports rather than the
+    0-100 the model CLIs use.
+
+    The release bundles ship the Engine, not the weights, so the first run
+    with Beat This! enabled downloads them. Nothing about the response is
+    trusted: the file is written beside its destination and only moved into
+    place once its length and SHA-256 match the recorded spec, so a
+    truncated or substituted download cannot become the model that loads.
+    """
+    if mode not in MODEL_SPECS:
+        raise ValueError(f"Unknown Beat This! mode: {mode}")
+
+    spec = MODEL_SPECS[mode]
+
+    # urlopen is happy to read file:// and hand the bytes back as though
+    # they had been downloaded. The urls here are module constants, so this
+    # is belt and braces - but it is the difference between a bad spec being
+    # a failed download and a bad spec pulling something off the local disk
+    # into the model directory. The transport is not what makes this safe;
+    # the digest below is, which is why plain http is not refused outright.
+    if urllib.parse.urlparse(spec.url).scheme not in ("http", "https"):
+        raise ValueError(
+            f"Beat This! {spec.name} model url must be http(s): {spec.url}"
+        )
+
+    directory = Path(model_dir).expanduser().resolve() if model_dir else _writable_model_directory()
+    directory.mkdir(parents=True, exist_ok=True)
+
+    destination = directory / f"{spec.name}.ckpt"
+    partial = destination.with_suffix(".ckpt.partial")
+    token = cancellation or CancellationToken()
+
+    if progress:
+        progress(0.0, f"Downloading the Beat This! {spec.name} model (0%)")
+
+    digest = hashlib.sha256()
+    received = 0
+    last_reported = -1
+
+    try:
+        with urllib.request.urlopen(spec.url, timeout=60) as response, \
+                partial.open("wb") as handle:
+            while True:
+                token.raise_if_cancelled()
+                chunk = response.read(1 << 20)
+                if not chunk:
+                    break
+
+                handle.write(chunk)
+                digest.update(chunk)
+                received += len(chunk)
+
+                if progress and spec.size:
+                    fraction = min(1.0, received / spec.size)
+                    percent = int(fraction * 100.0)
+                    # Every report crosses a pipe into the plugin, and a
+                    # chunked read redraws far faster than the number moves.
+                    if percent != last_reported:
+                        last_reported = percent
+                        progress(
+                            fraction,
+                            f"Downloading the Beat This! {spec.name} model ({percent}%)",
+                        )
+
+        if received != spec.size:
+            raise RuntimeError(
+                f"Beat This! {spec.name} download is {received} bytes, expected {spec.size}"
+            )
+
+        actual = digest.hexdigest().lower()
+        if actual != spec.sha256:
+            raise RuntimeError(
+                f"Beat This! {spec.name} download failed SHA-256 validation "
+                f"(got {actual}, expected {spec.sha256})"
+            )
+
+        partial.replace(destination)
+    except BaseException:
+        # A half-written file left behind would be found by the next run and
+        # rejected on its size, which reads as a corrupt install rather than
+        # an interrupted download.
+        partial.unlink(missing_ok=True)
+        raise
+
+    return destination
+
+
+def ensure_packaged_model(
+    mode: str,
+    model_dir: str | Path | None = None,
+    *,
+    progress: Callable[[float, str], None] | None = None,
+    cancellation: CancellationToken | None = None,
+) -> Path:
+    """Return a validated checkpoint, downloading it the first time."""
+    try:
+        return resolve_packaged_model(mode, model_dir)
+    except FileNotFoundError:
+        return download_packaged_model(
+            mode, model_dir, progress=progress, cancellation=cancellation
+        )
 
 
 def choose_device(requested: str = "auto") -> torch.device:
@@ -243,7 +394,18 @@ def analyse_beats(
     token = cancellation or CancellationToken()
     token.raise_if_cancelled()
     spec = MODEL_SPECS[mode]
-    model_path = resolve_packaged_model(mode, model_dir)
+    # The download gets the sliver below the 0.05 the load step starts at,
+    # so a first run creeps through it instead of the bar standing still.
+    model_path = ensure_packaged_model(
+        mode,
+        model_dir,
+        progress=(
+            (lambda fraction, stage: progress(0.04 * fraction, stage))
+            if progress
+            else None
+        ),
+        cancellation=token,
+    )
     selected_device = choose_device(device)
     if progress:
         progress(0.05, f"Loading Beat This! {spec.name} on {selected_device.type}")

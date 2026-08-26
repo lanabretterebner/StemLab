@@ -1,4 +1,12 @@
-"""Exercise packaged StemLab analysis without allowing model downloads."""
+"""Exercise packaged StemLab analysis end to end, download included.
+
+The bundle ships the Engine, not the weights, so the first analysis fetches
+its checkpoint. That fetch is the part of a release most likely to be broken
+by something outside the repository - a moved file, a dead host - and the
+least likely to be noticed on a developer machine, where the model is
+already cached. Running it here means a release build fails rather than a
+user's first separation.
+"""
 
 from __future__ import annotations
 
@@ -10,15 +18,13 @@ import numpy as np
 import soundfile as sf
 
 from stemlab.analysis_cache import AnalysisCache
-from stemlab.beat_tracking import resolve_packaged_model
+from stemlab.beat_tracking import ensure_packaged_model
 from stemlab.source_analysis import analyse_source
 
 
 def main() -> None:
     engine = Path(os.environ.get("STEMLAB_ENGINE_DIR", Path(os.sys.executable).parent)).resolve()
-    models = engine / "Models" / "BeatThis"
-    resolve_packaged_model("fast", models)
-    resolve_packaged_model("accurate", models)
+    print(f"Engine under test: {engine}", flush=True)
 
     sample_rate = 22_050
     duration = 8.0
@@ -31,6 +37,18 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory(prefix="fi_stem_offline_smoke_") as temporary:
         root = Path(temporary)
+
+        # Deliberately not the bundle's own Models directory: the bundle
+        # ships no weights, and a smoke test that left one behind would
+        # quietly change what the installer contains.
+        models = root / "Models" / "BeatThis"
+        checkpoint = ensure_packaged_model(
+            "fast",
+            models,
+            progress=lambda _fraction, stage: print(stage, flush=True),
+        )
+        print(f"Beat This! model downloaded and verified: {checkpoint}", flush=True)
+
         source = root / "source.wav"
         sf.write(source, audio, sample_rate)
         result = analyse_source(

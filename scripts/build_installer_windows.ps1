@@ -1,9 +1,6 @@
 param(
-    [ValidateSet("nvidia", "cpu", "amd")]
-    [string]$Backend = "nvidia",
-    [string]$EnvironmentPath = "",
+    [string]$EnvironmentPath = ".venv",
     [string]$FfmpegPath = "",
-    [bool]$DownloadModels = $true,
     [switch]$SkipPortableBuild,
     [switch]$SkipPluginBuild,
     [switch]$SkipTests,
@@ -12,25 +9,17 @@ param(
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path $PSScriptRoot -Parent
-. (Join-Path $RepoRoot "scripts\windows_backend.ps1")
-$BackendConfiguration = Get-StemLabBackendConfiguration $Backend
 $DistRoot = Join-Path $RepoRoot "dist"
 
 $VersionMatch = Select-String -LiteralPath (Join-Path $RepoRoot "pyproject.toml") -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
 if (-not $VersionMatch) { throw "Could not read StemLab version from pyproject.toml." }
 $Version = $VersionMatch.Matches[0].Groups[1].Value
-$PortableRoot = Join-Path $DistRoot "StemLab-Portable-$Version-$($BackendConfiguration.Suffix)"
-
-if ($Backend -eq "amd") {
-    throw "AMD ROCm installer packaging is not yet available: the verified portable build requires a reproducible Python 3.12 ROCm payload. AMD development setup is supported with .\scripts\setup_dev.ps1 -Backend amd."
-}
+$PortableRoot = Join-Path $DistRoot "StemLab-Portable-$Version"
 
 if (-not $SkipPortableBuild) {
     $PortableArgs = @{
-        Backend = $Backend
         EnvironmentPath = $EnvironmentPath
         OutputDirectory = $PortableRoot
-        DownloadModels = $DownloadModels
     }
     if ($FfmpegPath) { $PortableArgs.FfmpegPath = $FfmpegPath }
     if ($SkipPluginBuild) { $PortableArgs.SkipPluginBuild = $true }
@@ -45,6 +34,23 @@ if (-not (Test-Path -LiteralPath (Join-Path $PortableRoot "StemLab.exe") -PathTy
     throw "Portable payload is missing: $PortableRoot"
 }
 
+# The payload names itself. build_portable_windows.ps1 writes this from the
+# torch it actually installed, so the installer filename describes what is
+# inside it rather than what a build was asked for.
+$FlavorFile = Join-Path $PortableRoot "Engine\.stemlab-torch-flavor"
+if (-not (Test-Path -LiteralPath $FlavorFile -PathType Leaf)) {
+    throw @"
+The portable payload does not record which torch build it carries.
+Missing: $FlavorFile
+Rebuild the payload with build_portable_windows.ps1.
+"@
+}
+$Flavor = (Get-Content -LiteralPath $FlavorFile -Raw).Trim()
+if (-not $Flavor) { throw "The recorded torch flavor is empty: $FlavorFile" }
+Write-Host "Payload torch flavor: $Flavor" -ForegroundColor Cyan
+
+# The installer copies the VST3 bundle to the system VST3 directory, so a
+# payload whose bundle is hollow must fail here, not on the user's machine.
 $PortableVst3Module = Join-Path $PortableRoot "StemLab.vst3\Contents\x86_64-win\StemLab.vst3"
 if (-not (Test-Path -LiteralPath $PortableVst3Module -PathType Leaf)) {
     throw "Portable VST3 module is missing: $PortableVst3Module"
@@ -95,8 +101,7 @@ if ($LASTEXITCODE -ne 0) {
 
 $IsccExitCode = 1
 try {
-    & $Iscc "/DSourceDir=$InnoSourceDir" "/DAppVersion=$Version" `
-        "/DBackendSuffix=$($BackendConfiguration.Suffix)" "/DOutputDir=$DistRoot" $Iss
+    & $Iscc "/DSourceDir=$InnoSourceDir" "/DAppVersion=$Version" "/DFlavor=$Flavor" "/DOutputDir=$DistRoot" $Iss
     $IsccExitCode = $LASTEXITCODE
 }
 finally {
@@ -104,7 +109,7 @@ finally {
 }
 if ($IsccExitCode -ne 0) { exit $IsccExitCode }
 
-$Setup = Join-Path $DistRoot "StemLab-Setup-$Version-$($BackendConfiguration.Suffix).exe"
+$Setup = Join-Path $DistRoot "StemLab-Setup-$Version-$Flavor.exe"
 if (-not (Test-Path -LiteralPath $Setup -PathType Leaf)) {
     throw "Inno Setup completed without producing: $Setup"
 }
@@ -112,6 +117,6 @@ if (-not (Test-Path -LiteralPath $Setup -PathType Leaf)) {
 Write-Host ""
 Write-Host "Installer build complete." -ForegroundColor Green
 Write-Host "  $Setup"
-Get-ChildItem -LiteralPath $DistRoot -Filter "StemLab-Setup-$Version-$($BackendConfiguration.Suffix)-*.bin" -ErrorAction SilentlyContinue | ForEach-Object {
+Get-ChildItem -LiteralPath $DistRoot -Filter "StemLab-Setup-$Version-$Flavor-*.bin" -ErrorAction SilentlyContinue | ForEach-Object {
     Write-Host "  $($_.FullName)"
 }

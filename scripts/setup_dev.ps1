@@ -1,7 +1,12 @@
 param(
     [ValidateSet("nvidia", "cpu", "amd")]
     [string]$Backend = "nvidia",
-    [string]$EnvironmentPath = ""
+    [string]$EnvironmentPath = "",
+    # The release workflow prepares each matrix leg's torch itself - pinned
+    # per flavor, including xpu, which the backend list does not cover - and
+    # constrains pip through PIP_CONSTRAINT. This switch leaves that torch
+    # alone instead of replacing it with the backend's pinned build.
+    [switch]$SkipTorchInstall
 )
 
 $ErrorActionPreference = "Stop"
@@ -34,22 +39,40 @@ if ($ActualPython.Trim() -ne $BackendConfiguration.Python) {
     throw "$($BackendConfiguration.Label) requires Python $($BackendConfiguration.Python), but $Environment uses Python $($ActualPython.Trim()). Use a separate environment path."
 }
 
-Write-Host "Installing the pinned $($BackendConfiguration.Label) PyTorch runtime..." -ForegroundColor Cyan
-Install-StemLabTorchBackend $Python $BackendConfiguration
-
 $VerifyBackend = Join-Path $PSScriptRoot "verify_windows_backend.py"
-& $Python $VerifyBackend --backend $Backend
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+if ($SkipTorchInstall) {
+    & $Python -c "import torch"
+    if ($LASTEXITCODE -ne 0) {
+        throw "-SkipTorchInstall expects torch to already be installed in $Environment."
+    }
+}
+else {
+    Write-Host "Installing the pinned $($BackendConfiguration.Label) PyTorch runtime..." -ForegroundColor Cyan
+    Install-StemLabTorchBackend $Python $BackendConfiguration
+
+    & $Python $VerifyBackend --backend $Backend
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
 
 Write-Host "Installing StemLab, developer tools, and recursive separation support..."
 Write-Host "This is a large first-time install because it includes the audio models' runtimes." -ForegroundColor DarkGray
-& $Python -m pip install -e "$RepoRoot[dev,recursive]" `
-    --constraint (Join-Path $RepoRoot "requirements\windows-backend-constraints.txt")
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-# Verify once more after resolving every transitive dependency.
-& $Python $VerifyBackend --backend $Backend
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if ($SkipTorchInstall) {
+    # No backend constraint here: the caller's PIP_CONSTRAINT pins the
+    # flavor it installed, and a second exact-version pin could contradict it.
+    & $Python -m pip install -e "$RepoRoot[dev,recursive]"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+else {
+    & $Python -m pip install -e "$RepoRoot[dev,recursive]" `
+        --constraint (Join-Path $RepoRoot "requirements\windows-backend-constraints.txt")
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    # Verify once more after resolving every transitive dependency.
+    & $Python $VerifyBackend --backend $Backend
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
 
 Write-Host "Running the unit tests..."
 & $Python -m pytest -q $RepoRoot

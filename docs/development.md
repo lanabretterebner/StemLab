@@ -180,8 +180,10 @@ ignored. Edit sources under `stemlab/`, `plugin/Source/`,
 
 ## Current Limits
 
-- Release-model downloads happen during deliberate staging, never during normal
-  installed runtime operation.
+- Model weights are downloaded on first use, not shipped: no bundle carries
+  them, each is rejected unless it matches a recorded length and digest, and
+  the download is named in the status area while it runs. The first
+  separation on a fresh install is therefore slower than the ones after it.
 - Guitar/piano/other adaptive splitting is DSP-based and experimental.
 - Source-count estimates are recursion heuristics, not literal musician counts.
 - `PluginProcessor.cpp`, `PluginEditor.cpp`, and

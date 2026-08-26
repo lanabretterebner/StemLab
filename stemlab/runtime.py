@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import queue
 import re
@@ -296,6 +297,104 @@ def drain_cr_lf_stream(stdout: BinaryIO, on_segment: Callable[[bytes], None]) ->
                 segment.clear()
         else:
             segment.extend(byte)
+
+
+class _DownloadWatchingStream:
+    """A text sink that reports byte-transfer bars and forwards everything on.
+
+    run_progress_process can watch a model CLI because the CLI is a child
+    process and its output is a pipe. audio-separator is not a CLI - it
+    downloads inside this process while ``load_model`` blocks - so there is
+    no pipe to read and the bar it writes goes straight to the job's own
+    stdout, where the plugin ignores it. This wraps that stream instead,
+    applying the same two parsers so an in-process download reaches the
+    status area the same way a subprocess one does.
+    """
+
+    def __init__(self, wrapped, on_download: Callable[[float], None]) -> None:
+        self._wrapped = wrapped
+        self._on_download = on_download
+        self._segment = ""
+        self._last_reported = -1
+
+    def write(self, text: str) -> int:
+        written = self._wrapped.write(text)
+
+        # tqdm rewrites one line with carriage returns, so a bar only ever
+        # arrives as CR-terminated fragments - splitting on newlines alone
+        # would hold the whole download in the buffer until it finished.
+        self._segment += text
+        while True:
+            cut = max(self._segment.find("\r"), self._segment.find("\n"))
+            if cut < 0:
+                break
+            self._consume(self._segment[:cut])
+            self._segment = self._segment[cut + 1 :]
+
+        return written
+
+    def _consume(self, fragment: str) -> None:
+        if not fragment:
+            return
+
+        raw = fragment.encode("utf-8", "replace")
+        if not looks_like_download(raw):
+            return
+
+        percent = last_progress_percent(raw)
+        if percent is None or int(percent) == self._last_reported:
+            return
+
+        self._last_reported = int(percent)
+        self._on_download(percent)
+
+    def drain(self) -> None:
+        """Consume a fragment left unterminated when the transfer ended.
+
+        tqdm's last frame is the one that says 100%, and it is written
+        without a trailing carriage return - the bar is closed by the caller
+        moving on, not by another redraw. Dropping it would leave the status
+        stuck a frame short of finished.
+        """
+        pending, self._segment = self._segment, ""
+        self._consume(pending)
+
+    def flush(self) -> None:
+        self._wrapped.flush()
+
+    def isatty(self) -> bool:
+        # tqdm renders a bar rather than one line per update only when it
+        # believes it is on a terminal, and a bar is what the parsers read.
+        return True
+
+    def __getattr__(self, name):
+        return getattr(self._wrapped, name)
+
+
+@contextlib.contextmanager
+def report_downloads(on_download: Callable[[float], None] | None):
+    """Report byte-transfer bars written to stdout/stderr inside this process.
+
+    A no-op without a callback, so callers can wrap unconditionally.
+    """
+    if on_download is None:
+        yield
+        return
+
+    stdout, stderr = sys.stdout, sys.stderr
+    watched_out = _DownloadWatchingStream(stdout, on_download)
+    watched_err = _DownloadWatchingStream(stderr, on_download)
+    sys.stdout, sys.stderr = watched_out, watched_err
+    try:
+        yield
+    finally:
+        for watched in (watched_out, watched_err):
+            try:
+                watched.drain()
+            except Exception:
+                # Reporting a download must never be what fails a job.
+                pass
+        sys.stdout, sys.stderr = stdout, stderr
 
 
 def run_progress_process(

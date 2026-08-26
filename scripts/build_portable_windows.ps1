@@ -1,10 +1,7 @@
 param(
-    [ValidateSet("nvidia", "cpu", "amd")]
-    [string]$Backend = "nvidia",
-    [string]$EnvironmentPath = "",
+    [string]$EnvironmentPath = ".venv",
     [string]$OutputDirectory = "",
     [string]$FfmpegPath = "",
-    [bool]$DownloadModels = $true,
     [switch]$SkipPluginBuild,
     [switch]$SkipTests,
     [switch]$CleanPlugin
@@ -14,20 +11,15 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
 $RepoRoot = Split-Path $PSScriptRoot -Parent
-. (Join-Path $RepoRoot "scripts\windows_backend.ps1")
-$BackendConfiguration = Get-StemLabBackendConfiguration $Backend
 $DistRoot = Join-Path $RepoRoot "dist"
 $CacheRoot = Join-Path $RepoRoot ".portable-cache"
-$Manifest = Join-Path $RepoRoot "packaging\models.json"
-$StageScript = Join-Path $RepoRoot "scripts\stage_models.py"
-$VerifyBackend = Join-Path $RepoRoot "scripts\verify_windows_backend.py"
 
 $VersionMatch = Select-String -LiteralPath (Join-Path $RepoRoot "pyproject.toml") -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
 if (-not $VersionMatch) { throw "Could not read StemLab version from pyproject.toml." }
 $Version = $VersionMatch.Matches[0].Groups[1].Value
 
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
-    $OutputDirectory = Join-Path $DistRoot "StemLab-Portable-$Version-$($BackendConfiguration.Suffix)"
+    $OutputDirectory = Join-Path $DistRoot "StemLab-Portable-$Version"
 }
 elseif (-not [System.IO.Path]::IsPathRooted($OutputDirectory)) {
     $OutputDirectory = Join-Path $RepoRoot $OutputDirectory
@@ -37,14 +29,6 @@ $OutputDirectory = [System.IO.Path]::GetFullPath($OutputDirectory)
 $DistPrefix = [System.IO.Path]::GetFullPath($DistRoot).TrimEnd('\') + '\'
 if (-not (($OutputDirectory.TrimEnd('\') + '\').StartsWith($DistPrefix, [StringComparison]::OrdinalIgnoreCase))) {
     throw "Portable output must be under the repository dist directory: $DistRoot"
-}
-
-if ($Backend -eq "amd") {
-    throw "AMD ROCm release packaging is not yet available: StemLab's verified portable engine embeds Python 3.11, while AMD ROCm 7.2.1 requires a separate Python 3.12 runtime. AMD development setup is supported with .\scripts\setup_dev.ps1 -Backend amd."
-}
-
-if ([string]::IsNullOrWhiteSpace($EnvironmentPath)) {
-    $EnvironmentPath = $BackendConfiguration.DefaultEnvironment
 }
 
 if ([System.IO.Path]::IsPathRooted($EnvironmentPath)) {
@@ -112,12 +96,6 @@ function Download-VerifiedFile(
 
 Assert-File $DevPython "StemLab's Python environment is missing. Run .\scripts\setup_dev.ps1 first."
 Assert-Directory $VenvSitePackages "StemLab's Python site-packages directory is missing."
-Assert-File $Manifest "The release model manifest is missing."
-Assert-File $StageScript "The model staging helper is missing."
-
-Write-Host "Verifying the source environment backend..." -ForegroundColor Cyan
-& $DevPython $VerifyBackend --backend $Backend
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 if (-not $SkipTests) {
     Write-Host "Running the Python regression suite..." -ForegroundColor Cyan
@@ -193,46 +171,12 @@ Set-Content -LiteralPath (Join-Path $OutputDirectory "FFMPEG_BUILD_INFO.txt") -E
     $FfmpegInfo
 )
 
-$PersistentModelEngine = Join-Path $CacheRoot "release-model-engine"
-$SourceRoots = @(
-    $PersistentModelEngine,
-    (Join-Path $env:LOCALAPPDATA "StemLab\Models"),
-    (Join-Path $env:LOCALAPPDATA "StemLab\Models"), # legacy cache fallback
-    (Join-Path $env:USERPROFILE ".cache\bs-roformer-infer"),
-    (Join-Path $env:USERPROFILE ".cache\torch\hub\checkpoints"),
-    (Join-Path $env:USERPROFILE ".cache\audio-separator")
-)
-if ($env:BS_ROFORMER_MODELS_PATH) { $SourceRoots += $env:BS_ROFORMER_MODELS_PATH }
-if ($env:STEMLAB_RECURSIVE_MODEL_DIR) { $SourceRoots += $env:STEMLAB_RECURSIVE_MODEL_DIR }
-$SourceRoots = $SourceRoots | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique
-
-if ($DownloadModels) {
-    # Download/copy once into a persistent checksum-verified cache. dist/ is
-    # intentionally disposable, so downloading directly into it would force
-    # multi-gigabyte model downloads on every rebuild.
-    $CacheStageArgs = @("--manifest", $Manifest, "--engine", $PersistentModelEngine)
-    foreach ($Root in $SourceRoots) {
-        if ([System.IO.Path]::GetFullPath($Root) -ne [System.IO.Path]::GetFullPath($PersistentModelEngine)) {
-            $CacheStageArgs += @("--source-root", $Root)
-        }
-    }
-    $CacheStageArgs += "--download-missing"
-
-    Write-Host "Updating the persistent verified model cache..." -ForegroundColor Cyan
-    & $DevPython $StageScript @CacheStageArgs
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-    if (-not ($SourceRoots -contains $PersistentModelEngine)) {
-        $SourceRoots = @($PersistentModelEngine) + $SourceRoots
-    }
-}
-
-$StageArgs = @("--manifest", $Manifest, "--engine", $Engine)
-foreach ($Root in $SourceRoots) { $StageArgs += @("--source-root", $Root) }
-
-Write-Host "Staging and verifying release model assets..." -ForegroundColor Cyan
-& $DevPython $StageScript @StageArgs
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+# Model weights are not staged into the bundle. Each downloads the first
+# time its model is used, is verified against the digest recorded beside
+# it, and the plugin names the download in its status area while it runs
+# - the same as the Linux bundle. Staging made a release depend on
+# whatever the build machine happened to have cached, which is what hid
+# two dead download URLs for as long as that cache stayed warm.
 
 Write-Host "Copying application and Ableton integration..." -ForegroundColor Cyan
 Copy-Item -LiteralPath $Standalone -Destination (Join-Path $OutputDirectory "StemLab.exe") -Force
@@ -241,9 +185,9 @@ Invoke-Robocopy (Join-Path $RepoRoot "integrations\ableton\StemLabRemote") (Join
 New-Item -ItemType Directory -Path (Join-Path $OutputDirectory "scripts") -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\install_ableton.ps1") -Destination (Join-Path $OutputDirectory "scripts\install_ableton.ps1") -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "LICENSE") -Destination $OutputDirectory -Force
-Copy-Item -LiteralPath (Join-Path $RepoRoot "plugin\Resources\StemLabIcon.ico") -Destination (Join-Path $OutputDirectory "StemLabIcon.ico") -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "docs\third-party.md") -Destination (Join-Path $OutputDirectory "THIRD_PARTY.md") -Force
-Copy-Item -LiteralPath $Manifest -Destination (Join-Path $OutputDirectory "models.json") -Force
+# The installer definition's SetupIconFile reads this out of the payload.
+Copy-Item -LiteralPath (Join-Path $RepoRoot "plugin\Resources\StemLabIcon.ico") -Destination (Join-Path $OutputDirectory "StemLabIcon.ico") -Force
 
 $EnginePython = Join-Path $Engine "python.exe"
 Assert-File $EnginePython "The embedded Python runtime was not assembled correctly."
@@ -251,12 +195,30 @@ Assert-File $EnginePython "The embedded Python runtime was not assembled correct
 Write-Host "Verifying isolated portable imports..." -ForegroundColor Cyan
 Push-Location $OutputDirectory
 try {
-    & $EnginePython -c "import stemlab, torch, beat_this, demucs, audio_separator, mido; print('Portable imports OK')"
+    & $EnginePython -c "import stemlab, torch, beat_this, demucs, audio_separator, mido; print('Portable imports OK; CUDA:', torch.cuda.is_available())"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-    & $EnginePython $VerifyBackend --backend $Backend `
-        --metadata-file (Join-Path $OutputDirectory "RUNTIME_BACKEND.txt")
+    # Ask torch what it is rather than being told. A wheel tags itself -
+    # 2.9.1+cu128, 2.9.1+cpu, 2.9.1+xpu - so this cannot drift from the
+    # payload the way a build label passed down the chain can. The Linux
+    # bundle records the same marker from install_backend.sh.
+    $TorchBuild = & $EnginePython -c "import torch; print(torch.__version__)"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    # Deliberately unanchored: a local version can carry a suffix
+    # (2.9.1+cu128.post1), and anchoring would drop such a build through to
+    # the default and label a CUDA installer "cpu" - the exact mislabel this
+    # is here to prevent.
+    $Flavor = switch -Regex ($TorchBuild) {
+        '\+cu\d+'   { "cuda"; break }
+        '\+xpu'     { "xpu";  break }
+        '\+rocm'    { "rocm"; break }
+        default     { "cpu" }
+    }
+
+    Set-Content -LiteralPath (Join-Path $Engine ".stemlab-torch-flavor") `
+        -Encoding ASCII -Value $Flavor
+    Write-Host "Engine torch build: $TorchBuild (flavor: $Flavor)" -ForegroundColor Cyan
 
     $env:STEMLAB_ENGINE_DIR = $Engine
     try {

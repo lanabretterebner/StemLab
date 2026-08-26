@@ -8,9 +8,11 @@ BUILDER = (ROOT / "scripts" / "build_installer_windows.ps1").read_text(encoding=
 ABLETON_INSTALLER = (ROOT / "scripts" / "install_ableton.ps1").read_text(encoding="utf-8")
 
 
-def test_backend_variants_share_one_uninstall_identity():
+def test_flavor_variants_share_one_uninstall_identity():
+    # cpu/cuda/xpu installers are variants of one installed product: the
+    # flavor may name the setup file, never the uninstall identity.
     app_id_line = next(line for line in ISS.splitlines() if line.startswith("AppId="))
-    assert "BackendSuffix" not in app_id_line
+    assert "Flavor" not in app_id_line
     assert "UsePreviousAppDir=yes" in ISS
     assert "UninstallLogMode=append" in ISS
 

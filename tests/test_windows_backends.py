@@ -66,15 +66,11 @@ def test_amd_requires_hip_torch():
     assert details["GPU"] == "Test GPU"
 
 
+# The build scripts take no backend argument on purpose: the portable
+# payload records the torch flavor it actually contains and the installer
+# names itself from that record, so only the dev setup selects a backend.
 @needs_powershell
-@pytest.mark.parametrize(
-    "script",
-    [
-        "scripts/setup_dev.ps1",
-        "scripts/build_portable_windows.ps1",
-        "scripts/build_installer_windows.ps1",
-    ],
-)
+@pytest.mark.parametrize("script", ["scripts/setup_dev.ps1"])
 def test_invalid_backend_is_rejected(script: str):
     result = subprocess.run(
         ["powershell.exe", "-NoProfile", "-File", str(ROOT / script), "-Backend", "invalid"],
@@ -106,19 +102,3 @@ def test_backend_output_suffixes_do_not_collide():
     assert len(suffixes) == len(set(suffixes))
 
 
-@needs_powershell
-@pytest.mark.parametrize(
-    "script",
-    ["scripts/build_portable_windows.ps1", "scripts/build_installer_windows.ps1"],
-)
-def test_amd_release_packaging_fails_explicitly(script: str):
-    result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-File", str(ROOT / script), "-Backend", "amd"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode != 0
-    assert "AMD ROCm" in result.stderr
-    assert "Python 3.12" in result.stderr

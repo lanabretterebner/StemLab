@@ -89,26 +89,22 @@ model output.
 
 Push a tag matching the version in `pyproject.toml` and
 `.github/workflows/release.yml` builds, checksums, and publishes every
-asset (Windows installer, Linux bundle, plugin binaries, wheel/sdist). A
+asset (Windows installers, Linux bundles, plugin binaries, wheel/sdist). A
 mismatched tag fails the run. Run the workflow manually with **publish**
 off to test packaging changes.
 
-Locally on Windows, build one backend per portable folder and installer
-(NVIDIA is the default when `-Backend` is omitted):
+Bundles are built per torch flavor: `cpu`, `cuda` and `xpu` on both
+platforms, plus `rocm` on Linux only - PyTorch publishes no ROCm wheel for
+Windows. Each is named for the torch build it actually contains, read out
+of the assembled Engine rather than from what the build was asked for.
 
-```powershell
-.\scripts\build_portable_windows.ps1 -Backend nvidia   # or cpu
-.\scripts\build_installer_windows.ps1 -Backend nvidia -SkipPortableBuild
-```
+Locally: `.\scripts\build_portable_windows.ps1` then
+`.\scripts\build_installer_windows.ps1 -SkipPortableBuild` on Windows;
+`./scripts/build_portable.sh --torch-flavor cpu` on Linux.
 
-Outputs carry the backend suffix - `dist\StemLab-Portable-<version>-NVIDIA`
-and `dist\StemLab-Setup-<version>-NVIDIA.exe` - and each portable root
-includes `RUNTIME_BACKEND.txt` with the packaged Python, Torch, and
-CUDA/HIP details. AMD portable/installer packaging stops with a concise
-error until a reproducible Python 3.12 ROCm runtime exists; NVIDIA and CPU
-releases are fully supported.
-
-On Linux: `./scripts/build_portable.sh --torch-flavor cpu`.
+No bundle carries model weights. Each model downloads the first time it is
+used, is rejected unless it matches a recorded length and digest, and is
+named in the status area while it runs.
 
 ## Documentation
 
