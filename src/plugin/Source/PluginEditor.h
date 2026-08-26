@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include <vector>
 #include <functional>
+#include <map>
 #include <utility>
 #include "PluginProcessor.h"
 #include "SelfFileDragGuard.h"
@@ -43,6 +44,12 @@ public:
     void mouseDoubleClick(const juce::MouseEvent&) override;
     void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
+    /** The editor's UI timer calls this instead of a blanket repaint: it asks
+        the processor what the well would show now and repaints only when that
+        differs from the last tick - and when just the playhead moved, only
+        the two thin strips it left and entered. A still lane costs nothing. */
+    void timerRefresh();
+
 private:
     /** One drawn column: the shape of the audio under it, per channel, and
         the colour that audio calls for. */
@@ -54,8 +61,26 @@ private:
         stemlab::waveform::BandLevels bands;
     };
 
+    /** The well interior and the view window with its start snapped to a
+        whole column of time; viewLength is 0 when there is nothing to draw.
+        Snapping is what keeps a scrolling view from re-bucketing the audio
+        every frame (each column would cover a slightly different span and
+        the whole waveform would crawl and shimmer): snapped, the picture
+        translates by whole columns and every column keeps its audio. */
+    struct ViewGeometry
+    {
+        juce::Rectangle<float> inner;
+        double snappedStart = 0.0;
+        double viewLength = 0.0;
+    };
+
+    ViewGeometry viewGeometry() const;
+
     /** Rebuild the column cache if the view, the size or the file moved. */
     void refreshColumns(juce::Rectangle<float> inner, double viewStart, double viewLength);
+
+    /** Draw columns [first, first + count) into columnImage. */
+    void renderColumnStrip(int first, int count);
 
     /** Where a point in the well falls in the file, 0 to 1. */
     double normalisedForX(float x) const;
@@ -69,6 +94,12 @@ private:
 
     std::vector<Column> columns;
 
+    /** The columns pre-rendered as pixels, so a paint is one blit instead of
+        thousands of one-pixel fills. When the view slides by whole columns
+        (zoomed playback) the image scrolls and only the newly exposed
+        columns are recomputed and drawn. */
+    juce::Image columnImage;
+
     /*
         What the cached columns were built for. A scrolling view snaps to
         whole pixels, so these change only when the picture genuinely does -
@@ -78,7 +109,33 @@ private:
     double columnsStart = -1.0;
     double columnsLength = -1.0;
     int columnsWidth = 0;
+    int columnsHeight = 0;
     int columnsChannels = 0;
+    int columnsPalette = -1;
+    bool columnsMuted = false;
+    juce::String columnsIdentity;
+
+    /** Everything the well drew at the last timer tick, so timerRefresh can
+        tell a genuinely changed picture from one that only needs its
+        playhead strip refreshed - or nothing at all. */
+    struct DisplayState
+    {
+        const void* profilePtr = nullptr;
+        double viewStart = 0.0;
+        double viewLength = 0.0;
+        double transportPosition = 0.0;
+        double transportLength = 0.0;
+        double gridBpm = 0.0;
+        double gridBarOne = 0.0;
+        int gridNumerator = 0;
+        int palette = 0;
+        bool selectionActive = false;
+        double selectionStart = 0.0;
+        double selectionEnd = 0.0;
+    };
+
+    DisplayState lastDisplay;
+    bool lastDisplayValid = false;
 
     juce::File currentFile;
     juce::String stemIdentity;
@@ -117,6 +174,14 @@ public:
                       std::function<void(int, juce::String)> toggleExpanded);
 
     void refresh();
+
+    /** Forwards the editor's UI tick to the waveform well's change-detecting
+        refresh; the lane's own widgets repaint through their setters. */
+    void timerRefreshWaveform()
+    {
+        if (waveform != nullptr)
+            waveform->timerRefresh();
+    }
 
     /** What a lane menu anchors to, so it opens under the button that
         was clicked rather than against the whole lane row. */
@@ -242,6 +307,13 @@ private:
     /** Draws and lays out the panel in its own (design-size) coordinates. */
     void paintPanel(juce::Graphics&);
     void layoutPanel();
+
+    /** The accent glow behind a primary action, from a cache keyed by size:
+        juce::DropShadow re-runs its Gaussian blur on every draw call, which
+        is pure waste for a glow that only changes when the layout does. */
+    void drawCachedGlow(juce::Graphics&, juce::Rectangle<int> area);
+
+    std::map<std::pair<int, int>, juce::Image> glowCache;
 
     /** Lays out the footer status line and progress row; the rows rearrange
         when a job starts or ends, so it runs on every status refresh. */
