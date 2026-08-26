@@ -969,12 +969,6 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
                 {
                     windowComponent->setUsingNativeTitleBar(true);
                     windowComponent->setName("StemLab");
-
-                    const auto appIcon = juce::ImageFileFormat::loadFrom(
-                        BinaryData::StemLabIcon_png, BinaryData::StemLabIcon_pngSize);
-
-                    if (appIcon.isValid())
-                        windowComponent->setIcon(appIcon);
                 }
             });
     }

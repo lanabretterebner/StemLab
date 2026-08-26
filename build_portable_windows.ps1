@@ -224,7 +224,6 @@ Invoke-Robocopy (Join-Path $RepoRoot "integrations\ableton\StemLabRemote") (Join
 New-Item -ItemType Directory -Path (Join-Path $OutputDirectory "scripts") -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\install_ableton.ps1") -Destination (Join-Path $OutputDirectory "scripts\install_ableton.ps1") -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "LICENSE") -Destination $OutputDirectory -Force
-Copy-Item -LiteralPath (Join-Path $RepoRoot "plugin\Resources\StemLabIcon.ico") -Destination (Join-Path $OutputDirectory "StemLabIcon.ico") -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "docs\third-party.md") -Destination (Join-Path $OutputDirectory "THIRD_PARTY.md") -Force
 Copy-Item -LiteralPath $Manifest -Destination (Join-Path $OutputDirectory "models.json") -Force
 
