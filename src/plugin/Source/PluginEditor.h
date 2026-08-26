@@ -74,7 +74,9 @@ private:
         double viewLength = 0.0;
     };
 
-    ViewGeometry viewGeometry() const;
+    /** Geometry for a given view window, so paint and timerRefresh frame
+        the same captured window rather than each reading a fresher one. */
+    ViewGeometry viewGeometryFor(double viewStart, double viewLength) const;
 
     /** Rebuild the column cache if the view, the size or the file moved. */
     void refreshColumns(juce::Rectangle<float> inner, double viewStart, double viewLength);
@@ -134,6 +136,17 @@ private:
         double selectionEnd = 0.0;
     };
 
+    /** One live read of everything the well draws. */
+    DisplayState readDisplayState() const;
+
+    /*
+        paint draws lastDisplay, never a fresher read: a strip repaint's clip
+        only covers where the captured state put the playhead, so reading the
+        transport again at paint time would draw it where the clip may not
+        reach and erase it where it never was - ghost playheads, worst zoomed
+        in at the file's ends where the view is pinned while the playhead
+        crosses pixels fastest.
+    */
     DisplayState lastDisplay;
     bool lastDisplayValid = false;
 
