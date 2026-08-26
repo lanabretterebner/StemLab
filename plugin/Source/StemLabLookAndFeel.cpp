@@ -653,6 +653,50 @@ namespace stemlab::icons
         return p;
     }
 
+    juce::Path dragOut(juce::Rectangle<float> b)
+    {
+        /*
+         * Drag this stem out: a rounded square, an arrow leaving it
+         * diagonally, and a corner bracket standing in for wherever it is
+         * going.
+         *
+         * The reference art dashes that second square. At 14px dashes close
+         * up into a grey smear, so it is reduced to the two edges that carry
+         * the meaning.
+         */
+        const auto size = juce::jmin(b.getWidth(), b.getHeight());
+
+        juce::Path p;
+
+        // Source: rounded square across the top-left.
+        const auto square = size * 0.52f;
+        p.addRoundedRectangle(b.getX(), b.getY(), square, square, size * 0.12f);
+
+        // Target: the far corner of a box, opposite the source.
+        const auto bracket = size * 0.30f;
+        const auto right = b.getX() + size;
+        const auto bottom = b.getY() + size;
+
+        p.startNewSubPath(right, bottom - bracket);
+        p.lineTo(right, bottom);
+        p.lineTo(right - bracket, bottom);
+
+        // The arrow between them, on the diagonal.
+        const auto from = juce::Point<float>(b.getX() + size * 0.34f, b.getY() + size * 0.34f);
+        const auto to = juce::Point<float>(b.getX() + size * 0.74f, b.getY() + size * 0.74f);
+
+        p.startNewSubPath(from);
+        p.lineTo(to);
+
+        const auto head = size * 0.20f;
+
+        p.startNewSubPath(to.x - head, to.y);
+        p.lineTo(to.x, to.y);
+        p.lineTo(to.x, to.y - head);
+
+        return p;
+    }
+
     juce::Path kebab(juce::Rectangle<float> b)
     {
         // Three dots up the centre: the usual "more actions" affordance.

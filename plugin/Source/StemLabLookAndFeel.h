@@ -116,4 +116,7 @@ namespace stemlab::icons
 
     /** Per-lane actions: three dots, the usual "more actions" affordance. */
     juce::Path kebab(juce::Rectangle<float> bounds);
+
+    /** Drag this stem out: a square, a diagonal arrow, a target corner. */
+    juce::Path dragOut(juce::Rectangle<float> bounds);
 }

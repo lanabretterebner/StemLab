@@ -224,6 +224,167 @@ inline SpectralProfile analyseMono(const float* samples, std::size_t sampleCount
     return profile;
 }
 
+/*
+    Peak envelope.
+
+    The lanes used to sample juce::AudioThumbnail once per drawn bar, per
+    repaint - tens of thousands of calls a second across six lanes at the UI
+    rate, which is where the sluggishness came from. Reading min and max per
+    channel once into a flat array turns painting into indexing.
+*/
+
+/** ~2ms per frame: finer than a pixel at the deepest zoom, so columns never
+    have to interpolate between frames. */
+constexpr double peakSecondsPerFrame = 0.002;
+
+/** Past this a long file coarsens rather than growing without bound. */
+constexpr std::size_t peakMaxFrames = 400000;
+
+/** Only the first two channels are drawn, so only those are stored. */
+constexpr int peakMaxChannels = 2;
+
+/** Per-frame minimum and maximum sample value, per channel. */
+struct PeakEnvelope
+{
+    double secondsPerFrame = 0.0;
+    int channels = 0;
+
+    // Interleaved: frame * channels + channel.
+    std::vector<float> minima;
+    std::vector<float> maxima;
+
+    std::size_t frames() const
+    {
+        return channels > 0 ? minima.size() / static_cast<std::size_t>(channels) : 0;
+    }
+
+    bool isEmpty() const { return frames() == 0; }
+};
+
+struct PeakRange
+{
+    float minimum = 0.0f;
+    float maximum = 0.0f;
+};
+
+/**
+ * The envelope over a span of time, for one channel.
+ *
+ * A span shorter than a frame still reads the one frame it lands in, so a
+ * fully zoomed-in column draws real audio rather than nothing.
+ */
+inline PeakRange peakBetween(const PeakEnvelope& envelope, int channel, double startSeconds,
+                             double endSeconds)
+{
+    const auto frameCount = envelope.frames();
+
+    if (frameCount == 0 || !(envelope.secondsPerFrame > 0.0) || channel < 0 ||
+        channel >= envelope.channels)
+    {
+        return {};
+    }
+
+    const auto last = static_cast<long long>(frameCount) - 1;
+
+    auto first = static_cast<long long>(std::floor(startSeconds / envelope.secondsPerFrame));
+    auto final = static_cast<long long>(std::ceil(endSeconds / envelope.secondsPerFrame)) - 1;
+
+    final = std::max(first, final);
+
+    first = std::clamp<long long>(first, 0, last);
+    final = std::clamp<long long>(final, 0, last);
+
+    PeakRange range{envelope.maxima[static_cast<std::size_t>(first) *
+                                        static_cast<std::size_t>(envelope.channels) +
+                                    static_cast<std::size_t>(channel)],
+                    envelope.maxima[static_cast<std::size_t>(first) *
+                                        static_cast<std::size_t>(envelope.channels) +
+                                    static_cast<std::size_t>(channel)]};
+
+    range.minimum = envelope.minima[static_cast<std::size_t>(first) *
+                                        static_cast<std::size_t>(envelope.channels) +
+                                    static_cast<std::size_t>(channel)];
+
+    for (auto frame = first + 1; frame <= final; ++frame)
+    {
+        const auto index = static_cast<std::size_t>(frame) *
+                               static_cast<std::size_t>(envelope.channels) +
+                           static_cast<std::size_t>(channel);
+
+        range.minimum = std::min(range.minimum, envelope.minima[index]);
+        range.maximum = std::max(range.maximum, envelope.maxima[index]);
+    }
+
+    return range;
+}
+
+/** Reduce de-interleaved channel data to a peak envelope. */
+inline PeakEnvelope analysePeaks(const float* const* channelData, int channelCount,
+                                 std::size_t sampleCount, double sampleRate)
+{
+    PeakEnvelope envelope;
+
+    if (channelData == nullptr || channelCount <= 0 || sampleCount == 0 || !(sampleRate > 0.0))
+        return envelope;
+
+    envelope.channels = std::min(channelCount, peakMaxChannels);
+
+    auto hop = static_cast<std::size_t>(std::max(1.0, sampleRate * peakSecondsPerFrame));
+
+    if (sampleCount / hop > peakMaxFrames)
+        hop = std::max<std::size_t>(hop, sampleCount / peakMaxFrames);
+
+    envelope.secondsPerFrame = static_cast<double>(hop) / sampleRate;
+
+    const auto frames = (sampleCount + hop - 1) / hop;
+    const auto slots = frames * static_cast<std::size_t>(envelope.channels);
+
+    envelope.minima.assign(slots, 0.0f);
+    envelope.maxima.assign(slots, 0.0f);
+
+    for (std::size_t frame = 0; frame < frames; ++frame)
+    {
+        const auto start = frame * hop;
+        const auto stop = std::min(sampleCount, start + hop);
+
+        for (int channel = 0; channel < envelope.channels; ++channel)
+        {
+            const auto* samples = channelData[channel];
+
+            if (samples == nullptr)
+                continue;
+
+            float lowest = samples[start];
+            float highest = samples[start];
+
+            for (auto i = start + 1; i < stop; ++i)
+            {
+                lowest = std::min(lowest, samples[i]);
+                highest = std::max(highest, samples[i]);
+            }
+
+            const auto index =
+                frame * static_cast<std::size_t>(envelope.channels) +
+                static_cast<std::size_t>(channel);
+
+            envelope.minima[index] = lowest;
+            envelope.maxima[index] = highest;
+        }
+    }
+
+    return envelope;
+}
+
+/** Everything a lane needs to draw one file: shape and colour. */
+struct WaveformProfile
+{
+    double lengthSeconds = 0.0;
+    SpectralProfile spectrum;
+    PeakEnvelope peaks;
+
+    bool isEmpty() const { return peaks.isEmpty() && spectrum.isEmpty(); }
+};
+
 /** Brightness at a time in the file; a neutral 0.5 when there is no profile
     yet, so an unanalysed lane draws in one calm colour rather than flashing. */
 inline float brightnessAt(const SpectralProfile& profile, double seconds)

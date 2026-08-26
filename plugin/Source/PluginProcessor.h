@@ -664,6 +664,9 @@ private:
     mutable juce::CriticalSection selectionLock;
     std::map<juce::String, StemLabSelectionRange> stemSelections;
 
+    /** Which lane's range the transport is currently looping, if any. */
+    juce::String loopSelectionId;
+
     // Looping the monitored lane over its highlighted range. Read on the
     // audio thread, written from the message thread.
     std::atomic<bool> previewLoopEnabled{false};

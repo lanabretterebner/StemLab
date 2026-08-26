@@ -100,9 +100,9 @@ target_sources(StemLabPlugin
         Source/LinuxSystemCapture.cpp
         Source/LinuxSystemCapture.h
         Source/WaveformGrid.h
-        Source/WaveformSpectrum.h
-        Source/SpectrumCache.cpp
-        Source/SpectrumCache.h
+        Source/WaveformAnalysis.h
+        Source/WaveformCache.cpp
+        Source/WaveformCache.h
 )
 
 target_include_directories(StemLabPlugin
@@ -132,11 +132,11 @@ if (BUILD_TESTING)
 
     # The spectral analysis is deliberately JUCE-free - FFT included - so the
     # whole of it is exercised here without standing up a plugin.
-    add_executable(StemLabWaveformSpectrumTests
-        Tests/WaveformSpectrumTests.cpp Source/WaveformSpectrum.h)
-    target_include_directories(StemLabWaveformSpectrumTests PRIVATE Source)
-    target_compile_features(StemLabWaveformSpectrumTests PRIVATE cxx_std_20)
-    add_test(NAME StemLabWaveformSpectrumTests COMMAND StemLabWaveformSpectrumTests)
+    add_executable(StemLabWaveformAnalysisTests
+        Tests/WaveformAnalysisTests.cpp Source/WaveformAnalysis.h)
+    target_include_directories(StemLabWaveformAnalysisTests PRIVATE Source)
+    target_compile_features(StemLabWaveformAnalysisTests PRIVATE cxx_std_20)
+    add_test(NAME StemLabWaveformAnalysisTests COMMAND StemLabWaveformAnalysisTests)
 endif()
 
 target_compile_definitions(StemLabPlugin

@@ -1,4 +1,4 @@
-#include "WaveformSpectrum.h"
+#include "WaveformAnalysis.h"
 
 #include <cassert>
 #include <cmath>
@@ -227,6 +227,97 @@ int main()
 
         const float one = 0.0f;
         assert(analyseMono(&one, 1, 0.0).isEmpty());
+    }
+
+    // -------------------------------------------------- the peak envelope
+
+    {
+        constexpr double rate = 1000.0;
+
+        // Two channels that differ, so a mix-up between them shows up.
+        std::vector<float> left(1000), right(1000);
+
+        for (std::size_t i = 0; i < left.size(); ++i)
+        {
+            left[i] = i < 500 ? 1.0f : -0.25f;
+            right[i] = i < 500 ? 0.5f : -1.0f;
+        }
+
+        const float* channels[] = {left.data(), right.data()};
+
+        const auto envelope = analysePeaks(channels, 2, left.size(), rate);
+
+        assert(!envelope.isEmpty());
+        assert(envelope.channels == 2);
+        assert(envelope.secondsPerFrame > 0.0);
+
+        // Each channel keeps its own extremes over its own half.
+        const auto firstLeft = peakBetween(envelope, 0, 0.0, 0.5);
+        assert(std::abs(firstLeft.maximum - 1.0f) < 1.0e-6f);
+
+        const auto secondLeft = peakBetween(envelope, 0, 0.5, 1.0);
+        assert(std::abs(secondLeft.minimum + 0.25f) < 1.0e-6f);
+
+        const auto firstRight = peakBetween(envelope, 1, 0.0, 0.5);
+        assert(std::abs(firstRight.maximum - 0.5f) < 1.0e-6f);
+
+        const auto secondRight = peakBetween(envelope, 1, 0.5, 1.0);
+        assert(std::abs(secondRight.minimum + 1.0f) < 1.0e-6f);
+
+        // The whole file spans both halves of both channels.
+        const auto whole = peakBetween(envelope, 0, 0.0, 1.0);
+        assert(std::abs(whole.maximum - 1.0f) < 1.0e-6f);
+        assert(std::abs(whole.minimum + 0.25f) < 1.0e-6f);
+
+        // A span shorter than a frame still reads the frame it lands in,
+        // so a fully zoomed-in column draws audio rather than nothing.
+        const auto sliver = peakBetween(envelope, 0, 0.2, 0.2);
+        assert(std::abs(sliver.maximum - 1.0f) < 1.0e-6f);
+
+        // Out of range clamps rather than reading off the end.
+        const auto before = peakBetween(envelope, 0, -5.0, -4.0);
+        assert(std::abs(before.maximum - 1.0f) < 1.0e-6f);
+
+        const auto after = peakBetween(envelope, 0, 50.0, 60.0);
+        assert(std::abs(after.minimum + 0.25f) < 1.0e-6f);
+
+        // A channel that does not exist is silence, not a crash.
+        const auto missing = peakBetween(envelope, 5, 0.0, 1.0);
+        assert(missing.minimum == 0.0f && missing.maximum == 0.0f);
+    }
+
+    {
+        // Mono stays mono; a third channel is not stored.
+        std::vector<float> mono(500, 0.75f);
+        const float* one[] = {mono.data()};
+        assert(analysePeaks(one, 1, mono.size(), 1000.0).channels == 1);
+
+        std::vector<float> a3(500, 0.1f), b3(500, 0.2f), c3(500, 0.3f);
+        const float* three[] = {a3.data(), b3.data(), c3.data()};
+        assert(analysePeaks(three, 3, a3.size(), 1000.0).channels == peakMaxChannels);
+    }
+
+    {
+        // Nothing to analyse is an empty envelope, not a crash.
+        assert(analysePeaks(nullptr, 2, 100, 1000.0).isEmpty());
+
+        std::vector<float> some(10, 0.0f);
+        const float* one[] = {some.data()};
+        assert(analysePeaks(one, 1, 0, 1000.0).isEmpty());
+        assert(analysePeaks(one, 1, some.size(), 0.0).isEmpty());
+        assert(analysePeaks(one, 0, some.size(), 1000.0).isEmpty());
+
+        // An empty envelope reads as silence rather than indexing into it.
+        const auto none = peakBetween(PeakEnvelope{}, 0, 0.0, 1.0);
+        assert(none.minimum == 0.0f && none.maximum == 0.0f);
+    }
+
+    {
+        // A long file coarsens rather than growing without bound.
+        std::vector<float> long_(2000000, 0.5f);
+        const float* one[] = {long_.data()};
+        const auto envelope = analysePeaks(one, 1, long_.size(), 1000000.0);
+        assert(envelope.frames() <= peakMaxFrames + 1);
     }
 
     // --------------------------------------------------------- the lookup

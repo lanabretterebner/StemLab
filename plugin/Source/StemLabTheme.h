@@ -446,11 +446,17 @@ namespace stemlab::theme
         namespace lanes
         {
             // Grid per row: twisty | include | name | waveform | controls.
-            constexpr int twistyColumn = 14;
-            constexpr int twistyIcon = 9;
+            constexpr int twistyColumn = 16;
+            constexpr int twistyIcon = 11;
+
+            // The twisty used to butt straight up against the checkbox.
+            constexpr int twistyGap = 6;
+
             constexpr int includeColumn = 18;
             constexpr int nameColumn = 92;
-            constexpr int controlsColumn = 78;
+
+            // Four buttons now: drag-out, S, M, and the menu.
+            constexpr int controlsColumn = 106;
             constexpr int columnGap = 12;
 
             constexpr int rowPadY = 5;
@@ -467,8 +473,20 @@ namespace stemlab::theme
             constexpr int smGap = 6;
             constexpr int layersIcon = 14;
 
-            // Waveform bars: 2px rounded bars on a ~4px pitch (approx. 150
-            // bars across the reference 612px well).
+            // The well's inset: the waveform draws inside this, and clicks
+            // are measured against the same rectangle.
+            constexpr float wellPadX = 6.0f;
+            constexpr float wellPadY = 5.0f;
+
+            // Stereo draws as two half-height waveforms with this between.
+            constexpr float channelGap = 3.0f;
+
+            // Silence still draws a hairline, so an empty stem reads as flat
+            // rather than as a lane that failed to load.
+            constexpr float waveMinHeight = 1.0f;
+
+            // Retained for the reference layout; the lanes now draw one
+            // column per pixel from a peak envelope rather than these bars.
             constexpr float barWidth = 2.0f;
             constexpr float barPitch = 4.0f;
             constexpr float barMinHeight = 2.0f;
