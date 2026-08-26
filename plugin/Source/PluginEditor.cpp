@@ -1047,7 +1047,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
      * which is one click for one change and six for "actually, just the
      * drums". These two act on every lane at once - adaptive children
      * included, since they stand in for their parent in the mix - and the
-     * readout beside them says where that left things.
+     * readout to their left says where that left things.
      */
     selectAllButton.setComponentID("neutral");
     selectAllButton.setTooltip("Include every stem");
@@ -1059,16 +1059,18 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     deselectAllButton.onClick = [this] { setAllLanesIncluded(false); };
     panelContent.addAndMakeVisible(deselectAllButton);
 
-    selectionCountLabel.setFont(theme::fonts::meta());
-    selectionCountLabel.setColour(juce::Label::textColourId, theme::colours::text50());
-    selectionCountLabel.setJustificationType(juce::Justification::centredLeft);
-    panelContent.addAndMakeVisible(selectionCountLabel);
+    // User-action feedback, doubling as the selection readout. It hugs the
+    // Select all pill on its right, so fresh messages grow leftward into
+    // the header's free middle instead of pushing anything around.
+    userStatusLabel.setFont(theme::fonts::meta());
+    userStatusLabel.setColour(juce::Label::textColourId, theme::colours::text50());
+    userStatusLabel.setJustificationType(juce::Justification::centredRight);
+    panelContent.addAndMakeVisible(userStatusLabel);
 
     {
-        // Measure once: the pills and the readout then hold still while the
-        // selection changes underneath them.
+        // Measure once: the pills and the title then hold still while the
+        // readout between them changes.
         const juce::Font pillFont{theme::fonts::smallButton()};
-        const juce::Font countFont{theme::fonts::meta()};
 
         const auto textWidth = [](const juce::Font& font, const juce::String& text)
         { return juce::roundToInt(juce::GlyphArrangement::getStringWidth(font, text)); };
@@ -1081,9 +1083,12 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
             textWidth(pillFont, deselectAllButton.getButtonText()) +
             2 * theme::metrics::header::selectButtonPadX;
 
-        // The widest readout is every lane selected with the tree expanded,
-        // which we cannot know here - so measure the widest two-digit form.
-        selectionCountWidth = textWidth(countFont, "88 of 88 selected") + 2;
+        // The title used to absorb all the slack; now the readout needs it,
+        // so the title is bounded to its own text (plus the label's border).
+        titleWidth = textWidth(juce::Font(theme::fonts::title())
+                                   .withExtraKerningFactor(theme::fonts::titleKerning),
+                               titleLabel.getText()) +
+                     12;
     }
 
     /*
@@ -1348,6 +1353,10 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     // A reopened editor must not re-trigger the switch-to-Stems that runs
     // when a job is first observed finishing: seed from processor state.
     sawSuccessfulJob = processor.hasSuccessfulJob();
+
+    // Same for user-action feedback: a message posted before this editor
+    // opened is old news, not something to replay in the header.
+    lastActionStatusRevision = processor.getActionStatusRevision();
 
     // Sized last: setSize() fires resized(), which needs every child above.
     const auto scale = juce::jlimit(window::minScale, window::maxScale,
@@ -1625,10 +1634,6 @@ void StemLabAudioProcessorEditor::layoutPanel()
 
     headerRow.removeFromRight(header::groupGap);
 
-    selectionCountLabel.setBounds(headerRow.removeFromRight(selectionCountWidth));
-
-    headerRow.removeFromRight(header::selectCountGap);
-
     deselectAllButton.setBounds(
         headerRow.removeFromRight(deselectAllWidth)
             .withSizeKeepingCentre(deselectAllWidth, header::selectButtonHeight));
@@ -1639,13 +1644,21 @@ void StemLabAudioProcessorEditor::layoutPanel()
         headerRow.removeFromRight(selectAllWidth)
             .withSizeKeepingCentre(selectAllWidth, header::selectButtonHeight));
 
-    headerRow.removeFromRight(header::groupGap);
+    headerRow.removeFromRight(header::selectCountGap);
 
     brandGlyphBounds = headerRow.removeFromLeft(header::glyphSize)
                            .withSizeKeepingCentre(header::glyphSize, header::glyphSize);
 
     headerRow.removeFromLeft(header::glyphGap);
-    titleLabel.setBounds(headerRow);
+    titleLabel.setBounds(headerRow.removeFromLeft(titleWidth));
+
+    headerRow.removeFromLeft(header::glyphGap);
+
+    // Everything left between the title and the pills is the readout's.
+    // Kept one line tall: a message too long for the space must ellipsize,
+    // not wrap across the header.
+    userStatusLabel.setBounds(
+        headerRow.withSizeKeepingCentre(headerRow.getWidth(), header::userStatusHeight));
 
     inner.removeFromTop(panel::stackGap);
 
@@ -2217,6 +2230,7 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     const auto captureFile = processor.getCaptureFile();
     const auto captureExists = captureFile.existsAsFile();
     const auto jobDone = processor.hasSuccessfulJob();
+    const auto nowMs = juce::Time::getMillisecondCounter();
 
     syncLanes();
 
@@ -2234,10 +2248,29 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     selectAllButton.setEnabled(lanesLive && includedLanes < totalLanes);
     deselectAllButton.setEnabled(lanesLive && includedLanes > 0);
 
-    selectionCountLabel.setText(lanesLive ? juce::String(includedLanes) + " of " +
-                                                juce::String(totalLanes) + " selected"
-                                          : juce::String(),
+    // The header readout: a fresh user-action message holds it for a few
+    // seconds, then the selection count takes back over. Work the plugin
+    // is doing never appears here - that is the bottom status line's job.
+    {
+        const auto actionRevision = processor.getActionStatusRevision();
+
+        if (actionRevision != lastActionStatusRevision)
+        {
+            lastActionStatusRevision = actionRevision;
+            actionStatusShownMs = nowMs;
+        }
+
+        const auto actionText = processor.getActionStatus();
+
+        const bool actionFresh =
+            actionText.isNotEmpty() && nowMs - actionStatusShownMs < 4000;
+
+        userStatusLabel.setText(actionFresh ? actionText
+                                : lanesLive ? juce::String(includedLanes) + " of " +
+                                                  juce::String(totalLanes) + " selected"
+                                            : juce::String(),
                                 juce::dontSendNotification);
+    }
 
     // The zoom can also move from restored state or a second editor, so the
     // slider and the readout follow the processor rather than the last click.
@@ -2429,11 +2462,11 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
     // -------------------------------------------------------------- footer
 
-    // Status line: while separating, stream the engine status. Once a job
-    // is done, transient action feedback (send/save/rejection notices)
-    // stays visible for a few seconds before the summary takes back over.
+    // Status line, reserved for the work the plugin is doing: while
+    // separating, stream the engine status; once a job is done, its final
+    // words stand for a few seconds before the summary takes back over.
+    // User-action feedback reports in the header readout instead.
     const auto rawStatus = processor.getStatus();
-    const auto nowMs = juce::Time::getMillisecondCounter();
 
     if (rawStatus != lastRawStatus)
     {
@@ -3058,8 +3091,9 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
             }
             else if (result == analysisClearCacheId)
             {
-                if (safeThis->processor.clearAnalysisCache())
-                    safeThis->processor.postUiStatus("Clearing the analysis cache...");
+                // No feedback post: the launch already reports the clearing
+                // job on the work status line.
+                safeThis->processor.clearAnalysisCache();
             }
 
             safeThis->refreshFromProcessor();

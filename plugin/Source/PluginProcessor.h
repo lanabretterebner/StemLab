@@ -367,6 +367,17 @@ public:
     bool isCancelRequested() const noexcept { return engineCancelRequested.load(); }
 
     juce::String getStatus() const;
+
+    /**
+     * Feedback for things the user changed - model, palette, transport,
+     * selection, rejected clicks. Lives in the header readout, so the main
+     * status line stays reserved for the work the plugin is actually doing.
+     * The revision bumps on every post, letting the editor restart its
+     * display timer even when the same message repeats.
+     */
+    juce::String getActionStatus() const;
+    int getActionStatusRevision() const;
+
     juce::String getEngineLog() const;
     juce::File getLastJobDirectory() const;
 
@@ -426,7 +437,7 @@ public:
     bool sendSelectedStemsToAbleton();
     bool retryAbletonImport();
     juce::String getAbletonBridgeStatus() const;
-    /** Publish a short status message from a UI callback. */
+    /** Publish user-action feedback from a UI callback (header readout). */
     void postUiStatus(const juce::String& message);
 
     /** Copy selected completed stems to a Standalone export directory. */
@@ -529,6 +540,7 @@ private:
 
     void stopCapture();
     void setStatus(const juce::String&);
+    void setActionStatus(const juce::String&);
     void setEngineProgress(double progress);
     void handleEngineOutputLine(const juce::String& line);
     juce::StringArray makePythonModuleCommand(const juce::String& moduleName) const;
@@ -679,6 +691,12 @@ private:
 
     juce::String engineCommand{"stemlab-plugin-job"};
     juce::String status{"Ready"};
+
+    // User-action feedback (header readout), separate from the work status
+    // above so a palette change can never overwrite "Separating...".
+    juce::String actionStatus;
+    int actionStatusRevision = 0;
+
     juce::String engineLog;
 
     // Resolved once when the VST3 wrapper delivers the host context, before

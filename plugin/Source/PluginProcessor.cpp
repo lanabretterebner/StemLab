@@ -1648,7 +1648,7 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
 {
     if (!file.existsAsFile())
     {
-        setStatus("Selected audio file does not exist");
+        setActionStatus("Selected audio file does not exist");
         return false;
     }
 
@@ -1659,7 +1659,7 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
     // reply - is refused until the job ends.
     if (isEngineRunning())
     {
-        setStatus("Cancel the running job before loading another file");
+        setActionStatus("Cancel the running job before loading another file");
         return false;
     }
 
@@ -1749,8 +1749,12 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
         sourceDownbeats.clear();
     }
 
-    setStatus(previewAvailable ? "Source ready"
-                               : "Source ready - preview unavailable until stems are made");
+    // Loading a source is a user change, so it reports in the header; the
+    // work line drops back to idle instead of keeping the last job's text.
+    setStatus("Ready");
+    setActionStatus(previewAvailable
+                        ? "Source ready"
+                        : "Source ready - preview unavailable until stems are made");
 
     if (beatThisEnabled.load())
         startSourceAnalysis(file);
@@ -1791,7 +1795,7 @@ void StemLabAudioProcessor::toggleStandalonePlayback()
     if (previewTransport.isPlaying())
     {
         previewTransport.stop();
-        setStatus("Source paused");
+        setActionStatus("Source paused");
         return;
     }
 
@@ -1801,7 +1805,7 @@ void StemLabAudioProcessor::toggleStandalonePlayback()
     }
 
     previewTransport.start();
-    setStatus("Playing source");
+    setActionStatus("Playing source");
 }
 
 juce::File StemLabAudioProcessor::getCompletedStemFile(int index) const
@@ -2161,7 +2165,7 @@ void StemLabAudioProcessor::transportTogglePlay()
         if (stemMixTransport.isPlaying())
         {
             stemMixTransport.stop();
-            setStatus("Paused");
+            setActionStatus("Paused");
             return;
         }
 
@@ -2172,7 +2176,7 @@ void StemLabAudioProcessor::transportTogglePlay()
         }
 
         stemMixTransport.start();
-        setStatus("Playing stems");
+        setActionStatus("Playing stems");
         return;
     }
 
@@ -2342,7 +2346,7 @@ bool StemLabAudioProcessor::startStandaloneRecording()
 
     if (standaloneDeviceManager == nullptr)
     {
-        setStatus("Audio device is not ready");
+        setActionStatus("Audio device is not ready");
         return false;
     }
 
@@ -2350,7 +2354,7 @@ bool StemLabAudioProcessor::startStandaloneRecording()
 
     if (device == nullptr || device->getActiveInputChannels().countNumberOfSetBits() == 0)
     {
-        setStatus("Choose a microphone/interface input in Settings");
+        setActionStatus("Choose a microphone/interface input in Settings");
         return false;
     }
 
@@ -2358,7 +2362,7 @@ bool StemLabAudioProcessor::startStandaloneRecording()
 
     if (sampleRate <= 0.0)
     {
-        setStatus("Audio input sample rate is not ready");
+        setActionStatus("Audio input sample rate is not ready");
         return false;
     }
 
@@ -2577,7 +2581,9 @@ void StemLabAudioProcessor::setJobRootDirectory(const juce::File& directory)
         jobRootDirectory = directory;
     }
 
-    setStatus("File location set: " + directory.getFullPathName());
+    // The footer's path readout carries the full path; the feedback line
+    // only needs to confirm the change.
+    setActionStatus("File location set: " + directory.getFileName());
 }
 
 juce::File StemLabAudioProcessor::getJobRootDirectory() const
@@ -2822,7 +2828,7 @@ void StemLabAudioProcessor::refreshAbletonSourceClipFromDisk()
 
     if (setInputAudioFile(juce::File(path), startBeat, label))
     {
-        setStatus("Live clip ready");
+        setActionStatus("Live clip ready");
 
         {
             const juce::ScopedLock lock(abletonBridgeLock);
@@ -2838,7 +2844,7 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
 
     if (capturing.load())
     {
-        setStatus("Finish the capture before separating");
+        setActionStatus("Finish the capture before separating");
         return false;
     }
 
@@ -2849,8 +2855,8 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
 
     if (!source.existsAsFile())
     {
-        setStatus(isStandaloneApp() ? "Select or record audio first"
-                                    : "Use Live Clip or Record PC first");
+        setActionStatus(isStandaloneApp() ? "Select or record audio first"
+                                          : "Use Live Clip or Record PC first");
         return false;
     }
 
@@ -2858,7 +2864,7 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
 
     if (commandName.isEmpty())
     {
-        setStatus("Choose the StemLab engine in Settings");
+        setActionStatus("Choose the StemLab engine in Settings");
         return false;
     }
 
@@ -3608,7 +3614,22 @@ juce::String StemLabAudioProcessor::getStatus() const
     return status;
 }
 
-void StemLabAudioProcessor::postUiStatus(const juce::String& message) { setStatus(message); }
+juce::String StemLabAudioProcessor::getActionStatus() const
+{
+    const juce::ScopedLock lock(stateLock);
+    return actionStatus;
+}
+
+int StemLabAudioProcessor::getActionStatusRevision() const
+{
+    const juce::ScopedLock lock(stateLock);
+    return actionStatusRevision;
+}
+
+void StemLabAudioProcessor::postUiStatus(const juce::String& message)
+{
+    setActionStatus(message);
+}
 
 juce::String StemLabAudioProcessor::getEngineLog() const
 {
@@ -3627,6 +3648,17 @@ void StemLabAudioProcessor::setStatus(const juce::String& newStatus)
     {
         const juce::ScopedLock lock(stateLock);
         status = newStatus;
+    }
+
+    sendChangeMessage();
+}
+
+void StemLabAudioProcessor::setActionStatus(const juce::String& newStatus)
+{
+    {
+        const juce::ScopedLock lock(stateLock);
+        actionStatus = newStatus;
+        ++actionStatusRevision;
     }
 
     sendChangeMessage();
@@ -3842,7 +3874,7 @@ int StemLabAudioProcessor::saveSelectedStemsTo(const juce::File& destination)
             ++saved;
     }
 
-    setStatus("Saved " + juce::String(saved) + (saved == 1 ? " stem" : " stems"));
+    setActionStatus("Saved " + juce::String(saved) + (saved == 1 ? " stem" : " stems"));
 
     return saved;
 }
@@ -4080,7 +4112,7 @@ bool StemLabAudioProcessor::sendSelectedStemsToAbleton()
 
     if (selected.isEmpty())
     {
-        setStatus("Choose at least one stem to send");
+        setActionStatus("Choose at least one stem to send");
         return false;
     }
 
@@ -4147,7 +4179,7 @@ bool StemLabAudioProcessor::retryAbletonImport()
 
     if (!manifest.existsAsFile())
     {
-        setStatus("No completed Ableton manifest to import");
+        setActionStatus("No completed Ableton manifest to import");
         return false;
     }
 
@@ -4240,7 +4272,7 @@ bool StemLabAudioProcessor::requestReaperSourceItem()
 
     if (!item.ok)
     {
-        setStatus(item.message);
+        setActionStatus(item.message);
         return false;
     }
 
@@ -4260,7 +4292,7 @@ bool StemLabAudioProcessor::requestReaperSourceItem()
         reaperSourceInfo.trackNumber = item.trackNumber;
     }
 
-    setStatus("REAPER item ready: " + item.label);
+    setActionStatus("REAPER item ready: " + item.label);
     return true;
 }
 
@@ -4422,7 +4454,7 @@ bool StemLabAudioProcessor::insertSelectedStemsIntoReaper()
 
     if (ordered.isEmpty())
     {
-        setStatus("Choose at least one stem to insert");
+        setActionStatus("Choose at least one stem to insert");
         return false;
     }
 
@@ -4736,7 +4768,7 @@ juce::String StemLabAudioProcessor::getEngineCommand() const
 void StemLabAudioProcessor::resetEngineCommandToAutoDiscover()
 {
     setEngineCommand(discoverEngineCommand());
-    setStatus("Engine path auto-detected");
+    setActionStatus("Engine path auto-detected");
 }
 
 void StemLabAudioProcessor::setStemEnabled(int index, bool enabled)

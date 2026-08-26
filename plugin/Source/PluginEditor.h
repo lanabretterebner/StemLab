@@ -284,7 +284,10 @@ private:
     // Which lanes the job carries forward, in one gesture rather than six.
     juce::TextButton selectAllButton{"Select all"};
     juce::TextButton deselectAllButton{"Deselect all"};
-    juce::Label selectionCountLabel;
+
+    // Feedback for things the user changes - selection, model, palette,
+    // transport, rejected clicks. Falls back to the selection count.
+    juce::Label userStatusLabel;
 
     // Horizontal waveform zoom, shared by every lane.
     std::unique_ptr<stemlab::widgets::IconButton> zoomResetButton;
@@ -295,11 +298,11 @@ private:
     // shuffle the arrows either side of the pill.
     int engineSelectorWidth = 0;
 
-    // Sized once for their own labels and the widest readout, so the header
-    // holds still as lanes are selected and the zoom is stepped.
+    // Sized once for their own labels and the title, so the header holds
+    // still and the user readout gets exactly the space left between them.
     int selectAllWidth = 0;
     int deselectAllWidth = 0;
-    int selectionCountWidth = 0;
+    int titleWidth = 0;
 
     // Source strip.
     juce::Label fileNameLabel;
@@ -331,6 +334,13 @@ private:
     // job is done, before the summary line takes back over.
     juce::String lastRawStatus;
     juce::uint32 lastStatusChangeMs = 0;
+
+    // The header readout shows a freshly posted user-action message for a
+    // few seconds before reverting to the selection count. The revision
+    // (not the text) marks freshness, so an identical message posted again
+    // - a second rejected click - restarts the clock.
+    int lastActionStatusRevision = 0;
+    juce::uint32 actionStatusShownMs = 0;
 
     int lastSeparatorEngine = -1;
     bool lastSeparateGlow = false;
