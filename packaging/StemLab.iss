@@ -1,5 +1,5 @@
 #ifndef SourceDir
-  #error SourceDir must be supplied by build_installer_windows.ps1
+  #error SourceDir must be supplied by scripts/build_installer_windows.ps1
 #endif
 #ifndef AppVersion
   #define AppVersion "0.9.9"

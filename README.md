@@ -187,8 +187,8 @@ have no GPU. Users on NVIDIA, AMD, or Intel hardware re-run
 To build a release locally instead, on Windows:
 
 ```powershell
-.\build_portable_windows.ps1
-.\build_installer_windows.ps1 -SkipPortableBuild
+.\scripts\build_portable_windows.ps1
+.\scripts\build_installer_windows.ps1 -SkipPortableBuild
 ```
 
 Outputs are `dist\StemLab-Portable-0.9.9` and
