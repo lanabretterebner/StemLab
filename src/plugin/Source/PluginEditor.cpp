@@ -160,7 +160,9 @@ void StemLaneWaveform::setFile(const juce::File& file)
     currentFile = file;
     profile.reset();
     columns.clear();
+    columnImage = juce::Image();
     columnsFile = juce::File();
+    lastDisplayValid = false;
 
     repaint();
 }
@@ -204,39 +206,65 @@ double StemLaneWaveform::normalisedForX(float x) const
                         (view.getStart() + across * view.getLength()) / profile->lengthSeconds);
 }
 
+StemLaneWaveform::ViewGeometry StemLaneWaveform::viewGeometry() const
+{
+    namespace lanes = theme::metrics::lanes;
+
+    ViewGeometry geometry;
+
+    geometry.inner = getLocalBounds().toFloat().reduced(lanes::wellPadX, lanes::wellPadY);
+
+    if (profile == nullptr || !(profile->lengthSeconds > 0.0) || geometry.inner.isEmpty())
+        return geometry;
+
+    const auto view = processor.getWaveformViewRange(profile->lengthSeconds);
+
+    geometry.viewLength = juce::jmax(1.0e-6, view.getLength());
+
+    const auto secondsPerColumn =
+        geometry.viewLength / static_cast<double>(geometry.inner.getWidth());
+
+    geometry.snappedStart =
+        secondsPerColumn > 0.0
+            ? std::floor(view.getStart() / secondsPerColumn) * secondsPerColumn
+            : view.getStart();
+
+    return geometry;
+}
+
 void StemLaneWaveform::refreshColumns(juce::Rectangle<float> inner, double viewStart,
                                       double viewLength)
 {
     const auto width = juce::jmax(0, static_cast<int>(inner.getWidth()));
+    const auto height = juce::jmax(0, static_cast<int>(inner.getHeight()));
 
-    if (profile == nullptr || profile->peaks.isEmpty() || width <= 0)
+    if (profile == nullptr || profile->peaks.isEmpty() || width <= 0 || height <= 0)
     {
         columns.clear();
+        columnImage = juce::Image();
+        columnsFile = juce::File();
         return;
     }
 
     const auto channels = juce::jlimit(1, 2, profile->peaks.channels);
+    const auto palette = processor.getWaveformColourIndex();
+
+    // Everything that shapes or colours the pixels; a change in any of it
+    // means neither the columns nor their rendering can be reused.
+    const bool sameSetup = columnsFile == currentFile && columnsWidth == width &&
+                           columnsHeight == height && columnsChannels == channels &&
+                           columnsPalette == palette && columnsMuted == mutedAppearance &&
+                           columnsIdentity == stemIdentity &&
+                           std::abs(columnsLength - viewLength) < 1.0e-9;
 
     // Nothing about the picture changed, so neither do the columns. This is
     // what keeps a still lane free and a scrolling one cheap.
-    if (columnsFile == currentFile && columnsWidth == width && columnsChannels == channels &&
-        std::abs(columnsStart - viewStart) < 1.0e-9 &&
-        std::abs(columnsLength - viewLength) < 1.0e-9)
-    {
+    if (sameSetup && std::abs(columnsStart - viewStart) < 1.0e-9)
         return;
-    }
-
-    columnsFile = currentFile;
-    columnsWidth = width;
-    columnsChannels = channels;
-    columnsStart = viewStart;
-    columnsLength = viewLength;
-
-    columns.assign(static_cast<std::size_t>(width), {});
 
     const auto secondsPerColumn = viewLength / static_cast<double>(width);
 
-    for (int x = 0; x < width; ++x)
+    const auto computeColumn = [this, viewStart, secondsPerColumn, channels](int x)
     {
         const auto from = viewStart + secondsPerColumn * static_cast<double>(x);
         const auto to = from + secondsPerColumn;
@@ -256,6 +284,187 @@ void StemLaneWaveform::refreshColumns(juce::Rectangle<float> inner, double viewS
             stemlab::waveform::brightnessAt(profile->spectrum, (from + to) * 0.5);
 
         column.bands = stemlab::waveform::bandsAt(profile->spectrum, (from + to) * 0.5);
+    };
+
+    if (sameSetup && secondsPerColumn > 0.0)
+    {
+        /*
+         * The view slid along the same file at the same zoom. Both starts
+         * are snapped to whole columns, so the slide is a whole number of
+         * columns and the picture translates: scroll it and rebuild only
+         * what was exposed. This is the path a zoomed-in view takes on
+         * every tick of playback, where the window follows the playhead.
+         */
+        const auto shift =
+            static_cast<int>(std::llround((viewStart - columnsStart) / secondsPerColumn));
+
+        const bool wholeColumns =
+            std::abs(columnsStart + shift * secondsPerColumn - viewStart) <
+            secondsPerColumn * 1.0e-6;
+
+        if (wholeColumns && shift == 0)
+            return;
+
+        if (wholeColumns && std::abs(shift) < width && columnImage.isValid())
+        {
+            columnsStart = viewStart;
+
+            if (shift > 0)
+            {
+                std::move(columns.begin() + shift, columns.end(), columns.begin());
+                columnImage.moveImageSection(0, 0, shift, 0, width - shift, height);
+
+                for (int x = width - shift; x < width; ++x)
+                    computeColumn(x);
+
+                renderColumnStrip(width - shift, shift);
+            }
+            else
+            {
+                std::move_backward(columns.begin(), columns.end() + shift, columns.end());
+                columnImage.moveImageSection(-shift, 0, 0, 0, width + shift, height);
+
+                for (int x = 0; x < -shift; ++x)
+                    computeColumn(x);
+
+                renderColumnStrip(0, -shift);
+            }
+
+            return;
+        }
+
+        // A seek jumped further than the window is wide: rebuild the lot.
+    }
+
+    columnsFile = currentFile;
+    columnsWidth = width;
+    columnsHeight = height;
+    columnsChannels = channels;
+    columnsPalette = palette;
+    columnsMuted = mutedAppearance;
+    columnsIdentity = stemIdentity;
+    columnsStart = viewStart;
+    columnsLength = viewLength;
+
+    columns.assign(static_cast<std::size_t>(width), {});
+
+    for (int x = 0; x < width; ++x)
+        computeColumn(x);
+
+    if (columnImage.getWidth() != width || columnImage.getHeight() != height)
+        columnImage = juce::Image(juce::Image::ARGB, width, height, true);
+
+    renderColumnStrip(0, width);
+}
+
+void StemLaneWaveform::renderColumnStrip(int first, int count)
+{
+    namespace lanes = theme::metrics::lanes;
+
+    if (!columnImage.isValid() || count <= 0)
+        return;
+
+    // moveImageSection leaves the vacated pixels behind; start the strip
+    // from transparent so stale columns cannot show around thin bars.
+    columnImage.clear({first, 0, count, columnsHeight});
+
+    juce::Graphics g(columnImage);
+
+    /*
+     * Stereo draws as two half-height waveforms rather than one summed
+     * envelope: which side a part sits on is information, and summing hides
+     * anything that cancels.
+     */
+    const auto channelHeight =
+        columnsChannels > 1
+            ? (static_cast<float>(columnsHeight) - lanes::channelGap) * 0.5f
+            : static_cast<float>(columnsHeight);
+
+    for (int channel = 0; channel < columnsChannels; ++channel)
+    {
+        const auto top = static_cast<float>(channel) * (channelHeight + lanes::channelGap);
+        const auto centreY = top + channelHeight * 0.5f;
+        const auto halfHeight = channelHeight * 0.5f;
+
+        // The whole waveform draws in its full palette colour: position is
+        // the playhead's job, and dimming everything ahead of it greyed
+        // most of the picture out for most of every playback.
+        for (int i = 0; i < count; ++i)
+        {
+            const auto& column = columns[static_cast<std::size_t>(first + i)];
+            const auto x = static_cast<float>(first + i);
+
+            const auto lowest = juce::jlimit(-1.0f, 1.0f, column.minimum[channel]);
+            const auto highest = juce::jlimit(-1.0f, 1.0f, column.maximum[channel]);
+
+            auto topY = centreY - highest * halfHeight;
+            auto bottomY = centreY - lowest * halfHeight;
+
+            // Silence still draws a hairline, so an empty stem reads as a
+            // flat line rather than as a lane that failed to load.
+            if (bottomY - topY < lanes::waveMinHeight)
+            {
+                const auto centre = (topY + bottomY) * 0.5f;
+                topY = centre - lanes::waveMinHeight * 0.5f;
+                bottomY = centre + lanes::waveMinHeight * 0.5f;
+            }
+
+            /*
+             * 3-Band draws one bar per band, nested: the dominant band (a
+             * share of 1) owns the column's full extent and the others
+             * scale within it, drawn strongest-first so each remains
+             * visible inside the last. A kick column reads as blue with a
+             * thin core, a hi-hat column as white through and through.
+             */
+            if (!columnsMuted && columnsPalette == theme::waveform::paletteThreeBand)
+            {
+                struct BandBar
+                {
+                    float share;
+                    juce::Colour colour;
+                };
+
+                BandBar bars[3] = {{column.bands.low, theme::waveform::bandLowColour()},
+                                   {column.bands.mid, theme::waveform::bandMidColour()},
+                                   {column.bands.high, theme::waveform::bandHighColour()}};
+
+                std::sort(std::begin(bars), std::end(bars),
+                          [](const BandBar& a, const BandBar& b) { return a.share > b.share; });
+
+                const auto centre = (topY + bottomY) * 0.5f;
+                const auto halfExtent = (bottomY - topY) * 0.5f;
+
+                for (const auto& bar : bars)
+                {
+                    // An inaudible band draws nothing: forcing a hairline
+                    // here would etch a white core through every pure-bass
+                    // bar. The silence hairline is the outer clamp's job.
+                    if (bar.share <= 0.04f)
+                        continue;
+
+                    const auto half = halfExtent * bar.share;
+
+                    g.setColour(bar.colour);
+                    g.fillRect(x, centre - half, 1.0f, half * 2.0f);
+                }
+
+                continue;
+            }
+
+            juce::Colour colour;
+
+            if (columnsMuted)
+                colour = theme::colours::waveMuted();
+            else if (columnsPalette == theme::waveform::paletteRgb)
+                colour = theme::waveform::rgbColour(column.bands.low, column.bands.mid,
+                                                    column.bands.high);
+            else
+                colour = theme::waveform::playedColour(columnsPalette, columnsIdentity,
+                                                       column.brightness);
+
+            g.setColour(colour);
+            g.fillRect(x, topY, 1.0f, bottomY - topY);
+        }
     }
 }
 
@@ -271,31 +480,17 @@ void StemLaneWaveform::paint(juce::Graphics& g)
     if (profile == nullptr && currentFile.existsAsFile())
         profile = waveformCache.get(currentFile);
 
-    const auto inner = full.reduced(lanes::wellPadX, lanes::wellPadY);
+    // The snapping that keeps a scrolling view from re-bucketing the audio
+    // every frame lives in viewGeometry, which timerRefresh shares.
+    const auto geometry = viewGeometry();
+    const auto inner = geometry.inner;
 
     if (profile == nullptr || !(profile->lengthSeconds > 0.0) || inner.isEmpty())
         return;
 
     const auto length = profile->lengthSeconds;
-
-    /*
-     * Snap the window's start to a whole column of time.
-     *
-     * Without this a scrolling view re-buckets the audio every frame: each
-     * column covers a slightly different span, its peak jumps to a
-     * neighbouring sample, and the whole waveform crawls and shimmers even
-     * though the audio is not moving. Snapped, the picture translates by
-     * whole columns and every column keeps exactly the audio it had.
-     */
-    const auto view = processor.getWaveformViewRange(length);
-    const auto viewLength = juce::jmax(1.0e-6, view.getLength());
-
-    const auto secondsPerColumn = viewLength / static_cast<double>(inner.getWidth());
-
-    const auto snappedStart =
-        secondsPerColumn > 0.0
-            ? std::floor(view.getStart() / secondsPerColumn) * secondsPerColumn
-            : view.getStart();
+    const auto viewLength = geometry.viewLength;
+    const auto snappedStart = geometry.snappedStart;
 
     refreshColumns(inner, snappedStart, viewLength);
 
@@ -304,8 +499,6 @@ void StemLaneWaveform::paint(juce::Graphics& g)
         return inner.getX() +
                static_cast<float>((seconds - snappedStart) / viewLength) * inner.getWidth();
     };
-
-    const int palette = processor.getWaveformColourIndex();
 
     const auto transportLength = processor.getTransportLengthSeconds();
     const auto transportPosition = processor.getTransportPositionSeconds();
@@ -418,108 +611,18 @@ void StemLaneWaveform::paint(juce::Graphics& g)
         }
     }
 
-    if (columns.empty())
+    if (columns.empty() || !columnImage.isValid())
         return;
-
-    const auto channels = juce::jlimit(1, 2, profile->peaks.channels);
 
     const float playheadX = secondsToX(juce::jmax(0.0, playNormalised) * length);
 
-    /*
-     * Stereo draws as two half-height waveforms rather than one summed
-     * envelope: which side a part sits on is information, and summing hides
-     * anything that cancels.
-     */
-    const auto channelHeight =
-        channels > 1 ? (inner.getHeight() - lanes::channelGap) * 0.5f : inner.getHeight();
-
-    for (int channel = 0; channel < channels; ++channel)
-    {
-        const auto top =
-            inner.getY() + static_cast<float>(channel) * (channelHeight + lanes::channelGap);
-
-        const auto centreY = top + channelHeight * 0.5f;
-        const auto halfHeight = channelHeight * 0.5f;
-
-        // The whole waveform draws in its full palette colour: position is
-        // the playhead's job, and dimming everything ahead of it greyed
-        // most of the picture out for most of every playback.
-        for (std::size_t i = 0; i < columns.size(); ++i)
-        {
-            const auto& column = columns[i];
-            const auto x = inner.getX() + static_cast<float>(i);
-
-            const auto lowest = juce::jlimit(-1.0f, 1.0f, column.minimum[channel]);
-            const auto highest = juce::jlimit(-1.0f, 1.0f, column.maximum[channel]);
-
-            auto topY = centreY - highest * halfHeight;
-            auto bottomY = centreY - lowest * halfHeight;
-
-            // Silence still draws a hairline, so an empty stem reads as a
-            // flat line rather than as a lane that failed to load.
-            if (bottomY - topY < lanes::waveMinHeight)
-            {
-                const auto centre = (topY + bottomY) * 0.5f;
-                topY = centre - lanes::waveMinHeight * 0.5f;
-                bottomY = centre + lanes::waveMinHeight * 0.5f;
-            }
-
-            /*
-             * 3-Band draws one bar per band, nested: the dominant band (a
-             * share of 1) owns the column's full extent and the others
-             * scale within it, drawn strongest-first so each remains
-             * visible inside the last. A kick column reads as blue with a
-             * thin core, a hi-hat column as white through and through.
-             */
-            if (!mutedAppearance && palette == theme::waveform::paletteThreeBand)
-            {
-                struct BandBar
-                {
-                    float share;
-                    juce::Colour colour;
-                };
-
-                BandBar bars[3] = {{column.bands.low, theme::waveform::bandLowColour()},
-                                   {column.bands.mid, theme::waveform::bandMidColour()},
-                                   {column.bands.high, theme::waveform::bandHighColour()}};
-
-                std::sort(std::begin(bars), std::end(bars),
-                          [](const BandBar& a, const BandBar& b) { return a.share > b.share; });
-
-                const auto centre = (topY + bottomY) * 0.5f;
-                const auto halfExtent = (bottomY - topY) * 0.5f;
-
-                for (const auto& bar : bars)
-                {
-                    // An inaudible band draws nothing: forcing a hairline
-                    // here would etch a white core through every pure-bass
-                    // bar. The silence hairline is the outer clamp's job.
-                    if (bar.share <= 0.04f)
-                        continue;
-
-                    const auto half = halfExtent * bar.share;
-
-                    g.setColour(bar.colour);
-                    g.fillRect(x, centre - half, 1.0f, half * 2.0f);
-                }
-
-                continue;
-            }
-
-            juce::Colour colour;
-
-            if (mutedAppearance)
-                colour = theme::colours::waveMuted();
-            else if (palette == theme::waveform::paletteRgb)
-                colour = theme::waveform::rgbColour(column.bands.low, column.bands.mid,
-                                                    column.bands.high);
-            else
-                colour = theme::waveform::playedColour(palette, stemIdentity, column.brightness);
-
-            g.setColour(colour);
-            g.fillRect(x, topY, 1.0f, bottomY - topY);
-        }
-    }
+    // The columns land in one blit; the per-column drawing itself lives in
+    // renderColumnStrip, which only runs when the picture changes. Images
+    // draw at the current colour's opacity, and the grid labels left a
+    // mostly-transparent one behind.
+    g.setOpacity(1.0f);
+    g.drawImageAt(columnImage, static_cast<int>(inner.getX()),
+                  static_cast<int>(inner.getY()));
 
     // Selection / loop range, live while dragging and persistent after.
     {
@@ -579,6 +682,110 @@ void StemLaneWaveform::paint(juce::Graphics& g)
         g.fillRect(playheadX - lanes::playheadWidth * 0.5f, inner.getY(),
                    lanes::playheadWidth, inner.getHeight());
     }
+}
+
+void StemLaneWaveform::timerRefresh()
+{
+    if (profile == nullptr)
+    {
+        // Still waiting on the analysis thread (paint is what asks the
+        // cache): keep polling while there is a file to draw. The paints
+        // this schedules early-out until the profile lands.
+        if (currentFile.existsAsFile())
+            repaint();
+
+        return;
+    }
+
+    DisplayState now;
+
+    now.profilePtr = profile.get();
+
+    const auto view = processor.getWaveformViewRange(profile->lengthSeconds);
+
+    now.viewStart = view.getStart();
+    now.viewLength = view.getLength();
+    now.transportPosition = processor.getTransportPositionSeconds();
+    now.transportLength = processor.getTransportLengthSeconds();
+    now.palette = processor.getWaveformColourIndex();
+
+    const auto grid = processor.getWaveformGridInfo();
+
+    now.gridBpm = grid.bpm;
+    now.gridBarOne = grid.barOne;
+    now.gridNumerator = grid.numerator;
+
+    const auto range = processor.getStemSelectionRange(selectionId);
+
+    now.selectionActive = range.active;
+    now.selectionStart = range.start;
+    now.selectionEnd = range.end;
+
+    // Exact comparisons on purpose: these are change detectors on values
+    // re-read from one source, and the worst a stray bit costs is a repaint.
+    const bool samePicture =
+        lastDisplayValid && now.profilePtr == lastDisplay.profilePtr &&
+        juce::exactlyEqual(now.viewStart, lastDisplay.viewStart) &&
+        juce::exactlyEqual(now.viewLength, lastDisplay.viewLength) &&
+        juce::exactlyEqual(now.transportLength, lastDisplay.transportLength) &&
+        now.palette == lastDisplay.palette &&
+        juce::exactlyEqual(now.gridBpm, lastDisplay.gridBpm) &&
+        juce::exactlyEqual(now.gridBarOne, lastDisplay.gridBarOne) &&
+        now.gridNumerator == lastDisplay.gridNumerator &&
+        now.selectionActive == lastDisplay.selectionActive &&
+        juce::exactlyEqual(now.selectionStart, lastDisplay.selectionStart) &&
+        juce::exactlyEqual(now.selectionEnd, lastDisplay.selectionEnd);
+
+    const bool playheadMoved =
+        !juce::exactlyEqual(now.transportPosition, lastDisplay.transportPosition);
+
+    const auto previous = lastDisplay;
+
+    lastDisplay = now;
+    lastDisplayValid = true;
+
+    if (samePicture && !playheadMoved)
+        return;
+
+    if (!samePicture)
+    {
+        repaint();
+        return;
+    }
+
+    /*
+     * Only the playhead moved. The zoomed view follows the playhead, so
+     * this is the zoom-1 and clamped-at-either-end case, where the columns
+     * hold still: repaint the strip the playhead left and the strip it
+     * entered instead of the whole well.
+     */
+    const auto geometry = viewGeometry();
+
+    if (!(geometry.viewLength > 0.0) || !(now.transportLength > 0.0))
+    {
+        repaint();
+        return;
+    }
+
+    const auto xFor = [this, &geometry, &now](double transportPosition)
+    {
+        const auto normalised =
+            juce::jlimit(0.0, 1.0, transportPosition / now.transportLength);
+
+        return geometry.inner.getX() +
+               static_cast<float>(
+                   (normalised * profile->lengthSeconds - geometry.snappedStart) /
+                   geometry.viewLength) *
+                   geometry.inner.getWidth();
+    };
+
+    // Half the glow plus a pixel of slack on either side of each strip.
+    const auto margin = theme::metrics::lanes::playheadGlowWidth * 0.5f + 1.0f;
+
+    for (const auto x : {xFor(previous.transportPosition), xFor(now.transportPosition)})
+        repaint(juce::Rectangle<float>(x - margin, 0.0f, margin * 2.0f,
+                                       static_cast<float>(getHeight()))
+                    .getSmallestIntegerContainer());
 }
 
 void StemLaneWaveform::mouseDown(const juce::MouseEvent& event)
@@ -1060,6 +1267,11 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
      * between legible and absurd.
      */
     panelContent.onPaint = [this](juce::Graphics& g) { paintPanel(g); };
+
+    // paintPanel starts from a full fillAll, so promising opacity here stops
+    // every child repaint from also invalidating whatever sits behind it.
+    panelContent.setOpaque(true);
+
     addAndMakeVisible(panelContent);
 
     setResizable(true, true);
@@ -1757,16 +1969,14 @@ void StemLabAudioProcessorEditor::paintPanel(juce::Graphics& g)
     // parent, because a shadow painted inside a component is clipped to its
     // own bounds.
     if (separateControl.isVisible() && separateControl.isSeparateActionEnabled())
-        juce::DropShadow(theme::colours::accentGlow(), 11, {})
-            .drawForRectangle(g, separateControl.getBounds());
+        drawCachedGlow(g, separateControl.getBounds());
 
     for (auto* primary : {&insertButton, &saveButton})
     {
         if (primary->isVisible() && primary->isEnabled() &&
             primary->getComponentID() == "primary")
         {
-            juce::DropShadow(theme::colours::accentGlow(), 11, {})
-                .drawForRectangle(g, primary->getBounds());
+            drawCachedGlow(g, primary->getBounds());
         }
     }
 
@@ -1791,6 +2001,32 @@ void StemLabAudioProcessorEditor::paintPanel(juce::Graphics& g)
     }
 }
 
+void StemLabAudioProcessorEditor::drawCachedGlow(juce::Graphics& g,
+                                                 juce::Rectangle<int> area)
+{
+    // Matches DropShadow(accentGlow, 11, {}) exactly; the Gaussian blur just
+    // runs once per size instead of on every paint.
+    constexpr int radius = 11;
+    constexpr int margin = radius * 2;
+
+    auto& image = glowCache[{area.getWidth(), area.getHeight()}];
+
+    if (!image.isValid())
+    {
+        image = juce::Image(juce::Image::ARGB, area.getWidth() + margin * 2,
+                            area.getHeight() + margin * 2, true);
+
+        juce::Graphics glow(image);
+
+        juce::DropShadow(theme::colours::accentGlow(), radius, {})
+            .drawForRectangle(glow, {margin, margin, area.getWidth(), area.getHeight()});
+    }
+
+    // Images draw at the current colour's opacity; the glow must not.
+    g.setOpacity(1.0f);
+    g.drawImageAt(image, area.getX() - margin, area.getY() - margin);
+}
+
 void StemLabAudioProcessorEditor::resized()
 {
     // The host can resize before the constructor finishes building children.
@@ -1798,6 +2034,10 @@ void StemLabAudioProcessorEditor::resized()
     // controls: laying out with either still null would dereference it.
     if (settingsButton == nullptr || zoomResetButton == nullptr)
         return;
+
+    // Buttons take new sizes with the layout, so cached glows for the old
+    // ones would only pile up.
+    glowCache.clear();
 
     namespace window = theme::metrics::window;
 
@@ -2458,13 +2698,16 @@ void StemLabAudioProcessorEditor::timerCallback()
 
     refreshFromProcessor();
 
+    // Not a blanket repaint: each well compares what it would draw against
+    // the last tick and repaints only what actually changed, so idle lanes
+    // cost nothing and a moving playhead costs two thin strips.
     for (auto& lane : rootLanes)
         if (lane != nullptr)
-            lane->repaint();
+            lane->timerRefreshWaveform();
 
     for (auto& lane : childLanes)
         if (lane != nullptr)
-            lane->repaint();
+            lane->timerRefreshWaveform();
 
     // The record dot's pulse and the status spinner are functions of the
     // clock at paint time; keep them animating from the UI timer.
