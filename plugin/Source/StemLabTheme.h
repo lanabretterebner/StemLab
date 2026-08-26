@@ -464,8 +464,8 @@ namespace stemlab::theme
             constexpr int columnGap = 12;
 
             // The wells sit close together: this is the whole gap between one
-            // lane's waveform and the next, doubled.
-            constexpr int rowPadY = 2;
+            // lane's waveform and the next, halved.
+            constexpr int rowPadY = 1;
             constexpr float rowRadius = 6.0f;
             constexpr int wellHeight = 40;
             constexpr float wellRadius = 6.0f;
