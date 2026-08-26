@@ -165,7 +165,26 @@ checkpoints locally and validate their sizes and SHA-256 hashes.
 
 ## Build A Release
 
-Build the portable folder and then the Inno Setup installer:
+Push a tag matching the version in `pyproject.toml` and
+`.github/workflows/release.yml` builds and publishes everything:
+
+```bash
+git tag v0.9.9 && git push origin v0.9.9
+```
+
+It produces the Windows installer, the self-contained Linux bundle, the
+plugin binaries on their own for both platforms, and the Python wheel and
+sdist, checksums them, and attaches them to a GitHub release. A tag that
+disagrees with `pyproject.toml` fails the run rather than shipping
+mislabelled files. Run the workflow from the Actions tab with **publish**
+left off to build every asset without releasing - use that to check a
+change to the packaging scripts.
+
+The bundled Engine is built against CPU torch, because the build machines
+have no GPU. Users on NVIDIA, AMD, or Intel hardware re-run
+`scripts/install_backend.sh` with `--cuda`, `--rocm`, or `--xpu`.
+
+To build a release locally instead, on Windows:
 
 ```powershell
 .\build_portable_windows.ps1
@@ -175,6 +194,9 @@ Build the portable folder and then the Inno Setup installer:
 Outputs are `dist\StemLab-Portable-0.9.9` and
 `dist\StemLab-Setup-0.9.9.exe` (plus installer data slices). Model downloads
 occur only while staging a release; the installed runtime uses packaged models.
+
+On Linux, `./scripts/build_portable.sh --torch-flavor cpu` produces
+`dist/StemLab-0.9.9-Linux-cpu.tar.gz`.
 
 ## Repository Map
 
