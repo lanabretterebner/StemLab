@@ -34,8 +34,8 @@ Building, running, testing, and releasing are covered in `docs/`:
 
 ```text
 docs/                        The guides listed above
-packaging/                   Installer definition
-scripts/                     Development setup, build, install, release commands
+scripts/                     Setup, build, install, and release commands,
+                             plus the Windows installer definition
 src/integrations/ableton/    Ableton Live control-surface bridge
 src/plugin/                  JUCE C++ frontend, assets, CMake definition, tests
 src/stemlab/                 Python separation and DSP engine
