@@ -266,12 +266,33 @@ esac
 # resolution - the Engine must be self-contained.
 PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install --upgrade pip --quiet
 
-# Install torch AND torchaudio together, pinned to the requested flavor.
-# Demucs depends on torchaudio, and PyPI's torchaudio is a CUDA build that
-# declares no torch dependency - resolved on its own it would sit mismatched
-# next to a cpu/rocm/xpu torch. Same index, same resolution, same variant.
+# Install torch AND torchaudio pinned to the same flavor AND the same
+# version. Demucs depends on torchaudio, whose metadata declares no
+# dependency on torch at all - not even a lower bound - so pip is free to
+# pair any torch with any torchaudio, and left alone it does: the cpu and
+# xpu indexes carry torch 2.13 while torchaudio stops at 2.11. torchaudio
+# ships a compiled extension linked against one torch, so that pairing loads
+# a library against the wrong runtime. On Linux it happened to import
+# anyway; on Windows the loader refused it outright.
+#
+# torchaudio is the one that lags, so it picks the version and torch follows.
+# Asking for a version rather than hardcoding one keeps this correct as both
+# move.
 PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install \
-    ${TORCH_ARGS[@]+"${TORCH_ARGS[@]}"} "torch>=2.4" "torchaudio"
+    ${TORCH_ARGS[@]+"${TORCH_ARGS[@]}"} "torchaudio"
+
+TORCH_VERSION="$(PYTHONNOUSERSITE=1 "$PYTHON" -s -c \
+    'from importlib.metadata import version; print(version("torchaudio").split("+")[0])')"
+
+[[ -n "$TORCH_VERSION" ]] || {
+    echo "Could not determine which torchaudio version was installed." >&2
+    exit 1
+}
+
+echo "Pinning torch to torchaudio $TORCH_VERSION..."
+PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install \
+    ${TORCH_ARGS[@]+"${TORCH_ARGS[@]}"} \
+    "torch==$TORCH_VERSION" "torchaudio==$TORCH_VERSION"
 
 # Recursive/adaptive stem splitting needs audio-separator. The project's own
 # "recursive" extra pins the CUDA onnxruntime unconditionally, so install the
@@ -293,13 +314,29 @@ printf '%s\n' "$TORCH_FLAVOR" > "$FLAVOR_FILE"
 echo "Verifying the Engine..."
 
 PYTHONNOUSERSITE=1 "$PYTHON" -s - <<'PYCHECK'
+import sys
+
 import stemlab
 import stemlab.recursive
 import torch
 
+# Importing torchaudio is the check, not a formality: its compiled extension
+# is linked against one torch, and loading it against another is how a
+# mismatched Engine fails - at the user's first separation rather than here.
+import torchaudio
+
 print(f"  stemlab import: ok")
 print(f"  recursive splitting available: {stemlab.recursive.Separator is not None}")
 print(f"  torch {torch.__version__}, CUDA available: {torch.cuda.is_available()}")
+print(f"  torchaudio {torchaudio.__version__}")
+
+if torch.__version__.split("+")[0] != torchaudio.__version__.split("+")[0]:
+    print(
+        f"  torch {torch.__version__} and torchaudio {torchaudio.__version__} "
+        "are different versions; demucs would fail on this Engine.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 PYCHECK
 
 # ------------------------------------------------------------------- pointer
