@@ -74,7 +74,7 @@ With winget:
 "@
 }
 
-$Iss = Join-Path $RepoRoot "packaging\StemLab.iss"
+$Iss = Join-Path $PSScriptRoot "StemLab.iss"
 if (-not (Test-Path -LiteralPath $Iss -PathType Leaf)) { throw "Missing installer definition: $Iss" }
 New-Item -ItemType Directory -Path $DistRoot -Force | Out-Null
 
