@@ -1,4 +1,5 @@
 #include "WaveformGrid.h"
+#include "HostIntegrationPolicy.h"
 
 #include <cassert>
 #include <cmath>
@@ -91,5 +92,19 @@ int main()
     assert(clampLaneHeight(1) == 42);
     assert(clampLaneHeight(defaultLaneHeight) == defaultLaneHeight);
     assert(clampLaneHeight(999) == 180);
+
+    using stemlab::host::UiMode;
+    if (stemlab::host::captureActionText(UiMode::ableton) != "Use Live Clip" ||
+        stemlab::host::completedStemActionText(UiMode::ableton) != "Send Selected" ||
+        stemlab::host::captureActionText(UiMode::genericVst) != "Capture Host" ||
+        stemlab::host::completedStemActionText(UiMode::genericVst) != "Drag Selected" ||
+        stemlab::host::showsImportFromPc(UiMode::standalone) ||
+        stemlab::host::showsImportFromPc(UiMode::ableton) ||
+        !stemlab::host::showsImportFromPc(UiMode::genericVst) ||
+        !stemlab::host::canStartHostAudioCapture(UiMode::genericVst, false, false) ||
+        stemlab::host::canStartHostAudioCapture(UiMode::genericVst, true, false) ||
+        stemlab::host::canStartHostAudioCapture(UiMode::genericVst, false, true) ||
+        stemlab::host::canStartHostAudioCapture(UiMode::ableton, false, false))
+        return 1;
     return 0;
 }

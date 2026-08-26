@@ -90,6 +90,8 @@ target_sources(StemLabPlugin
         Source/StemLabWidgets.cpp
         Source/StemLabPaths.cpp
         Source/StemLabPaths.h
+        Source/HostIntegrationPolicy.h
+        Source/SelfFileDragGuard.h
         Source/ReaperHost.cpp
         Source/ReaperHost.h
         Source/ReaperBridge.cpp
@@ -122,7 +124,8 @@ endif()
 
 include(CTest)
 if (BUILD_TESTING)
-    add_executable(StemLabWaveformGridTests Tests/WaveformGridTests.cpp Source/WaveformGrid.h)
+    add_executable(StemLabWaveformGridTests Tests/WaveformGridTests.cpp
+                   Source/HostIntegrationPolicy.h Source/WaveformGrid.h)
     target_include_directories(StemLabWaveformGridTests PRIVATE Source)
     target_compile_features(StemLabWaveformGridTests PRIVATE cxx_std_20)
     add_test(NAME StemLabWaveformGridTests COMMAND StemLabWaveformGridTests)
@@ -134,6 +137,19 @@ if (BUILD_TESTING)
     target_include_directories(StemLabWaveformAnalysisTests PRIVATE Source)
     target_compile_features(StemLabWaveformAnalysisTests PRIVATE cxx_std_20)
     add_test(NAME StemLabWaveformAnalysisTests COMMAND StemLabWaveformAnalysisTests)
+
+    # Upstream's host-capture pass: the self-drag guard plus a real
+    # processor capturing processBlock audio, so this one links the plugin.
+    add_executable(StemLabHostCaptureTests Tests/HostCaptureTests.cpp
+                   Source/SelfFileDragGuard.h)
+    target_include_directories(StemLabHostCaptureTests PRIVATE Source
+                               "${CMAKE_CURRENT_BINARY_DIR}/StemLabPlugin_artefacts/JuceLibraryCode"
+                               "${CMAKE_CURRENT_BINARY_DIR}/juce_binarydata_StemLabAssets/JuceLibraryCode")
+    target_compile_features(StemLabHostCaptureTests PRIVATE cxx_std_20)
+    target_link_libraries(StemLabHostCaptureTests PRIVATE StemLabPlugin juce::juce_audio_utils
+                                                          juce::juce_audio_formats
+                                                          juce::juce_gui_extra)
+    add_test(NAME StemLabHostCaptureTests COMMAND StemLabHostCaptureTests)
 endif()
 
 target_compile_definitions(StemLabPlugin

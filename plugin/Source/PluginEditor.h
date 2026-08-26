@@ -5,6 +5,7 @@
 #include <functional>
 #include <utility>
 #include "PluginProcessor.h"
+#include "SelfFileDragGuard.h"
 #include "StemLabLookAndFeel.h"
 #include "StemLabWidgets.h"
 #include "WaveformCache.h"
@@ -202,7 +203,15 @@ public:
     void fileDragEnter(const juce::StringArray& files, int x, int y) override;
     void fileDragExit(const juce::StringArray& files) override;
 
+    // The footer's Drag Stems pill (generic VST hosts) starts its export
+    // drag from here, the same way the lane handles do.
+    void mouseDrag(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override;
+
 private:
+    /** Every selected stem as one external drag, selection ranges included. */
+    void startSelectedStemsDrag();
+
     void timerCallback() override;
     void changeListenerCallback(juce::ChangeBroadcaster*) override;
 
@@ -373,6 +382,11 @@ private:
     std::unique_ptr<juce::FileChooser> jobFolderChooser;
 
     bool dragActive = false;
+
+    // Files of our own in-flight outbound drag, so releasing them back
+    // over the window cannot reload the source they were split from.
+    StemLabSelfFileDragGuard selfFileDragGuard;
+    bool footerDragStarted = false;
 
     /** What the action segment last rendered as, so a click acts on the
         state the user actually saw. */

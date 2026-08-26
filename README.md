@@ -23,14 +23,28 @@ builds, model weights, or virtual environments.
 ## Windows
 
 Requires Visual Studio (Desktop development with C++ and CMake tools),
-Python 3.11, and FFmpeg on `PATH`. From the repository root:
+Python 3.11 (NVIDIA/CPU) or Python 3.12 (experimental AMD ROCm), and FFmpeg
+on `PATH`. From the repository root, choose a runtime backend - NVIDIA is
+the recommended default:
 
 ```powershell
-.\scripts\setup_dev.ps1      # venv, dependencies, unit tests
+.\scripts\setup_dev.ps1 -Backend nvidia   # recommended/default
+.\scripts\setup_dev.ps1 -Backend cpu      # universal fallback, slower
+.\scripts\setup_dev.ps1 -Backend amd      # AMD ROCm, experimental
+
 .\scripts\build_plugin.ps1   # Standalone + VST3
 & ".\plugin\build\StemLabPlugin_artefacts\Release\Standalone\StemLab.exe"
 .\scripts\install_ableton.ps1   # VST3 + Ableton Remote Script
 ```
+
+NVIDIA and CPU setup create `.venv`. AMD setup creates a separate `.venv-amd`
+and never converts an existing Python 3.11 environment. Setup installs and
+verifies a pinned backend-specific PyTorch build before installing StemLab
+plus its development/recursive dependencies, then runs the unit tests. A
+separate CUDA Toolkit is not required because the NVIDIA wheel packages its
+CUDA runtime. AMD ROCm support is experimental and currently requires
+Windows 11, Python 3.12, AMD's supported driver, and hardware in AMD's
+compatibility matrix.
 
 See [docs/ableton.md](docs/ableton.md) for the Ableton setup and workflow.
 
@@ -79,9 +93,22 @@ asset (Windows installer, Linux bundle, plugin binaries, wheel/sdist). A
 mismatched tag fails the run. Run the workflow manually with **publish**
 off to test packaging changes.
 
-Locally: `.\scripts\build_portable_windows.ps1` then
-`.\scripts\build_installer_windows.ps1 -SkipPortableBuild` on Windows;
-`./scripts/build_portable.sh --torch-flavor cpu` on Linux.
+Locally on Windows, build one backend per portable folder and installer
+(NVIDIA is the default when `-Backend` is omitted):
+
+```powershell
+.\scripts\build_portable_windows.ps1 -Backend nvidia   # or cpu
+.\scripts\build_installer_windows.ps1 -Backend nvidia -SkipPortableBuild
+```
+
+Outputs carry the backend suffix - `dist\StemLab-Portable-<version>-NVIDIA`
+and `dist\StemLab-Setup-<version>-NVIDIA.exe` - and each portable root
+includes `RUNTIME_BACKEND.txt` with the packaged Python, Torch, and
+CUDA/HIP details. AMD portable/installer packaging stops with a concise
+error until a reproducible Python 3.12 ROCm runtime exists; NVIDIA and CPU
+releases are fully supported.
+
+On Linux: `./scripts/build_portable.sh --torch-flavor cpu`.
 
 ## Documentation
 

@@ -282,9 +282,11 @@ jobs:
       # -SkipTests because the step above already ran them against this exact
       # tree. The script builds the plugin, assembles the portable payload
       # (Engine, models, ffmpeg, Ableton bridge) and compiles the installer.
+      # -Backend nvidia is the default, spelled out because it names the
+      # published artifacts (StemLab-Setup-<version>-NVIDIA.exe).
       - name: Build the portable payload and the installer
         shell: pwsh
-        run: .\scripts\build_installer_windows.ps1 -SkipTests
+        run: .\scripts\build_installer_windows.ps1 -Backend nvidia -SkipTests
 
       - name: Package the plugin on its own
         shell: pwsh
@@ -375,7 +377,7 @@ jobs:
 
           | File | What it is |
           | --- | --- |
-          | `StemLab-Setup-*.exe` **and** `StemLab-Setup-*.bin` | **Windows installer.** Download every part into the same folder before running the `.exe` - it will not start without its `.bin` slices. Installs the app, the VST3 and the Engine; no Python needed. |
+          | `StemLab-Setup-*-NVIDIA.exe` **and** `StemLab-Setup-*-NVIDIA-*.bin` | **Windows installer** (NVIDIA CUDA runtime; runs on CPU too). Download every part into the same folder before running the `.exe` - it will not start without its `.bin` slices. Installs the app, the VST3 and the Engine; no Python needed. |
           | `StemLab-*-Linux-<flavor>.tar.gz` | **Linux, self-contained.** Extract and run `./install.sh` once. Includes the Engine; no Python needed. Pick the flavor for your hardware - see below. |
           | `StemLab-*-plugin-only.*` | The VST3 and Standalone binaries alone, for anyone who already has an Engine installed. |
           | `stemlab_open-*.whl`, `stemlab_open-*.tar.gz` | The Python package on its own, for command-line use. |
