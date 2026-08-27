@@ -10,6 +10,8 @@ import soundfile as sf
 
 from stemlab.analysis_cache import cleanup_stale_midi_drag_files
 from stemlab.midi import (
+    MIDI_ALGORITHM_VERSION,
+    _smooth_pitch_frames,
     build_ableton_midi_payload,
     convert_stem_to_midi,
     metadata_path_for,
@@ -130,3 +132,53 @@ def test_internal_midi_round_trip_drag_lifecycle_and_ableton_payload(tmp_path):
     os.utime(drag_file, (old, old))
     assert cleanup_stale_midi_drag_files(max_age_days=7) == 1
     assert not os.path.exists(drag_file)
+
+
+def test_smooth_pitch_frames_matches_per_frame_reference():
+    rng = np.random.default_rng(5)
+    for _ in range(50):
+        size = int(rng.integers(0, 120))
+        pitches = rng.normal(60.0, 10.0, size)
+        valid = rng.random(size) < 0.6
+        pitches[~valid] = np.nan
+
+        reference = pitches.copy()
+        for index in np.flatnonzero(valid):
+            start = max(0, index - 2)
+            end = min(pitches.size, index + 3)
+            local = pitches[start:end][valid[start:end]]
+            if local.size >= 2:
+                reference[index] = float(np.median(local))
+
+        result = _smooth_pitch_frames(pitches, valid)
+        assert np.array_equal(np.isnan(reference), np.isnan(result))
+        finite = np.isfinite(reference)
+        assert np.array_equal(reference[finite], result[finite])
+
+
+def test_stale_algorithm_version_triggers_retranscription(tmp_path):
+    sample_rate = 22_050
+    time_axis = np.arange(sample_rate, dtype=np.float32) / sample_rate
+    audio = (0.4 * np.sin(2.0 * np.pi * 110.0 * time_axis)).astype(np.float32)
+    source = tmp_path / "bass.wav"
+    output = tmp_path / "bass.mid"
+    sf.write(source, audio, sample_rate)
+
+    convert_stem_to_midi(source, output, "bass", bpm=120.0)
+    metadata_path = metadata_path_for(output)
+    stale = read_transcription(metadata_path)
+    assert stale.algorithm_version == MIDI_ALGORITHM_VERSION
+
+    # An entry from an older algorithm (e.g. the pre-hop-512 transcriber)
+    # must be recomputed, not reused.
+    import json
+
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    payload["algorithm_version"] = "stemlab-midi-2"
+    payload["notes"] = []
+    metadata_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    convert_stem_to_midi(source, output, "bass", bpm=120.0)
+    refreshed = read_transcription(metadata_path)
+    assert refreshed.algorithm_version == MIDI_ALGORITHM_VERSION
+    assert refreshed.notes

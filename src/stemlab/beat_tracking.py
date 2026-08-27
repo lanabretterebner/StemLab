@@ -12,11 +12,19 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
-import torch
 
 from .runtime import CancellationToken, JobCancelled
+
+if TYPE_CHECKING:
+    import torch
+
+# torch is imported inside the functions that run inference so that importing
+# this module for its constants (BEAT_ALGORITHM_VERSION, MODEL_SPECS,
+# BeatAnalysis) stays cheap: cache-hit analyses and the sqlite-only CLI paths
+# must never pay for, or require, torch.
 
 BEAT_THIS_VERSION = "1.1.0"
 BEAT_ALGORITHM_VERSION = "beat-this-1.1.0-stemlab-1"
@@ -274,6 +282,8 @@ def ensure_packaged_model(
 
 def choose_device(requested: str = "auto") -> torch.device:
     """Use CUDA when available and otherwise return a safe CPU device."""
+    import torch
+
     requested = requested.strip().lower()
     if requested in {"", "auto"}:
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -386,6 +396,7 @@ def analyse_beats(
     progress: Callable[[float, str], None] | None = None,
 ) -> BeatAnalysis:
     """Run packaged Beat This! inference with progress between real chunks."""
+    import torch
     from beat_this.inference import aggregate_prediction, split_piece
     from beat_this.model.postprocessor import Postprocessor
     from beat_this.preprocessing import LogMelSpect

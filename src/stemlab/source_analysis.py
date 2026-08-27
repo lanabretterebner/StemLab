@@ -1,23 +1,40 @@
-"""Offline tempo, beat, downbeat, meter, and musical-key analysis."""
+"""Offline tempo, beat, downbeat, meter, and musical-key analysis.
+
+CLI modes:
+  - Analysis:            --input SRC --output OUT [--mode ...] [stem flags]
+  - Cache maintenance:   --clear-cache
+  - Correction only:     --input SRC --set-correction [--correct-* ...]
+                         --input SRC --forget-correction
+  - Combined:            --input SRC --set-correction [--correct-* ...] --output OUT
+                         (also --forget-correction with --output) applies the
+                         correction to the local store first, then runs the
+                         cache-aware analysis and writes OUT in one process.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-import librosa
 import numpy as np
 
 from .analysis_cache import AnalysisCache, source_identity
+# beat_tracking defers its torch import into the inference paths, so this
+# import stays light; analyse_beats only loads torch when actually called on
+# a beat-cache miss.
 from .beat_tracking import BEAT_ALGORITHM_VERSION, MODEL_SPECS, BeatAnalysis, analyse_beats
 from .runtime import CancellationToken, JobCancelled, configure_utf8_stdio
 
 KEY_ALGORITHM_VERSION = "fistem-tonal-ensemble-3"
+# Version tag for cached per-signal tonal evidence values; bump when the
+# stored evidence layout or the scoring that produces it changes shape.
+_KEY_EVIDENCE_SCHEMA = 1
+_ANALYSIS_SAMPLE_RATE = 22_050
 _WINDOW_SECONDS = 12.0
 _PITCH_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 
@@ -202,6 +219,8 @@ def _tonal_evidence(
     bass_role: bool,
     cancellation: CancellationToken,
 ) -> tuple[np.ndarray, float, float]:
+    import librosa
+
     audio = np.asarray(audio, dtype=np.float32)
     if audio.size < 2048 or float(np.sqrt(np.mean(np.square(audio)))) < 1.0e-5:
         return np.zeros(24), 0.0, 0.0
@@ -229,14 +248,28 @@ def _tonal_evidence(
         if flatness > 0.22:
             continue
 
+        # chroma_cqt and chroma_cens both reduce the same |CQT| internally
+        # (fmin C1, 7 octaves, 36 bins/octave); computing it once and passing
+        # C keeps their outputs bit-identical while halving the transforms.
+        constant_q = np.abs(
+            librosa.cqt(
+                harmonic_window,
+                sr=sample_rate,
+                hop_length=2048,
+                fmin=None,
+                n_bins=7 * 36,
+                bins_per_octave=36,
+                tuning=tuning,
+            )
+        )
         chroma_cqt = librosa.feature.chroma_cqt(
-            y=harmonic_window,
+            C=constant_q,
             sr=sample_rate,
             hop_length=2048,
             tuning=tuning,
         )
         chroma_cens = librosa.feature.chroma_cens(
-            y=harmonic_window,
+            C=constant_q,
             sr=sample_rate,
             hop_length=2048,
             tuning=tuning,
@@ -296,38 +329,89 @@ def _tonal_evidence(
     return scores, float(np.sum(weights)), tuning * 100.0
 
 
-def analyse_key(
-    audio: np.ndarray,
-    sample_rate: int,
+@dataclass(frozen=True)
+class _KeySource:
+    """One tonal-evidence input: how to load it, weigh it, and cache it."""
+
+    load: Callable[[], tuple[np.ndarray, int]]
+    scale: float
+    divisor: float
+    bass_role: bool
+    signal_hash: str | None = None
+
+
+def _evidence_settings(bass_role: bool) -> dict[str, Any]:
+    # Every per-call knob that shapes one signal's _tonal_evidence output.
+    # The profile/chord split mirrors the constants inside _tonal_evidence;
+    # code-level scoring changes are covered by KEY_ALGORITHM_VERSION.
+    return {
+        "window_seconds": _WINDOW_SECONDS,
+        "bass_role": bass_role,
+        "sample_rate": _ANALYSIS_SAMPLE_RATE,
+        "profile_weight": 0.40,
+        "chord_weight": 0.60,
+    }
+
+
+def _cached_tonal_evidence(
+    source: _KeySource,
     *,
-    harmony_signals: tuple[tuple[np.ndarray, int], ...] = (),
-    bass_signal: tuple[np.ndarray, int] | None = None,
-    cancellation: CancellationToken | None = None,
+    cache: AnalysisCache | None,
+    cancellation: CancellationToken,
+) -> tuple[np.ndarray, float, float]:
+    """Fetch or compute one signal's evidence; mix evidence is stem-independent."""
+    settings = _evidence_settings(source.bass_role)
+    cacheable = cache is not None and source.signal_hash is not None
+    if cacheable:
+        stored = cache.get_result(
+            "key_evidence", source.signal_hash, KEY_ALGORITHM_VERSION, settings
+        )
+        if (
+            stored is not None
+            and stored.get("schema") == _KEY_EVIDENCE_SCHEMA
+            and len(stored.get("scores", ())) == 24
+        ):
+            return (
+                np.asarray(stored["scores"], dtype=np.float64),
+                float(stored["weight"]),
+                float(stored["tuning_cents"]),
+            )
+
+    audio, sample_rate = source.load()
+    scores, weight, tuning_cents = _tonal_evidence(
+        audio, sample_rate, bass_role=source.bass_role, cancellation=cancellation
+    )
+    if cacheable:
+        cache.put_result(
+            "key_evidence",
+            source.signal_hash,
+            KEY_ALGORITHM_VERSION,
+            settings,
+            {
+                "schema": _KEY_EVIDENCE_SCHEMA,
+                "scores": [float(value) for value in np.asarray(scores, dtype=np.float64)],
+                "weight": float(weight),
+                "tuning_cents": float(tuning_cents),
+            },
+        )
+    return scores, weight, tuning_cents
+
+
+def _analyse_key_sources(
+    sources: Sequence[_KeySource],
+    *,
+    cache: AnalysisCache | None,
+    cancellation: CancellationToken,
 ) -> KeyAnalysis:
-    """Rank all 24 keys from multiple stable harmonic windows and profiles."""
-    token = cancellation or CancellationToken()
+    """Rank all 24 keys from per-signal evidence rows, cached or fresh."""
     rows: list[tuple[np.ndarray, float]] = []
     tunings: list[tuple[float, float]] = []
-
-    scores, weight, tuning = _tonal_evidence(
-        audio, sample_rate, bass_role=False, cancellation=token
-    )
-    if weight > 0:
-        rows.append((scores, weight * 0.65))
-        tunings.append((tuning, weight))
-
-    for signal, rate in harmony_signals:
-        scores, weight, tuning = _tonal_evidence(signal, rate, bass_role=False, cancellation=token)
-        if weight > 0:
-            rows.append((scores, weight * 0.25 / max(1, len(harmony_signals))))
-            tunings.append((tuning, weight))
-
-    if bass_signal is not None:
-        scores, weight, tuning = _tonal_evidence(
-            bass_signal[0], bass_signal[1], bass_role=True, cancellation=token
+    for source in sources:
+        scores, weight, tuning = _cached_tonal_evidence(
+            source, cache=cache, cancellation=cancellation
         )
         if weight > 0:
-            rows.append((scores, weight * 0.10))
+            rows.append((scores, weight * source.scale / source.divisor))
             tunings.append((tuning, weight))
 
     if not rows:
@@ -363,19 +447,38 @@ def analyse_key(
     )
 
 
+def analyse_key(
+    audio: np.ndarray,
+    sample_rate: int,
+    *,
+    harmony_signals: tuple[tuple[np.ndarray, int], ...] = (),
+    bass_signal: tuple[np.ndarray, int] | None = None,
+    cancellation: CancellationToken | None = None,
+) -> KeyAnalysis:
+    """Rank all 24 keys from multiple stable harmonic windows and profiles."""
+    token = cancellation or CancellationToken()
+    sources: list[_KeySource] = [_KeySource(lambda: (audio, sample_rate), 0.65, 1.0, False)]
+    divisor = float(max(1, len(harmony_signals)))
+    for signal, rate in harmony_signals:
+        sources.append(
+            _KeySource(lambda signal=signal, rate=rate: (signal, rate), 0.25, divisor, False)
+        )
+    if bass_signal is not None:
+        sources.append(_KeySource(lambda: bass_signal, 0.10, 1.0, True))
+    return _analyse_key_sources(sources, cache=None, cancellation=token)
+
+
 def estimate_key(audio: np.ndarray, sample_rate: int) -> tuple[str | None, float]:
     """Compatibility wrapper for callers that only need the leading key."""
     result = analyse_key(audio, sample_rate)
     return result.key, result.confidence
 
 
-def _load_optional_audio(paths: tuple[Path, ...]) -> tuple[tuple[np.ndarray, int], ...]:
-    rows = []
-    for path in paths:
-        if path.is_file():
-            audio, sample_rate = librosa.load(str(path), sr=22_050, mono=True)
-            rows.append((np.asarray(audio, dtype=np.float32), int(sample_rate)))
-    return tuple(rows)
+def _load_signal(path: Path) -> tuple[np.ndarray, int]:
+    import librosa
+
+    audio, sample_rate = librosa.load(str(path), sr=_ANALYSIS_SAMPLE_RATE, mono=True)
+    return np.asarray(audio, dtype=np.float32), int(sample_rate)
 
 
 def _beat_from_cache(payload: dict[str, Any]) -> BeatAnalysis:
@@ -411,7 +514,7 @@ def analyse_source(
     cancellation: CancellationToken | None = None,
     progress: Callable[[float, str], None] | None = None,
 ) -> SourceAnalysis:
-    """Decode the original once, then run or retrieve beat and key analyses."""
+    """Run or retrieve beat and key analyses, decoding the source only on a miss."""
     if mode not in MODEL_SPECS:
         raise ValueError(f"Unknown source-analysis mode: {mode}")
     source = Path(path).expanduser().resolve()
@@ -428,12 +531,19 @@ def analyse_source(
     )
     cache = cache or AnalysisCache()
 
-    report(0.06, "Decoding source audio")
-    audio, sample_rate = librosa.load(str(source), sr=22_050, mono=True)
-    audio = np.asarray(audio, dtype=np.float32)
-    if audio.size == 0:
-        raise RuntimeError("Source audio is empty")
-    token.raise_if_cancelled()
+    # Decoding is deferred and memoized: a fully cached run (beats, key, and
+    # mix evidence all present) must never decode the source at all.
+    decoded: dict[str, tuple[np.ndarray, int]] = {}
+
+    def get_audio(fraction: float = 0.06) -> tuple[np.ndarray, int]:
+        if "mix" not in decoded:
+            report(fraction, "Decoding source audio")
+            audio, sample_rate = _load_signal(source)
+            if audio.size == 0:
+                raise RuntimeError("Source audio is empty")
+            token.raise_if_cancelled()
+            decoded["mix"] = (audio, sample_rate)
+        return decoded["mix"]
 
     beat_settings = {
         "mode": mode,
@@ -442,6 +552,7 @@ def analyse_source(
     }
     cached_beat = cache.get_result("beats", source_hash, BEAT_ALGORITHM_VERSION, beat_settings)
     if cached_beat is None:
+        audio, sample_rate = get_audio()
         beat = analyse_beats(
             audio,
             sample_rate,
@@ -460,22 +571,32 @@ def analyse_source(
 
     harmony_files = tuple(Path(item).expanduser().resolve() for item in harmony_paths)
     bass_file = Path(bass_path).expanduser().resolve() if bass_path else None
-    stem_hashes = [source_identity(item, token) for item in harmony_files if item.is_file()]
-    if bass_file and bass_file.is_file():
-        stem_hashes.append(source_identity(bass_file, token))
+    harmony_present = [item for item in harmony_files if item.is_file()]
+    harmony_hashes = [source_identity(item, token) for item in harmony_present]
+    bass_present = bass_file if bass_file and bass_file.is_file() else None
+    bass_hash = source_identity(bass_present, token) if bass_present else None
+    stem_hashes = harmony_hashes + ([bass_hash] if bass_hash else [])
     key_settings = {"stem_hashes": stem_hashes, "window_seconds": _WINDOW_SECONDS}
     cached_key = cache.get_result("key", source_hash, KEY_ALGORITHM_VERSION, key_settings)
     if cached_key is None:
         report(0.69, "Analysing stable harmonic sections")
-        harmony_signals = _load_optional_audio(harmony_files)
-        bass_signals = _load_optional_audio((bass_file,)) if bass_file else ()
-        key_analysis = analyse_key(
-            audio,
-            sample_rate,
-            harmony_signals=harmony_signals,
-            bass_signal=bass_signals[0] if bass_signals else None,
-            cancellation=token,
-        )
+        # The mix source carries its own hash so full-mix evidence computed
+        # before separation is reused after separation adds stem signals.
+        key_sources: list[_KeySource] = [
+            _KeySource(lambda: get_audio(0.70), 0.65, 1.0, False, source_hash)
+        ]
+        divisor = float(max(1, len(harmony_present)))
+        for stem, stem_hash in zip(harmony_present, harmony_hashes, strict=True):
+            key_sources.append(
+                _KeySource(lambda stem=stem: _load_signal(stem), 0.25, divisor, False, stem_hash)
+            )
+        if bass_present:
+            key_sources.append(
+                _KeySource(
+                    lambda: _load_signal(bass_present), 0.10, 1.0, True, bass_hash
+                )
+            )
+        key_analysis = _analyse_key_sources(key_sources, cache=cache, cancellation=token)
         cache.put_result(
             "key", source_hash, KEY_ALGORITHM_VERSION, key_settings, key_analysis.to_dict()
         )
@@ -552,7 +673,14 @@ def _set_correction(args: argparse.Namespace, cache: AnalysisCache) -> None:
 def main() -> None:
     """CLI entry used by JUCE's source-analysis worker."""
     configure_utf8_stdio()
-    parser = argparse.ArgumentParser(description="Analyze source tempo, beats, meter, and key.")
+    parser = argparse.ArgumentParser(
+        description="Analyze source tempo, beats, meter, and key.",
+        epilog=(
+            "--set-correction/--forget-correction normally exit after updating the "
+            "local store; combined with --output they instead continue into the "
+            "cache-aware analysis and write the corrected result in one invocation."
+        ),
+    )
     parser.add_argument("--input")
     parser.add_argument("--output")
     parser.add_argument("--mode", choices=("fast", "accurate"), default="fast")
@@ -578,13 +706,18 @@ def main() -> None:
         return
     if not args.input:
         parser.error("--input is required")
+    # Correction flags without --output keep their historical exit-early
+    # contract; with --output the same invocation continues into analysis so
+    # the plugin can correct and re-emit the contract in one process.
     if args.forget_correction:
         removed = cache.forget_correction(source_identity(args.input))
         print("Correction forgotten" if removed else "No correction was stored", flush=True)
-        return
+        if not args.output:
+            return
     if args.set_correction:
         _set_correction(args, cache)
-        return
+        if not args.output:
+            return
     if not args.output:
         parser.error("--output is required for analysis")
 
