@@ -495,6 +495,27 @@ public:
         from its scan cache rather than by another stat. */
     bool hasCompletedStemFile(int index) const;
 
+    /**
+     * The file the running separation announced for this stem, or an empty
+     * File.
+     *
+     * The engine reports each stem as its final file lands, well before the
+     * job as a whole finishes, which is what lets a lane draw its waveform
+     * early. Only the running main job's own announcements ever reach here
+     * (see the reset points around it), so this cannot answer with an
+     * earlier job's stem.
+     *
+     * It carries no claim about the job: everything that acts on stems -
+     * the monitor mix, the transport, save, send, drag - stays gated on
+     * hasSuccessfulJob(), because a job can still be cancelled or fail
+     * after announcing some of its stems.
+     */
+    juce::File getReadyStemFile(int index) const;
+
+    /** Changes whenever an announcement lands or the record is reset, so a
+        reader can tell one snapshot of the lanes from the next. */
+    int getReadyStemRevision() const;
+
     /** Override or query the executable used for the main Python worker. */
     void setEngineCommand(const juce::String&);
     juce::String getEngineCommand() const;
@@ -595,6 +616,17 @@ private:
     void setActionStatus(const juce::String&);
     void setEngineProgress(double progress);
     void handleEngineOutputLine(const juce::String& line);
+
+    /** Consume one "STEMLAB_STEM_READY <stem> <path>" payload - everything
+        after the keyword and its separating space. */
+    void handleStemReadyLine(const juce::String& payload);
+
+    /** Drop every per-stem announcement. Called wherever the lanes must stop
+        showing an unfinished job's stems: a new launch, a cancel, a
+        failure. Lazy job-mismatch dropping is not enough on its own - a job
+        that fails before announcing anything never reaches the writer. */
+    void resetReadyStemFiles();
+
     juce::StringArray makePythonModuleCommand(const juce::String& moduleName) const;
 
     /** Pre-queue waveform analyses for the finished job's stems. */
@@ -603,7 +635,25 @@ private:
     void finishRecursiveJob(const juce::File& manifestFile);
     void clearRecursiveResults();
 
-    void startSourceAnalysis(const juce::File& source);
+    /**
+     * Launch the source-analysis worker, optionally carrying a correction
+     * for it to apply first.
+     *
+     * The Python CLI applies --set-correction/--forget-correction before it
+     * reads the cancel token and then continues into the analysis, so one
+     * process covers both halves: the correction is persisted even when the
+     * analysis half is later cancelled. Returns false when no command could
+     * be built or the thread refused to start.
+     */
+    bool startSourceAnalysis(const juce::File& source,
+                             const juce::StringArray& correctionArguments = {},
+                             const juce::String& correctionLabel = {});
+
+    /** Persist or drop a stored correction for the loaded source, then
+        re-analyse it in the same process. */
+    bool applySourceCorrection(const juce::StringArray& correctionArguments,
+                               const juce::String& label);
+
     void finishSourceAnalysis(const juce::File& source, const juce::File& result, int exitCode);
     bool launchAnalysisMaintenance(const juce::StringArray& arguments, const juce::String& label);
     void finishAnalysisMaintenance(const juce::File& source, const juce::String& label,
@@ -855,6 +905,19 @@ private:
     std::atomic<bool> sawEngineProgressProtocol{false};
 
     /**
+     * True for as long as the main six-stem separation thread's run() is
+     * executing.
+     *
+     * Three reader threads share handleEngineOutputLine - the main engine,
+     * the adaptive split, and source analysis - and only the main job owns
+     * the six root lanes. An atomic rather than a probe of engineThread:
+     * that unique_ptr is reassigned by the message thread while the old
+     * reader is still draining its last lines, so reading it from a reader
+     * thread races its own destruction.
+     */
+    std::atomic<bool> mainEngineRunning{false};
+
+    /**
      * Resolved stem files for the current job. The editor asks for these
      * many times per redraw; without a cache each answer costs a recursive
      * enumeration of the job tree. Invalidated by a change of job directory
@@ -864,6 +927,28 @@ private:
     mutable juce::File stemFileCacheJob;
     mutable bool stemFileCacheJobDone = false;
     mutable std::array<juce::File, stemCount> stemFileCache;
+
+    /**
+     * Per-stem STEMLAB_STEM_READY announcements from the separation that is
+     * still running: the file the engine finished writing, the job those
+     * files belong to, and a revision that changes with every slot.
+     *
+     * Guarded by stemFileCacheLock above rather than by a lock of its own.
+     * That lock already answers "which file is this stem right now", has
+     * only these two records under it, and is held over nothing but plain
+     * assignments; a lane reads exactly one of the two records per refresh,
+     * so sharing it costs no extra contention. Every copy out of these
+     * slots must happen under it: juce::File holds a reference-counted
+     * String, and copying a slot while an announcement overwrites it races
+     * that refcount.
+     *
+     * Nothing may call getLastJobDirectory() while holding this lock. That
+     * takes stateLock, and nesting the two would create an ordering rule
+     * this code does not otherwise have.
+     */
+    std::array<juce::File, stemCount> readyStemFile;
+    juce::File readyStemJob;
+    int readyStemRevision = 0;
 
     static juce::File matchStemFile(const juce::Array<juce::File>& candidates,
                                     const juce::String& stem);
