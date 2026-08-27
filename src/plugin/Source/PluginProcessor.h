@@ -880,6 +880,11 @@ private:
     juce::String abletonBridgeStatus{"Bridge not confirmed yet"};
     std::atomic<double> abletonBridgeWaitStartMs{0.0};
 
+    /** Stays true from Send/Retry until an ack is consumed, so an ack that
+        lands after the 12s timeout still reaches the user instead of the
+        stale "timed out" message inviting a duplicate import. */
+    std::atomic<bool> abletonAckExpected{false};
+
     // Identity (mtime + size) of the Remote Script's heartbeat file at the
     // last bridge poll, so an unchanged file is not re-read and re-parsed
     // at the poll rate. Message thread only.

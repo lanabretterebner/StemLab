@@ -52,8 +52,11 @@ def refine_stem_folder(
             stage_callback(label)
 
     def cached(stem: str) -> tuple[np.ndarray, int] | None:
+        # pop, not get: each handed-over array is consumed exactly once, and
+        # releasing it here keeps the whole fused set from staying pinned in
+        # memory for the duration of refinement.
         if preloaded is not None:
-            return preloaded.get(stem)
+            return preloaded.pop(stem, None)
         return None
 
     drum_path = find_stem_file(input_dir, "drums")

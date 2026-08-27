@@ -115,12 +115,10 @@ class DemucsBackend:
                 model_name = PACKAGED_DEMUCS_SIGNATURE
                 repo_args = ["--repo", str(repo_path)]
 
-            # Parallel worker processes only pay off on CPU; on an
-            # accelerator they would multiply device-memory use instead.
-            cpu_args = (
-                ["-j", str(min(4, os.cpu_count() or 1))] if device == "cpu" else []
-            )
-
+            # No -j: each demucs worker process holds its own model copy and
+            # segment buffers, which multiplies peak memory past what low-RAM
+            # machines that complete today can afford, while BLAS already
+            # spreads the single process across cores.
             command = [
                 sys.executable,
                 "-m",
@@ -132,7 +130,6 @@ class DemucsBackend:
                 device,
                 "--overlap",
                 str(DEMUCS_OVERLAP),
-                *cpu_args,
                 "--out",
                 str(raw_output),
                 str(staged),

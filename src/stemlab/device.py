@@ -6,7 +6,9 @@ import importlib
 import importlib.metadata
 import json
 import os
+import shutil
 import sys
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -15,22 +17,33 @@ from typing import Callable
 # the torch.cuda API (see pick_best_device).
 _PROBE_ENV_VARS = ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES")
 
+# A cached answer can also go stale for reasons no fingerprint can see (a
+# driver update, a GPU swapped out); one live probe per day bounds how long
+# any such staleness can last.
+_PROBE_CACHE_TTL_SECONDS = 24 * 60 * 60
+
 
 def _probe_cache_path() -> Path:
-    # Same resolution as analysis_cache.managed_analysis_dir(), duplicated
-    # rather than imported: that module carries sqlite3 and the process
-    # runtime helpers, and this one is imported by every job parent - the
-    # exact startup weight the probe cache exists to avoid.
-    override = os.environ.get("STEMLAB_ANALYSIS_HOME")
-    if override:
-        return Path(override).expanduser().resolve() / "device_probe.json"
-    local = os.environ.get("LOCALAPPDATA")
-    if local:
-        return Path(local) / "StemLab" / "Analysis" / "device_probe.json"
-    return Path.home() / ".stemlab" / "analysis" / "device_probe.json"
+    # Imported lazily: analysis_cache brings sqlite3 and the runtime
+    # helpers, a few milliseconds this hot path only pays on a cache
+    # access, in exchange for one definition of the managed directory.
+    from .analysis_cache import managed_analysis_dir
+
+    return managed_analysis_dir() / "device_probe.json"
 
 
-def _probe_fingerprint() -> dict[str, str | None] | None:
+def _driver_markers() -> dict[str, bool]:
+    # A driver installed or removed after the first probe must flip the
+    # cache stale; these see the driver without touching torch. Intel has
+    # no equally cheap universal marker - the TTL covers it.
+    return {
+        "nvidia": Path("/proc/driver/nvidia/version").exists()
+        or shutil.which("nvidia-smi") is not None,
+        "amdgpu": Path("/sys/module/amdgpu").exists(),
+    }
+
+
+def _probe_fingerprint() -> dict[str, object] | None:
     """Identity of the environment a cached probe answer belongs to.
 
     Reads torch's version from package metadata precisely so torch itself
@@ -42,18 +55,21 @@ def _probe_fingerprint() -> dict[str, str | None] | None:
         version = importlib.metadata.version("torch")
     except Exception:
         return None
-    fingerprint: dict[str, str | None] = {"torch": version}
+    fingerprint: dict[str, object] = {"torch": version}
     for name in _PROBE_ENV_VARS:
         fingerprint[name] = os.environ.get(name)
+    fingerprint["drivers"] = _driver_markers()
     return fingerprint
 
 
-def _cached_answer(fingerprint: dict[str, str | None], device: str) -> bool | None:
+def _cached_answer(fingerprint: dict[str, object], device: str) -> bool | None:
     # A corrupt, stale, or unreadable cache file must behave like a miss:
     # the probe reproduces the answer, so no error here is worth surfacing.
     try:
         data = json.loads(_probe_cache_path().read_text(encoding="utf-8"))
         if data.get("fingerprint") != fingerprint:
+            return None
+        if time.time() - float(data.get("time", 0.0)) > _PROBE_CACHE_TTL_SECONDS:
             return None
         answer = data.get("probes", {}).get(device)
     except Exception:
@@ -61,7 +77,7 @@ def _cached_answer(fingerprint: dict[str, str | None], device: str) -> bool | No
     return answer if isinstance(answer, bool) else None
 
 
-def _store_answer(fingerprint: dict[str, str | None], device: str, available: bool) -> None:
+def _store_answer(fingerprint: dict[str, object], device: str, available: bool) -> None:
     # Best-effort: a failed write only means the next process probes again.
     path = _probe_cache_path()
     try:
@@ -76,6 +92,7 @@ def _store_answer(fingerprint: dict[str, str | None], device: str, available: bo
             probes = {}
             data["probes"] = probes
         probes[device] = available
+        data["time"] = time.time()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     except Exception:

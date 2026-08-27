@@ -383,7 +383,12 @@ def fuse_stem_folders(
     pending = [stem for stem, *_ in jobs]
     finished = 0
 
-    with ThreadPoolExecutor(max_workers=min(4, os.cpu_count() or 1)) as pool:
+    # Two workers, not more: each in-flight stem holds three full-length
+    # stereo arrays plus STFT scratch, and fusion runs right after the model
+    # stages already pushed peak memory - halving the concurrency keeps the
+    # gain (the tail is the slowest stem, not the sum) without doubling the
+    # footprint again.
+    with ThreadPoolExecutor(max_workers=min(2, os.cpu_count() or 1)) as pool:
         futures = {
             pool.submit(fuse_one, stem, roformer_path, demucs_path, output_path): stem
             for stem, roformer_path, demucs_path, output_path in jobs

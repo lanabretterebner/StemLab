@@ -608,6 +608,7 @@ public:
                 }
 
                 owner.abletonBridgeWaitStartMs.store(0.0);
+                owner.abletonAckExpected.store(false);
 
                 owner.setStatus("Done - audition stems, then Send Selected");
                 break;
@@ -3102,6 +3103,7 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
         }
 
         abletonBridgeWaitStartMs.store(0.0);
+        abletonAckExpected.store(false);
     }
 
     command.add("--output");
@@ -4279,11 +4281,14 @@ void StemLabAudioProcessor::refreshAbletonBridgeStatusFromDisk()
      * a wait (both delete any leftovers before arming), so outside one
      * there is nothing to poll for - and a stale ack surviving from an
      * earlier session must not replay as a fresh import result. This is
-     * also what keeps the steady state free of per-poll file I/O.
+     * also what keeps the steady state free of per-poll file I/O. The ack
+     * alone stays polled past the timeout: Live finishing a long import at
+     * 15s must replace "timed out", not leave the user retrying a set that
+     * actually landed.
      */
     const auto waitStart = abletonBridgeWaitStartMs.load();
 
-    if (waitStart <= 0.0)
+    if (waitStart <= 0.0 && !abletonAckExpected.load())
         return;
 
     const auto job = getLastJobDirectory();
@@ -4293,7 +4298,9 @@ void StemLabAudioProcessor::refreshAbletonBridgeStatusFromDisk()
 
     const auto importProgress = job.getChildFile("stemlab_ableton_import_progress.json");
 
-    if (importProgress.existsAsFile())
+    // Progress narration only matters while the wait is live; after a
+    // timeout only the ack below is still of interest.
+    if (waitStart > 0.0 && importProgress.existsAsFile())
     {
         const auto progressParsed = juce::JSON::parse(importProgress.loadFileAsString());
 
@@ -4357,12 +4364,15 @@ void StemLabAudioProcessor::refreshAbletonBridgeStatusFromDisk()
                                     "Retry Import");
 
                 abletonBridgeWaitStartMs.store(0.0);
+                abletonAckExpected.store(false);
                 return;
             }
         }
     }
 
-    if (nowMs() - waitStart > 12000.0)
+    // abletonAckExpected deliberately stays true here: the poll keeps
+    // watching for a late ack that supersedes this message.
+    if (waitStart > 0.0 && nowMs() - waitStart > 12000.0)
     {
         {
             const juce::ScopedLock lock(abletonBridgeLock);
@@ -4509,6 +4519,7 @@ bool StemLabAudioProcessor::sendSelectedStemsToAbleton()
     }
 
     abletonBridgeWaitStartMs.store(nowMs());
+    abletonAckExpected.store(true);
 
     setStatus("Sending selected stems to Ableton...");
     return true;
@@ -4556,6 +4567,7 @@ bool StemLabAudioProcessor::retryAbletonImport()
     }
 
     abletonBridgeWaitStartMs.store(nowMs());
+    abletonAckExpected.store(true);
 
     if (!sendAbletonBridgeNotification(manifest))
     {

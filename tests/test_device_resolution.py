@@ -1,6 +1,7 @@
 import importlib.metadata
 import json
 import sys
+import time
 import types
 
 import pytest
@@ -197,3 +198,40 @@ def test_missing_torch_metadata_disables_the_cache(monkeypatch):
 
     assert resolve_device("cuda") == "cuda"
     assert not device._probe_cache_path().exists()
+
+
+def test_probe_cache_expires_after_the_ttl(monkeypatch):
+    # A fingerprint cannot see every way an answer goes stale (a driver
+    # update under the same torch wheel), so age alone must force a re-probe.
+    _install_torch_metadata(monkeypatch, "2.5.1")
+    calls: list[str] = []
+    _install_probing_torch(monkeypatch, cuda_available=True, calls=calls)
+
+    assert resolve_device("cuda") == "cuda"
+    assert calls == ["torch"]
+
+    path = device._probe_cache_path()
+    stale = json.loads(path.read_text(encoding="utf-8"))
+    stale["time"] = time.time() - device._PROBE_CACHE_TTL_SECONDS - 1
+    path.write_text(json.dumps(stale), encoding="utf-8")
+
+    assert resolve_device("cuda") == "cuda"
+    assert calls == ["torch", "torch"], "an expired entry must probe again"
+
+
+def test_probe_cache_invalidated_by_driver_marker_change(monkeypatch):
+    # Installing the NVIDIA driver after a cached "no cuda" answer must not
+    # leave every future job silently on CPU until the torch wheel changes.
+    _install_torch_metadata(monkeypatch, "2.5.1")
+    calls: list[str] = []
+    _install_probing_torch(monkeypatch, cuda_available=False, calls=calls)
+
+    monkeypatch.setattr(device, "_driver_markers", lambda: {"nvidia": False, "amdgpu": False})
+    assert resolve_device("cuda") == "cpu"
+    assert calls == ["torch"]
+
+    monkeypatch.setattr(device, "_driver_markers", lambda: {"nvidia": True, "amdgpu": False})
+    _install_probing_torch(monkeypatch, cuda_available=True, calls=calls)
+
+    assert resolve_device("cuda") == "cuda"
+    assert calls == ["torch", "torch"], "a new driver marker must probe again"
