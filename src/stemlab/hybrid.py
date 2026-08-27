@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import math
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
 
@@ -39,20 +42,26 @@ def _pad_to_length(audio: np.ndarray, length: int) -> np.ndarray:
     )
 
 
-def _fuse_channel(
+def _fuse_channels(
     roformer: np.ndarray,
     demucs: np.ndarray,
     roformer_preference: float,
     n_fft: int = 2048,
     hop: int = 512,
 ) -> np.ndarray:
+    """Fuse matching ``[channels, samples]`` blocks in one batched transform.
+
+    scipy's stft/istft operate along the last axis, so every channel goes
+    through a single call; the fusion math itself is elementwise and is
+    bit-identical to transforming each channel on its own.
+    """
     if roformer.size == 0:
         return roformer.astype(np.float32, copy=True)
 
     # scipy shrinks nperseg to the signal length but leaves noverlap alone,
     # so a block shorter than the overlap raises "noverlap must be less than
     # nperseg". Clamp both to what this block can actually support.
-    frames = int(roformer.shape[0])
+    frames = int(roformer.shape[-1])
     nperseg = min(n_fft, frames)
     noverlap = min(n_fft - hop, nperseg - 1)
 
@@ -118,7 +127,7 @@ def _fuse_channel(
     )
 
     return np.asarray(
-        audio[: roformer.shape[0]],
+        audio[..., :frames],
         dtype=np.float32,
     )
 
@@ -133,18 +142,11 @@ def _fuse_audio_chunk(
         demucs.shape[0],
     )
 
-    outputs = []
-
-    for channel in range(channels):
-        outputs.append(
-            _fuse_channel(
-                roformer[channel],
-                demucs[channel],
-                ROFORMER_PREFERENCE.get(stem, 0.55),
-            )
-        )
-
-    return np.stack(outputs, axis=0)
+    return _fuse_channels(
+        roformer[:channels],
+        demucs[:channels],
+        ROFORMER_PREFERENCE.get(stem, 0.55),
+    )
 
 
 def fuse_stem_pair(
@@ -154,8 +156,13 @@ def fuse_stem_pair(
     stem: str,
     chunk_seconds: float = 16.0,
     overlap_seconds: float = 0.35,
-) -> None:
-    """Fuse one matching pair of model outputs and write a normalized WAV."""
+) -> tuple[np.ndarray, int]:
+    """Fuse one matching pair of model outputs and write a normalized WAV.
+
+    Returns the exact ``[channels, samples]`` float32 audio and sample rate
+    just written, so a same-process caller can keep working on the array
+    without decoding the file again.
+    """
     roformer, sr = load_audio(
         roformer_path,
         stereo=True,
@@ -292,6 +299,8 @@ def fuse_stem_pair(
         sr,
     )
 
+    return result, sr
+
 
 def fuse_stem_folders(
     roformer_dir: str | Path,
@@ -299,22 +308,32 @@ def fuse_stem_folders(
     output_dir: str | Path,
     log_callback: Callable[[str], None] | None = None,
     progress_callback: Callable[[int, int, str], None] | None = None,
+    fused_out: dict[str, tuple[np.ndarray, int]] | None = None,
 ) -> list[Path]:
-    """Fuse all six named stems from two model-output directories."""
+    """Fuse all six named stems from two model-output directories.
+
+    The stems are independent, so they run on a small thread pool: scipy's
+    FFT work releases the GIL, and threads share the audio buffers that
+    worker processes would have to re-import and copy.
+
+    ``progress_callback(count, total, stem)`` stays monotonic regardless of
+    which stem finishes first - ``count`` is the number of finished stems,
+    ``stem`` names one still in flight - and ends with ``(total, total,
+    "")`` once everything is written. All callbacks fire on the calling
+    thread. ``fused_out``, when given, is filled with ``{stem: (audio,
+    sr)}`` exactly as written to disk, letting a same-process caller skip
+    re-decoding the files.
+    """
     roformer_dir = Path(roformer_dir)
     demucs_dir = Path(demucs_dir)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    files: list[Path] = []
+    # Resolve every input before any work starts so a missing stem fails
+    # the job before compute is spent, never after five stems are fused.
+    jobs: list[tuple[str, Path, Path, Path]] = []
 
-    for index, stem in enumerate(STEM_NAMES):
-        # Reported at the START of each stem - "index stems done, working
-        # on this one" - so the label always names work in progress rather
-        # than work already finished.
-        if progress_callback:
-            progress_callback(index, len(STEM_NAMES), stem)
-
+    for stem in STEM_NAMES:
         roformer_path = find_stem_file(
             roformer_dir,
             stem,
@@ -326,24 +345,75 @@ def fuse_stem_folders(
         if roformer_path is None or demucs_path is None:
             missing = roformer_dir if roformer_path is None else demucs_dir
             raise FileNotFoundError(f"Could not find {stem} in {missing}")
-        output_path = output_dir / f"{stem}.wav"
 
-        if log_callback:
+        jobs.append((stem, roformer_path, demucs_path, output_dir / f"{stem}.wav"))
+
+    if log_callback:
+        for stem, *_ in jobs:
             log_callback(
                 f"Hybrid fusion: {stem} "
                 f"(RoFormer preference {ROFORMER_PREFERENCE.get(stem, 0.55):.2f})"
             )
 
-        fuse_stem_pair(
+    total = len(jobs)
+
+    if progress_callback:
+        progress_callback(0, total, jobs[0][0])
+
+    # Cancellation arrives as an exception out of a progress or log callback
+    # (or a worker); stems that have not started yet must then never start.
+    abort = threading.Event()
+
+    def fuse_one(
+        stem: str,
+        roformer_path: Path,
+        demucs_path: Path,
+        output_path: Path,
+    ) -> tuple[np.ndarray, int] | None:
+        if abort.is_set():
+            return None
+
+        return fuse_stem_pair(
             roformer_path=roformer_path,
             demucs_path=demucs_path,
             output_path=output_path,
             stem=stem,
         )
 
-        files.append(output_path)
+    pending = [stem for stem, *_ in jobs]
+    finished = 0
+
+    with ThreadPoolExecutor(max_workers=min(4, os.cpu_count() or 1)) as pool:
+        futures = {
+            pool.submit(fuse_one, stem, roformer_path, demucs_path, output_path): stem
+            for stem, roformer_path, demucs_path, output_path in jobs
+        }
+
+        try:
+            for future in as_completed(futures):
+                fused = future.result()
+                stem = futures[future]
+
+                if fused is None:
+                    continue
+
+                if fused_out is not None:
+                    fused_out[stem] = fused
+
+                pending.remove(stem)
+                finished += 1
+
+                # Monotonic by construction: the finished count only grows,
+                # and the label names work still in progress.
+                if pending and progress_callback:
+                    progress_callback(finished, total, pending[0])
+        except BaseException:
+            abort.set()
+            for future in futures:
+                future.cancel()
+            raise
 
     if progress_callback:
-        progress_callback(len(STEM_NAMES), len(STEM_NAMES), "")
+        progress_callback(total, total, "")
 
-    return files
+    return [output_path for *_, output_path in jobs]

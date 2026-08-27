@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.ndimage import uniform_filter1d
 from scipy.signal import butter, find_peaks, sosfiltfilt
 
 
@@ -53,10 +54,18 @@ def detect_kick_events(
 
     low = _lowpass(x, sr)
 
-    # Short RMS-ish low-frequency energy envelope.
+    # Short RMS-ish low-frequency energy envelope. The O(N) running mean
+    # equals a normalized ``ones(win)/win`` boxcar in "same" mode:
+    # ``mode="constant"``/``cval=0`` reproduces the zero padding and the
+    # window is centred identically. Summing runs in float64 because the
+    # moving-sum accumulator would drift in float32 across a whole song.
     win = max(8, int(sr * 0.008))
-    kernel = np.ones(win, dtype=np.float32) / win
-    energy = np.convolve(low * low, kernel, mode="same")
+    energy = uniform_filter1d(
+        np.square(low, dtype=np.float64),
+        size=win,
+        mode="constant",
+        cval=0.0,
+    ).astype(np.float32)
     env = np.sqrt(np.maximum(energy, 0.0))
 
     # Emphasize attack rather than sustained sub/bass.

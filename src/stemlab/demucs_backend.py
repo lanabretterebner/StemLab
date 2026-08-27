@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import sys
@@ -17,6 +18,18 @@ from .runtime import CancellationToken, run_progress_process
 DEFAULT_DEMUCS_MODEL = "htdemucs_6s"
 PACKAGED_DEMUCS_SIGNATURE = "5c90dfd2"
 PACKAGED_DEMUCS_FILENAME = "5c90dfd2-34c22ccb.th"
+
+# Cross-fade fraction between Demucs' sliding analysis windows. The upstream
+# default of 0.25 re-processes a quarter of every window (~17% extra forward
+# passes) for smoothing headroom the htdemucs family does not need; 0.10 keeps
+# the window seams inaudible while dropping that redundant compute.
+DEMUCS_OVERLAP = 0.10
+
+
+def _demucs_available() -> bool:
+    # find_spec resolves the package on disk without importing it, so the
+    # torch-heavy demucs module never loads into this process.
+    return importlib.util.find_spec("demucs") is not None
 
 
 class DemucsBackend:
@@ -73,17 +86,7 @@ class DemucsBackend:
         if self.cancellation:
             self.cancellation.raise_if_cancelled()
 
-        probe_exit_code = run_progress_process(
-            [
-                sys.executable,
-                "-c",
-                "import demucs, sys; sys.stdout.write(getattr(demucs, '__version__', 'ok'))",
-            ],
-            lambda _message: None,
-            lambda _percent: None,
-            cancellation=self.cancellation,
-        )
-        if probe_exit_code != 0:
+        if not _demucs_available():
             raise RuntimeError(
                 "Demucs is not installed in StemLab's Python environment. "
                 "Run: python -m pip install -e ."
@@ -112,6 +115,12 @@ class DemucsBackend:
                 model_name = PACKAGED_DEMUCS_SIGNATURE
                 repo_args = ["--repo", str(repo_path)]
 
+            # Parallel worker processes only pay off on CPU; on an
+            # accelerator they would multiply device-memory use instead.
+            cpu_args = (
+                ["-j", str(min(4, os.cpu_count() or 1))] if device == "cpu" else []
+            )
+
             command = [
                 sys.executable,
                 "-m",
@@ -121,6 +130,9 @@ class DemucsBackend:
                 *repo_args,
                 "--device",
                 device,
+                "--overlap",
+                str(DEMUCS_OVERLAP),
+                *cpu_args,
                 "--out",
                 str(raw_output),
                 str(staged),

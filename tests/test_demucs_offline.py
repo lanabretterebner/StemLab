@@ -20,6 +20,7 @@ def test_packaged_demucs_uses_local_repo_and_signature(tmp_path, monkeypatch):
     (repo / PACKAGED_DEMUCS_FILENAME).write_bytes(b"checkpoint-fixture")
 
     monkeypatch.setenv("STEMLAB_DEMUCS_MODEL_REPO", str(repo))
+    monkeypatch.setattr("stemlab.demucs_backend._demucs_available", lambda: True)
     monkeypatch.setattr("stemlab.demucs_backend.resolve_torch_device", lambda *_args: "cpu")
     monkeypatch.setattr(
         "stemlab.demucs_backend._normalise_input_for_backend",
@@ -45,6 +46,8 @@ def test_packaged_demucs_uses_local_repo_and_signature(tmp_path, monkeypatch):
 
     results = DemucsBackend(model=DEFAULT_DEMUCS_MODEL, device="cpu").separate(source, output)
 
-    assert len(commands) == 2
+    # The availability probe runs in-process now, so the model invocation is
+    # the only subprocess.
+    assert len(commands) == 1
     assert [path.name for path in results] == [f"{stem}.wav" for stem in STEM_NAMES]
     assert all(path.is_file() for path in results)
