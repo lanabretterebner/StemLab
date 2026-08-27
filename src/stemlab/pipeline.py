@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from .audio import STEM_NAMES, find_stem_file
 from .device import pick_best_device, resolve_torch_device
 from .demucs_backend import DEFAULT_DEMUCS_MODEL, DemucsBackend
 from .hybrid import fuse_stem_folders
@@ -205,6 +206,64 @@ def separate(
         # plugin counts it down between reports.
         log(f"STEMLAB_ETA {max(0.0, float(seconds)):.0f}")
 
+    announced: set[str] = set()
+
+    def stem_ready(stem: str, path: Path):
+        """Publish one finished stem as ``STEMLAB_STEM_READY <stem> <path>``.
+
+        The path must be the one the plugin reads for the rest of the job,
+        and the line may only follow the write that made that file final.
+        Hence never a baseline/ path on a refine run: the plugin prefers
+        job/refined the moment that directory exists, and refinement
+        creates it before writing anything, so a baseline line would name a
+        file every other consumer has already stopped resolving to, and
+        would swap the file under a user mid-audition once superseded.
+
+        An announcement cannot be retracted - the cancel path leaves the
+        process through os._exit/SystemExit with no cleanup hook - and is
+        not meant to be: "ready" states that this file is complete on disk,
+        not that the job will finish. The plugin drops every announced lane
+        when a job ends without success.
+
+        Reporting must never abort a separation, so the whole body is best
+        effort.
+        """
+        try:
+            name = str(stem).strip().lower()
+
+            if name in announced or name not in STEM_NAMES:
+                return
+
+            resolved = str(Path(path).resolve())
+
+            # One line, "first token is the stem, the rest is the path": a
+            # control character in the name would split or truncate it. The
+            # plugin's own end-of-job scan covers those stems instead.
+            if any(ord(char) < 0x20 for char in resolved):
+                return
+
+            announced.add(name)
+
+            log(f"STEMLAB_STEM_READY {name} {resolved}")
+        except Exception:
+            return
+
+    def announce_folder(folder: Path):
+        """Announce every stem that resolves to a real file under ``folder``.
+
+        Extensions and naming vary by backend, so each stem is resolved the
+        way every other consumer resolves it rather than assumed to be
+        ``<stem>.wav``.
+        """
+        for stem in STEM_NAMES:
+            try:
+                path = find_stem_file(folder, stem)
+            except Exception:
+                continue
+
+            if path is not None:
+                stem_ready(stem, path)
+
     tracker = _JobProgress(progress, eta)
 
     requested_device = str(device or "").strip().lower()
@@ -319,6 +378,11 @@ def separate(
             output_dir=baseline_dir,
         )
 
+        if not refine:
+            # Only without refinement is baseline/ the final location; a
+            # refine run publishes from the refinement loop instead.
+            announce_folder(baseline_dir)
+
     elif engine == ENGINE_DEMUCS:
         on_progress, on_download, on_eta = make_model_stage("model", "Demucs", "Demucs")
 
@@ -334,6 +398,9 @@ def separate(
             input_path=input_path,
             output_dir=baseline_dir,
         )
+
+        if not refine:
+            announce_folder(baseline_dir)
 
     else:
         roformer_dir = output_dir / "engines" / "roformer"
@@ -404,6 +471,9 @@ def separate(
             output_dir=baseline_dir,
             log_callback=log,
             progress_callback=on_fusion_progress,
+            # Fusion writes the final files only when nothing refines them
+            # afterwards; otherwise refinement is what publishes.
+            ready_callback=None if refine else stem_ready,
             fused_out=fused_stems,
         )
 
@@ -443,6 +513,7 @@ def separate(
             cfg=refinement_config,
             progress_callback=on_refine_progress,
             stage_callback=on_refine_stage,
+            ready_callback=stem_ready,
             preloaded=fused_stems,
         )
 
@@ -465,6 +536,11 @@ def separate(
     export_prefix = step_prefix("Export")
 
     tracker.stage(1.0, f"{export_prefix} · Collecting the finished stems")
+
+    # Backstop: whatever the stages above published, the plugin must know
+    # about every stem sitting in the final folder before the job ends.
+    # Already-announced stems are dropped by the dedupe in stem_ready.
+    announce_folder(final_dir)
 
     return PipelineResult(
         baseline_dir=baseline_dir,

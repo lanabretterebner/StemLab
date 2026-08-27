@@ -49,7 +49,7 @@ def fake_backends(monkeypatch):
     monkeypatch.setattr(pipeline, "DemucsBackend", _FakeBackend)
 
 
-def _run(tmp_path, engine, refine):
+def _run(tmp_path, engine, refine, lines: list[str] | None = None):
     source = tmp_path / "input.wav"
     _write_stems(tmp_path / "srcdir")
     (tmp_path / "srcdir" / "vocals.wav").replace(source)
@@ -58,6 +58,9 @@ def _run(tmp_path, engine, refine):
     etas: list[float] = []
 
     def on_log(message: str) -> None:
+        if lines is not None:
+            lines.append(message)
+
         if message.startswith("STEMLAB_ETA "):
             etas.append(float(message.split()[1]))
 
@@ -126,6 +129,28 @@ def test_eta_is_job_level(tmp_path, fake_backends, engine):
     assert etas[0] > 40.0
 
     assert all(value >= 0.0 for value in etas)
+
+
+@pytest.mark.parametrize("engine", ENGINE_CHOICES)
+@pytest.mark.parametrize("refine", (True, False))
+def test_stem_ready_lines_share_the_stream_without_disturbing_it(
+    tmp_path, fake_backends, engine, refine
+):
+    lines: list[str] = []
+
+    reports, etas = _run(tmp_path, engine, refine, lines=lines)
+
+    ready = [line for line in lines if line.startswith("STEMLAB_STEM_READY ")]
+
+    assert len(ready) == len(STEM_NAMES), "every stem reaches the plugin as it lands"
+
+    # The plugin dispatches on the prefix, so a new line type must not be
+    # readable as one of the older ones: no ready line may parse where a
+    # progress or ETA line is expected, and the two older streams must be
+    # exactly what they were before this one joined them.
+    assert not any(line.startswith(("STEMLAB_PROGRESS ", "STEMLAB_ETA ")) for line in ready)
+    assert len([line for line in lines if line.startswith("STEMLAB_PROGRESS ")]) == len(reports)
+    assert len([line for line in lines if line.startswith("STEMLAB_ETA ")]) == len(etas)
 
 
 class _DownloadingBackend(_FakeBackend):
