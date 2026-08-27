@@ -258,11 +258,17 @@ struct Utf8LineBuffer
     template <typename Fn>
     void feed(const char* bytes, int count, Fn&& onLine)
     {
+        // Only the bytes that just arrived can complete a line, and the
+        // reader feeds a byte at a time: rescanning from the front would
+        // make a long run without a newline - a progress bar redrawing
+        // over carriage returns - cost time in the square of its length.
+        const auto scanFrom = pending.size();
+
         pending.insert(pending.end(), bytes, bytes + count);
 
         size_t start = 0;
 
-        for (size_t i = 0; i < pending.size(); ++i)
+        for (size_t i = scanFrom; i < pending.size(); ++i)
         {
             if (pending[i] != '\n')
                 continue;
@@ -536,14 +542,16 @@ public:
         /*
          * One byte per call, and no sleep while bytes keep coming.
          *
-         * JUCE reads the child pipe with fread(dest, 1, numBytes), which
-         * blocks until it has the whole requested count or the stream
-         * ends - ask for the buffer and a job's output arrives in 4KB
-         * steps, with everything under that size held back until the
-         * engine exits. Asking for one byte returns as soon as the pipe
-         * has anything, so protocol lines reach the UI when the engine
-         * prints them rather than in bursts. The read blocks in between,
-         * so this parks the thread instead of spinning it.
+         * JUCE fills the whole requested count before returning on both
+         * platforms - fread on POSIX, a PeekNamedPipe/ReadFile loop on
+         * Windows - so asking for the buffer delivers a job's output in
+         * 4KB steps and holds anything smaller back until the engine
+         * exits. Asking for one byte returns as soon as the pipe has
+         * anything, so protocol lines reach the UI when the engine prints
+         * them rather than in bursts. The read blocks in between, which
+         * parks the thread rather than spinning it; the cost is per-byte
+         * call overhead on a few hundred KB of text per job, off both the
+         * audio and message threads.
          */
         while (!threadShouldExit())
         {
@@ -767,14 +775,16 @@ public:
         /*
          * One byte per call, and no sleep while bytes keep coming.
          *
-         * JUCE reads the child pipe with fread(dest, 1, numBytes), which
-         * blocks until it has the whole requested count or the stream
-         * ends - ask for the buffer and a job's output arrives in 4KB
-         * steps, with everything under that size held back until the
-         * engine exits. Asking for one byte returns as soon as the pipe
-         * has anything, so protocol lines reach the UI when the engine
-         * prints them rather than in bursts. The read blocks in between,
-         * so this parks the thread instead of spinning it.
+         * JUCE fills the whole requested count before returning on both
+         * platforms - fread on POSIX, a PeekNamedPipe/ReadFile loop on
+         * Windows - so asking for the buffer delivers a job's output in
+         * 4KB steps and holds anything smaller back until the engine
+         * exits. Asking for one byte returns as soon as the pipe has
+         * anything, so protocol lines reach the UI when the engine prints
+         * them rather than in bursts. The read blocks in between, which
+         * parks the thread rather than spinning it; the cost is per-byte
+         * call overhead on a few hundred KB of text per job, off both the
+         * audio and message threads.
          */
         while (!threadShouldExit())
         {
@@ -954,7 +964,11 @@ public:
         }
 
         std::array<char, 4096> buffer{};
-        juce::String processOutput;
+
+        // Raw bytes, decoded once at the end: a byte-at-a-time read hands
+        // over single bytes, and converting each one on its own would split
+        // every multibyte character and re-walk the string on each append.
+        std::vector<char> processBytes;
         Utf8LineBuffer lines;
 
         auto onLine = [&owner = owner](const juce::String& line)
@@ -962,7 +976,7 @@ public:
 
         auto consumeChunk = [&](int bytes)
         {
-            processOutput += juce::String::fromUTF8(buffer.data(), bytes);
+            processBytes.insert(processBytes.end(), buffer.data(), buffer.data() + bytes);
 
             if (kind == sourceAnalysis)
                 lines.feed(buffer.data(), bytes, onLine);
@@ -971,14 +985,16 @@ public:
         /*
          * One byte per call, and no sleep while bytes keep coming.
          *
-         * JUCE reads the child pipe with fread(dest, 1, numBytes), which
-         * blocks until it has the whole requested count or the stream
-         * ends - ask for the buffer and a job's output arrives in 4KB
-         * steps, with everything under that size held back until the
-         * engine exits. Asking for one byte returns as soon as the pipe
-         * has anything, so protocol lines reach the UI when the engine
-         * prints them rather than in bursts. The read blocks in between,
-         * so this parks the thread instead of spinning it.
+         * JUCE fills the whole requested count before returning on both
+         * platforms - fread on POSIX, a PeekNamedPipe/ReadFile loop on
+         * Windows - so asking for the buffer delivers a job's output in
+         * 4KB steps and holds anything smaller back until the engine
+         * exits. Asking for one byte returns as soon as the pipe has
+         * anything, so protocol lines reach the UI when the engine prints
+         * them rather than in bursts. The read blocks in between, which
+         * parks the thread rather than spinning it; the cost is per-byte
+         * call overhead on a few hundred KB of text per job, off both the
+         * audio and message threads.
          */
         while (!threadShouldExit() && isChildRunning())
         {
@@ -1016,9 +1032,14 @@ public:
             process.reset();
         }
 
-        if (processOutput.isNotEmpty() && kind != sourceAnalysis)
+        if (!processBytes.empty() && kind != sourceAnalysis)
+        {
+            const auto processOutput = juce::String::fromUTF8(
+                processBytes.data(), static_cast<int>(processBytes.size()));
+
             owner.appendEngineLog(processOutput.endsWithChar('\n') ? processOutput
                                                                    : processOutput + "\n");
+        }
 
         if (!threadShouldExit() || cancelRequested.load())
             finish(exitCode);
@@ -4132,15 +4153,27 @@ void StemLabAudioProcessor::handleStemReadyLine(const juce::String& payload)
 
     const juce::File announced(path);
 
-    // The two folders the main job writes its stems into. Anything else -
-    // a recursive split's own output, a temp file, a path from a job that
-    // has already been replaced - belongs to something the lanes do not
-    // draw.
-    if (!announced.isAChildOf(job.getChildFile("baseline")) &&
-        !announced.isAChildOf(job.getChildFile("refined")))
+    /*
+     * The two folders the main job writes its stems into. Anything else -
+     * a recursive split's own output, a temp file, a path from a job that
+     * has already been replaced - belongs to something the lanes do not
+     * draw.
+     *
+     * Compared through the resolved job directory because the engine
+     * announces a resolved path: with a symlink anywhere above the job
+     * root - a linked cache or home directory - the two spellings differ
+     * and every announcement would be dropped silently.
+     */
+    const auto resolvedJob = job.getLinkedTarget();
+
+    const auto insideJobOutput = [&announced](const juce::File& root)
     {
+        return announced.isAChildOf(root.getChildFile("baseline")) ||
+               announced.isAChildOf(root.getChildFile("refined"));
+    };
+
+    if (!insideJobOutput(job) && !insideJobOutput(resolvedJob))
         return;
-    }
 
     {
         const juce::ScopedLock lock(stemFileCacheLock);
