@@ -17,12 +17,14 @@
 #   ./scripts/linux/build.sh --torch-flavor cpu  # cpu|cuda|rocm|xpu|auto
 #   ./scripts/linux/build.sh --juce-source DIR   # reuse a JUCE checkout
 #   ./scripts/linux/build.sh --no-tarball        # skip the .tar.gz
+#   ./scripts/linux/build.sh --skip-plugin-build # reuse already-built artefacts
 
 set -euo pipefail
 
 TORCH_FLAVOR="auto"
 JUCE_SOURCE=""
 MAKE_TARBALL=1
+SKIP_PLUGIN_BUILD=0
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
@@ -38,6 +40,7 @@ while [[ $# -gt 0 ]]; do
             shift 2 ;;
         --juce-source)  JUCE_SOURCE="$2";  shift 2 ;;
         --no-tarball)   MAKE_TARBALL=0;    shift ;;
+        --skip-plugin-build) SKIP_PLUGIN_BUILD=1; shift ;;
         -h|--help)
             sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             exit 0 ;;
@@ -64,12 +67,19 @@ echo "Building StemLab $VERSION for Linux (torch flavor: $TORCH_FLAVOR)..."
 
 # ---------------------------------------------------------------- 1. plugin
 
-BUILD_ARGS=()
-[[ -n "$JUCE_SOURCE" ]] && BUILD_ARGS+=(--juce-source "$JUCE_SOURCE")
-
-"$REPO_ROOT/scripts/linux/build_plugin.sh" ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}
-
 ARTEFACTS="$REPO_ROOT/src/plugin/build/StemLabPlugin_artefacts/Release"
+
+# --skip-plugin-build trusts whatever is already in $ARTEFACTS (the release
+# workflow builds the flavor-independent binaries once and extracts them
+# there); the checks below still refuse an empty or partial directory.
+if [[ $SKIP_PLUGIN_BUILD -eq 1 ]]; then
+    echo "Skipping the plugin build; using artefacts in $ARTEFACTS"
+else
+    BUILD_ARGS=()
+    [[ -n "$JUCE_SOURCE" ]] && BUILD_ARGS+=(--juce-source "$JUCE_SOURCE")
+
+    "$REPO_ROOT/scripts/linux/build_plugin.sh" ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}
+fi
 
 [[ -f "$ARTEFACTS/Standalone/StemLab" ]] || {
     echo "Standalone build missing at $ARTEFACTS/Standalone/StemLab" >&2
@@ -193,7 +203,11 @@ DIST_DIR="$FINAL_DIR"
 
 if [[ $MAKE_TARBALL -eq 1 ]]; then
     echo "Creating $DIST_NAME.tar.gz (this is large)..."
-    tar -C "$REPO_ROOT/dist" -czf "$REPO_ROOT/dist/$DIST_NAME.tar.gz" "$DIST_NAME"
+    # A GPU bundle runs to 15GB and gzip is single-threaded; pigz compresses
+    # on every core and emits the same .tar.gz format, so the consumers
+    # (setup script, sha256, split) cannot tell the difference.
+    tar -C "$REPO_ROOT/dist" -I "$(command -v pigz || echo gzip)" \
+        -cf "$REPO_ROOT/dist/$DIST_NAME.tar.gz" "$DIST_NAME"
 fi
 
 echo

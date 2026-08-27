@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from scipy import signal
+from scipy.ndimage import uniform_filter1d
 
 
 @dataclass
@@ -129,21 +130,35 @@ def _istft_multichannel(
 
 
 def _smooth_frequency(h: np.ndarray, bins: int) -> np.ndarray:
+    """Boxcar-average ``[channels, freq, frames]`` along the frequency axis.
+
+    Equivalent to convolving every frame with ``ones(bins) / bins`` in
+    "same" mode: the kernel is a normalized mean, and ``mode="constant"``
+    with ``cval=0`` reproduces np.convolve's zero padding at the spectrum
+    edges. Filtering runs in float64 - the running-sum filter would drift
+    in float32 - and the result keeps ``h``'s complex dtype.
+    """
     if bins <= 1:
         return h
 
     if bins % 2 == 0:
         bins += 1
 
-    kernel = np.ones(bins, dtype=np.float64) / bins
-
-    out = np.empty_like(h)
-    for ch in range(h.shape[0]):
-        for frame in range(h.shape[2]):
-            real = np.convolve(h[ch, :, frame].real, kernel, mode="same")
-            imag = np.convolve(h[ch, :, frame].imag, kernel, mode="same")
-            out[ch, :, frame] = real + 1j * imag
-    return out
+    real = uniform_filter1d(
+        h.real.astype(np.float64),
+        size=bins,
+        axis=1,
+        mode="constant",
+        cval=0.0,
+    )
+    imag = uniform_filter1d(
+        h.imag.astype(np.float64),
+        size=bins,
+        axis=1,
+        mode="constant",
+        cval=0.0,
+    )
+    return (real + 1j * imag).astype(h.dtype)
 
 
 def _spectral_similarity(a: np.ndarray, b: np.ndarray) -> float:

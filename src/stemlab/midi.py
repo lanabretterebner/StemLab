@@ -10,18 +10,19 @@ import re
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
-import librosa
 import mido
 import numpy as np
-from scipy.signal import find_peaks
 
 from .analysis_cache import cleanup_stale_midi_drag_files, managed_analysis_dir
 from .runtime import configure_utf8_stdio
 
+# librosa is imported inside the transcription functions so that cache-hit
+# MIDI exports (re-serializing an existing transcription) never pay for it.
+
 _SAMPLE_RATE = 22_050
-_MONO_HOP = 256
+_MONO_HOP = 512
 _POLY_HOP = 512
-MIDI_ALGORITHM_VERSION = "stemlab-midi-2"
+MIDI_ALGORITHM_VERSION = "stemlab-midi-3"
 
 
 @dataclass(frozen=True)
@@ -94,13 +95,19 @@ def _merge_notes(notes: list[NoteEvent], max_gap: float = 0.055) -> list[NoteEve
 
 
 def _smooth_pitch_frames(pitches: np.ndarray, valid: np.ndarray) -> np.ndarray:
+    """Median-smooth each valid frame over the valid entries of its 5-frame window."""
     smoothed = pitches.copy()
-    for index in np.flatnonzero(valid):
-        start = max(0, index - 2)
-        end = min(pitches.size, index + 3)
-        local = pitches[start:end][valid[start:end]]
-        if local.size >= 2:
-            smoothed[index] = float(np.median(local))
+    if pitches.size == 0 or not np.any(valid):
+        return smoothed
+    # NaN-masking invalid frames and NaN-padding the edges reproduces the
+    # boundary clipping and valid-only selection of the per-frame loop exactly.
+    padded = np.pad(np.asarray(pitches, dtype=np.float64), 2, constant_values=np.nan)
+    padded[2:-2][~valid] = np.nan
+    windows = np.lib.stride_tricks.sliding_window_view(padded, 5)
+    counts = np.count_nonzero(np.isfinite(windows), axis=1)
+    rows = np.flatnonzero(valid & (counts >= 2))
+    if rows.size:
+        smoothed[rows] = np.nanmedian(windows[rows], axis=1)
     return smoothed
 
 
@@ -110,6 +117,8 @@ def _transcribe_monophonic(
     *,
     bass: bool,
 ) -> list[NoteEvent]:
+    import librosa
+
     fmin = librosa.note_to_hz("E1" if bass else "C2")
     fmax = librosa.note_to_hz("C5" if bass else "C7")
     f0, voiced, probability = librosa.pyin(
@@ -137,10 +146,13 @@ def _transcribe_monophonic(
 
     # Bridge only tiny unvoiced gaps when both sides agree. This retains rests
     # while avoiding note splits caused by a single uncertain analysis frame.
-    for index in range(1, frame_count - 1):
-        if rounded[index] < 0 and rounded[index - 1] == rounded[index + 1] >= 0:
-            rounded[index] = rounded[index - 1]
-            rms[index] = min(rms[index - 1], rms[index + 1])
+    # A filled frame can never enable an adjacent fill (the condition needs
+    # both neighbours already voiced), so this equals the sequential scan.
+    gap = (rounded[1:-1] < 0) & (rounded[:-2] >= 0) & (rounded[:-2] == rounded[2:])
+    fill = np.flatnonzero(gap) + 1
+    if fill.size:
+        rounded[fill] = rounded[fill - 1]
+        rms[fill] = np.minimum(rms[fill - 1], rms[fill + 1])
 
     min_duration = 0.10 if bass else 0.075
     reference = float(np.percentile(rms[rms > 0.0], 95)) if np.any(rms > 0.0) else 1.0
@@ -226,6 +238,8 @@ def _transcribe_drums(
     sample_rate: int,
     stem_type: str,
 ) -> list[NoteEvent]:
+    import librosa
+
     onset_envelope = librosa.onset.onset_strength(
         y=audio,
         sr=sample_rate,
@@ -270,6 +284,9 @@ def _transcribe_polyphonic(
     sample_rate: int,
     stem_type: str,
 ) -> list[NoteEvent]:
+    import librosa
+    from scipy.signal import find_peaks
+
     min_midi = 40 if "guitar" in stem_type.lower() else 21
     max_midi = 100 if "piano" in stem_type.lower() else 96
     magnitude = np.abs(
@@ -345,6 +362,8 @@ def transcribe_stem(
     stem_type: str,
 ) -> tuple[list[NoteEvent], bool]:
     """Transcribe one isolated stem and return notes plus its drum-channel flag."""
+    import librosa
+
     input_path = Path(input_path).expanduser().resolve()
     if not input_path.is_file():
         raise FileNotFoundError(f"Stem audio does not exist: {input_path}")

@@ -200,6 +200,11 @@ def refine_kick_bleed(
     region_len = pre + post
     fade_samples = int(sr * cfg.edge_fade_ms / 1000.0)
 
+    # Both depend only on the prototype and the region geometry, never on
+    # the individual event, so they are computed once for all events.
+    ref_peak = float(np.max(np.abs(reference))) + 1e-12
+    edge_window = _edge_window(region_len, fade_samples=fade_samples)
+
     correction_sum = np.zeros_like(target, dtype=np.float32)
     window_sum = np.zeros(target.shape[-1], dtype=np.float32)
 
@@ -236,7 +241,6 @@ def refine_kick_bleed(
 
         # Scale the prototype toward the current drum event before the
         # constrained spectral matcher gets to modify anything.
-        ref_peak = float(np.max(np.abs(reference))) + 1e-12
         event_peak = float(np.max(np.abs(drum_region)))
         scaled_ref = reference * (event_peak / ref_peak)
 
@@ -259,10 +263,7 @@ def refine_kick_bleed(
 
         # Short fades ensure the correction reaches exactly zero at region
         # boundaries, eliminating hard-splice discontinuities/clicks.
-        window = _edge_window(
-            region_len,
-            fade_samples=fade_samples,
-        )[:real_len]
+        window = edge_window[:real_len]
 
         correction_sum[:, start:end] += correction * window[None, :]
         window_sum[start:end] += window

@@ -171,6 +171,11 @@ def separate(
     baseline_dir = output_dir / "baseline"
     final_dir = output_dir / ("refined" if refine else "baseline")
 
+    # Filled by the hybrid fusion stage with {stem: (audio, sr)} so the
+    # refinement stage can reuse the arrays fusion just wrote instead of
+    # decoding the same six files straight back off disk.
+    fused_stems: dict | None = None
+
     engine = str(engine).strip().lower()
 
     if engine not in ENGINE_CHOICES:
@@ -391,12 +396,15 @@ def separate(
 
             tracker.elapsed_eta()
 
+        fused_stems = {}
+
         fuse_stem_folders(
             roformer_dir=roformer_dir,
             demucs_dir=demucs_dir,
             output_dir=baseline_dir,
             log_callback=log,
             progress_callback=on_fusion_progress,
+            fused_out=fused_stems,
         )
 
     if refine:
@@ -435,6 +443,7 @@ def separate(
             cfg=refinement_config,
             progress_callback=on_refine_progress,
             stage_callback=on_refine_stage,
+            preloaded=fused_stems,
         )
 
         for stem, stats in stats_by_stem.items():

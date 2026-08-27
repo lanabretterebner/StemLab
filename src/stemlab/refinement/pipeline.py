@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Callable
+
+import numpy as np
+import soundfile as sf
 
 from ..audio import STEM_NAMES, find_stem_file, load_audio, save_audio
 from .events import detect_kick_events
@@ -22,6 +26,7 @@ def refine_stem_folder(
     cfg: KickRefinementConfig | None = None,
     progress_callback: Callable[[int, int, str], None] | None = None,
     stage_callback: Callable[[str], None] | None = None,
+    preloaded: dict[str, tuple[np.ndarray, int]] | None = None,
 ) -> dict[str, KickRefinementStats]:
     """Copy all stems while reducing kick bleed in configured target stems.
 
@@ -31,6 +36,12 @@ def refine_stem_folder(
     line built from it always names work in progress. ``stage_callback``
     narrates the analysis that runs before the per-stem loop, which is the
     slow silent start of refinement.
+
+    ``preloaded`` maps stem names to ``([channels, samples] float32 audio,
+    sample_rate)`` already in memory - a same-process caller that just
+    wrote ``input_dir`` (hybrid fusion) hands the arrays over so no stem is
+    decoded twice. An entry is only trusted when its rate matches the
+    folder rate; anything else falls back to decoding the file.
     """
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
@@ -40,12 +51,25 @@ def refine_stem_folder(
         if stage_callback:
             stage_callback(label)
 
+    def cached(stem: str) -> tuple[np.ndarray, int] | None:
+        # pop, not get: each handed-over array is consumed exactly once, and
+        # releasing it here keeps the whole fused set from staying pinned in
+        # memory for the duration of refinement.
+        if preloaded is not None:
+            return preloaded.pop(stem, None)
+        return None
+
     drum_path = find_stem_file(input_dir, "drums")
     if drum_path is None:
         raise FileNotFoundError("Could not find a drums stem in the input folder")
 
     stage("Loading the drums stem")
-    drums, sr = load_audio(drum_path)
+
+    drums_cached = cached("drums")
+    if drums_cached is not None:
+        drums, sr = drums_cached
+    else:
+        drums, sr = load_audio(drum_path)
 
     # Shared across every target stem; see refine_kick_bleed.
     kick_config = cfg or KickRefinementConfig()
@@ -63,17 +87,29 @@ def refine_stem_folder(
 
     total = max(1, len(available))
 
+    def stem_audio(stem: str, path: Path) -> np.ndarray:
+        entry = cached(stem)
+        if entry is not None and entry[1] == sr:
+            return entry[0]
+
+        if path == drum_path:
+            # The folder rate is the drums' native rate, so the array loaded
+            # for kick analysis is exactly what this decode would produce.
+            return drums
+
+        audio, _ = load_audio(path, target_sr=sr)
+        return audio
+
     for index, (stem, path) in enumerate(available):
         if progress_callback:
             progress_callback(index, total, stem)
 
-        audio, _ = load_audio(path, target_sr=sr)
         out_path = output_dir / path.name
 
         if stem in kick_targets:
             refined, stem_stats = refine_kick_bleed(
                 drums=drums,
-                target=audio,
+                target=stem_audio(stem, path),
                 sr=sr,
                 cfg=kick_config,
                 events=kick_events,
@@ -82,7 +118,15 @@ def refine_stem_folder(
             save_audio(out_path, refined, sr)
             stats[stem] = stem_stats
         else:
-            save_audio(out_path, audio, sr)
+            info = sf.info(str(path))
+            if info.samplerate == sr and info.channels > 1:
+                # Untouched stem at the folder rate: a byte copy is the
+                # decode + float32 re-encode with the work removed.
+                shutil.copyfile(path, out_path)
+            else:
+                # Mismatched rate must resample; mono is still promoted to
+                # stereo by the decode path.
+                save_audio(out_path, stem_audio(stem, path), sr)
 
     if progress_callback:
         progress_callback(total, total, "")
