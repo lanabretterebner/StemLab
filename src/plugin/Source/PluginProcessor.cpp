@@ -258,11 +258,17 @@ struct Utf8LineBuffer
     template <typename Fn>
     void feed(const char* bytes, int count, Fn&& onLine)
     {
+        // Only the bytes that just arrived can complete a line, and the
+        // reader feeds a byte at a time: rescanning from the front would
+        // make a long run without a newline - a progress bar redrawing
+        // over carriage returns - cost time in the square of its length.
+        const auto scanFrom = pending.size();
+
         pending.insert(pending.end(), bytes, bytes + count);
 
         size_t start = 0;
 
-        for (size_t i = 0; i < pending.size(); ++i)
+        for (size_t i = scanFrom; i < pending.size(); ++i)
         {
             if (pending[i] != '\n')
                 continue;
@@ -501,6 +507,11 @@ public:
         // starts cannot leave the waveform worker parked at low priority.
         owner.waveformProfiles.setSeparationActive(true);
 
+        // Marks the window in which a STEMLAB_STEM_READY line belongs to the
+        // six root lanes. Cleared on every exit below, including the two
+        // early ones, so no later reader inherits it.
+        owner.mainEngineRunning.store(true);
+
         juce::ChildProcess* childProcess = nullptr;
 
         {
@@ -515,6 +526,7 @@ public:
             owner.setStatus("Could not start StemLab engine");
             owner.appendEngineLog("Failed to launch engine process.\n");
             owner.waveformProfiles.setSeparationActive(false);
+            owner.mainEngineRunning.store(false);
 
             const juce::ScopedLock lock(processLock);
             process.reset();
@@ -527,13 +539,29 @@ public:
         auto onLine = [&owner = owner](const juce::String& line)
         { owner.handleEngineOutputLine(line); };
 
+        /*
+         * One byte per call, and no sleep while bytes keep coming.
+         *
+         * JUCE fills the whole requested count before returning on both
+         * platforms - fread on POSIX, a PeekNamedPipe/ReadFile loop on
+         * Windows - so asking for the buffer delivers a job's output in
+         * 4KB steps and holds anything smaller back until the engine
+         * exits. Asking for one byte returns as soon as the pipe has
+         * anything, so protocol lines reach the UI when the engine prints
+         * them rather than in bursts. The read blocks in between, which
+         * parks the thread rather than spinning it; the cost is per-byte
+         * call overhead on a few hundred KB of text per job, off both the
+         * audio and message threads.
+         */
         while (!threadShouldExit())
         {
-            const auto bytes = childProcess->readProcessOutput(
-                buffer.data(), static_cast<int>(buffer.size()));
+            const auto bytes = childProcess->readProcessOutput(buffer.data(), 1);
 
             if (bytes > 0)
+            {
                 lines.feed(buffer.data(), bytes, onLine);
+                continue;
+            }
 
             if (!isChildRunning())
                 break;
@@ -562,6 +590,8 @@ public:
             process.reset();
         }
 
+        owner.mainEngineRunning.store(false);
+
         // Unloading mid-job: the processor is going away, nobody is left to
         // read status, and the members it points at are about to die.
         if (threadShouldExit())
@@ -577,6 +607,12 @@ public:
         {
             owner.engineCompletedSuccessfully.store(false);
             owner.engineProgress.store(0.0);
+
+            // A cancelled job leaves lanes live otherwise: hasSuccessfulJob()
+            // is false, so nothing else would ever clear the stems it did
+            // manage to announce.
+            owner.resetReadyStemFiles();
+
             owner.appendEngineLog("Separation cancelled by user.\n");
             owner.setStatus("Separation cancelled");
         }
@@ -631,6 +667,11 @@ public:
         else
         {
             owner.engineCompletedSuccessfully.store(false);
+
+            // Same reason as the cancel arm, and one case more: a job that
+            // fails before announcing anything would otherwise leave the
+            // previous job's slots standing.
+            owner.resetReadyStemFiles();
 
             if (!owner.getStatus().startsWithIgnoreCase("Failed - "))
                 owner.setStatus("StemLab engine failed - see Settings > Copy diagnostics");
@@ -731,13 +772,29 @@ public:
         auto onLine = [&owner = owner](const juce::String& line)
         { owner.handleEngineOutputLine(line); };
 
+        /*
+         * One byte per call, and no sleep while bytes keep coming.
+         *
+         * JUCE fills the whole requested count before returning on both
+         * platforms - fread on POSIX, a PeekNamedPipe/ReadFile loop on
+         * Windows - so asking for the buffer delivers a job's output in
+         * 4KB steps and holds anything smaller back until the engine
+         * exits. Asking for one byte returns as soon as the pipe has
+         * anything, so protocol lines reach the UI when the engine prints
+         * them rather than in bursts. The read blocks in between, which
+         * parks the thread rather than spinning it; the cost is per-byte
+         * call overhead on a few hundred KB of text per job, off both the
+         * audio and message threads.
+         */
         while (!threadShouldExit())
         {
-            const auto bytes = childProcess->readProcessOutput(
-                buffer.data(), static_cast<int>(buffer.size()));
+            const auto bytes = childProcess->readProcessOutput(buffer.data(), 1);
 
             if (bytes > 0)
+            {
                 lines.feed(buffer.data(), bytes, onLine);
+                continue;
+            }
 
             if (!isChildRunning())
                 break;
@@ -907,7 +964,11 @@ public:
         }
 
         std::array<char, 4096> buffer{};
-        juce::String processOutput;
+
+        // Raw bytes, decoded once at the end: a byte-at-a-time read hands
+        // over single bytes, and converting each one on its own would split
+        // every multibyte character and re-walk the string on each append.
+        std::vector<char> processBytes;
         Utf8LineBuffer lines;
 
         auto onLine = [&owner = owner](const juce::String& line)
@@ -915,18 +976,36 @@ public:
 
         auto consumeChunk = [&](int bytes)
         {
-            processOutput += juce::String::fromUTF8(buffer.data(), bytes);
+            processBytes.insert(processBytes.end(), buffer.data(), buffer.data() + bytes);
 
             if (kind == sourceAnalysis)
                 lines.feed(buffer.data(), bytes, onLine);
         };
 
+        /*
+         * One byte per call, and no sleep while bytes keep coming.
+         *
+         * JUCE fills the whole requested count before returning on both
+         * platforms - fread on POSIX, a PeekNamedPipe/ReadFile loop on
+         * Windows - so asking for the buffer delivers a job's output in
+         * 4KB steps and holds anything smaller back until the engine
+         * exits. Asking for one byte returns as soon as the pipe has
+         * anything, so protocol lines reach the UI when the engine prints
+         * them rather than in bursts. The read blocks in between, which
+         * parks the thread rather than spinning it; the cost is per-byte
+         * call overhead on a few hundred KB of text per job, off both the
+         * audio and message threads.
+         */
         while (!threadShouldExit() && isChildRunning())
         {
-            const auto bytes = childProcess->readProcessOutput(
-                buffer.data(), static_cast<int>(buffer.size()));
+            const auto bytes = childProcess->readProcessOutput(buffer.data(), 1);
+
             if (bytes > 0)
+            {
                 consumeChunk(bytes);
+                continue;
+            }
+
             wait(50);
         }
 
@@ -953,9 +1032,14 @@ public:
             process.reset();
         }
 
-        if (processOutput.isNotEmpty() && kind != sourceAnalysis)
+        if (!processBytes.empty() && kind != sourceAnalysis)
+        {
+            const auto processOutput = juce::String::fromUTF8(
+                processBytes.data(), static_cast<int>(processBytes.size()));
+
             owner.appendEngineLog(processOutput.endsWithChar('\n') ? processOutput
                                                                    : processOutput + "\n");
+        }
 
         if (!threadShouldExit() || cancelRequested.load())
             finish(exitCode);
@@ -3154,6 +3238,10 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
 
     sawEngineProgressProtocol.store(false);
 
+    // The lanes must not carry a single frame of the previous job's stems
+    // into this one; the new job's own announcements refill these.
+    resetReadyStemFiles();
+
     {
         const juce::ScopedLock lock(stateLock);
         activeCancelFile = cancelFile;
@@ -3976,6 +4064,15 @@ void StemLabAudioProcessor::handleEngineOutputLine(const juce::String& line)
         return;
     }
 
+    // Before the scraper below, and returning rather than falling through:
+    // a stem path with a digit in front of a '%' is an ordinary file name,
+    // and letting it reach the scraper would drive the progress bar from it.
+    if (line.startsWithIgnoreCase("STEMLAB_STEM_READY "))
+    {
+        handleStemReadyLine(line.fromFirstOccurrenceOf("STEMLAB_STEM_READY ", false, true));
+        return;
+    }
+
     // Legacy fallback: pick a bare "NN%" out of raw model output. It is
     // only for engines too old to emit STEMLAB_PROGRESS at all - once this
     // job has spoken the protocol, raw percentages are noise. A first-run
@@ -4001,6 +4098,137 @@ void StemLabAudioProcessor::handleEngineOutputLine(const juce::String& line)
         if (number >= 0 && number <= 100)
             setEngineProgress(0.10 + 0.68 * (number / 100.0));
     }
+}
+
+void StemLabAudioProcessor::handleStemReadyLine(const juce::String& payload)
+{
+    // "<stem> <absolute final path>". The stem name is lowercase and free of
+    // spaces; the path is the whole remainder, unquoted and unescaped, so it
+    // is taken verbatim - stem paths routinely contain spaces, and the line
+    // reader has already taken the newline and any carriage return off the
+    // end of it.
+    const auto trimmed = payload.trimStart();
+    const auto separator = trimmed.indexOfChar(' ');
+
+    if (separator <= 0)
+        return;
+
+    const auto stem = trimmed.substring(0, separator);
+    const auto path = trimmed.substring(separator + 1);
+
+    // The protocol promises an absolute path, and juce::File asserts on
+    // anything else rather than returning a null file.
+    if (!juce::File::isAbsolutePath(path))
+        return;
+
+    int index = -1;
+
+    for (int i = 0; i < stemCount; ++i)
+    {
+        if (getStemName(i).equalsIgnoreCase(stem))
+        {
+            index = i;
+            break;
+        }
+    }
+
+    // An engine that learns a seventh stem announces a name this build has
+    // no lane for. There is nothing to show it in, so the line is dropped
+    // rather than guessed at.
+    if (index < 0)
+        return;
+
+    // This handler is shared by the adaptive-split and source-analysis
+    // readers, and neither of those owns the six root lanes.
+    if (!mainEngineRunning.load())
+        return;
+
+    // Read before the lock below: getLastJobDirectory takes stateLock, and
+    // taking stateLock under stemFileCacheLock would plant a lock ordering
+    // that does not exist anywhere else in this class.
+    const auto job = getLastJobDirectory();
+
+    if (job == juce::File() || !job.isDirectory())
+        return;
+
+    const juce::File announced(path);
+
+    /*
+     * The two folders the main job writes its stems into. Anything else -
+     * a recursive split's own output, a temp file, a path from a job that
+     * has already been replaced - belongs to something the lanes do not
+     * draw.
+     *
+     * Compared through the resolved job directory because the engine
+     * announces a resolved path: with a symlink anywhere above the job
+     * root - a linked cache or home directory - the two spellings differ
+     * and every announcement would be dropped silently.
+     */
+    const auto resolvedJob = job.getLinkedTarget();
+
+    const auto insideJobOutput = [&announced](const juce::File& root)
+    {
+        return announced.isAChildOf(root.getChildFile("baseline")) ||
+               announced.isAChildOf(root.getChildFile("refined"));
+    };
+
+    if (!insideJobOutput(job) && !insideJobOutput(resolvedJob))
+        return;
+
+    {
+        const juce::ScopedLock lock(stemFileCacheLock);
+
+        // Belt to the explicit resets: one job's slots must never stand
+        // next to another's, whatever order the launch and the last lines
+        // of the previous reader arrive in.
+        if (readyStemJob != job)
+        {
+            readyStemFile.fill(juce::File());
+            readyStemJob = job;
+        }
+
+        readyStemFile[static_cast<size_t>(index)] = announced;
+
+        // Bumped inside the lock: a revision published after releasing it
+        // could name a snapshot that a reader had already moved past.
+        ++readyStemRevision;
+    }
+
+    // Analysed while the rest of the job runs, so the lane has a picture the
+    // moment it starts drawing this file.
+    waveformProfiles.warm(announced);
+
+    // No setStatus here. Ready lines interleave with the engine's
+    // STEMLAB_PROGRESS stage reports, and the footer would flip between the
+    // two at engine line rate; the 20 Hz refresh shows the new lane anyway.
+    sendChangeMessage();
+}
+
+void StemLabAudioProcessor::resetReadyStemFiles()
+{
+    const juce::ScopedLock lock(stemFileCacheLock);
+
+    readyStemFile.fill(juce::File());
+    readyStemJob = juce::File();
+    ++readyStemRevision;
+}
+
+juce::File StemLabAudioProcessor::getReadyStemFile(int index) const
+{
+    if (!juce::isPositiveAndBelow(index, stemCount))
+        return {};
+
+    // Copied under the lock, not merely referenced from under it: juce::File
+    // holds a reference-counted String, and an announcement overwriting the
+    // slot mid-copy races that refcount.
+    const juce::ScopedLock lock(stemFileCacheLock);
+    return readyStemFile[static_cast<size_t>(index)];
+}
+
+int StemLabAudioProcessor::getReadyStemRevision() const
+{
+    const juce::ScopedLock lock(stemFileCacheLock);
+    return readyStemRevision;
 }
 
 void StemLabAudioProcessor::appendEngineLog(const juce::String& text)
@@ -5382,7 +5610,9 @@ juce::AudioProcessorEditor* StemLabAudioProcessor::createEditor()
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new StemLabAudioProcessor(); }
 
-void StemLabAudioProcessor::startSourceAnalysis(const juce::File& source)
+bool StemLabAudioProcessor::startSourceAnalysis(const juce::File& source,
+                                                const juce::StringArray& correctionArguments,
+                                                const juce::String& correctionLabel)
 {
     analysisThread.reset();
     sourceAnalysisRunning.store(true);
@@ -5414,7 +5644,7 @@ void StemLabAudioProcessor::startSourceAnalysis(const juce::File& source)
     {
         sourceAnalysisRunning.store(false);
         sendChangeMessage();
-        return;
+        return false;
     }
 
     const auto output = juce::File::getSpecialLocation(juce::File::tempDirectory)
@@ -5440,22 +5670,31 @@ void StemLabAudioProcessor::startSourceAnalysis(const juce::File& source)
 
     if (hasSuccessfulJob())
     {
+        // hasCompletedStemFile answers from the same scan cache the file
+        // itself comes out of, so the four existsAsFile() stats this used to
+        // pay told it nothing the scan had not already established.
         for (int index : {3, 4, 5})
         {
-            const auto stem = getCompletedStemFile(index);
-            if (stem.existsAsFile())
-            {
-                command.add("--harmony-stem");
-                command.add(stem.getFullPathName());
-            }
+            if (!hasCompletedStemFile(index))
+                continue;
+
+            command.add("--harmony-stem");
+            command.add(getCompletedStemFile(index).getFullPathName());
         }
-        const auto bass = getCompletedStemFile(2);
-        if (bass.existsAsFile())
+
+        if (hasCompletedStemFile(2))
         {
             command.add("--bass-stem");
-            command.add(bass.getFullPathName());
+            command.add(getCompletedStemFile(2).getFullPathName());
         }
     }
+
+    // A correction rides along with the analysis rather than in a process of
+    // its own: the CLI writes it to the local store before it reads the
+    // cancel token, so it survives a cancelled analysis half, and the
+    // sourceAnalysis kind is the one that streams stdout here and honors the
+    // cancel file at all.
+    command.addArray(correctionArguments);
 
     analysisThread = std::make_unique<StemLabUtilityThread>(
         *this, StemLabUtilityThread::sourceAnalysis, command, source, output, juce::String{},
@@ -5465,9 +5704,17 @@ void StemLabAudioProcessor::startSourceAnalysis(const juce::File& source)
     {
         analysisThread.reset();
         sourceAnalysisRunning.store(false);
+        sendChangeMessage();
+        return false;
     }
-    setStatus("Analyzing source with Beat This!...");
+
+    // The correction is applied first and silently; naming it here is the
+    // only point at which the user sees it happen, and the engine's own
+    // stage lines take the footer over as soon as the analysis half starts.
+    setStatus(correctionLabel.isEmpty() ? "Analyzing source with Beat This!..."
+                                        : correctionLabel + ", then re-analyzing...");
     sendChangeMessage();
+    return true;
 }
 
 void StemLabAudioProcessor::finishSourceAnalysis(const juce::File& source, const juce::File& result,
@@ -5719,25 +5966,40 @@ void StemLabAudioProcessor::setTempoInterpretation(int interpretation)
 bool StemLabAudioProcessor::saveSourceCorrection(double bpm, const juce::String& key,
                                                  int numerator, int denominator, double barOne)
 {
-    const auto source = getCaptureFile();
-    if (!source.existsAsFile())
-        return false;
-    juce::StringArray arguments{"--input", source.getFullPathName(), "--set-correction",
-                                "--correct-bpm", juce::String(bpm, 4), "--correct-key", key,
-                                "--correct-meter-numerator", juce::String(numerator),
-                                "--correct-meter-denominator", juce::String(denominator),
-                                "--correct-bar-one", juce::String(barOne, 6)};
-    return launchAnalysisMaintenance(arguments, "Saving local analysis correction");
+    return applySourceCorrection(
+        {"--set-correction", "--correct-bpm", juce::String(bpm, 4), "--correct-key", key,
+         "--correct-meter-numerator", juce::String(numerator), "--correct-meter-denominator",
+         juce::String(denominator), "--correct-bar-one", juce::String(barOne, 6)},
+        "Saving local analysis correction");
 }
 
 bool StemLabAudioProcessor::forgetSourceCorrection()
 {
+    return applySourceCorrection({"--forget-correction"}, "Forgetting local analysis correction");
+}
+
+bool StemLabAudioProcessor::applySourceCorrection(const juce::StringArray& correctionArguments,
+                                                  const juce::String& label)
+{
     const auto source = getCaptureFile();
-    if (!source.existsAsFile())
+
+    if (!source.existsAsFile() || sourceAnalysisRunning.load())
         return false;
-    return launchAnalysisMaintenance(
-        {"--input", source.getFullPathName(), "--forget-correction"},
-        "Forgetting local analysis correction");
+
+    // One process for both halves. The two-process form re-entered
+    // startSourceAnalysis from the maintenance thread's own run(), where its
+    // first statement - analysisThread.reset() - destroyed and joined the
+    // thread it was running on.
+    if (beatThisEnabled.load())
+        return startSourceAnalysis(source, correctionArguments, label);
+
+    // Analysis switched off: there is nothing for the correction to be
+    // followed by, and the CLI's correction-only form is the one that
+    // returns as soon as the store is written.
+    juce::StringArray arguments{"--input", source.getFullPathName()};
+    arguments.addArray(correctionArguments);
+
+    return launchAnalysisMaintenance(arguments, label);
 }
 
 bool StemLabAudioProcessor::clearAnalysisCache()
@@ -5773,14 +6035,34 @@ void StemLabAudioProcessor::finishAnalysisMaintenance(const juce::File& source,
                                                       const juce::String& label, int exitCode)
 {
     sourceAnalysisRunning.store(false);
-    if (exitCode == 0)
+
+    if (exitCode != 0)
     {
-        setStatus(label + " complete");
-        if (beatThisEnabled.load() && source.existsAsFile())
-            startSourceAnalysis(source);
-    }
-    else
         setStatus(label + " failed - see diagnostics");
+        return;
+    }
+
+    setStatus(label + " complete");
+
+    if (!beatThisEnabled.load() || !source.existsAsFile())
+        return;
+
+    // This runs on the maintenance thread itself, and startSourceAnalysis
+    // opens by resetting analysisThread - which is this thread, so calling it
+    // from here destroys and joins the thread it is running on. The follow-up
+    // therefore starts from the message thread, by which point this thread's
+    // run() has returned and the reset is an ordinary join. The weak token
+    // drops the callback if the processor goes away first.
+    std::weak_ptr<int> lifetime = lifetimeToken;
+
+    juce::MessageManager::callAsync(
+        [this, lifetime, source]
+        {
+            if (lifetime.expired())
+                return;
+
+            startSourceAnalysis(source);
+        });
 }
 
 void StemLabAudioProcessor::setWaveformGridMode(int mode) noexcept

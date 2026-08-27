@@ -26,6 +26,7 @@ def refine_stem_folder(
     cfg: KickRefinementConfig | None = None,
     progress_callback: Callable[[int, int, str], None] | None = None,
     stage_callback: Callable[[str], None] | None = None,
+    ready_callback: Callable[[str, Path], None] | None = None,
     preloaded: dict[str, tuple[np.ndarray, int]] | None = None,
 ) -> dict[str, KickRefinementStats]:
     """Copy all stems while reducing kick bleed in configured target stems.
@@ -36,6 +37,10 @@ def refine_stem_folder(
     line built from it always names work in progress. ``stage_callback``
     narrates the analysis that runs before the per-stem loop, which is the
     slow silent start of refinement.
+
+    ``ready_callback(stem, path)`` fires at the END of each stem, once its
+    output file is written and final, so a caller may hand that one stem to
+    a consumer while the rest of the folder is still being refined.
 
     ``preloaded`` maps stem names to ``([channels, samples] float32 audio,
     sample_rate)`` already in memory - a same-process caller that just
@@ -127,6 +132,11 @@ def refine_stem_folder(
                 # Mismatched rate must resample; mono is still promoted to
                 # stereo by the decode path.
                 save_audio(out_path, stem_audio(stem, path), sr)
+
+        if ready_callback:
+            # Below the write, never beside progress_callback at the top of
+            # the iteration: this states the file is complete on disk.
+            ready_callback(stem, out_path)
 
     if progress_callback:
         progress_callback(total, total, "")

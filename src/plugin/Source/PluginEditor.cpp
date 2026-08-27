@@ -1148,20 +1148,41 @@ void StemLaneComponent::refresh()
     const bool jobDone = processor.hasSuccessfulJob();
 
     if (!isChildLane())
-        laneFile = jobDone ? processor.getCompletedStemFile(stemIndex) : juce::File{};
+    {
+        /*
+         * Mid-job the ready record is the only source: getCompletedStemFile
+         * caches its directory scan on (job, completion), so asking it before
+         * the job finishes would pin one partial scan for the rest of the run
+         * - and it switches to refined/ the moment that folder exists, which
+         * is before anything has been written into it.
+         */
+        laneFile = jobDone ? processor.getCompletedStemFile(stemIndex)
+                           : (engineRunning ? processor.getReadyStemFile(stemIndex) : juce::File{});
+    }
 
     // One existence answer per refresh - this runs for every lane on every
     // UI tick. Root lanes take the processor's scan-cache answer instead
-    // of a stat; child lanes stat their own file once.
-    const bool laneFileReady = isChildLane()
-                                   ? laneFile.existsAsFile()
-                                   : jobDone && processor.hasCompletedStemFile(stemIndex);
+    // of a stat; a stem the engine has announced was on disk when it said
+    // so, which is the same standing that answer has. Child lanes stat
+    // their own file once.
+    const bool laneFileReady = isChildLane() ? laneFile.existsAsFile()
+                               : jobDone     ? processor.hasCompletedStemFile(stemIndex)
+                                             : laneFile != juce::File();
 
+    /*
+     * An announced stem is file-ready long before the job is. Only the
+     * picture goes live that early: everything these two gate - solo, mute,
+     * the lane menu, the drag handle, and through it the lane's own
+     * mouseDrag - still waits for the whole job, because the job can still
+     * be cancelled or fail after announcing this stem, and because the stem
+     * mix behind the transport is built once, from a finished job.
+     */
     const bool ready = jobDone && !engineRunning && !capturing && laneFileReady;
     const bool laneLive = jobDone && !engineRunning && !capturing;
 
     if (waveform != nullptr)
     {
+        // A disabled well still paints; setEnabled only withholds the mouse.
         waveform->setFile(laneFile);
         waveform->setEnabled(ready);
     }

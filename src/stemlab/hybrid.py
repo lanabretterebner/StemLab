@@ -308,6 +308,7 @@ def fuse_stem_folders(
     output_dir: str | Path,
     log_callback: Callable[[str], None] | None = None,
     progress_callback: Callable[[int, int, str], None] | None = None,
+    ready_callback: Callable[[str, Path], None] | None = None,
     fused_out: dict[str, tuple[np.ndarray, int]] | None = None,
 ) -> list[Path]:
     """Fuse all six named stems from two model-output directories.
@@ -319,10 +320,12 @@ def fuse_stem_folders(
     ``progress_callback(count, total, stem)`` stays monotonic regardless of
     which stem finishes first - ``count`` is the number of finished stems,
     ``stem`` names one still in flight - and ends with ``(total, total,
-    "")`` once everything is written. All callbacks fire on the calling
-    thread. ``fused_out``, when given, is filled with ``{stem: (audio,
-    sr)}`` exactly as written to disk, letting a same-process caller skip
-    re-decoding the files.
+    "")`` once everything is written. ``ready_callback(stem, path)`` fires
+    once per stem as it lands, naming the stem that actually finished
+    rather than the in-flight one the progress label carries. All callbacks
+    fire on the calling thread. ``fused_out``, when given, is filled with
+    ``{stem: (audio, sr)}`` exactly as written to disk, letting a
+    same-process caller skip re-decoding the files.
     """
     roformer_dir = Path(roformer_dir)
     demucs_dir = Path(demucs_dir)
@@ -383,6 +386,8 @@ def fuse_stem_folders(
     pending = [stem for stem, *_ in jobs]
     finished = 0
 
+    outputs = {stem: output_path for stem, _roformer, _demucs, output_path in jobs}
+
     # Two workers, not more: each in-flight stem holds three full-length
     # stereo arrays plus STFT scratch, and fusion runs right after the model
     # stages already pushed peak memory - halving the concurrency keeps the
@@ -407,6 +412,11 @@ def fuse_stem_folders(
 
                 pending.remove(stem)
                 finished += 1
+
+                if ready_callback:
+                    # The stem this future carried, not the one the progress
+                    # label below names: that one is still in flight.
+                    ready_callback(stem, outputs[stem])
 
                 # Monotonic by construction: the finished count only grows,
                 # and the label names work still in progress.
