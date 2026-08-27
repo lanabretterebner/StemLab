@@ -2203,6 +2203,17 @@ void StemLabAudioProcessorEditor::layoutPanel()
     footerDivider.setBounds(inner.removeFromBottom(2));
     inner.removeFromBottom(footer::dividerGap);
 
+    /*
+        The eye reads the footer as sitting in the band between the divider
+        and the panel's bottom edge, and the panel's own bottom padding is
+        part of that band. Laid flush against that padding the row cleared
+        the divider by dividerGap but the edge by dividerGap + padY, which
+        left the buttons visibly pinned to the divider. Centring the row in
+        the band splits the difference. The lanes above do not move: the
+        row keeps the height it already took out of inner.
+    */
+    footerRow.translate(0, (panel::padY - footer::dividerGap) / 2);
+
     {
         auto row = footerRow;
 

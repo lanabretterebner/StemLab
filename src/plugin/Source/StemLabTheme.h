@@ -391,7 +391,11 @@ namespace stemlab::theme
 
             // Between the selector group, the palette, and the settings icon.
             constexpr int groupGap = 10;
-            constexpr int paletteButton = 30;
+            // Square, and the same square as the settings icon beside it:
+            // the two sit side by side and their hover backgrounds have to
+            // match. The glyph stays a shade smaller, since a filled
+            // palette reads heavier than the settings icon's strokes.
+            constexpr int paletteButton = settingsButton;
             constexpr int paletteIcon = 15;
 
             /*
