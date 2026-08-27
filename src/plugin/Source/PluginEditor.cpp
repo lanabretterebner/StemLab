@@ -247,7 +247,10 @@ StemLaneWaveform::DisplayState StemLaneWaveform::readDisplayState() const
     state.transportLength = processor.getTransportLengthSeconds();
     state.palette = processor.getWaveformColourIndex();
 
-    const auto grid = processor.getWaveformGridInfo();
+    // Scalars only: this runs per lane per tick, and the full grid info
+    // takes the processor's state lock to copy beat vectors nothing here
+    // reads.
+    const auto grid = processor.getWaveformGridScalars();
 
     state.gridBpm = grid.bpm;
     state.gridBarOne = grid.barOne;
@@ -1147,7 +1150,14 @@ void StemLaneComponent::refresh()
     if (!isChildLane())
         laneFile = jobDone ? processor.getCompletedStemFile(stemIndex) : juce::File{};
 
-    const bool ready = jobDone && !engineRunning && !capturing && laneFile.existsAsFile();
+    // One existence answer per refresh - this runs for every lane on every
+    // UI tick. Root lanes take the processor's scan-cache answer instead
+    // of a stat; child lanes stat their own file once.
+    const bool laneFileReady = isChildLane()
+                                   ? laneFile.existsAsFile()
+                                   : jobDone && processor.hasCompletedStemFile(stemIndex);
+
+    const bool ready = jobDone && !engineRunning && !capturing && laneFileReady;
     const bool laneLive = jobDone && !engineRunning && !capturing;
 
     if (waveform != nullptr)
@@ -1185,7 +1195,9 @@ void StemLaneComponent::refresh()
      * menu itself decides which entries it can show.
      */
     menuButton->setEnabled(ready);
-    dragButton->setEnabled(ready && laneFile.existsAsFile());
+
+    // ready already carries this refresh's existence answer.
+    dragButton->setEnabled(ready);
 
     if (waveform != nullptr)
         waveform->setMutedAppearance(muted && !soloed);
@@ -1259,7 +1271,8 @@ void StemLaneComponent::paint(juce::Graphics& g)
 // ====================================================================== editor
 
 StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& processorIn)
-    : AudioProcessorEditor(&processorIn), processor(processorIn)
+    : AudioProcessorEditor(&processorIn), processor(processorIn),
+      waveformProfiles(processorIn.getWaveformCache())
 {
     namespace window = theme::metrics::window;
 
@@ -1582,8 +1595,6 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     panelContent.addAndMakeVisible(separateControl);
 
     // --------------------------------------------------------------- lanes
-
-    waveformFormats.registerBasicFormats();
 
     rootExpanded.fill(true);
 
@@ -2694,8 +2705,17 @@ void StemLabAudioProcessorEditor::timerCallback()
     // REAPER or a plain host is pure disk traffic at the timer rate.
     if (processor.getHostIntegration() == StemLabAudioProcessor::hostIntegrationAbletonLive)
     {
+        // The clip reply is what Import from DAW is actively waiting on,
+        // so it keeps the full tick rate. The bridge status feeds a status
+        // line, which does not need 50 ms latency: every 5th tick (4 Hz)
+        // divides its steady-state file traffic accordingly.
         processor.refreshAbletonSourceClipFromDisk();
-        processor.refreshAbletonBridgeStatusFromDisk();
+
+        if (++abletonBridgePollTick >= 5)
+        {
+            abletonBridgePollTick = 0;
+            processor.refreshAbletonBridgeStatusFromDisk();
+        }
     }
 
     refreshFromProcessor();
@@ -2724,15 +2744,24 @@ void StemLabAudioProcessorEditor::timerCallback()
 
 void StemLabAudioProcessorEditor::changeListenerCallback(juce::ChangeBroadcaster*)
 {
-    refreshFromProcessor();
+    /*
+     * Deliberately empty. The UI timer already runs refreshFromProcessor
+     * unconditionally at 20 Hz, which bounds status latency at 50 ms;
+     * refreshing here as well let a chatty engine - sendChangeMessage per
+     * stdout line - multiply that into a refresh storm. User actions that
+     * want feedback inside the same event keep their direct
+     * refreshFromProcessor() calls.
+     */
 }
 
 juce::String StemLabAudioProcessorEditor::jobSummaryLine() const
 {
     int readyCount = 0;
 
+    // The scan-cache answer, not a stat: once a job is done this line
+    // renders every tick.
     for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
-        if (processor.getCompletedStemFile(i).existsAsFile())
+        if (processor.hasCompletedStemFile(i))
             ++readyCount;
 
     const auto duration = processor.getMainJobDurationSeconds() > 0.0

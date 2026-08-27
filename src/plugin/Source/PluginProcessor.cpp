@@ -165,8 +165,19 @@ public:
             // source that stopped being read would have to refill from a
             // jumped position when it comes back, dropping audio at the
             // start of every unmute.
+            //
+            // Sequential playback needs no seek: BufferingAudioSource's
+            // getNextAudioBlock advances its own nextPlayPos by the samples
+            // it delivered (juce_BufferingAudioSource.cpp), so every entry
+            // already sits at blockStart and stays sample-aligned with the
+            // shared clock. Only a real seek is pushed down - in JUCE 9 the
+            // redundant call took two locks and signalled the read thread
+            // per stem per block.
             juce::AudioSourceChannelInfo scratchInfo(&scratch, 0, info.numSamples);
-            entry.buffered->setNextReadPosition(blockStart);
+
+            if (entry.buffered->getNextReadPosition() != blockStart)
+                entry.buffered->setNextReadPosition(blockStart);
+
             entry.buffered->getNextAudioBlock(scratchInfo);
 
             if (next <= 0.0f && previous <= 0.0f)
@@ -486,6 +497,10 @@ public:
         owner.setStatus("Starting...");
         owner.setEngineProgress(0.02);
 
+        // Scoped to this run rather than set at launch, so a job that never
+        // starts cannot leave the waveform worker parked at low priority.
+        owner.waveformProfiles.setSeparationActive(true);
+
         juce::ChildProcess* childProcess = nullptr;
 
         {
@@ -499,6 +514,7 @@ public:
         {
             owner.setStatus("Could not start StemLab engine");
             owner.appendEngineLog("Failed to launch engine process.\n");
+            owner.waveformProfiles.setSeparationActive(false);
 
             const juce::ScopedLock lock(processLock);
             process.reset();
@@ -551,6 +567,8 @@ public:
         if (threadShouldExit())
             return;
 
+        owner.waveformProfiles.setSeparationActive(false);
+
         const auto elapsed = juce::jmax(0.0, (nowMs() - owner.engineStartMs.load()) / 1000.0);
 
         owner.lastEngineDurationSeconds.store(elapsed);
@@ -572,6 +590,11 @@ public:
             owner.mainJobDurationSeconds.store(elapsed);
 
             owner.setEngineProgress(1.0);
+
+            // Queue the new stems' waveform analyses now, from the thread
+            // that knows the job finished, rather than waiting for the
+            // lanes' first paint to ask one file at a time.
+            owner.warmCompletedStemProfiles();
 
             switch (owner.getHostIntegration())
             {
@@ -677,6 +700,10 @@ public:
     {
         owner.setEngineProgress(0.01);
 
+        // See StemLabEngineThread: low-priority waveform analysis for the
+        // duration of the split, restored on every exit from this run.
+        owner.waveformProfiles.setSeparationActive(true);
+
         juce::ChildProcess* childProcess = nullptr;
 
         {
@@ -690,6 +717,7 @@ public:
         {
             owner.setStatus("Could not start Recursive Stem Splitting");
             owner.appendEngineLog("Failed to launch recursive engine process.\n");
+            owner.waveformProfiles.setSeparationActive(false);
 
             const juce::ScopedLock lock(processLock);
             process.reset();
@@ -739,6 +767,8 @@ public:
 
         if (threadShouldExit())
             return;
+
+        owner.waveformProfiles.setSeparationActive(false);
 
         const auto elapsed = juce::jmax(0.0, (nowMs() - owner.engineStartMs.load()) / 1000.0);
 
@@ -1337,6 +1367,12 @@ StemLabAudioProcessor::StemLabAudioProcessor()
         flags = std::make_shared<MonitorFlags>();
 
     previewFormats.registerBasicFormats();
+
+    // The waveform cache's worker is already up (member construction), but
+    // it cannot see this manager until the first file is queued, which no
+    // caller can do before this constructor returns.
+    waveformFormats.registerBasicFormats();
+
     diskWriterThread.startThread();
     previewReadThread.startThread();
 
@@ -1773,6 +1809,10 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
         sourceDownbeats.clear();
     }
 
+    // The source file is known now; queue its waveform analysis rather
+    // than leaving it for a first paint to ask.
+    waveformProfiles.warm(file);
+
     // Loading a source is a user change, so it reports in the header; the
     // work line drops back to idle instead of keeping the last job's text.
     setStatus("Ready");
@@ -1888,6 +1928,32 @@ juce::File StemLabAudioProcessor::getCompletedStemFile(int index) const
     return resolved[static_cast<size_t>(index)];
 }
 
+bool StemLabAudioProcessor::hasCompletedStemFile(int index) const
+{
+    // Answered from the scan cache above: a file that scan resolved was
+    // seen on disk during the scan, so a non-empty answer stands in for
+    // existsAsFile() without a stat per stem per tick. A stem deleted
+    // externally is picked up when that cache invalidates - a change of
+    // job directory or completion state - which is the invalidation the
+    // cache already has.
+    return getCompletedStemFile(index) != juce::File();
+}
+
+void StemLabAudioProcessor::warmCompletedStemProfiles()
+{
+    // Called from the engine thread the moment a job finishes, so the
+    // waveform analyses queue (and the stem-file scan cache fills) before
+    // the editor's next tick paints the lanes. Paint's lazy get() stays
+    // the fallback.
+    for (int i = 0; i < stemCount; ++i)
+    {
+        const auto stem = getCompletedStemFile(i);
+
+        if (stem != juce::File())
+            waveformProfiles.warm(stem);
+    }
+}
+
 juce::File StemLabAudioProcessor::matchStemFile(const juce::Array<juce::File>& candidates,
                                                 const juce::String& stem)
 {
@@ -1953,9 +2019,6 @@ bool StemLabAudioProcessor::ensureStemMixLoaded()
 
     const auto job = getLastJobDirectory();
 
-    if (!job.isDirectory())
-        return false;
-
     int generation = 0;
 
     {
@@ -1964,12 +2027,20 @@ bool StemLabAudioProcessor::ensureStemMixLoaded()
     }
 
     // An adaptive split changes which files the mix has to play, so the
-    // tree generation is part of the identity of a loaded mix.
+    // tree generation is part of the identity of a loaded mix. Decided
+    // before any disk call: this runs on every UI tick through
+    // refreshStemMixIfNeeded, and the isDirectory() below is a stat. A job
+    // tree deleted externally under a loaded mix still surfaces through
+    // the job / generation change that reloads or unloads the mix - the
+    // same invalidation the stem-file cache relies on.
     if (stemMixSource != nullptr && job == stemMixJobDirectory &&
         generation == stemMixTreeGeneration)
     {
         return true;
     }
+
+    if (!job.isDirectory())
+        return false;
 
     const auto tree = getRecursiveStemItems();
 
@@ -3086,6 +3157,12 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
         activeCancelFile = cancelFile;
     }
 
+    // Bound the waveform-profile cache before the new job's stems fill it:
+    // everything but the loaded source is evicted (keyed by file path -
+    // see retainOnly), since the completed-state reset above already
+    // stopped the lanes drawing the previous job's stems.
+    waveformProfiles.retainOnly({source});
+
     // Exit code 0 alone does not prove success: a child killed by a signal
     // is reaped without a status and reports 0, so the job's own manifest
     // is what the completion handler checks.
@@ -3336,6 +3413,11 @@ void StemLabAudioProcessor::finishRecursiveJob(const juce::File& manifestFile)
         // New leaves for the monitor mix to play in place of their parent.
         ++recursiveTreeGeneration;
     }
+
+    // The new child lanes ask for these on their next paint; queue the
+    // analyses now so the profiles are ready by then.
+    for (const auto& item : newItems)
+        waveformProfiles.warm(item.file);
 
     if (parentId == rootStem)
     {
@@ -4145,37 +4227,64 @@ void StemLabAudioProcessor::refreshAbletonBridgeStatusFromDisk()
     // The invisible Remote Script writes a small heartbeat/status file when
     // Live loads it. This lets the VST distinguish "integration installed"
     // from "no background script is active" without any visible Live device.
-    const auto globalStatusFile =
-        stemlab::paths::legacyBridgeDirectory().getChildFile("stemlab_remote_status.json");
-
-    if (globalStatusFile.existsAsFile())
+    // The heartbeat can never override a job-specific wait/import status
+    // once a separation exists, so it is not worth reading at all then.
+    if (!hasSuccessfulJob())
     {
-        const auto remoteStatus = juce::JSON::parse(globalStatusFile.loadFileAsString());
+        const auto globalStatusFile =
+            stemlab::paths::legacyBridgeDirectory().getChildFile("stemlab_remote_status.json");
 
-        if (auto* statusObject = remoteStatus.getDynamicObject())
+        // A heartbeat unchanged since the last poll cannot change the
+        // answer either; mtime + size stand in for the content so the poll
+        // does not re-read and re-parse the JSON forever. Size 0 also
+        // covers a missing file without a separate existence stat.
+        const auto heartbeatMtime = globalStatusFile.getLastModificationTime().toMilliseconds();
+        const auto heartbeatSize = globalStatusFile.getSize();
+
+        if (heartbeatSize > 0 &&
+            (heartbeatMtime != bridgeHeartbeatMtime || heartbeatSize != bridgeHeartbeatSize))
         {
-            if (statusObject->getProperty("protocol").toString() == "stemlab-remote-status")
+            bridgeHeartbeatMtime = heartbeatMtime;
+            bridgeHeartbeatSize = heartbeatSize;
+
+            const auto remoteStatus = juce::JSON::parse(globalStatusFile.loadFileAsString());
+
+            if (auto* statusObject = remoteStatus.getDynamicObject())
             {
-                const bool active = static_cast<bool>(statusObject->getProperty("active"));
-
-                const double timestamp =
-                    static_cast<double>(statusObject->getProperty("timestamp"));
-
-                const auto nowUnix = juce::Time::getCurrentTime().toMilliseconds() / 1000.0;
-
-                // The init heartbeat persists on disk. Treat it as a useful
-                // "installed/loaded recently" indication but never override a
-                // job-specific wait/import status once a separation exists.
-                if (active && nowUnix - timestamp < 24.0 * 60.0 * 60.0 && !hasSuccessfulJob())
+                if (statusObject->getProperty("protocol").toString() == "stemlab-remote-status")
                 {
-                    const juce::ScopedLock lock(abletonBridgeLock);
+                    const bool active = static_cast<bool>(statusObject->getProperty("active"));
 
-                    abletonBridgeStatus =
-                        "StemLabRemote active - background Ableton integration ready";
+                    const double timestamp =
+                        static_cast<double>(statusObject->getProperty("timestamp"));
+
+                    const auto nowUnix = juce::Time::getCurrentTime().toMilliseconds() / 1000.0;
+
+                    // The init heartbeat persists on disk. Treat it as a
+                    // useful "installed/loaded recently" indication.
+                    if (active && nowUnix - timestamp < 24.0 * 60.0 * 60.0)
+                    {
+                        const juce::ScopedLock lock(abletonBridgeLock);
+
+                        abletonBridgeStatus =
+                            "StemLabRemote active - background Ableton integration ready";
+                    }
                 }
             }
         }
     }
+
+    /*
+     * Progress and ack files only appear after Send Selected / Retry armed
+     * a wait (both delete any leftovers before arming), so outside one
+     * there is nothing to poll for - and a stale ack surviving from an
+     * earlier session must not replay as a fresh import result. This is
+     * also what keeps the steady state free of per-poll file I/O.
+     */
+    const auto waitStart = abletonBridgeWaitStartMs.load();
+
+    if (waitStart <= 0.0)
+        return;
 
     const auto job = getLastJobDirectory();
 
@@ -4184,7 +4293,7 @@ void StemLabAudioProcessor::refreshAbletonBridgeStatusFromDisk()
 
     const auto importProgress = job.getChildFile("stemlab_ableton_import_progress.json");
 
-    if (importProgress.existsAsFile() && abletonBridgeWaitStartMs.load() > 0.0)
+    if (importProgress.existsAsFile())
     {
         const auto progressParsed = juce::JSON::parse(importProgress.loadFileAsString());
 
@@ -4253,9 +4362,7 @@ void StemLabAudioProcessor::refreshAbletonBridgeStatusFromDisk()
         }
     }
 
-    const auto waitStart = abletonBridgeWaitStartMs.load();
-
-    if (waitStart > 0.0 && nowMs() - waitStart > 12000.0)
+    if (nowMs() - waitStart > 12000.0)
     {
         {
             const juce::ScopedLock lock(abletonBridgeLock);
@@ -5681,8 +5788,12 @@ void StemLabAudioProcessor::setManualGrid(double bpm, int numerator, int denomin
     sendChangeMessage();
 }
 
-StemLabGridInfo StemLabAudioProcessor::getWaveformGridInfo() const
+StemLabGridInfo StemLabAudioProcessor::getWaveformGridScalars() const
 {
+    // Everything here reads atomics: the per-lane per-tick display path
+    // wants only these scalars and must not pay stateLock plus two vector
+    // copies per read. Callers that need the beat vectors go through
+    // getWaveformGridInfo below.
     StemLabGridInfo info;
     info.mode = waveformGridMode.load();
     info.captureStartPpq = juce::jmax(0.0, captureStartPpq.load());
@@ -5709,10 +5820,21 @@ StemLabGridInfo StemLabAudioProcessor::getWaveformGridInfo() const
         info.numerator = sourceMeterNumerator.load();
         info.denominator = sourceMeterDenominator.load();
         info.barOne = sourceBarOne.load();
+    }
+    return info;
+}
+
+StemLabGridInfo StemLabAudioProcessor::getWaveformGridInfo() const
+{
+    auto info = getWaveformGridScalars();
+
+    if (info.mode == gridSource)
+    {
         const juce::ScopedLock lock(stateLock);
         info.beats = sourceBeats;
         info.downbeats = sourceDownbeats;
     }
+
     return info;
 }
 

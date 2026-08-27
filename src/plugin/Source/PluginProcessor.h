@@ -10,6 +10,7 @@
 
 #include "HostIntegrationPolicy.h"
 #include "LoopRegions.h"
+#include "WaveformCache.h"
 
 namespace stemlab::reaper
 {
@@ -439,6 +440,16 @@ public:
     void setManualGrid(double bpm, int numerator, int denominator, double barOne) noexcept;
     StemLabGridInfo getWaveformGridInfo() const;
 
+    /** getWaveformGridInfo without the beat vectors: every field it fills
+        is backed by an atomic, so the per-lane per-tick display read pays
+        no lock and no vector copies. */
+    StemLabGridInfo getWaveformGridScalars() const;
+
+    /** Waveform profiles for the lane wells. Owned here rather than by the
+        editor so closing and reopening the window does not re-read and
+        re-FFT every stem; the editor borrows it by reference. */
+    StemLabWaveformCache& getWaveformCache() noexcept { return waveformProfiles; }
+
     int getWaveformLaneHeight(const juce::String& id) const;
     void setWaveformLaneHeight(const juce::String& id, int height);
 
@@ -479,6 +490,10 @@ public:
     /** Return selected WAVs, rendering existing waveform ranges when needed. */
     juce::StringArray getSelectedStemFilesForDrag();
     juce::File getCompletedStemFile(int index) const;
+
+    /** Whether getCompletedStemFile(index) resolves to a file, answered
+        from its scan cache rather than by another stat. */
+    bool hasCompletedStemFile(int index) const;
 
     /** Override or query the executable used for the main Python worker. */
     void setEngineCommand(const juce::String&);
@@ -581,6 +596,10 @@ private:
     void setEngineProgress(double progress);
     void handleEngineOutputLine(const juce::String& line);
     juce::StringArray makePythonModuleCommand(const juce::String& moduleName) const;
+
+    /** Pre-queue waveform analyses for the finished job's stems. */
+    void warmCompletedStemProfiles();
+
     void finishRecursiveJob(const juce::File& manifestFile);
     void clearRecursiveResults();
 
@@ -861,6 +880,12 @@ private:
     juce::String abletonBridgeStatus{"Bridge not confirmed yet"};
     std::atomic<double> abletonBridgeWaitStartMs{0.0};
 
+    // Identity (mtime + size) of the Remote Script's heartbeat file at the
+    // last bridge poll, so an unchanged file is not re-read and re-parsed
+    // at the poll rate. Message thread only.
+    juce::int64 bridgeHeartbeatMtime = 0;
+    juce::int64 bridgeHeartbeatSize = 0;
+
     std::unique_ptr<StemLabEngineThread> engineThread;
     std::unique_ptr<StemLabRecursiveThread> recursiveThread;
 
@@ -880,6 +905,18 @@ private:
     int recursiveTreeGeneration = 0;
 
     juce::AudioFormatManager previewFormats;
+
+    // Reader formats for waveform analysis, separate from previewFormats so
+    // the analysis worker never shares a manager with the message thread.
+    // Registered in the constructor body; the worker only touches it once a
+    // file is queued, which cannot happen before construction returns.
+    juce::AudioFormatManager waveformFormats;
+
+    /** See getWaveformCache(). Its own destructor stops the analysis
+        thread, the same shutdown the other worker threads get in
+        ~StemLabAudioProcessor. */
+    StemLabWaveformCache waveformProfiles{waveformFormats};
+
     std::unique_ptr<juce::AudioFormatReaderSource> previewReaderSource;
     juce::AudioTransportSource previewTransport;
     juce::AudioSourcePlayer previewPlayer;

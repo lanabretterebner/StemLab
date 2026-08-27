@@ -1,11 +1,14 @@
 #include "WaveformCache.h"
 
+#include <algorithm>
+
 StemLabWaveformCache::StemLabWaveformCache(juce::AudioFormatManager& formatsIn)
     : juce::Thread("StemLab waveform"), formats(formatsIn)
 {
-    // Low: this competes with a separation the user is actually waiting for,
-    // and a lane drawing a moment late costs nothing.
-    startThread(juce::Thread::Priority::low);
+    // Normal while no separation runs; setSeparationActive drops the worker
+    // to low for the duration of one, where analysis would compete with a
+    // job the user is actually waiting for.
+    startThread(juce::Thread::Priority::normal);
 }
 
 StemLabWaveformCache::~StemLabWaveformCache()
@@ -47,6 +50,53 @@ StemLabWaveformCache::ProfilePtr StemLabWaveformCache::get(const juce::File& fil
 
     notify();
     return nullptr;
+}
+
+void StemLabWaveformCache::warm(const juce::File& file)
+{
+    // get() already queues an unknown file exactly once and ignores a
+    // missing one; warming is asking without wanting the answer yet.
+    get(file);
+}
+
+void StemLabWaveformCache::retainOnly(const juce::Array<juce::File>& keep)
+{
+    // Keys are "path|size|mtime"; matching on the "path|" prefix keeps
+    // every version of a kept file without another stat here.
+    juce::StringArray keepPrefixes;
+
+    for (const auto& file : keep)
+        if (file != juce::File())
+            keepPrefixes.add(file.getFullPathName() + "|");
+
+    const juce::ScopedLock scoped(lock);
+
+    for (auto entry = profiles.begin(); entry != profiles.end();)
+    {
+        bool kept = false;
+
+        for (const auto& prefix : keepPrefixes)
+            kept = kept || entry->first.startsWith(prefix);
+
+        if (kept)
+            ++entry;
+        else
+            entry = profiles.erase(entry);
+    }
+
+    pending.erase(std::remove_if(pending.begin(), pending.end(),
+                                 [&keep](const juce::File& file)
+                                 { return !keep.contains(file); }),
+                  pending.end());
+}
+
+void StemLabWaveformCache::setSeparationActive(bool active)
+{
+    separationActive.store(active);
+
+    // Wake a parked worker so the priority change is applied now rather
+    // than when the next file happens to be queued.
+    notify();
 }
 
 StemLabWaveformCache::Profile StemLabWaveformCache::analyse(const juce::File& file)
@@ -160,8 +210,21 @@ StemLabWaveformCache::Profile StemLabWaveformCache::analyse(const juce::File& fi
 
 void StemLabWaveformCache::run()
 {
+    // Matches the priority the thread was started with; setPriority only
+    // works from the target thread, so the flag is applied here.
+    bool appliedSeparationActive = false;
+
     while (!threadShouldExit())
     {
+        const bool active = separationActive.load();
+
+        if (active != appliedSeparationActive)
+        {
+            appliedSeparationActive = active;
+            setPriority(active ? juce::Thread::Priority::low
+                               : juce::Thread::Priority::normal);
+        }
+
         juce::File next;
 
         {
@@ -169,8 +232,10 @@ void StemLabWaveformCache::run()
 
             if (!pending.empty())
             {
-                next = pending.back();
-                pending.pop_back();
+                // FIFO: lanes queue top to bottom, so the top lane's
+                // profile lands first instead of last.
+                next = pending.front();
+                pending.erase(pending.begin());
             }
         }
 
@@ -190,8 +255,13 @@ void StemLabWaveformCache::run()
 
             // An unreadable file lands as an empty profile rather than a
             // null one: empty still answers "analysed", so it is not queued
-            // again on the next repaint.
-            profiles[keyFor(next)] = std::move(profile);
+            // again on the next repaint. Store into the existing slot only:
+            // an entry evicted mid-analysis stays evicted, and a later
+            // get() re-queues it if anything still wants it.
+            const auto entry = profiles.find(keyFor(next));
+
+            if (entry != profiles.end())
+                entry->second = std::move(profile);
         }
     }
 }

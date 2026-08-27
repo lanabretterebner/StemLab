@@ -429,9 +429,10 @@ private:
     stemlab::widgets::RecordButton recordInputButton{"Record In"};
     stemlab::widgets::SeparateSplitControl separateControl;
 
-    // Lanes.
-    juce::AudioFormatManager waveformFormats;
-    StemLabWaveformCache waveformProfiles{waveformFormats};
+    // Lanes. The waveform cache lives on the processor so profiles survive
+    // the editor - reopening the window does not re-read and re-FFT every
+    // stem; the lanes borrow it through this reference.
+    StemLabWaveformCache& waveformProfiles;
     juce::Viewport laneViewport;
     juce::Component laneContent;
     std::array<std::unique_ptr<StemLaneComponent>, StemLabAudioProcessor::stemCount> rootLanes;
@@ -451,6 +452,10 @@ private:
     // job is done, before the summary line takes back over.
     juce::String lastRawStatus;
     juce::uint32 lastStatusChangeMs = 0;
+
+    // Divides the UI timer for the Ableton bridge-status poll: status text
+    // does not need 50 ms latency, and the poll costs file I/O.
+    int abletonBridgePollTick = 0;
 
     // The header readout shows a freshly posted user-action message for a
     // few seconds before reverting to the selection count. The revision

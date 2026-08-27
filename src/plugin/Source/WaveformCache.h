@@ -10,14 +10,15 @@
 
 /**
  * Waveform profiles - peak envelope and spectral colour - analysed off the
- * message thread and kept for as long as the editor lives.
+ * message thread and kept for as long as the processor lives.
  *
  * Analysis reads the whole stem once, reduces it to a peak envelope, and runs
  * a few thousand FFTs over it. That is well under a second per file and
  * nowhere near a paint call's budget, so lanes ask for a profile and draw
  * nothing until one arrives. The editor already repaints them at the UI
  * refresh rate, so a finished analysis appears on its own without any
- * completion plumbing.
+ * completion plumbing. Owned by the processor rather than the editor, so
+ * closing and reopening the window does not re-read and re-FFT every stem.
  */
 class StemLabWaveformCache final : private juce::Thread
 {
@@ -36,6 +37,32 @@ public:
      */
     ProfilePtr get(const juce::File& file);
 
+    /**
+     * Queue a file that is known to be wanted soon - a job just produced
+     * it, or it was just loaded - so its analysis runs before the first
+     * paint asks. Already-known and missing files are ignored; paint's
+     * lazy get() stays the fallback. Callable from any thread.
+     */
+    void warm(const juce::File& file);
+
+    /**
+     * Growth bound: drop every profile and queued analysis whose file is
+     * not in keep. Eviction is keyed by file path (the stored keys carry
+     * size/mtime after the path, so every version of a kept file stays).
+     * Called when a new job starts, which is the moment the previous job's
+     * stems stop being drawn.
+     */
+    void retainOnly(const juce::Array<juce::File>& keep);
+
+    /**
+     * Low priority while a separation runs - analysis must not compete with
+     * a job the user is actually waiting for - and back to normal when it
+     * ends, so freshly finished stems get their profiles promptly. Callable
+     * from any thread; the worker applies the change to itself, because
+     * juce::Thread::setPriority only works from the target thread.
+     */
+    void setSeparationActive(bool active);
+
 private:
     /** Path plus size and timestamp, so a rewritten stem is re-analysed
         rather than served from a stale entry at the same path. */
@@ -52,6 +79,9 @@ private:
     juce::CriticalSection lock;
     std::map<juce::String, ProfilePtr> profiles;
     std::vector<juce::File> pending;
+
+    /** Desired worker priority; the worker itself applies changes. */
+    std::atomic<bool> separationActive{false};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StemLabWaveformCache)
 };
