@@ -12,20 +12,15 @@ import math
 import os
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import TYPE_CHECKING, Callable, Iterable
 
 from .adaptive.analysis import analyse_audio, assess_children
 from .adaptive.foreground import split_foreground
 from .adaptive.policy import MAX_ADAPTIVE_DEPTH, should_offer_split
 from .runtime import report_downloads
 
-try:
+if TYPE_CHECKING:
     from audio_separator.separator import Separator
-except ImportError as exc:  # pragma: no cover - runtime dependency check
-    Separator = None  # type: ignore[assignment]
-    _AUDIO_SEPARATOR_IMPORT_ERROR = exc
-else:
-    _AUDIO_SEPARATOR_IMPORT_ERROR = None
 
 
 # Models proven/selected for StemLab's first recursive pass.
@@ -92,19 +87,38 @@ def _load_model(
         separator.load_model(model_filename=model_filename)
 
 
-def _require_separator() -> None:
-    if Separator is None:
+def _require_separator() -> "type[Separator]":
+    # Imported here, not at module scope: audio-separator brings torch and
+    # onnxruntime with it, and the pure-DSP operations in this module (lead /
+    # adaptive instrument splits) must run without paying for that stack.
+    try:
+        from audio_separator.separator import Separator
+    except ImportError as exc:
         raise RuntimeError(
             "Recursive Stem Splitting requires audio-separator. "
             "Run scripts/win/setup_dev.ps1, or install StemLab with the recursive extra."
-        ) from _AUDIO_SEPARATOR_IMPORT_ERROR
+        ) from exc
+    return Separator
+
+
+def __getattr__(name: str) -> object:
+    # `recursive.Separator` is the optional-dependency probe the build
+    # scripts and tests check: the class when audio-separator is installed,
+    # None when it is not. Resolving it on attribute access keeps a plain
+    # import of this module free of the ML stack.
+    if name != "Separator":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    try:
+        return _require_separator()
+    except RuntimeError:
+        return None
 
 
 def _separator(output_dir: Path, model_dir: Path) -> "Separator":
-    _require_separator()
+    separator_cls = _require_separator()
     output_dir.mkdir(parents=True, exist_ok=True)
     model_dir.mkdir(parents=True, exist_ok=True)
-    return Separator(
+    return separator_cls(
         output_dir=str(output_dir),
         model_file_dir=str(model_dir),
         output_format="WAV",
