@@ -1,0 +1,138 @@
+diff --git a/modules/juce_gui_basics/native/juce_DragAndDrop_linux.cpp b/modules/juce_gui_basics/native/juce_DragAndDrop_linux.cpp
+index 5a8f7f5..3337ae4 100644
+--- a/modules/juce_gui_basics/native/juce_DragAndDrop_linux.cpp
++++ b/modules/juce_gui_basics/native/juce_DragAndDrop_linux.cpp
+@@ -86,6 +86,13 @@ public:
+ 
+     void handleExternalDragAndDropStatus (const XClientMessageEvent& clientMsg)
+     {
++        // STEMLAB_DND_PATCH: only the current target's answer counts. A status
++        // that a previous target sent late (another toplevel of the same
++        // application, typically) used to be consumed as this target's answer,
++        // and the real answer that followed was then thrown away.
++        if ((::Window) clientMsg.data.l[0] != targetWindow)
++            return;
++
+         if (expectingStatus)
+         {
+             expectingStatus = false;
+@@ -115,10 +122,21 @@ public:
+         if (canDrop)
+         {
+             sendExternalDragAndDropDrop();
++
++            // STEMLAB_DND_PATCH: the gesture is over; the data handshake
++            // (SelectionRequest -> XdndFinished) continues on its own. Keeping
++            // `dragging` set until XdndFinished arrived meant a target that
++            // never sends it blocked every future drag, and mouse input kept
++            // driving the finished drag in the meantime.
++            dragging = false;
++            canDrop = false;
++            expectingStatus = false;
+         }
+         else
+         {
+-            sendExternalDragAndDropLeave();
++            if (targetWindow != None)
++                sendExternalDragAndDropLeave();
++
+             externalResetDragAndDrop();
+         }
+     }
+@@ -139,6 +157,12 @@ public:
+             canDrop = false;
+             silentRect = {};
+ 
++            // STEMLAB_DND_PATCH: the old target is gone either way; leaving it
++            // in targetWindow re-sent XdndLeave to it on every later motion,
++            // and let its late XdndStatus keep passing the sender check.
++            targetWindow = None;
++            expectingStatus = false;
++
+             if (newTargetWindow == None)
+                 return;
+ 
+@@ -151,7 +175,7 @@ public:
+             sendExternalDragAndDropEnter();
+         }
+ 
+-        if (! expectingStatus)
++        if (targetWindow != None && ! expectingStatus)
+             sendExternalDragAndDropPosition();
+     }
+ 
+@@ -352,14 +376,32 @@ public:
+         NullCheckedInvocation::invoke (completionCallback);
+ 
+         dragging = false;
++
++        // STEMLAB_DND_PATCH: everything the next drag must not inherit. The
++        // callback is nulled so a late XdndFinished cannot invoke it twice.
++        completionCallback = nullptr;
++        canDrop = false;
++        expectingStatus = false;
++        targetWindow = None;
++        silentRect = {};
+     }
+ 
+     bool externalDragInit (::Window window, bool text, const String& str, std::function<void()>&& cb)
+     {
++        // STEMLAB_DND_PATCH: a fresh drag starts from a clean machine, and the
++        // source never targets its own window - the real target is discovered
++        // by the first motion. Targeting itself here sent an XdndEnter to its
++        // own window, whose accepting reply could then be mistaken for the
++        // real target's answer.
++        canDrop         = false;
++        expectingStatus = false;
++        silentRect      = {};
++        allowedTypes.clearQuick();
++
+         windowH            = window;
+         isText             = text;
+         textOrFiles        = str;
+-        targetWindow       = windowH;
++        targetWindow       = None;
+         completionCallback = std::move (cb);
+ 
+         auto* display = getDisplay();
+@@ -385,9 +427,9 @@ public:
+                                                         reinterpret_cast<const unsigned char*> (allowedTypes.getRawDataPointer()), allowedTypes.size());
+ 
+             dragging = true;
+-            xdndVersion = getDnDVersionForWindow (targetWindow);
+ 
+-            sendExternalDragAndDropEnter();
++            // STEMLAB_DND_PATCH: no XdndEnter to our own window - the first
++            // motion finds the real target and greets that one.
+             handleExternalDragMotionNotify();
+ 
+             return true;
+diff --git a/modules/juce_gui_basics/native/juce_XWindowSystem_linux.cpp b/modules/juce_gui_basics/native/juce_XWindowSystem_linux.cpp
+index 41ef54c..2a58740 100644
+--- a/modules/juce_gui_basics/native/juce_XWindowSystem_linux.cpp
++++ b/modules/juce_gui_basics/native/juce_XWindowSystem_linux.cpp
+@@ -2926,8 +2926,12 @@ bool XWindowSystem::externalDragFileInit (LinuxComponentPeer* peer, const String
+ {
+     auto& dragState = dragAndDropStateMap[peer];
+ 
++    // STEMLAB_DND_PATCH: a new gesture can only begin after the old one's
++    // button was released, so a state still marked dragging is a leftover -
++    // typically a drop whose target never sent XdndFinished. It must not
++    // block every drag for the rest of the session.
+     if (dragState.isDragging())
+-        return false;
++        dragState.externalResetDragAndDrop();
+ 
+     StringArray uriList;
+ 
+@@ -2946,8 +2950,9 @@ bool XWindowSystem::externalDragTextInit (LinuxComponentPeer* peer, const String
+ {
+     auto& dragState = dragAndDropStateMap[peer];
+ 
++    // STEMLAB_DND_PATCH: same leftover-state reset as externalDragFileInit.
+     if (dragState.isDragging())
+-        return false;
++        dragState.externalResetDragAndDrop();
+ 
+     return dragState.externalDragInit ((::Window) peer->getNativeHandle(), true, text, std::move (callback));
+ }

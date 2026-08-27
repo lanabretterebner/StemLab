@@ -448,7 +448,7 @@ public:
     void clearStemSelectionRange(const juce::String& id);
     void clearAllStemSelectionRanges();
 
-    /** The lane's stem file, trimmed to its highlighted range when one is set. */
+    /** The lane's stem file, trimmed to the playback loop when one is set. */
     juce::File getStemDragFile(const juce::File& source, const juce::String& selectionId);
 
     bool launchStemMidiConversion(int stemIndex);
@@ -619,9 +619,11 @@ private:
                                    double startPpq, int recordingMode,
                                    const juce::String& recordingStatus);
 
-    /** The stem file itself, or its active selection range rendered to WAV. */
-    juce::File exportSelectedRegion(const juce::File& source, const juce::File& destination,
-                                    const juce::String& selectionId);
+    /** The stem file itself, or the playback loop's regions rendered to WAV. */
+    juce::File exportLoopedRegions(const juce::File& source, const juce::File& destination);
+
+    /** The merged loop regions, copied under the selection lock. */
+    std::vector<stemlab::loops::Region> loopRegionsSnapshot() const;
 
     juce::File createRecordingFile(const juce::String& prefix) const;
     juce::File createJobDirectory() const;

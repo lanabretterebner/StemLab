@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# The JUCE tree this patch applies to ships CRLF line endings; the hunks
+# must stay byte-identical to match, so no normalization here.
+scripts/linux/juce-linux-dnd.patch -text

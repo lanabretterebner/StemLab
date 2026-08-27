@@ -1,5 +1,4 @@
 #include "PluginEditor.h"
-#include "LinuxDragSourceGuard.h"
 #include "StemLabPaths.h"
 #include "StemLabTheme.h"
 #include "BinaryData.h"
@@ -1130,25 +1129,13 @@ void StemLaneComponent::mouseDrag(const juce::MouseEvent& event)
     if (!dragFile.existsAsFile())
         return;
 
-    if (auto* peer = getPeer(); peer != nullptr && dndSourceGuardToken == nullptr)
-        dndSourceGuardToken = stemlab::linuxdnd::suppressDropTarget(peer->getNativeHandle());
-
     externalDragStarted = juce::DragAndDropContainer::performExternalDragDropOfFiles(
         juce::StringArray{dragFile.getFullPathName()}, false, this);
-
-    if (!externalDragStarted)
-        releaseDragSourceGuard();
 }
 
 void StemLaneComponent::mouseUp(const juce::MouseEvent&)
 {
     externalDragStarted = false;
-    releaseDragSourceGuard();
-}
-
-void StemLaneComponent::releaseDragSourceGuard()
-{
-    stemlab::linuxdnd::restoreDropTarget(std::exchange(dndSourceGuardToken, nullptr));
 }
 
 void StemLaneComponent::refresh()
@@ -1776,7 +1763,6 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
 StemLabAudioProcessorEditor::~StemLabAudioProcessorEditor()
 {
-    releaseDragSourceGuard();
     setLookAndFeel(nullptr);
     processor.removeChangeListener(this);
     stopTimer();
@@ -1823,9 +1809,6 @@ void StemLabAudioProcessorEditor::startSelectedStemsDrag()
 
     selfFileDragGuard.begin(files);
 
-    if (auto* peer = getPeer(); peer != nullptr && dndSourceGuardToken == nullptr)
-        dndSourceGuardToken = stemlab::linuxdnd::suppressDropTarget(peer->getNativeHandle());
-
     auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
 
     const bool started = juce::DragAndDropContainer::performExternalDragDropOfFiles(
@@ -1839,7 +1822,6 @@ void StemLabAudioProcessorEditor::startSelectedStemsDrag()
     if (!started)
     {
         selfFileDragGuard.clear();
-        releaseDragSourceGuard();
         processor.postUiStatus("Could not start the stem drag");
     }
 }
@@ -1865,12 +1847,6 @@ void StemLabAudioProcessorEditor::mouseDrag(const juce::MouseEvent& event)
 void StemLabAudioProcessorEditor::mouseUp(const juce::MouseEvent&)
 {
     footerDragStarted = false;
-    releaseDragSourceGuard();
-}
-
-void StemLabAudioProcessorEditor::releaseDragSourceGuard()
-{
-    stemlab::linuxdnd::restoreDropTarget(std::exchange(dndSourceGuardToken, nullptr));
 }
 
 bool StemLabAudioProcessorEditor::keyPressed(const juce::KeyPress& key)

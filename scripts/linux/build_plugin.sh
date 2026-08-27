@@ -170,6 +170,24 @@ else
     fi
 fi
 
+# JUCE's stock X11 drag source carries state from one drag into the next
+# (a stale accepting status, a target that never answered XdndFinished),
+# which wedged drag-and-drop after the first gesture. The patch resets the
+# machine per drag; the marker makes reapplying a no-op.
+DND_PATCH="$REPO_ROOT/scripts/linux/juce-linux-dnd.patch"
+DND_SOURCE="$JUCE_SOURCE/modules/juce_gui_basics/native/juce_DragAndDrop_linux.cpp"
+
+if [[ -f "$DND_PATCH" && -f "$DND_SOURCE" ]] && ! grep -q "STEMLAB_DND_PATCH" "$DND_SOURCE"; then
+    echo "Applying the drag-and-drop fix to JUCE..."
+    # The dry run keeps a mismatch from leaving a half-patched tree in the
+    # build cache, where it would poison every later build.
+    if ! patch -p1 -d "$JUCE_SOURCE" --dry-run < "$DND_PATCH" >/dev/null ||
+       ! patch -p1 -d "$JUCE_SOURCE" < "$DND_PATCH"; then
+        echo "Could not patch JUCE's drag-and-drop source." >&2
+        exit 1
+    fi
+fi
+
 # ----------------------------------------------------------------------- build
 
 [[ $CLEAN -eq 1 ]] && rm -rf "$BUILD_DIR"
