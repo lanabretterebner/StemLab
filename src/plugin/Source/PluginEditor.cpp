@@ -2312,22 +2312,26 @@ void StemLabAudioProcessorEditor::layoutStatusArea()
     // descender overhang into the empty padding below.
     auto progressRow = area.withHeight(footer::progressRowHeight);
 
-    // The readout's room comes off the top - sized to its current text and
-    // rounded up in coarse steps so the bar end does not creep as the clock
-    // ticks - and the bar takes what is left, up to its full width. Sizing
-    // the bar first squeezed the readout to zero wherever the footer's
-    // buttons leave the status area narrow.
+    /*
+        The readout's slot is a constant, sized for the widest text the
+        readout can show rather than for what it shows now. Deriving it
+        from the live text resized the bar every time the clock ticked
+        over or the ETA appeared, so the whole row visibly jumped around
+        all run long. The slot must also come off the top before the bar
+        is sized: reserving only the gap squeezed the readout to zero
+        wherever the footer's buttons leave the status area narrow.
+    */
     const juce::Font progressFont{theme::fonts::progress()};
 
-    const int labelWidth =
+    const auto dot = juce::String::fromUTF8(" \xc2\xb7 ");
+
+    const int labelSlot =
         juce::roundToInt(juce::GlyphArrangement::getStringWidth(
-            progressFont, progressLabel.getText())) + 2;
+            progressFont, "100%" + dot + "888:88" + dot + "ETA 88:88")) + 4;
 
-    const int reserved =
-        ((labelWidth + footer::progressLabelGap + 23) / 24) * 24;
-
-    const int barWidth = juce::jlimit(0, footer::progressBarWidth,
-                                      progressRow.getWidth() - reserved);
+    const int barWidth =
+        juce::jlimit(0, footer::progressBarWidth,
+                     progressRow.getWidth() - labelSlot - footer::progressLabelGap);
 
     progressBar.setBounds(progressRow.removeFromLeft(barWidth));
     progressRow.removeFromLeft(footer::progressLabelGap);
