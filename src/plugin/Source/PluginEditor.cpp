@@ -206,7 +206,8 @@ double StemLaneWaveform::normalisedForX(float x) const
                         (view.getStart() + across * view.getLength()) / profile->lengthSeconds);
 }
 
-StemLaneWaveform::ViewGeometry StemLaneWaveform::viewGeometry() const
+StemLaneWaveform::ViewGeometry StemLaneWaveform::viewGeometryFor(double viewStart,
+                                                                 double viewLength) const
 {
     namespace lanes = theme::metrics::lanes;
 
@@ -214,22 +215,52 @@ StemLaneWaveform::ViewGeometry StemLaneWaveform::viewGeometry() const
 
     geometry.inner = getLocalBounds().toFloat().reduced(lanes::wellPadX, lanes::wellPadY);
 
-    if (profile == nullptr || !(profile->lengthSeconds > 0.0) || geometry.inner.isEmpty())
+    if (!(viewLength > 0.0) || geometry.inner.isEmpty())
         return geometry;
 
-    const auto view = processor.getWaveformViewRange(profile->lengthSeconds);
-
-    geometry.viewLength = juce::jmax(1.0e-6, view.getLength());
+    geometry.viewLength = juce::jmax(1.0e-6, viewLength);
 
     const auto secondsPerColumn =
         geometry.viewLength / static_cast<double>(geometry.inner.getWidth());
 
-    geometry.snappedStart =
-        secondsPerColumn > 0.0
-            ? std::floor(view.getStart() / secondsPerColumn) * secondsPerColumn
-            : view.getStart();
+    geometry.snappedStart = secondsPerColumn > 0.0
+                                ? std::floor(viewStart / secondsPerColumn) * secondsPerColumn
+                                : viewStart;
 
     return geometry;
+}
+
+StemLaneWaveform::DisplayState StemLaneWaveform::readDisplayState() const
+{
+    DisplayState state;
+
+    state.profilePtr = profile.get();
+
+    if (profile != nullptr && profile->lengthSeconds > 0.0)
+    {
+        const auto view = processor.getWaveformViewRange(profile->lengthSeconds);
+
+        state.viewStart = view.getStart();
+        state.viewLength = view.getLength();
+    }
+
+    state.transportPosition = processor.getTransportPositionSeconds();
+    state.transportLength = processor.getTransportLengthSeconds();
+    state.palette = processor.getWaveformColourIndex();
+
+    const auto grid = processor.getWaveformGridInfo();
+
+    state.gridBpm = grid.bpm;
+    state.gridBarOne = grid.barOne;
+    state.gridNumerator = grid.numerator;
+
+    const auto range = processor.getStemSelectionRange(selectionId);
+
+    state.selectionActive = range.active;
+    state.selectionStart = range.start;
+    state.selectionEnd = range.end;
+
+    return state;
 }
 
 void StemLaneWaveform::refreshColumns(juce::Rectangle<float> inner, double viewStart,
@@ -480,12 +511,24 @@ void StemLaneWaveform::paint(juce::Graphics& g)
     if (profile == nullptr && currentFile.existsAsFile())
         profile = waveformCache.get(currentFile);
 
+    if (profile == nullptr || !(profile->lengthSeconds > 0.0))
+        return;
+
+    // Everything below draws the captured state timerRefresh invalidated
+    // for - never a fresher read; see the note on lastDisplay. The capture
+    // here only covers the first paint and a profile that just landed.
+    if (!lastDisplayValid || lastDisplay.profilePtr != profile.get())
+    {
+        lastDisplay = readDisplayState();
+        lastDisplayValid = true;
+    }
+
     // The snapping that keeps a scrolling view from re-bucketing the audio
-    // every frame lives in viewGeometry, which timerRefresh shares.
-    const auto geometry = viewGeometry();
+    // every frame lives in viewGeometryFor, which timerRefresh shares.
+    const auto geometry = viewGeometryFor(lastDisplay.viewStart, lastDisplay.viewLength);
     const auto inner = geometry.inner;
 
-    if (profile == nullptr || !(profile->lengthSeconds > 0.0) || inner.isEmpty())
+    if (!(geometry.viewLength > 0.0) || inner.isEmpty())
         return;
 
     const auto length = profile->lengthSeconds;
@@ -500,8 +543,8 @@ void StemLaneWaveform::paint(juce::Graphics& g)
                static_cast<float>((seconds - snappedStart) / viewLength) * inner.getWidth();
     };
 
-    const auto transportLength = processor.getTransportLengthSeconds();
-    const auto transportPosition = processor.getTransportPositionSeconds();
+    const auto transportLength = lastDisplay.transportLength;
+    const auto transportPosition = lastDisplay.transportPosition;
 
     const double playNormalised =
         transportLength > 0.0 ? juce::jlimit(0.0, 1.0, transportPosition / transportLength)
@@ -510,12 +553,13 @@ void StemLaneWaveform::paint(juce::Graphics& g)
     // Beat grid behind the waveform: bars read stronger than beats, and the
     // whole thing stays subordinate to the audio it sits behind.
     {
-        const auto grid = processor.getWaveformGridInfo();
+        const auto gridBpm = lastDisplay.gridBpm;
+        const auto gridBarOne = lastDisplay.gridBarOne;
 
-        if (grid.bpm > 0.0)
+        if (gridBpm > 0.0)
         {
-            const auto secondsPerBeat = 60.0 / grid.bpm;
-            const auto beatsPerBar = juce::jmax(1, grid.numerator);
+            const auto secondsPerBeat = 60.0 / gridBpm;
+            const auto beatsPerBar = juce::jmax(1, lastDisplay.gridNumerator);
 
             if (secondsPerBeat > 0.0 && secondsPerBeat * beatsPerBar * 3.0 < length)
             {
@@ -552,11 +596,11 @@ void StemLaneWaveform::paint(juce::Graphics& g)
                  * would each be computed only to be discarded.
                  */
                 int beatIndex = static_cast<int>(
-                    std::floor((snappedStart - grid.barOne) / secondsPerBeat));
+                    std::floor((snappedStart - gridBarOne) / secondsPerBeat));
 
                 g.setFont(theme::fonts::gridLabel());
 
-                for (double t = grid.barOne + beatIndex * secondsPerBeat;
+                for (double t = gridBarOne + beatIndex * secondsPerBeat;
                      t <= snappedStart + viewLength && t < length;
                      t += secondsPerBeat, ++beatIndex)
                 {
@@ -626,8 +670,6 @@ void StemLaneWaveform::paint(juce::Graphics& g)
 
     // Selection / loop range, live while dragging and persistent after.
     {
-        auto range = processor.getStemSelectionRange(selectionId);
-
         double from = 0.0, to = 0.0;
         bool show = false;
 
@@ -637,10 +679,10 @@ void StemLaneWaveform::paint(juce::Graphics& g)
             to = juce::jmax(selectionAnchor, selectionHead);
             show = to - from > 0.0;
         }
-        else if (range.active)
+        else if (lastDisplay.selectionActive)
         {
-            from = range.start;
-            to = range.end;
+            from = lastDisplay.selectionStart;
+            to = lastDisplay.selectionEnd;
             show = true;
         }
 
@@ -697,29 +739,7 @@ void StemLaneWaveform::timerRefresh()
         return;
     }
 
-    DisplayState now;
-
-    now.profilePtr = profile.get();
-
-    const auto view = processor.getWaveformViewRange(profile->lengthSeconds);
-
-    now.viewStart = view.getStart();
-    now.viewLength = view.getLength();
-    now.transportPosition = processor.getTransportPositionSeconds();
-    now.transportLength = processor.getTransportLengthSeconds();
-    now.palette = processor.getWaveformColourIndex();
-
-    const auto grid = processor.getWaveformGridInfo();
-
-    now.gridBpm = grid.bpm;
-    now.gridBarOne = grid.barOne;
-    now.gridNumerator = grid.numerator;
-
-    const auto range = processor.getStemSelectionRange(selectionId);
-
-    now.selectionActive = range.active;
-    now.selectionStart = range.start;
-    now.selectionEnd = range.end;
+    const auto now = readDisplayState();
 
     // Exact comparisons on purpose: these are change detectors on values
     // re-read from one source, and the worst a stray bit costs is a repaint.
@@ -759,7 +779,7 @@ void StemLaneWaveform::timerRefresh()
      * hold still: repaint the strip the playhead left and the strip it
      * entered instead of the whole well.
      */
-    const auto geometry = viewGeometry();
+    const auto geometry = viewGeometryFor(now.viewStart, now.viewLength);
 
     if (!(geometry.viewLength > 0.0) || !(now.transportLength > 0.0))
     {
@@ -842,7 +862,9 @@ void StemLaneWaveform::mouseUp(const juce::MouseEvent& event)
         else
             processor.clearStemSelectionRange(selectionId);
 
-        repaint();
+        // Through timerRefresh rather than a plain repaint, so the captured
+        // state paint draws picks the change up immediately.
+        timerRefresh();
         return;
     }
 
@@ -850,7 +872,7 @@ void StemLaneWaveform::mouseUp(const juce::MouseEvent& event)
         return;
 
     processor.transportSeekNormalised(normalisedForX(event.mouseDownPosition.x));
-    repaint();
+    timerRefresh();
 }
 
 void StemLaneWaveform::mouseDoubleClick(const juce::MouseEvent&)
@@ -859,7 +881,7 @@ void StemLaneWaveform::mouseDoubleClick(const juce::MouseEvent&)
     if (isEnabled())
     {
         processor.clearStemSelectionRange(selectionId);
-        repaint();
+        timerRefresh();
     }
 }
 
@@ -3435,15 +3457,16 @@ void StemLabAudioProcessorEditor::applyWaveformZoomIndex(int index)
 
     zoomLabel.setText(waveformZoomText(zoom), juce::dontSendNotification);
 
-    // The lanes only redraw on the timer, which is a whole frame away and
-    // does not run at all in some states; a zoom change has to show now.
+    // The lanes only redraw on the timer, which is a whole frame away; a
+    // zoom change has to show now, and it has to go through the wells'
+    // captured display state or the paint would still frame the old view.
     for (auto& lane : rootLanes)
         if (lane != nullptr)
-            lane->repaint();
+            lane->timerRefreshWaveform();
 
     for (auto& lane : childLanes)
         if (lane != nullptr)
-            lane->repaint();
+            lane->timerRefreshWaveform();
 }
 
 void StemLabAudioProcessorEditor::stepWaveformZoom(int delta)
