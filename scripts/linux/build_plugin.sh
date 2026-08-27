@@ -134,14 +134,30 @@ download_juce() {
     done
 }
 
+extract_juce() {
+    echo "Extracting JUCE $JUCE_VERSION..."
+    rm -rf "$JUCE_EXTRACT_ROOT"
+    mkdir -p "$JUCE_EXTRACT_ROOT"
+
+    if ! unzip -q "$JUCE_ZIP" -d "$JUCE_EXTRACT_ROOT"; then
+        # A truncated archive must not poison every later build.
+        echo "JUCE archive is corrupt. Removing it - please rerun." >&2
+        rm -f "$JUCE_ZIP"
+        rm -rf "$JUCE_EXTRACT_ROOT"
+        exit 1
+    fi
+}
+
 if [[ -n "$JUCE_SOURCE" ]]; then
     if [[ ! -f "$JUCE_SOURCE/CMakeLists.txt" ]]; then
         echo "--juce-source does not look like a JUCE tree: $JUCE_SOURCE" >&2
         exit 1
     fi
     JUCE_SOURCE="$(cd "$JUCE_SOURCE" && pwd)"
+    JUCE_TREE_IS_OURS=0
     echo "Using JUCE source: $JUCE_SOURCE"
 else
+    JUCE_TREE_IS_OURS=1
     JUCE_SOURCE="$JUCE_EXTRACT_ROOT/JUCE-$JUCE_VERSION"
 
     if [[ ! -f "$JUCE_SOURCE/CMakeLists.txt" ]]; then
@@ -151,17 +167,7 @@ else
             exit 1
         }
 
-        echo "Extracting JUCE $JUCE_VERSION..."
-        rm -rf "$JUCE_EXTRACT_ROOT"
-        mkdir -p "$JUCE_EXTRACT_ROOT"
-
-        if ! unzip -q "$JUCE_ZIP" -d "$JUCE_EXTRACT_ROOT"; then
-            # A truncated archive must not poison every later build.
-            echo "JUCE archive is corrupt. Removing it - please rerun." >&2
-            rm -f "$JUCE_ZIP"
-            rm -rf "$JUCE_EXTRACT_ROOT"
-            exit 1
-        fi
+        extract_juce
     fi
 
     if [[ ! -f "$JUCE_SOURCE/CMakeLists.txt" ]]; then
@@ -170,21 +176,47 @@ else
     fi
 fi
 
-# JUCE's stock X11 drag source carries state from one drag into the next
-# (a stale accepting status, a target that never answered XdndFinished),
-# which wedged drag-and-drop after the first gesture. The patch resets the
-# machine per drag; the marker makes reapplying a no-op.
+# JUCE's stock X11 drag source keeps `dragging` set until the target answers
+# XdndFinished, so a target that never does blocks every later drag for the
+# life of the process. The patch ends the gesture when the drop is sent.
 DND_PATCH="$REPO_ROOT/scripts/linux/juce-linux-dnd.patch"
 DND_SOURCE="$JUCE_SOURCE/modules/juce_gui_basics/native/juce_DragAndDrop_linux.cpp"
 
-if [[ -f "$DND_PATCH" && -f "$DND_SOURCE" ]] && ! grep -q "STEMLAB_DND_PATCH" "$DND_SOURCE"; then
+# --dry-run first, so a mismatch cannot leave a half-patched tree behind in
+# the build cache, where it would poison every later build.
+dnd_patch_applies() { patch -p1 -d "$JUCE_SOURCE" --dry-run <"$DND_PATCH" >/dev/null 2>&1; }
+dnd_patch_in_place() { patch -p1 -R -d "$JUCE_SOURCE" --dry-run <"$DND_PATCH" >/dev/null 2>&1; }
+
+apply_dnd_patch() {
     echo "Applying the drag-and-drop fix to JUCE..."
-    # The dry run keeps a mismatch from leaving a half-patched tree in the
-    # build cache, where it would poison every later build.
-    if ! patch -p1 -d "$JUCE_SOURCE" --dry-run < "$DND_PATCH" >/dev/null ||
-       ! patch -p1 -d "$JUCE_SOURCE" < "$DND_PATCH"; then
+    if ! dnd_patch_applies || ! patch -p1 -d "$JUCE_SOURCE" <"$DND_PATCH" >/dev/null; then
         echo "Could not patch JUCE's drag-and-drop source." >&2
         exit 1
+    fi
+}
+
+if [[ -f "$DND_PATCH" && -f "$DND_SOURCE" ]]; then
+    if dnd_patch_in_place; then
+        : # this exact patch is already in the tree
+    elif grep -q "STEMLAB_DND_PATCH" "$DND_SOURCE"; then
+        # An older version of our own patch. Testing only for the marker would
+        # accept it as current and quietly build the superseded fix - which is
+        # what a cached JUCE tree from an earlier release carries.
+        if [[ $JUCE_TREE_IS_OURS -eq 1 ]]; then
+            echo "Replacing a superseded drag-and-drop fix in the cached JUCE..."
+            [[ -f "$JUCE_ZIP" ]] || download_juce || {
+                echo "Could not download JUCE $JUCE_VERSION to re-patch it." >&2
+                exit 1
+            }
+            extract_juce
+            apply_dnd_patch
+        else
+            echo "$JUCE_SOURCE carries an older StemLab drag-and-drop patch." >&2
+            echo "Reset that checkout (git -C \"$JUCE_SOURCE\" checkout modules) and rerun." >&2
+            exit 1
+        fi
+    else
+        apply_dnd_patch
     fi
 fi
 

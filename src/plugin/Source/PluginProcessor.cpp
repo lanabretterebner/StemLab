@@ -6268,8 +6268,15 @@ juce::File StemLabAudioProcessor::getStemDragFile(const juce::File& source,
     const auto trimmed =
         exportLoopedRegions(source, directory.getChildFile(safeName + "_selection.wav"));
 
+    // A render that failed must not cancel the gesture: a drag that carries
+    // the whole stem is a worse answer than the loop, but silently dropping
+    // nothing at all reads as broken drag-and-drop.
     if (!trimmed.existsAsFile())
-        setStatus("Could not export the looped " + selectionId + " range");
+    {
+        setStatus("Could not render the looped " + selectionId +
+                  " range - dragging the whole stem instead");
+        return source;
+    }
 
     return trimmed;
 }
