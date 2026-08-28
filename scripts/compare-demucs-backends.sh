@@ -13,7 +13,7 @@
 #   scripts/compare-demucs-backends.sh INPUT.wav [options]
 #
 #   --demucs-rs PATH     demucs-rs checkout (default: ./third_party/demucs-rs,
-#                        cloned if missing)
+#                        cloned from $DEMUCS_RS_URL if missing)
 #   --out DIR            results directory (default: ./demucs-comparison)
 #   --model NAME         htdemucs | htdemucs_6s | htdemucs_ft (default: htdemucs_6s)
 #   --python-device DEV  cpu | cuda | mps (default: cuda if visible, else cpu)
@@ -302,13 +302,26 @@ fi
 
 # ------------------------------------------------------------------- build
 
+DEMUCS_RS_URL="${DEMUCS_RS_URL:-https://github.com/nikhilunni/demucs-rs}"
+
 if [[ ! -d "$RS_DIR" ]]; then
   info "cloning demucs-rs into $RS_DIR"
   mkdir -p "$(dirname "$RS_DIR")"
-  git clone --depth 1 https://github.com/jacobmarks/demucs-rs "$RS_DIR" \
-    || die "clone failed - pass an existing checkout with --demucs-rs PATH"
+  # Without this, git answers a 404 by prompting for credentials and then
+  # reporting "Authentication failed", which sends you hunting for a token
+  # when the real problem is the URL.
+  GIT_TERMINAL_PROMPT=0 git clone --depth 1 "$DEMUCS_RS_URL" "$RS_DIR" || die \
+    "could not clone $DEMUCS_RS_URL
+       If that repository has moved, point at the new one with
+       DEMUCS_RS_URL=... or clone it yourself and pass --demucs-rs PATH."
 fi
 [[ -f "$RS_DIR/Cargo.toml" ]] || die "not a demucs-rs checkout: $RS_DIR"
+
+# Record which revision produced the numbers. Two machines being compared
+# must be on the same one, and a result kept for later is worth little
+# without it.
+RS_REV="$(git -C "$RS_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+info "demucs-rs revision: $RS_REV"
 
 BIN_VULKAN="$RS_DIR/target/release/demucs"
 BIN_CPU="$RS_DIR/target/cpu-build/release/demucs"
@@ -460,10 +473,12 @@ printf '  %-24s %s s%s\n' "demucs-rs ($PRIMARY_LABEL)" "$VK_T" \
 (( WITH_RUST_CPU )) && printf '  %-24s %s s\n' "demucs-rs (ndarray cpu)" "$CPU_T"
 
 "$PYTHON" - "$RESULTS" "$PY_T" "$VK_T" "$CPU_T" "$PY_DEVICE" "$GPU_NAME" \
-           "$GPU_IS_SOFTWARE" "$MODEL" "$OVERLAP" "$SHIFTS" "$INPUT" <<'PY'
+           "$GPU_IS_SOFTWARE" "$MODEL" "$OVERLAP" "$SHIFTS" "$INPUT" \
+           "${RS_REV:-unknown}" <<'PY'
 import json, sys
 keys = ["python_seconds","rust_seconds","rust_cpu_control_seconds","python_device",
-        "vulkan_adapter","vulkan_is_software","model","overlap","shifts","input"]
+        "vulkan_adapter","vulkan_is_software","model","overlap","shifts","input",
+        "demucs_rs_revision"]
 out, vals = sys.argv[1], sys.argv[2:]
 def num(v):
     try: return float(v)
