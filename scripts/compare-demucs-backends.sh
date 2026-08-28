@@ -197,16 +197,40 @@ info "python:  $PYTHON ($("$PYTHON" -c 'import demucs; print("demucs", demucs.__
 
 if [[ -z "$PY_DEVICE" ]]; then
 resolve_py_device() {
-  local out rc
-  out="$(PYTHONPATH="$REPO_ROOT/src" "$PYTHON" "$REPO_ROOT/scripts/.device_probe.py" 2>&1)"
+  # stdout carries the answer, stderr carries torch's warnings. Merging them
+  # (as this first did) puts a UserWarning inside the device string, which
+  # then travels downstream as --device <paragraph of text>. Keep them apart:
+  # stdout is the value, stderr is reported but never returned.
+  local out err_file rc
+  err_file="$(mktemp)"
+  out="$(PYTHONPATH="$REPO_ROOT/src" "$PYTHON" "$REPO_ROOT/scripts/.device_probe.py" 2>"$err_file")"
   rc=$?
-  if (( rc != 0 )) || [[ -z "$out" ]]; then
+  out="$(tr -d '\r' <<<"$out" | tail -1 | xargs)"
+
+  if (( rc != 0 )); then
     warn "could not resolve the torch device via StemLab's own resolver:
-         ${out:-no output}
+         $(head -5 "$err_file")
          Falling back to cpu, which may not be what this machine would use."
-    printf 'cpu'
-    return
+    rm -f "$err_file"; printf 'cpu'; return
   fi
+
+  # A device torch does not know would fail far from here, with a worse
+  # message than this one.
+  case "$out" in
+    cpu|cuda|xpu|mps) ;;
+    *)
+      warn "the device probe returned something unexpected: '${out:-empty}'
+         Falling back to cpu."
+      rm -f "$err_file"; printf 'cpu'; return ;;
+  esac
+
+  # torch warns on stderr about things worth seeing - notably an XPU build
+  # with no usable device, which silently demotes the run to CPU.
+  if [[ -s "$err_file" ]] && grep -qi "warn" "$err_file"; then
+    warn "torch said, while resolving the device:
+         $(grep -i "warning" "$err_file" | head -2 | sed 's/^ *//')"
+  fi
+  rm -f "$err_file"
   printf '%s' "$out"
 }
   # Ask StemLab's own resolver rather than reimplementing it. The hand-rolled
