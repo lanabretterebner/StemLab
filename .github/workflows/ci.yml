@@ -39,7 +39,7 @@ jobs:
           # and audio-separator are imported lazily inside the functions that
           # need a model, so the suite passes without them; installing them
           # here would multiply the install for no extra coverage.
-          pip install numpy scipy soundfile librosa mido pytest ruff
+          pip install numpy scipy soundfile soxr librosa mido pytest ruff
 
           # The package itself, so "import stemlab" resolves. --no-deps keeps
           # the lean set above rather than pulling every runtime dependency
