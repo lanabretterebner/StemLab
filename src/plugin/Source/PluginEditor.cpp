@@ -1389,6 +1389,17 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
                             juce::roundToInt(window::height * window::maxScale));
                     }
 
+                    /*
+                     * The size hints above are only advice: a window manager
+                     * that ignores maximum-size hints, as tiling ones do, can
+                     * still hand the window more room than maxScale lets the
+                     * editor take. The editor stays capped and the surplus is
+                     * the window's own background, so paint that the ground
+                     * colour and the surplus reads as margin rather than as a
+                     * black band torn out of the panel.
+                     */
+                    windowComponent->setBackgroundColour(theme::colours::ground());
+
                     windowComponent->setUsingNativeTitleBar(true);
                     windowComponent->setName("StemLab");
                 }
