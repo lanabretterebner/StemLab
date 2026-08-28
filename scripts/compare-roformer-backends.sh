@@ -283,13 +283,30 @@ build_backend() {
   local flags=(-DGGML_CUDA=OFF)
   case "$backend" in
     cpu)    ;;
-    vulkan) flags+=(-DGGML_VULKAN=ON) ;;
+    vulkan)
+      local vk_missing=()
+      echo '#include <vulkan/vulkan.h>' | cc -E - >/dev/null 2>&1 || vk_missing+=("Vulkan headers")
+      command -v glslc >/dev/null 2>&1 || vk_missing+=("glslc (shader compiler)")
+      # ggml-vulkan does find_package(SPIRV-Headers CONFIG REQUIRED).
+      [[ -n "$(find /usr/share /usr/lib /usr/local -maxdepth 4 -iname "SPIRV-HeadersConfig*.cmake" 2>/dev/null | head -1)" ]] \
+        || vk_missing+=("SPIRV-Headers")
+      if (( ${#vk_missing[@]} )); then
+        warn "the vulkan backend needs build-time packages this machine lacks:
+           ${vk_missing[*]}
+         A working driver is not enough - ggml compiles its own shaders.
+           Debian/Ubuntu  sudo apt install libvulkan-dev glslc spirv-headers
+           Fedora         sudo dnf install vulkan-headers glslc spirv-headers
+           Arch           sudo pacman -S vulkan-headers shaderc spirv-headers"
+        return 1
+      fi
+      flags+=(-DGGML_VULKAN=ON) ;;
     sycl)   flags+=(-DGGML_SYCL=ON)
             command -v icpx >/dev/null \
               || warn "sycl needs oneAPI's icpx on PATH - source setvars.sh first" ;;
     *)      warn "unknown backend '$backend'"; return 1 ;;
   esac
-  if (( SKIP_BUILD )) && [[ -x "$dir/bin/bsroformer-cli" || -x "$dir/bsroformer-cli" ]]; then
+  if (( SKIP_BUILD )) && [[ -n "$(binary_for "$backend")" ]]; then
+    info "reusing existing $backend build"
     return 0
   fi
   info "building $backend"
@@ -301,15 +318,34 @@ build_backend() {
 
 binary_for() {
   local dir="$SRC_DIR/build-$1"
-  find "$dir" -maxdepth 3 -type f -name "*bsroformer*" -perm -u+x 2>/dev/null | head -1
+  # The CMake target is bs_roformer-cli. Look for that first, then fall back
+  # to anything roformer-shaped so an upstream rename degrades to a warning
+  # rather than a silent skip.
+  local found
+  found="$(find "$dir" -maxdepth 3 -type f -name "bs_roformer-cli" -perm -u+x 2>/dev/null | head -1)"
+  [[ -n "$found" ]] || found="$(find "$dir" -maxdepth 3 -type f -iname "*roformer*" -perm -u+x 2>/dev/null | head -1)"
+  printf '%s' "$found"
 }
 
 mkdir -p "$OUT_DIR"
 AVAILABLE=()
 IFS=',' read -ra WANTED_BACKENDS <<< "$BACKENDS"
 for b in "${WANTED_BACKENDS[@]}"; do
-  build_backend "$b" && [[ -n "$(binary_for "$b")" ]] && AVAILABLE+=("$b") \
-    || warn "skipping backend '$b'"
+  if ! build_backend "$b"; then
+    warn "skipping backend '$b': it did not build"
+    continue
+  fi
+  bin="$(binary_for "$b")"
+  if [[ -z "$bin" ]]; then
+    warn "backend '$b' built but no executable was found under
+         $SRC_DIR/build-$b
+         Expected the CMake target bs_roformer-cli. What is actually there:"
+    find "$SRC_DIR/build-$b" -maxdepth 3 -type f -perm -u+x 2>/dev/null \
+      | head -10 | sed 's/^/           /' >&2
+    continue
+  fi
+  info "$b -> $bin"
+  AVAILABLE+=("$b")
 done
 (( ${#AVAILABLE[@]} )) || die "no backend built successfully"
 
