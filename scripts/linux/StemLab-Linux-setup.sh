@@ -12,9 +12,9 @@
 # Given a flavor (cpu, cuda, rocm, xpu) it downloads that bundle's pieces
 # from the release it shipped with. Either way it then joins split .partNN
 # files, verifies the archive against its .sha256, installs the app and the
-# Engine into /opt/StemLab (override with STEMLAB_INSTALL_DIR), registers
-# the VST3 for the current user, and removes every downloaded file - the
-# archive, its parts, the checksum, and this script itself.
+# Engine into ~/.local/share/StemLab (override with STEMLAB_INSTALL_DIR),
+# registers the VST3 for the current user, and removes every downloaded file
+# - the archive, its parts, the checksum, and this script itself.
 
 set -euo pipefail
 shopt -s nullglob
@@ -246,7 +246,20 @@ fi
 
 # ----------------------------------------------------- extract and install
 
-INSTALL_DIR="${STEMLAB_INSTALL_DIR:-/opt/StemLab}"
+# Default to the XDG data directory rather than /opt. StemLab is a per-user
+# audio plugin: its VST3 goes to ~/.vst3 and its engine pointer to
+# ~/.config, so a system-wide payload was the odd one out and bought only a
+# sudo prompt. This also converges with install_backend.sh, which already
+# builds its Engine at $XDG_DATA_HOME/StemLab/Engine - the same path this
+# now unpacks to, instead of a second one beside it.
+#
+# Relative XDG values are invalid per the spec and are ignored by the
+# plugin, so ignore them the same way or the install lands where nothing
+# looks for it.
+DATA_HOME="${XDG_DATA_HOME:-}"
+[[ "$DATA_HOME" == /* ]] || DATA_HOME="$HOME/.local/share"
+
+INSTALL_DIR="${STEMLAB_INSTALL_DIR:-$DATA_HOME/StemLab}"
 parent_dir="$(dirname "$INSTALL_DIR")"
 
 # The tarball holds exactly one folder, named like itself.
@@ -257,14 +270,16 @@ tar -xzf "$bundle"
 
 [[ -f "$folder/install.sh" ]] || die "The archive did not contain $folder/install.sh - it is not a StemLab Linux bundle."
 
-# Placing the payload under /opt usually needs root, but everything
-# per-user - the VST3 copy, the engine pointer - must NOT run as root, so
-# only the file moves go through sudo and install.sh runs as the invoking
-# user afterwards.
+# The default location needs no privileges at all. This stays for anyone
+# who points STEMLAB_INSTALL_DIR at a system directory: only the file moves
+# go through sudo, and install.sh runs as the invoking user afterwards,
+# because everything it does is per-user - the VST3 copy, the engine
+# pointer - and must not be owned by root.
 priv=()
 if [[ ! -d "$parent_dir" || ! -w "$parent_dir" || ( -e "$INSTALL_DIR" && ! -w "$INSTALL_DIR" ) ]]; then
     command -v sudo >/dev/null 2>&1 || die "Installing to $INSTALL_DIR needs root.
-Re-run as root, or point STEMLAB_INSTALL_DIR at a folder you can write."
+Re-run as root, or unset STEMLAB_INSTALL_DIR to install under
+$DATA_HOME/StemLab, which needs no privileges."
     echo "Placing StemLab in $INSTALL_DIR (sudo may ask for your password)..."
     priv=(sudo)
 fi

@@ -154,7 +154,7 @@ else
   fi
   if [[ -z "$PYTHON" ]]; then
     for c in "$DATA_HOME/StemLab/Engine/bin/python" \
-             "${STEMLAB_INSTALL_DIR:-/opt/StemLab}/Engine/bin/python" \
+             "${STEMLAB_INSTALL_DIR:+$STEMLAB_INSTALL_DIR/Engine/bin/python}" \
              "$REPO_ROOT/.venv/bin/python" python3 python; do
       try_python "$c" && break
     done
