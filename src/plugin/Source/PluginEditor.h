@@ -87,6 +87,10 @@ private:
     /** Where a point in the well falls in the file, 0 to 1. */
     double normalisedForX(float x) const;
 
+    /** Ask the cache for currentFile's profile and arm the next poll.
+        True when a profile landed. */
+    bool fetchProfile();
+
     StemLabAudioProcessor& processor;
     StemLabWaveformCache& waveformCache;
 
@@ -151,6 +155,31 @@ private:
     bool lastDisplayValid = false;
 
     juce::File currentFile;
+
+    /** Whether currentFile was seen on disk. It only changes through
+        setFile, and File::existsAsFile is a syscall the waiting path would
+        otherwise pay at the UI rate. A stem announced before it is written
+        is the one case this starts out wrong, and only in that direction,
+        so the poll below re-checks until it turns true. */
+    bool currentFileExists = false;
+
+    /** Whether the cache has been asked for currentFile yet. paint asks
+        once, so a profile already analysed draws on the first frame; every
+        ask after that belongs to the rate-limited poll. */
+    bool profileRequested = false;
+
+    /** Timer ticks left before the next cache poll. */
+    int profilePollCountdown = 0;
+
+    /*
+        Analysis completion is not signalled, so a lane without a profile
+        polls the cache - and each ask costs a handful of stats, in a
+        window where every lane is waiting because stems now arrive while
+        later ones are still separating. At theme::metrics::uiRefreshHz
+        this trades poll latency for that traffic.
+    */
+    static constexpr int profilePollTicks = 4;
+
     juce::String stemIdentity;
     juce::String selectionId;
     bool mutedAppearance = false;
@@ -383,7 +412,14 @@ private:
 
     StemLabAudioProcessor& processor;
 
-    StemLabLookAndFeel lookAndFeel;
+    /*
+        Shared across every open editor: the constructor registers the two
+        Inter faces, which on the FreeType backend drags in a system font
+        directory scan. Declared here, ahead of every component that can
+        point at it, so the last reference outlives the last of them.
+    */
+    juce::SharedResourcePointer<StemLabLookAndFeel> lookAndFeel;
+
     juce::TooltipWindow tooltipWindow{this};
 
     // Declared before every control below: they are its children, so it has

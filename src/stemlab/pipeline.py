@@ -7,13 +7,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+import numpy as np
+
 from .audio import STEM_NAMES, find_stem_file
 from .device import pick_best_device, resolve_torch_device
 from .demucs_backend import DEFAULT_DEMUCS_MODEL, DemucsBackend
 from .hybrid import fuse_stem_folders
 from .pretrained import DEFAULT_MODEL, RoFormerBackend
 from .refinement.kick import KickRefinementConfig
-from .refinement.pipeline import refine_stem_folder
+from .refinement.pipeline import refine_stem_folder, reusable_stems
 from .runtime import CancellationToken
 
 ENGINE_ROFORMER = "roformer"
@@ -174,8 +176,8 @@ def separate(
 
     # Filled by the hybrid fusion stage with {stem: (audio, sr)} so the
     # refinement stage can reuse the arrays fusion just wrote instead of
-    # decoding the same six files straight back off disk.
-    fused_stems: dict | None = None
+    # decoding those files straight back off disk.
+    fused_stems: dict[str, tuple[np.ndarray, int]] | None = None
 
     engine = str(engine).strip().lower()
 
@@ -463,7 +465,18 @@ def separate(
 
             tracker.elapsed_eta()
 
-        fused_stems = {}
+        # Fusion hands each stem over as it lands and keeps nothing itself,
+        # so what outlives the stage is exactly what is caught here. Only
+        # the stems refinement decodes are worth catching: any other one is
+        # byte-copied from the file fusion already wrote, so keeping it
+        # would pin a full-length array nothing ever reads.
+        keep = reusable_stems()
+
+        fused_stems = {} if refine else None
+
+        def on_fused(stem: str, audio: np.ndarray, sr: int) -> None:
+            if stem in keep:
+                fused_stems[stem] = (audio, sr)
 
         fuse_stem_folders(
             roformer_dir=roformer_dir,
@@ -474,7 +487,9 @@ def separate(
             # Fusion writes the final files only when nothing refines them
             # afterwards; otherwise refinement is what publishes.
             ready_callback=None if refine else stem_ready,
-            fused_out=fused_stems,
+            # Nothing downstream reads a fused stem when refinement is off,
+            # so declining the handover frees each one as it is written.
+            fused_callback=on_fused if refine else None,
         )
 
     if refine:

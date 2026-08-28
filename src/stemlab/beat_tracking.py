@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sys
 import threading
@@ -91,6 +92,66 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+# What a completed digest check is remembered as, beside the checkpoint it
+# covers. Hashing a multi-hundred-megabyte file is slow enough to be felt at
+# the start of every run, and the file does not change between them. This is
+# a record of work already done, never a substitute for it: the size and
+# mtime it was taken over must still hold, and the digest it names must be
+# the one the spec pins, or the checkpoint goes back through the hash.
+_VERIFICATION_SUFFIX = ".verified.json"
+
+
+def _verification_path(checkpoint: Path) -> Path:
+    return checkpoint.with_name(checkpoint.name + _VERIFICATION_SUFFIX)
+
+
+def _already_verified(checkpoint: Path, info: os.stat_result, expected: str) -> bool:
+    """Has this exact file already hashed to the digest the spec pins?"""
+    try:
+        record = json.loads(_verification_path(checkpoint).read_text(encoding="utf-8"))
+        return (
+            str(record["sha256"]).lower() == expected.lower()
+            and int(record["size"]) == info.st_size
+            and int(record["mtime_ns"]) == info.st_mtime_ns
+        )
+    except (OSError, ValueError, TypeError, KeyError):
+        # No record, an unreadable one, or one that does not say what it must
+        # say. All of them mean the same thing: this file is unverified.
+        return False
+
+
+def _record_verification(checkpoint: Path, info: os.stat_result, digest: str) -> None:
+    """Note that ``checkpoint``, as ``info`` describes it, hashed to ``digest``.
+
+    ``info`` is deliberately the stat taken before the digest rather than
+    after: a checkpoint rewritten while it was being read carries a newer
+    mtime than this, and is hashed again rather than accepted on a digest
+    taken over bytes that no longer exist.
+    """
+    destination = _verification_path(checkpoint)
+    temporary = destination.with_name(f"{destination.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(
+                {
+                    "sha256": digest.lower(),
+                    "size": info.st_size,
+                    "mtime_ns": info.st_mtime_ns,
+                }
+            ),
+            encoding="utf-8",
+        )
+        os.replace(temporary, destination)
+    except OSError:
+        # A model directory that will not take the record costs later runs
+        # the hash they would have skipped. It must not cost this one the
+        # model, which is verified either way.
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _candidate_model_directories() -> list[Path]:
     candidates: list[Path] = []
     override = os.environ.get("STEMLAB_BEAT_THIS_MODEL_DIR")
@@ -126,11 +187,14 @@ def resolve_packaged_model(mode: str, model_dir: str | Path | None = None) -> Pa
         checked.append(str(path))
         if not path.is_file():
             continue
-        if path.stat().st_size != spec.size:
+        info = path.stat()
+        if info.st_size != spec.size:
             raise RuntimeError(f"Packaged Beat This! model has the wrong size: {path}")
-        digest = _sha256_file(path)
-        if digest.lower() != spec.sha256:
-            raise RuntimeError(f"Packaged Beat This! model failed SHA-256 validation: {path}")
+        if not _already_verified(path, info, spec.sha256):
+            digest = _sha256_file(path)
+            if digest.lower() != spec.sha256:
+                raise RuntimeError(f"Packaged Beat This! model failed SHA-256 validation: {path}")
+            _record_verification(path, info, digest)
         return path
 
     locations = "\n  ".join(checked)
@@ -254,6 +318,13 @@ def download_packaged_model(
             )
 
         partial.replace(destination)
+
+        # These bytes were hashed on the way in, so the resolution that
+        # follows this download has nothing left to check.
+        try:
+            _record_verification(destination, destination.stat(), actual)
+        except OSError:
+            pass
     except BaseException:
         # A half-written file left behind would be found by the next run and
         # rejected on its size, which reads as a corrupt install rather than

@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include <array>
 #include <atomic>
+#include <deque>
 #include <map>
 #include <unordered_map>
 #include <memory>
@@ -342,7 +343,15 @@ public:
     void setRecursiveStemMute(const juce::String& itemId, bool mute);
     bool isRecursiveStemMuted(const juce::String& itemId) const;
 
-    bool isCapturing() const noexcept { return capturing.load(); }
+    /*  Stays true while a stopped system capture is still flushing: the WAV
+        is not finalised and has not been handed over yet, so nothing that
+        consumes the recording - separation, a new take, the transport - may
+        treat the plugin as idle before then.
+    */
+    bool isCapturing() const noexcept
+    {
+        return capturing.load() || isSystemCaptureStopPending();
+    }
 
     bool isSourceAnalysisRunning() const noexcept { return sourceAnalysisRunning.load(); }
 
@@ -411,6 +420,11 @@ public:
     int getActionStatusRevision() const;
 
     juce::String getEngineLog() const;
+
+    /** Whether getEngineLog() would return anything, without paying for the
+        join - the editor asks this on every menu build. */
+    bool hasEngineLog() const;
+
     juce::File getLastJobDirectory() const;
 
     /** Compact key/BPM text for the currently loaded original source. */
@@ -665,6 +679,19 @@ private:
                               const juce::String& resultId);
     bool loadMidiInfo(const juce::String& id, const juce::File& midiFile);
     bool renderMidiAudition(juce::AudioBuffer<float>& buffer, int startSample, int numSamples);
+    void reserveMidiAuditionEvents();
+
+    /*  The half of stopSystemAudioRecording() that may only run once the
+        loopback thread has actually left run(): its last act is to destroy
+        the ThreadedWriter, which flushes the FIFO and finalises the WAV
+        header, so the file is not readable before then. Runs on the message
+        thread, either inline when the thread exits promptly or from
+        captureStopTimer when it does not.
+    */
+    void finishSystemAudioRecordingStop();
+
+    /** True while a stopped loopback thread is still flushing to disk. */
+    bool isSystemCaptureStopPending() const noexcept;
 
     /** Which lane a highlighted range applies to, in Lanes terms. */
     juce::String getCurrentPreviewSelectionId() const;
@@ -722,6 +749,15 @@ private:
     std::atomic<bool> capturing{false};
     std::atomic<int> standaloneRecordingMode{recordingNone};
     std::atomic<juce::int64> capturedSamples{0};
+
+    /*  Samples the threaded writer refused because its FIFO was full.
+        ThreadedWriter::write does not block - it returns false and discards
+        the block - so without this counter a disk hiccup produced a
+        time-compressed recording that still reported success, and the
+        duration readout hid the gap because dropped blocks were counted as
+        written. Non-zero at stop means the file is short by this much.
+    */
+    std::atomic<juce::int64> droppedCaptureSamples{0};
     std::atomic<double> captureStartPpq{-1.0};
     std::atomic<double> lastKnownHostPpq{0.0};
 
@@ -785,7 +821,22 @@ private:
 
     juce::Synthesiser midiAuditionSynth;
     mutable juce::CriticalSection midiAuditionLock;
+
+    /*  Sorted by note start, with midiAuditionNoteOffOrder indexing the same
+        notes by note end. Audition blocks are contiguous, so a cursor into
+        each list replaces rescanning the whole take on every block.
+    */
     std::vector<StemLabMidiNoteInfo> midiAuditionNotes;
+    std::vector<size_t> midiAuditionNoteOffOrder;
+    size_t midiAuditionNoteOnCursor = 0;
+    size_t midiAuditionNoteOffCursor = 0;
+
+    /*  Sized in prepareToPlay and cleared per block: MidiBuffer allocates on
+        its first event, which a fresh buffer per render put on the audio
+        thread. clear() keeps the allocation.
+    */
+    juce::MidiBuffer midiAuditionEvents;
+
     juce::String midiAuditionId;
     double midiAuditionPosition = 0.0;
     double midiAuditionDuration = 0.0;
@@ -815,6 +866,21 @@ private:
     };
     LoopTimer loopTimer{*this};
 
+    /*  Polls a stopping loopback thread instead of joining it. stopThread()
+        on the message thread blocked the UI for as long as the final flush
+        took, and its timeout escalates to thread cancellation - which the
+        loopback thread's own contract forbids, because a forced unwind out
+        of the writer's destructor terminates the host.
+    */
+    struct CaptureStopTimer final : juce::Timer
+    {
+        explicit CaptureStopTimer(StemLabAudioProcessor& ownerIn) : owner(ownerIn) {}
+        void timerCallback() override { owner.finishSystemAudioRecordingStop(); }
+        StemLabAudioProcessor& owner;
+    };
+
+    CaptureStopTimer captureStopTimer{*this};
+
     std::atomic<bool> abletonBridgeActive{false};
 
     juce::String engineCommand{"stemlab-plugin-job"};
@@ -825,7 +891,15 @@ private:
     juce::String actionStatus;
     int actionStatusRevision = 0;
 
-    juce::String engineLog;
+    /*  Chunks in arrival order rather than one juce::String: appending to a
+        50 KB String re-measured it, reallocated it to an exact fit and
+        copied it on every line, and the character-count trim walked the
+        whole UTF-8 buffer once the cap was reached. Only getEngineLog()
+        pays for the join. Guarded by stateLock; engineLogBytes tracks the
+        UTF-8 size the trim budget is spent against.
+    */
+    std::deque<juce::String> engineLogChunks;
+    size_t engineLogBytes = 0;
 
     // Resolved once when the VST3 wrapper delivers the host context, before
     // any editor exists; read from the message thread afterwards.

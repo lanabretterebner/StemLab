@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <thread>
 
 #if JUCE_LINUX
 #include "LinuxSystemCapture.h"
@@ -101,10 +102,16 @@ public:
         }
     }
 
+    ~StemLabStemMixSource() override
+    {
+        // The preparing thread holds references into entries, so it has to
+        // be gone before any of them is destroyed.
+        joinPreparation();
+    }
+
     void prepareToPlay(int samplesPerBlockExpected, double sampleRate) override
     {
-        for (auto& entry : entries)
-            entry.buffered->prepareToPlay(samplesPerBlockExpected, sampleRate);
+        joinPreparation();
 
         // The wrapping ResamplingAudioSource asks for up to its ring-buffer
         // size (our expected block + 32) in one call, and hosts occasionally
@@ -115,10 +122,37 @@ public:
 
         gainStepPerSample =
             sampleRate > 0.0 ? static_cast<float>(1.0 / (0.010 * sampleRate)) : 0.1f;
+
+        /*
+            BufferingAudioSource::prepareToPlay ends in a do/while whose body
+            is moveToFrontOfQueue plus Thread::sleep(5)
+            (juce_BufferingAudioSource.cpp), so it sleeps once even though
+            these sources are constructed with prefill disabled and the loop
+            condition is false. The transport calls this synchronously from
+            setSource, which made every mix build cost five milliseconds of
+            message-thread sleeping per lane - six for a plain job, more once
+            a lane has been split further.
+
+            Nothing can pull from this source while the prepare runs: on the
+            build path AudioTransportSource::setSource prepares the new
+            source before publishing it under its callback lock, and on the
+            re-prepare path it holds that lock throughout. Afterwards
+            sourcesReady is what keeps the audio thread out.
+        */
+        preparation = std::thread([this, samplesPerBlockExpected, sampleRate]
+                                  {
+                                      for (auto& entry : entries)
+                                          entry.buffered->prepareToPlay(samplesPerBlockExpected,
+                                                                        sampleRate);
+
+                                      sourcesReady.store(true, std::memory_order_release);
+                                  });
     }
 
     void releaseResources() override
     {
+        joinPreparation();
+
         for (auto& entry : entries)
             entry.buffered->releaseResources();
 
@@ -130,6 +164,17 @@ public:
         info.clearActiveBufferRegion();
 
         if (info.numSamples <= 0)
+            return;
+
+        /*
+            The lanes are still being prepared, which reallocates the cache
+            each BufferingAudioSource reads from - reading one now would be
+            reading freed memory. The shared clock is left where it is
+            rather than run forward over the gap, so the wait shows up as a
+            few milliseconds of latency before playback starts, not as
+            audio missing from the front of it.
+        */
+        if (!sourcesReady.load(std::memory_order_acquire))
             return;
 
         // One consistent read position for every stem this call; a
@@ -225,11 +270,24 @@ public:
     void setLooping(bool) override {}
 
 private:
+    void joinPreparation()
+    {
+        if (preparation.joinable())
+            preparation.join();
+
+        sourcesReady.store(false, std::memory_order_release);
+    }
+
     std::vector<Entry> entries;
     std::vector<float> currentGains;
     float gainStepPerSample = 0.1f;
     juce::AudioBuffer<float> scratch;
     std::atomic<juce::int64> position{0};
+
+    // Set once every lane has been prepared; read by the audio thread
+    // before it touches a single one of them.
+    std::atomic<bool> sourcesReady{false};
+    std::thread preparation;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StemLabStemMixSource)
 };
@@ -243,6 +301,18 @@ juce::String timestampForFilename()
 
 double nowMs() { return juce::Time::getMillisecondCounterHiRes(); }
 
+/*  How much audio the disk writer refused, in the terms the user cares
+    about. Reported at stop rather than logged when it happens: the count is
+    raised on the audio thread, where nothing may allocate or format text.
+*/
+juce::String describeDroppedCapture(juce::int64 samples, double sampleRate)
+{
+    if (sampleRate > 0.0)
+        return juce::String(static_cast<double>(samples) / sampleRate, 2) + " s";
+
+    return juce::String(samples) + " samples";
+}
+
 /*
     Splits a child process's output into lines BEFORE decoding UTF-8.
 
@@ -254,6 +324,15 @@ double nowMs() { return juce::Time::getMillisecondCounterHiRes(); }
 struct Utf8LineBuffer
 {
     std::vector<char> pending;
+
+    /*  A carriage-return progress bar carries no newline at all, so nothing
+        below can retire its bytes: pip and tqdm redrawing a model download
+        (report_downloads in runtime.py hands tqdm a fake TTY precisely so it
+        renders one) grew this buffer for the length of the download and then
+        emitted the whole thing as a single line. One screenful of redraws is
+        the entire useful history of a bar.
+    */
+    static constexpr size_t maxPendingBytes = 8192;
 
     template <typename Fn>
     void feed(const char* bytes, int count, Fn&& onLine)
@@ -284,6 +363,36 @@ struct Utf8LineBuffer
         }
 
         pending.erase(pending.begin(), pending.begin() + static_cast<long>(start));
+
+        if (pending.size() > maxPendingBytes)
+        {
+            // The tail after the last carriage return is the bar's current
+            // frame; everything before it has already been drawn over. '\r'
+            // is ASCII, so cutting there can never split a UTF-8 sequence.
+            const auto lastReturn = std::find(pending.rbegin(), pending.rend(), '\r');
+
+            if (lastReturn != pending.rend())
+            {
+                pending.erase(pending.begin(), lastReturn.base());
+            }
+            else
+            {
+                // Not a progress bar, just a process emitting a line longer
+                // than the budget: give up what is there rather than hold it.
+                const auto line =
+                    juce::String::fromUTF8(pending.data(), static_cast<int>(pending.size()))
+                        .trimEnd();
+
+                pending.clear();
+
+                if (line.isNotEmpty())
+                    onLine(line);
+            }
+        }
+
+        // The next feed() scans from pending.size() as it stands now, so any
+        // truncation above must leave the buffer, not an old offset, as the
+        // single source of where scanning resumes.
     }
 
     template <typename Fn>
@@ -1285,8 +1394,11 @@ public:
             return;
         }
 
+        // Two seconds of margin at whatever rate the endpoint runs: once
+        // the FIFO is full, write() discards rather than waits.
         auto writer = std::make_unique<juce::AudioFormatWriter::ThreadedWriter>(
-            formatWriter.release(), owner.diskWriterThread, 65536);
+            formatWriter.release(), owner.diskWriterThread,
+            juce::jmax(65536, static_cast<int>(sampleRate * 2.0)));
 
         // currentSampleRate/currentInputChannels belong to the host's
         // prepareToPlay and are plain members; writing them from this
@@ -1294,6 +1406,7 @@ public:
         // the duration readout actually consults.
         owner.systemCaptureSampleRate.store(sampleRate);
         owner.capturedSamples.store(0);
+        owner.droppedCaptureSamples.store(0);
 
         hr = audioClient->Start();
 
@@ -1423,9 +1536,15 @@ public:
                     }
                 }
 
-                writer->write(converted.getArrayOfReadPointers(), static_cast<int>(frames));
-
-                owner.capturedSamples.fetch_add(static_cast<juce::int64>(frames));
+                // ThreadedWriter::write returns false and DISCARDS the block
+                // when its FIFO is full. Waiting it out here is not an option
+                // - the endpoint buffer is still held by GetBuffer and would
+                // overrun - so the loss is counted and reported at stop
+                // instead of passing for a clean recording.
+                if (writer->write(converted.getArrayOfReadPointers(), static_cast<int>(frames)))
+                    owner.capturedSamples.fetch_add(static_cast<juce::int64>(frames));
+                else
+                    owner.droppedCaptureSamples.fetch_add(static_cast<juce::int64>(frames));
 
                 captureClient->ReleaseBuffer(frames);
 
@@ -1570,6 +1689,10 @@ StemLabAudioProcessor::~StemLabAudioProcessor()
     analysisThread.reset();
     midiThread.reset();
 
+    // Nothing left to hand over, so the poll stops before the thread it
+    // watches is joined by the reset below.
+    captureStopTimer.stopTimer();
+
 #if JUCE_WINDOWS || JUCE_LINUX
     systemLoopbackThread.reset();
 #endif
@@ -1585,6 +1708,8 @@ void StemLabAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock
 {
     currentSampleRate = sampleRate;
     currentInputChannels = juce::jmax(1, getTotalNumInputChannels());
+
+    reserveMidiAuditionEvents();
 
     if (!isStandaloneApp())
     {
@@ -1616,8 +1741,18 @@ void StemLabAudioProcessor::releaseResources()
 
 void StemLabAudioProcessor::prepareToPlay(int samplesPerBlockExpected, double sampleRate)
 {
+    reserveMidiAuditionEvents();
+
     previewTransport.prepareToPlay(samplesPerBlockExpected, sampleRate);
     stemMixTransport.prepareToPlay(samplesPerBlockExpected, sampleRate);
+}
+
+void StemLabAudioProcessor::reserveMidiAuditionEvents()
+{
+    // Room for the note-ons and note-offs of one block many times over; the
+    // point is only that renderMidiAudition never has to grow it.
+    const juce::ScopedLock lock(midiAuditionLock);
+    midiAuditionEvents.ensureSize(4096);
 }
 
 void StemLabAudioProcessor::getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill)
@@ -1683,7 +1818,13 @@ void StemLabAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
 
     // Physical-input and explicit host capture both use this pre-preview input
     // buffer and the same threaded disk writer. System loopback uses WASAPI.
-    if (standaloneRecordingMode.load() != recordingSystem)
+    //
+    // activeWriter doubles as the armed flag: with no capture running this
+    // load is the whole cost, and the lock below is never reached. A writer
+    // published between this load and the lock simply starts one block
+    // later.
+    if (activeWriter.load(std::memory_order_acquire) != nullptr &&
+        standaloneRecordingMode.load() != recordingSystem)
     {
         // Uncontended except at the moment recording stops, which is the
         // only time the writer can be destroyed (see stopStandaloneRecording).
@@ -1691,9 +1832,17 @@ void StemLabAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
 
         if (auto* writer = activeWriter.load(std::memory_order_acquire))
         {
-            writer->write(buffer.getArrayOfReadPointers(), buffer.getNumSamples());
+            const auto numSamples = buffer.getNumSamples();
 
-            capturedSamples.fetch_add(buffer.getNumSamples());
+            // ThreadedWriter::write never blocks: a full FIFO returns false
+            // and DISCARDS the block. Counting a discarded block as captured
+            // is what turned a disk hiccup into a silently time-compressed
+            // recording that still read as clean, so the two outcomes are
+            // counted apart and the stop path reports the loss.
+            if (writer->write(buffer.getArrayOfReadPointers(), numSamples))
+                capturedSamples.fetch_add(numSamples);
+            else
+                droppedCaptureSamples.fetch_add(numSamples);
         }
     }
 
@@ -1881,7 +2030,8 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
         const juce::ScopedLock lock(stateLock);
         captureFile = file;
         lastJobDirectory = juce::File();
-        engineLog.clear();
+        engineLogChunks.clear();
+        engineLogBytes = 0;
         reaperSourceInfo = {};
 
         inputSourceLabel = sourceLabel.isNotEmpty() ? sourceLabel : file.getFileName();
@@ -1995,10 +2145,6 @@ juce::File StemLabAudioProcessor::getCompletedStemFile(int index) const
         return {};
 
     const auto job = getLastJobDirectory();
-
-    if (!job.isDirectory())
-        return {};
-
     const bool jobDone = engineCompletedSuccessfully.load();
 
     {
@@ -2007,11 +2153,20 @@ juce::File StemLabAudioProcessor::getCompletedStemFile(int index) const
         // tree each time pegged a core once a job had finished - and worse
         // on a network share - so one scan serves every lookup until the
         // job state itself changes.
+        //
+        // Answered before job.isDirectory(), which is itself a stat and was
+        // paying for the directory on every hit. What the cache is keyed on
+        // - the job and its completion state - is exactly what invalidates
+        // it, so a job tree deleted underneath a loaded one surfaces the
+        // same way it always did: through that key changing.
         const juce::ScopedLock lock(stemFileCacheLock);
 
         if (stemFileCacheJob == job && stemFileCacheJobDone == jobDone)
             return stemFileCache[static_cast<size_t>(index)];
     }
+
+    if (!job.isDirectory())
+        return {};
 
     auto sourceFolder = job.getChildFile("refined");
 
@@ -2597,6 +2752,12 @@ bool StemLabAudioProcessor::startThreadedInputCapture(const juce::String& prefix
     if (capturing.load() || isEngineRunning() || sampleRate <= 0.0 || channels <= 0)
         return false;
 
+    if (isSystemCaptureStopPending())
+    {
+        setActionStatus("Still finishing the previous recording");
+        return false;
+    }
+
     currentSampleRate = sampleRate;
     currentInputChannels = juce::jlimit(1, 2, channels);
 
@@ -2624,17 +2785,26 @@ bool StemLabAudioProcessor::startThreadedInputCapture(const juce::String& prefix
         return false;
     }
 
+    // The FIFO is the whole margin against disk jitter: once it is full,
+    // write() discards blocks rather than waiting. 32768 samples was 0.68 s
+    // at 48 kHz, inside the range of an ordinary flush stall, so budget two
+    // seconds at whatever rate the device is actually running.
+    const int captureFifoSamples =
+        juce::jmax(32768, static_cast<int>(currentSampleRate * 2.0));
+
     threadedWriter = std::make_unique<juce::AudioFormatWriter::ThreadedWriter>(
-        formatWriter.release(), diskWriterThread, 32768);
+        formatWriter.release(), diskWriterThread, captureFifoSamples);
 
     {
         const juce::ScopedLock lock(stateLock);
         captureFile = recordingFile;
         lastJobDirectory = juce::File();
-        engineLog.clear();
+        engineLogChunks.clear();
+        engineLogBytes = 0;
     }
 
     capturedSamples.store(0);
+    droppedCaptureSamples.store(0);
     inputDurationSeconds.store(0.0);
     captureStartPpq.store(juce::jmax(0.0, startPpq));
     engineCompletedSuccessfully.store(false);
@@ -2670,10 +2840,20 @@ void StemLabAudioProcessor::stopStandaloneRecording()
     standaloneRecordingMode.store(recordingNone);
 
     const auto recordingFile = getCaptureFile();
+    const auto dropped = droppedCaptureSamples.load();
 
     if (recordingFile.existsAsFile() && setStandaloneInputFile(recordingFile))
     {
-        setStatus("Input recording ready");
+        // A short recording that reads as clean is worse than a loud
+        // failure: the missing audio is gone either way, but only one of
+        // the two tells the user to separate a take that is not the one
+        // they played.
+        if (dropped > 0)
+            setStatus("Input recording ready - "
+                      + describeDroppedCapture(dropped, currentSampleRate)
+                      + " was lost, the recording disk could not keep up");
+        else
+            setStatus("Input recording ready");
     }
     else
     {
@@ -2728,10 +2908,17 @@ void StemLabAudioProcessor::stopHostAudioCapture()
 
     const auto recordingFile = getCaptureFile();
 
+    const auto dropped = droppedCaptureSamples.load();
+
     if (recordingFile.existsAsFile() && recordingFile.getSize() > 44 &&
         setInputAudioFile(recordingFile, captureStartPpq.load(), "Host audio capture"))
     {
-        setStatus("Host audio capture ready");
+        if (dropped > 0)
+            setStatus("Host audio capture ready - "
+                      + describeDroppedCapture(dropped, currentSampleRate)
+                      + " was lost, the recording disk could not keep up");
+        else
+            setStatus("Host audio capture ready");
     }
     else
     {
@@ -2745,7 +2932,8 @@ void StemLabAudioProcessor::beginSystemCaptureSource(const juce::File& recording
         const juce::ScopedLock lock(stateLock);
         captureFile = recordingFile;
         lastJobDirectory = juce::File();
-        engineLog.clear();
+        engineLogChunks.clear();
+        engineLogBytes = 0;
     }
 
     inputDurationSeconds.store(0.0);
@@ -2764,6 +2952,15 @@ bool StemLabAudioProcessor::startSystemAudioRecording()
 {
     if (capturing.load() || isEngineRunning())
     {
+        return false;
+    }
+
+    // The previous take is still being flushed and its file has not been
+    // handed over yet; starting now would repoint captureFile out from
+    // under the pending handoff.
+    if (isSystemCaptureStopPending())
+    {
+        setActionStatus("Still finishing the previous recording");
         return false;
     }
 
@@ -2792,12 +2989,15 @@ bool StemLabAudioProcessor::startSystemAudioRecording()
      * writer are created before startThreadedInputCapture() replaces
      * anything.
      *
-     * capturedSamples is the exception, and safe: it only feeds the
-     * recording-time readout that getCapturedSeconds() consults while
-     * `capturing` is set, and a capture that never starts now falls back to
-     * inputDurationSeconds, which still describes the source.
+     * The two sample counters are the exception, and safe: they only feed
+     * the recording-time readout that getCapturedSeconds() consults while
+     * `capturing` is set and the drop report the stop path writes, and a
+     * capture that never starts now falls back to inputDurationSeconds,
+     * which still describes the source. Both threads zero them again when
+     * their writer opens.
      */
     capturedSamples.store(0);
+    droppedCaptureSamples.store(0);
 
     standaloneRecordingMode.store(recordingSystem);
     capturing.store(true);
@@ -2819,6 +3019,11 @@ bool StemLabAudioProcessor::startSystemAudioRecording()
 #endif
 }
 
+bool StemLabAudioProcessor::isSystemCaptureStopPending() const noexcept
+{
+    return captureStopTimer.isTimerRunning();
+}
+
 void StemLabAudioProcessor::stopSystemAudioRecording()
 {
 #if JUCE_WINDOWS || JUCE_LINUX
@@ -2829,24 +3034,75 @@ void StemLabAudioProcessor::stopSystemAudioRecording()
 
     capturing.store(false);
 
+    if (systemLoopbackThread != nullptr)
+    {
+        systemLoopbackThread->signalThreadShouldExit();
+        systemLoopbackThread->notify();
+
+        /*
+         * What is left to do is a queue drain plus the ThreadedWriter's
+         * destructor flushing its FIFO and rewriting the WAV header - disk
+         * work of no fixed duration. Joining it here (stopThread(5000)) is
+         * what froze the UI, and its timeout would have escalated to thread
+         * cancellation, which this thread's contract forbids because the
+         * forced unwind runs through that same writer destructor.
+         *
+         * So wait only long enough to cover the ordinary case, where the
+         * thread is already parked in its 25 ms sleep and exits at once,
+         * and hand anything slower to captureStopTimer. Nothing here reads
+         * the file, so the tail keeps flushing either way; only the handoff
+         * below waits for it.
+         */
+        if (!systemLoopbackThread->waitForThreadToExit(25))
+        {
+            // A thread that already failed has said something more useful.
+            if (!getStatus().startsWithIgnoreCase("System audio recording failed"))
+                setStatus("Finishing system audio recording...");
+
+            captureStopTimer.startTimer(20);
+            return;
+        }
+    }
+
+    finishSystemAudioRecordingStop();
+#endif
+}
+
+void StemLabAudioProcessor::finishSystemAudioRecordingStop()
+{
+#if JUCE_WINDOWS || JUCE_LINUX
+    // The WAV header is only correct once run() has returned; until then
+    // there is nothing to hand to the rest of the plugin.
+    if (systemLoopbackThread != nullptr && systemLoopbackThread->isThreadRunning())
+        return;
+
+    captureStopTimer.stopTimer();
+
     bool successful = false;
 
     if (systemLoopbackThread != nullptr)
     {
-        systemLoopbackThread->signalThreadShouldExit();
-        systemLoopbackThread->stopThread(5000);
         successful = systemLoopbackThread->wasSuccessful();
+
+        // The thread has already left run(), so the destructor's generous
+        // wait returns immediately - it stays the backstop, not the path.
         systemLoopbackThread.reset();
     }
 
     standaloneRecordingMode.store(recordingNone);
 
     const auto recordingFile = getCaptureFile();
+    const auto dropped = droppedCaptureSamples.load();
 
     if (successful && recordingFile.existsAsFile() && recordingFile.getSize() > 44 &&
         setInputAudioFile(recordingFile, captureStartPpq.load(), "System audio recording"))
     {
-        setStatus("System audio recording ready");
+        if (dropped > 0)
+            setStatus("System audio recording ready - "
+                      + describeDroppedCapture(dropped, systemCaptureSampleRate.load())
+                      + " was lost, the recording disk could not keep up");
+        else
+            setStatus("System audio recording ready");
     }
     else if (!getStatus().startsWithIgnoreCase("System audio recording failed"))
     {
@@ -3230,7 +3486,8 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
     {
         const juce::ScopedLock lock(stateLock);
         lastJobDirectory = job;
-        engineLog.clear();
+        engineLogChunks.clear();
+        engineLogBytes = 0;
     }
 
     if (getHostIntegration() == hostIntegrationAbletonLive)
@@ -3980,7 +4237,26 @@ void StemLabAudioProcessor::postUiStatus(const juce::String& message)
 juce::String StemLabAudioProcessor::getEngineLog() const
 {
     const juce::ScopedLock lock(stateLock);
-    return engineLog;
+
+    // Joined through a stream rather than String::operator+=, which
+    // re-measures the accumulated text on every append.
+    juce::MemoryOutputStream joined(engineLogBytes + 1);
+
+    for (const auto& chunk : engineLogChunks)
+        joined << chunk;
+
+    // Decoded explicitly rather than through toString(), which sniffs the
+    // first bytes for a byte-order mark the engine's own output never has.
+    return juce::String::fromUTF8(static_cast<const char*>(joined.getData()),
+                                  static_cast<int>(joined.getDataSize()));
+}
+
+bool StemLabAudioProcessor::hasEngineLog() const
+{
+    // appendEngineLog never stores an empty chunk, so emptiness here is the
+    // same answer getEngineLog().isNotEmpty() gives - without the join.
+    const juce::ScopedLock lock(stateLock);
+    return !engineLogChunks.empty();
 }
 
 juce::File StemLabAudioProcessor::getLastJobDirectory() const
@@ -4292,15 +4568,24 @@ int StemLabAudioProcessor::getReadyStemRevision() const
 
 void StemLabAudioProcessor::appendEngineLog(const juce::String& text)
 {
+    if (text.isNotEmpty())
     {
         const juce::ScopedLock lock(stateLock);
-        engineLog += text;
 
-        constexpr int maxLogCharacters = 50000;
+        // Appending to one juce::String cost a strlen, an exact-fit realloc
+        // and a full copy per line, and the character-count trim then walked
+        // every code point of the 50 KB cap on every line after that. Whole
+        // chunks leave the front instead, so the cost of a line no longer
+        // depends on how much has been logged.
+        engineLogBytes += static_cast<size_t>(text.getNumBytesAsUTF8());
+        engineLogChunks.push_back(text);
 
-        if (engineLog.length() > maxLogCharacters)
+        constexpr size_t maxLogBytes = 50000;
+
+        while (engineLogBytes > maxLogBytes && engineLogChunks.size() > 1)
         {
-            engineLog = engineLog.substring(engineLog.length() - maxLogCharacters);
+            engineLogBytes -= static_cast<size_t>(engineLogChunks.front().getNumBytesAsUTF8());
+            engineLogChunks.pop_front();
         }
     }
 
@@ -6470,6 +6755,26 @@ bool StemLabAudioProcessor::auditionMidi(const juce::String& id)
         midiAuditionDuration = 0.0;
         for (const auto& note : midiAuditionNotes)
             midiAuditionDuration = juce::jmax(midiAuditionDuration, note.end);
+
+        // Both orders are built once here so the render block only ever
+        // walks forward. Nothing outside the audition reads these copies,
+        // so reordering them is free.
+        std::sort(midiAuditionNotes.begin(), midiAuditionNotes.end(),
+                  [](const StemLabMidiNoteInfo& a, const StemLabMidiNoteInfo& b)
+                  { return a.start < b.start; });
+
+        midiAuditionNoteOffOrder.resize(midiAuditionNotes.size());
+
+        for (size_t i = 0; i < midiAuditionNoteOffOrder.size(); ++i)
+            midiAuditionNoteOffOrder[i] = i;
+
+        std::sort(midiAuditionNoteOffOrder.begin(), midiAuditionNoteOffOrder.end(),
+                  [this](size_t a, size_t b)
+                  { return midiAuditionNotes[a].end < midiAuditionNotes[b].end; });
+
+        midiAuditionNoteOnCursor = 0;
+        midiAuditionNoteOffCursor = 0;
+
         midiAuditionActive.store(true);
     }
     setStatus("Auditioning MIDI for " + id);
@@ -6488,6 +6793,9 @@ void StemLabAudioProcessor::stopMidiAudition()
     midiAuditionActive.store(false);
     midiAuditionSynth.allNotesOff(0, false);
     midiAuditionNotes.clear();
+    midiAuditionNoteOffOrder.clear();
+    midiAuditionNoteOnCursor = 0;
+    midiAuditionNoteOffCursor = 0;
     midiAuditionId.clear();
     midiAuditionPosition = 0.0;
     midiAuditionDuration = 0.0;
@@ -6502,7 +6810,8 @@ bool StemLabAudioProcessor::renderMidiAudition(juce::AudioBuffer<float>& buffer,
 
     const auto blockStart = midiAuditionPosition;
     const auto blockEnd = blockStart + static_cast<double>(numSamples) / currentSampleRate;
-    juce::MidiBuffer events;
+
+    midiAuditionEvents.clear();
 
     auto eventSample = [=](double seconds)
     {
@@ -6512,24 +6821,59 @@ bool StemLabAudioProcessor::renderMidiAudition(juce::AudioBuffer<float>& buffer,
                                                              currentSampleRate)));
     };
 
-    for (const auto& note : midiAuditionNotes)
+    const auto noteCount = midiAuditionNotes.size();
+
+    /*
+     * Note-offs before note-ons, which is what the old note-ordered scan
+     * produced and what a legato repeat of the same pitch needs: the voice
+     * has to be released before the next one takes it.
+     *
+     * Each cursor only moves forward. Audition blocks are contiguous
+     * (midiAuditionPosition is set to blockEnd below and reset to zero only
+     * when the note lists are rebuilt), so anything the cursor has passed
+     * is behind blockStart and was already emitted.
+     */
+    while (midiAuditionNoteOffCursor < noteCount)
     {
-        if (note.start >= blockStart && note.start < blockEnd)
-            events.addEvent(juce::MidiMessage::noteOn(
-                                1, note.pitch,
-                                static_cast<juce::uint8>(juce::jlimit(1, 127, note.velocity))),
-                            eventSample(note.start));
-        if (note.end >= blockStart && note.end < blockEnd)
-            events.addEvent(juce::MidiMessage::noteOff(1, note.pitch), eventSample(note.end));
+        const auto& note = midiAuditionNotes[midiAuditionNoteOffOrder[midiAuditionNoteOffCursor]];
+
+        if (note.end >= blockEnd)
+            break;
+
+        if (note.end >= blockStart)
+            midiAuditionEvents.addEvent(juce::MidiMessage::noteOff(1, note.pitch),
+                                        eventSample(note.end));
+
+        ++midiAuditionNoteOffCursor;
     }
 
-    midiAuditionSynth.renderNextBlock(buffer, events, startSample, numSamples);
+    while (midiAuditionNoteOnCursor < noteCount)
+    {
+        const auto& note = midiAuditionNotes[midiAuditionNoteOnCursor];
+
+        if (note.start >= blockEnd)
+            break;
+
+        if (note.start >= blockStart)
+            midiAuditionEvents.addEvent(
+                juce::MidiMessage::noteOn(
+                    1, note.pitch,
+                    static_cast<juce::uint8>(juce::jlimit(1, 127, note.velocity))),
+                eventSample(note.start));
+
+        ++midiAuditionNoteOnCursor;
+    }
+
+    midiAuditionSynth.renderNextBlock(buffer, midiAuditionEvents, startSample, numSamples);
     midiAuditionPosition = blockEnd;
     if (blockStart > midiAuditionDuration + 0.35)
     {
         midiAuditionSynth.allNotesOff(0, false);
         midiAuditionActive.store(false);
         midiAuditionNotes.clear();
+        midiAuditionNoteOffOrder.clear();
+        midiAuditionNoteOnCursor = 0;
+        midiAuditionNoteOffCursor = 0;
         midiAuditionId.clear();
     }
     return true;

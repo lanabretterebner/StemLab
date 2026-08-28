@@ -459,6 +459,7 @@ bool StemLabSystemLoopbackThread::openWriter (
 
     owner.systemCaptureSampleRate.store (captureSampleRate);
     owner.capturedSamples.store (0);
+    owner.droppedCaptureSamples.store (0);
 
     // Only now is the recording certain, so only now does the loaded source
     // give way to it. Everything that can fail - dlopen'ing libpulse,

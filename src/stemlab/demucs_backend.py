@@ -26,6 +26,22 @@ PACKAGED_DEMUCS_FILENAME = "5c90dfd2-34c22ccb.th"
 DEMUCS_OVERLAP = 0.10
 
 
+def _work_directory(output_dir: Path) -> tempfile.TemporaryDirectory:
+    """Open the scratch directory on the filesystem the stems land on.
+
+    Demucs writes six full-length stems into it and they are then put where
+    the job wants them. Beside the destination that is a rename; under the
+    system temp root, which is routinely a different filesystem, it is six
+    whole-file copies. A parent that will not take the directory - read-only,
+    or not ours to write - still has to yield a working job, so the temp root
+    remains the fallback.
+    """
+    try:
+        return tempfile.TemporaryDirectory(prefix="stemlab_demucs_input_", dir=output_dir.parent)
+    except OSError:
+        return tempfile.TemporaryDirectory(prefix="stemlab_demucs_input_")
+
+
 def _demucs_available() -> bool:
     # find_spec resolves the package on disk without importing it, so the
     # torch-heavy demucs module never loads into this process.
@@ -73,7 +89,7 @@ class DemucsBackend:
         input_path: str | Path,
         output_dir: str | Path,
     ) -> list[Path]:
-        """Run Demucs, then copy the six stems into a flat ``output_dir``."""
+        """Run Demucs, then move the six stems into a flat ``output_dir``."""
         input_path = Path(input_path).resolve()
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -92,7 +108,7 @@ class DemucsBackend:
                 "Run: python -m pip install -e ."
             )
 
-        with tempfile.TemporaryDirectory(prefix="stemlab_demucs_input_") as td:
+        with _work_directory(output_dir) as td:
             staging = Path(td) / "input"
             staging.mkdir(parents=True, exist_ok=True)
             staged = _normalise_input_for_backend(
@@ -154,7 +170,7 @@ class DemucsBackend:
             if exit_code != 0:
                 raise RuntimeError(f"Demucs failed with exit code {exit_code}")
 
-            copied: list[Path] = []
+            placed: list[Path] = []
             for stem in STEM_NAMES:
                 candidates = sorted(
                     raw_output.rglob(f"{stem}.wav"),
@@ -167,9 +183,18 @@ class DemucsBackend:
                 if not candidates:
                     raise RuntimeError(f"Demucs finished but did not produce the {stem} stem.")
                 destination = output_dir / f"{stem}.wav"
-                shutil.copy2(candidates[0], destination)
-                copied.append(destination)
+                try:
+                    # Nothing reads the stem from the scratch directory once
+                    # it is here, so the file moves rather than being written
+                    # a second time.
+                    candidates[0].replace(destination)
+                except OSError:
+                    # A rename cannot cross a filesystem, which is what the
+                    # scratch directory falls back to when it cannot sit
+                    # beside the output.
+                    shutil.copy2(candidates[0], destination)
+                placed.append(destination)
 
             self._progress(100.0)
-            self._log("Demucs separation complete: " + ", ".join(path.name for path in copied))
-            return copied
+            self._log("Demucs separation complete: " + ", ".join(path.name for path in placed))
+            return placed

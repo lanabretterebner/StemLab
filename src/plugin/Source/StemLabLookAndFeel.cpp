@@ -16,17 +16,28 @@ juce::String variantOf(const juce::Button& button)
 
 StemLabLookAndFeel::StemLabLookAndFeel()
 {
-    interRegular = juce::Typeface::createSystemTypefaceFor(BinaryData::InterRegular_ttf,
-                                                           BinaryData::InterRegular_ttfSize);
+    /*
+     * Publish the faces to the theme's font tokens: JUCE 9 resolves fonts
+     * without consulting getTypefaceForFont, so every FontOptions must
+     * carry its typeface explicitly (see theme::fonts::make).
+     *
+     * The tokens are also where the faces live for the process. Even the
+     * from-memory registration below goes through the FreeType backend's
+     * typeface list, whose first use scans the system font directories on
+     * the calling thread - which is the message thread here. Published
+     * tokens are therefore adopted rather than rebuilt, so the tokens are
+     * written exactly once however many instances exist.
+     */
+    if (theme::fonts::regularTypeface() == nullptr)
+        theme::fonts::regularTypeface() = juce::Typeface::createSystemTypefaceFor(
+            BinaryData::InterRegular_ttf, BinaryData::InterRegular_ttfSize);
 
-    interMedium = juce::Typeface::createSystemTypefaceFor(BinaryData::InterMedium_ttf,
-                                                          BinaryData::InterMedium_ttfSize);
+    if (theme::fonts::mediumTypeface() == nullptr)
+        theme::fonts::mediumTypeface() = juce::Typeface::createSystemTypefaceFor(
+            BinaryData::InterMedium_ttf, BinaryData::InterMedium_ttfSize);
 
-    // Publish the faces to the theme's font tokens: JUCE 9 resolves fonts
-    // without consulting getTypefaceForFont, so every FontOptions must
-    // carry its typeface explicitly (see theme::fonts::make).
-    theme::fonts::regularTypeface() = interRegular;
-    theme::fonts::mediumTypeface() = interMedium;
+    interRegular = theme::fonts::regularTypeface();
+    interMedium = theme::fonts::mediumTypeface();
 
     if (interRegular != nullptr)
         setDefaultSansSerifTypeface(interRegular);

@@ -18,11 +18,26 @@ from .kick import (
     refine_kick_bleed,
 )
 
+# Stems whose bleed is cancelled against the drums. Everything else in the
+# folder is passed through untouched.
+DEFAULT_KICK_TARGETS: tuple[str, ...] = ("bass", "guitar", "piano", "other")
+
+
+def reusable_stems(kick_targets: tuple[str, ...] = DEFAULT_KICK_TARGETS) -> frozenset[str]:
+    """Name the stems ``refine_stem_folder`` reads as audio.
+
+    Those are the only ones worth handing over in memory: the drums drive
+    kick analysis and every cancellation, and each target is cancelled
+    against them. The rest are byte-copied and never decoded, so preloading
+    one only pins a full-length array for the whole stage.
+    """
+    return frozenset({"drums", *kick_targets})
+
 
 def refine_stem_folder(
     input_dir: str | Path,
     output_dir: str | Path,
-    kick_targets: tuple[str, ...] = ("bass", "guitar", "piano", "other"),
+    kick_targets: tuple[str, ...] = DEFAULT_KICK_TARGETS,
     cfg: KickRefinementConfig | None = None,
     progress_callback: Callable[[int, int, str], None] | None = None,
     stage_callback: Callable[[str], None] | None = None,
@@ -46,7 +61,9 @@ def refine_stem_folder(
     sample_rate)`` already in memory - a same-process caller that just
     wrote ``input_dir`` (hybrid fusion) hands the arrays over so no stem is
     decoded twice. An entry is only trusted when its rate matches the
-    folder rate; anything else falls back to decoding the file.
+    folder rate; anything else falls back to decoding the file. Only the
+    stems ``reusable_stems`` names are ever read from it, so passing more
+    than those pins full-length audio nothing here will look at.
     """
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
@@ -122,6 +139,10 @@ def refine_stem_folder(
             )
             save_audio(out_path, refined, sr)
             stats[stem] = stem_stats
+
+            # Otherwise this name holds a full-length copy until the next
+            # target reassigns it, across that target's whole cancellation.
+            del refined
         else:
             info = sf.info(str(path))
             if info.samplerate == sr and info.channels > 1:

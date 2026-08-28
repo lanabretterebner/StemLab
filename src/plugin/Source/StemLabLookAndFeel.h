@@ -19,6 +19,12 @@
     Type: the bundled Inter faces load from BinaryData here.
     juce::Font::bold is mapped to Inter Medium (weight 500) - per Nocturne,
     nothing renders bolder than 500.
+
+    Registering those faces is expensive enough to be worth doing once per
+    process (see the constructor), so this is shared through
+    juce::SharedResourcePointer rather than owned per editor. It must
+    outlive every component pointing at it, which is what holding that
+    pointer as a member declared before those components guarantees.
 */
 class StemLabLookAndFeel final : public juce::LookAndFeel_V4
 {

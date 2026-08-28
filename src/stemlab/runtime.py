@@ -32,6 +32,12 @@ _DOWNLOAD_HINT_RE = re.compile(rb"download", re.IGNORECASE)
 # tqdm postfix "[elapsed<remaining, rate]" - the remaining half is a real ETA.
 _TQDM_REMAINING_RE = re.compile(rb"<(?:(\d+):)?(\d{1,2}):(\d{2})[,\]]")
 
+# What is left of a progress line once its numbers and its bar fill are
+# removed. Two redraws of one bar reduce to the same skeleton; a model log
+# line that happens to carry a percentage does not, so it is never mistaken
+# for a redraw of the bar above it.
+_REDRAW_NOISE_RE = re.compile(r"[\d\s#|=+.,:<>/\-\u2500-\u259f]+")
+
 # bs_roformer's chunk loop prints no percentages at all - only these two
 # time estimates. Together they are both a percentage and an ETA.
 _RF_TOTAL_RE = re.compile(
@@ -155,6 +161,11 @@ def tqdm_remaining_seconds(raw: bytes) -> float | None:
     match = matches[-1]
     hours = int(match.group(1) or 0)
     return float(hours * 3600 + int(match.group(2)) * 60 + int(match.group(3)))
+
+
+def _redraw_skeleton(text: str) -> str:
+    """Reduce a progress line to what stays fixed while its bar advances."""
+    return _REDRAW_NOISE_RE.sub("", text)
 
 
 def _terminate_registered_processes() -> None:
@@ -420,11 +431,16 @@ def run_progress_process(
     if cancellation:
         cancellation.raise_if_cancelled()
 
+    # Buffered, even though the reader below takes one byte at a time: a
+    # BufferedReader refills from whatever the pipe already holds rather than
+    # waiting for a full buffer, so fragments still arrive as promptly as
+    # unbuffered reads while costing one read(2) per refill instead of one
+    # per byte - on the machine that is at that moment running the model.
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        bufsize=0,
+        bufsize=-1,
         env=child_process_env(),
     )
     assert process.stdout is not None
@@ -444,6 +460,7 @@ def run_progress_process(
 
     last_reported = -1
     last_download_reported = -1
+    last_logged_redraw: tuple[tuple[str, int], str] | None = None
     roformer_total: float | None = None
     encoding = "utf-8"
 
@@ -454,13 +471,16 @@ def run_progress_process(
             progress(percent)
 
     def consume_segment(raw: bytes) -> None:
-        nonlocal last_download_reported, roformer_total
+        nonlocal last_download_reported, last_logged_redraw, roformer_total
         if not raw:
             return
 
         is_download = looks_like_download(raw)
         percent = last_progress_percent(raw)
         handled_progress = False
+        # The reading this segment carries, or None when it carries none.
+        # Only a segment with a reading can be a redraw of an earlier one.
+        reading: tuple[str, int] | None = None
 
         if percent is not None:
             if is_download:
@@ -468,9 +488,11 @@ def run_progress_process(
                     last_download_reported = int(percent)
                     download(percent)
                 handled_progress = True
+                reading = ("download", int(percent))
             else:
                 report_progress(percent)
                 handled_progress = True
+                reading = ("separation", int(percent))
 
         total_match = _RF_TOTAL_RE.search(raw)
         if total_match is not None:
@@ -479,6 +501,9 @@ def run_progress_process(
                 eta(roformer_total)
             report_progress(0.0)
             handled_progress = True
+            # Announced once per track rather than redrawn, so it is
+            # never a repeat of the frame above it.
+            reading = None
 
         remaining_match = _RF_REMAINING_RE.search(raw)
         if remaining_match is not None:
@@ -486,9 +511,9 @@ def run_progress_process(
             if eta is not None:
                 eta(remaining)
             if roformer_total is not None:
-                report_progress(
-                    max(0.0, min(100.0, 100.0 * (1.0 - remaining / roformer_total)))
-                )
+                bounded = max(0.0, min(100.0, 100.0 * (1.0 - remaining / roformer_total)))
+                report_progress(bounded)
+                reading = ("separation", int(bounded))
             handled_progress = True
         elif not is_download:
             tqdm_remaining = tqdm_remaining_seconds(raw)
@@ -499,8 +524,22 @@ def run_progress_process(
             text = raw.decode(encoding, errors="replace").strip()
         except LookupError:
             text = raw.decode("utf-8", errors="replace").strip()
-        if text and (log_progress_lines or not handled_progress):
-            log(text)
+        if not text or (handled_progress and not log_progress_lines):
+            return
+
+        # tqdm redraws its bar many times per percent, and every frame crosses
+        # the pipe and is appended to the plugin's diagnostics log - on
+        # Windows at two syscalls per byte. A frame that repeats the reading
+        # already logged, from a line of the same shape, says nothing the
+        # first frame at that reading did not. Anything else - a model's own
+        # output, an error, a protocol line the plugin parses - is logged
+        # whole, as is the first frame at every reading.
+        if reading is not None and not text.startswith("STEMLAB_"):
+            redraw = (reading, _redraw_skeleton(text))
+            if redraw == last_logged_redraw:
+                return
+            last_logged_redraw = redraw
+        log(text)
 
     segments: queue.Queue[bytes | None] = queue.Queue()
 

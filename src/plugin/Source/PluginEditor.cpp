@@ -157,6 +157,9 @@ void StemLaneWaveform::setFile(const juce::File& file)
         return;
 
     currentFile = file;
+    currentFileExists = file.existsAsFile();
+    profileRequested = false;
+    profilePollCountdown = 0;
     profile.reset();
     columns.clear();
     columnImage = juce::Image();
@@ -510,8 +513,10 @@ void StemLaneWaveform::paint(juce::Graphics& g)
     g.setColour(theme::colours::laneWell());
     g.fillRoundedRectangle(full, lanes::wellRadius);
 
-    if (profile == nullptr && currentFile.existsAsFile())
-        profile = waveformCache.get(currentFile);
+    // One ask from here per file; the timer's poll owns every ask after
+    // that, so a paint arriving for any other reason costs no syscalls.
+    if (profile == nullptr && !profileRequested)
+        fetchProfile();
 
     if (profile == nullptr || !(profile->lengthSeconds > 0.0))
         return;
@@ -728,14 +733,36 @@ void StemLaneWaveform::paint(juce::Graphics& g)
     }
 }
 
+bool StemLaneWaveform::fetchProfile()
+{
+    profileRequested = true;
+    profilePollCountdown = profilePollTicks;
+
+    // A stem can be announced before its file is written, so an existence
+    // that was false is the only one worth re-testing.
+    if (!currentFileExists)
+    {
+        if (!currentFile.existsAsFile())
+            return false;
+
+        currentFileExists = true;
+    }
+
+    profile = waveformCache.get(currentFile);
+    return profile != nullptr;
+}
+
 void StemLaneWaveform::timerRefresh()
 {
     if (profile == nullptr)
     {
-        // Still waiting on the analysis thread (paint is what asks the
-        // cache): keep polling while there is a file to draw. The paints
-        // this schedules early-out until the profile lands.
-        if (currentFile.existsAsFile())
+        // Still waiting on the analysis thread. Asking the cache is what
+        // both queues the file and picks the answer up, and the repaint
+        // is only worth scheduling once there is something to draw.
+        if (--profilePollCountdown > 0)
+            return;
+
+        if (fetchProfile())
             repaint();
 
         return;
@@ -1297,7 +1324,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 {
     namespace window = theme::metrics::window;
 
-    setLookAndFeel(&lookAndFeel);
+    setLookAndFeel(&lookAndFeel.get());
 
     // Clicking anywhere in the interface focuses the editor, so Esc can
     // reach keyPressed and clear the loop ranges.
@@ -2400,14 +2427,23 @@ void StemLabAudioProcessorEditor::layoutStatusArea()
         all run long. The slot must also come off the top before the bar
         is sized: reserving only the gap squeezed the readout to zero
         wherever the footer's buttons leave the status area narrow.
+
+        Measured once: both the token and the text are fixed for the
+        process, and this runs on every status refresh. The LookAndFeel
+        publishes the font tokens from its constructor and the editor holds
+        it as a member declared ahead of everything laid out here, so the
+        first measurement cannot capture a fallback face.
     */
-    const juce::Font progressFont{theme::fonts::progress()};
+    static const int labelSlot = []
+    {
+        const juce::Font progressFont{theme::fonts::progress()};
 
-    const auto dot = juce::String::fromUTF8(" \xc2\xb7 ");
+        const auto dot = juce::String::fromUTF8(" \xc2\xb7 ");
 
-    const int labelSlot =
-        juce::roundToInt(juce::GlyphArrangement::getStringWidth(
-            progressFont, "100%" + dot + "888:88" + dot + "ETA 88:88")) + 4;
+        return juce::roundToInt(juce::GlyphArrangement::getStringWidth(
+                   progressFont, "100%" + dot + "888:88" + dot + "ETA 88:88")) +
+               4;
+    }();
 
     const int barWidth =
         juce::jlimit(0, footer::progressBarWidth,
@@ -3444,7 +3480,7 @@ juce::PopupMenu StemLabAudioProcessorEditor::makeMenu()
 
     // A top-level menu window has no parent to inherit from: JUCE reads the
     // look and feel off the PopupMenu itself, and draws stock JUCE without.
-    menu.setLookAndFeel(&lookAndFeel);
+    menu.setLookAndFeel(&lookAndFeel.get());
 
     return menu;
 }
@@ -3700,7 +3736,7 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
 
     menu.addSeparator();
 
-    menu.addItem(4, "Copy diagnostics to clipboard", processor.getEngineLog().isNotEmpty());
+    menu.addItem(4, "Copy diagnostics to clipboard", processor.hasEngineLog());
 
     // The version this binary was built as (project VERSION in CMakeLists,
     // stamped by JUCE). Informational, so never selectable.

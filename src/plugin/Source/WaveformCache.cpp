@@ -1,13 +1,46 @@
 #include "WaveformCache.h"
 
 #include <algorithm>
+#include <vector>
+
+#if JUCE_LINUX
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
+namespace
+{
+/*
+ * Throttling during a separation is by work, not by scheduler priority.
+ *
+ * juce::Thread::setPriority does nothing at all on Linux: JUCE 9 stores the
+ * value, returns true for source compatibility with the other platforms, and
+ * leaves the thread alone "until we implement Nice awareness"; the priority
+ * handed to createNativeThread is likewise ignored for a non-realtime thread.
+ * A priority drop would therefore have thrown the analysis clear of a running
+ * job on macOS only. Resting for a multiple of what the block just cost works
+ * the same everywhere, needs no privileges, and sizes itself to the machine
+ * and the file rather than to a guessed number of milliseconds.
+ */
+constexpr double throttleRestFactor = 2.0;
+
+/** Ceiling on one rest, so a slow read cannot park the worker for a visible
+    stretch and the end of a separation is picked up within a block. */
+constexpr int throttleMaxRestMillis = 25;
+
+#if JUCE_LINUX
+/** The hint setPriority cannot give here. Raising niceness needs no privilege
+    but lowering it back does, so it is asked for once for the life of the
+    worker rather than around each separation - the resting is what follows a
+    job starting and ending. */
+constexpr int workerNiceness = 10;
+#endif
+}
 
 StemLabWaveformCache::StemLabWaveformCache(juce::AudioFormatManager& formatsIn)
     : juce::Thread("StemLab waveform"), formats(formatsIn)
 {
-    // Normal while no separation runs; setSeparationActive drops the worker
-    // to low for the duration of one, where analysis would compete with a
-    // job the user is actually waiting for.
     startThread(juce::Thread::Priority::normal);
 }
 
@@ -94,8 +127,8 @@ void StemLabWaveformCache::setSeparationActive(bool active)
 {
     separationActive.store(active);
 
-    // Wake a parked worker so the priority change is applied now rather
-    // than when the next file happens to be queued.
+    // Wake a resting or parked worker so a separation that has just ended
+    // gives back full speed now rather than after one more rest.
     notify();
 }
 
@@ -137,11 +170,28 @@ StemLabWaveformCache::Profile StemLabWaveformCache::analyse(const juce::File& fi
     profile.peaks.minima.assign(slots, 0.0f);
     profile.peaks.maxima.assign(slots, 0.0f);
 
-    // The spectrum wants the whole file summed to mono; the peaks want it a
-    // block at a time. One read serves both.
-    std::vector<float> mono(static_cast<std::size_t>(total), 0.0f);
+    /*
+     * The spectrum takes its windows as the blocks arrive rather than a mono
+     * copy of the file: only the windows the spectrum hop lands on are ever
+     * read, while a copy of an hour-long capture is 635MB of float resident
+     * for the whole analysis.
+     */
+    waveform::MonoSpectrumScanner spectrum(static_cast<std::size_t>(total), rate);
 
-    const auto blockFrames = juce::int64{512};
+    // One window of mono, refilled in place: sized by the window rather than
+    // by the file, which is the point of feeding the scanner in pieces.
+    std::vector<float> monoWindow(static_cast<std::size_t>(waveform::spectrumFftSize), 0.0f);
+
+    const auto monoScale = 1.0f / static_cast<float>(channels);
+
+    /*
+     * Blocks are a whole number of peak frames, as above, and bounded in
+     * samples: the hop a long file stretches to must not drag the read buffer
+     * up with it, which is the other way a duration turns into memory.
+     */
+    constexpr juce::int64 blockTargetSamples = 1 << 16;
+
+    const auto blockFrames = juce::jmax<juce::int64>(1, blockTargetSamples / hop);
     const auto blockSize = static_cast<int>(hop * blockFrames);
 
     juce::AudioBuffer<float> block(channels, blockSize);
@@ -153,17 +203,46 @@ StemLabWaveformCache::Profile StemLabWaveformCache::analyse(const juce::File& fi
         if (threadShouldExit())
             return {};
 
+        const auto startedAt = juce::Time::getMillisecondCounterHiRes();
+
         const auto count = static_cast<int>(juce::jmin<juce::int64>(blockSize, total - position));
 
         if (!reader->read(&block, 0, count, position, true, channels > 1))
             return {};
 
-        for (int channel = 0; channel < channels; ++channel)
+        /*
+         * A window can straddle two blocks: the scanner keeps the part it
+         * already has and takes the rest from the next block, so what is
+         * summed here is the intersection of the window with this block -
+         * hence a file position rather than an offset in the block.
+         */
+        for (auto wanted = spectrum.samplesWanted(); wanted > 0;
+             wanted = spectrum.samplesWanted())
         {
-            const auto* samples = block.getReadPointer(channel);
+            const auto start = spectrum.nextSample();
 
-            for (int i = 0; i < count; ++i)
-                mono[static_cast<std::size_t>(position + i)] += samples[i];
+            if (start >= static_cast<std::size_t>(position + count))
+                break;
+
+            const auto from = static_cast<int>(start - static_cast<std::size_t>(position));
+            const auto taken = juce::jmin(static_cast<int>(wanted), count - from);
+
+            const float* channelSamples[waveform::peakMaxChannels] = {};
+
+            for (int channel = 0; channel < channels; ++channel)
+                channelSamples[channel] = block.getReadPointer(channel) + from;
+
+            for (int i = 0; i < taken; ++i)
+            {
+                auto sum = 0.0f;
+
+                for (int channel = 0; channel < channels; ++channel)
+                    sum += channelSamples[channel][i];
+
+                monoWindow[static_cast<std::size_t>(i)] = channels > 1 ? sum * monoScale : sum;
+            }
+
+            spectrum.push(start, monoWindow.data(), static_cast<std::size_t>(taken));
         }
 
         for (int offset = 0; offset < count && frame < frameCount;
@@ -193,25 +272,41 @@ StemLabWaveformCache::Profile StemLabWaveformCache::analyse(const juce::File& fi
         }
 
         position += count;
+
+        /*
+         * One block is a bounded slice of work with nothing half-read across
+         * it, so it is where the worker can hand the CPU back. Resting for
+         * longer than the block took leaves a separation the larger share
+         * while the analysis still finishes on its own.
+         */
+        if (separationActive.load())
+        {
+            const auto workedMs = juce::Time::getMillisecondCounterHiRes() - startedAt;
+
+            wait(juce::jlimit(1, throttleMaxRestMillis,
+                              static_cast<int>(workedMs * throttleRestFactor)));
+        }
     }
 
-    if (channels > 1)
-    {
-        const auto scale = 1.0f / static_cast<float>(channels);
-
-        for (auto& sample : mono)
-            sample *= scale;
-    }
-
-    profile.spectrum = waveform::analyseMono(mono.data(), mono.size(), rate);
+    profile.spectrum = spectrum.finish();
 
     return profile;
 }
 
 void StemLabWaveformCache::run()
 {
+#if JUCE_LINUX
+    // Niceness is per-thread on Linux and settable only from the thread
+    // itself, so it is asked for here rather than at construction. A refusal
+    // costs nothing: the resting in analyse() is what actually throttles.
+    juce::ignoreUnused(::setpriority(PRIO_PROCESS, static_cast<id_t>(::syscall(SYS_gettid)),
+                                     workerNiceness));
+#endif
+
     // Matches the priority the thread was started with; setPriority only
-    // works from the target thread, so the flag is applied here.
+    // works from the target thread, so the flag is applied here. It is a hint
+    // on top of the resting in analyse(), not the mechanism: see above for
+    // the platforms where it does nothing.
     bool appliedSeparationActive = false;
 
     while (!threadShouldExit())
