@@ -3688,8 +3688,20 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
     statusLabel.setText(statusText, juce::dontSendNotification);
 
+    /*
+     * The severity describes rawStatus, and showSummary has just replaced
+     * it with a sentence about the finished job. Every failure that leaves
+     * hasSuccessfulJob() standing - an adaptive split that will not start,
+     * one whose manifest is rejected, a STEMLAB_ERROR from the recursive
+     * worker - would otherwise latch red and, five seconds later, repaint
+     * the main job's success summary in the failure colour beside a red
+     * cross, and stay that way until some later status changed severity.
+     * A failure with no summary behind it still reads as one: launching a
+     * main job clears hasSuccessfulJob() first, so showSummary is false
+     * for the whole of a failed separation.
+     */
     const bool statusIsError =
-        processor.getStatusSeverity() == StemLabAudioProcessor::statusFailure;
+        !showSummary && processor.getStatusSeverity() == StemLabAudioProcessor::statusFailure;
 
     // Only on change: juce::Label::setColour repaints, and this runs at 20 Hz.
     if (statusIsError != lastStatusWasError)
