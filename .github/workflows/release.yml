@@ -295,7 +295,7 @@ jobs:
             bash StemLab-Linux-setup.sh
 
           It joins the parts, verifies them, installs StemLab into
-          /opt/StemLab, and removes every downloaded file when done.
+          ~/.local/share/StemLab, and removes every downloaded file when done.
 
           By hand instead: put every part in one folder, join them, verify,
           then extract:
@@ -592,7 +592,7 @@ jobs:
           | --- | --- |
           | `StemLab-Windows-setup.ps1` | **Windows - the only file you need.** Right-click it, "Run with PowerShell", and pick a flavor - it downloads that installer (and its `.bin` slices, if any), verifies it, runs it, and deletes the downloads. |
           | `StemLab-Setup-*-<flavor>.exe` (+ `.bin` slices, if any) | **Windows installer.** What the script above fetches; grab it by hand if you prefer. An installer that ships with `.bin` slices needs every one of them in the same folder before the `.exe` will start. Installs the app, the VST3 and the Engine; no Python needed. Pick the flavor for your hardware. |
-          | `StemLab-Linux-setup.sh` | **Linux - the only file you need.** Run `bash StemLab-Linux-setup.sh <flavor>` (e.g. `xpu`) and it downloads that bundle from this release, verifies it, installs it into `/opt/StemLab` (override with `STEMLAB_INSTALL_DIR`), and removes every downloaded file, itself included. |
+          | `StemLab-Linux-setup.sh` | **Linux - the only file you need.** Run `bash StemLab-Linux-setup.sh <flavor>` (e.g. `xpu`) and it downloads that bundle from this release, verifies it, installs it into `~/.local/share/StemLab` (override with `STEMLAB_INSTALL_DIR`), and removes every downloaded file, itself included. |
           | `StemLab-*-Linux-<flavor>.tar.gz` | **Linux, self-contained.** What the script above fetches; grab it by hand if you prefer (every `.partNN`, if split, plus the `.sha256`). Includes the Engine; no Python needed. Pick the flavor for your hardware - see below. |
           | `StemLab-*-plugin-only.*` | The VST3 and Standalone binaries alone, for anyone who already has an Engine installed. |
           | `stemlab_open-*.whl`, `stemlab_open-*.tar.gz` | The Python package on its own, for command-line use. |
