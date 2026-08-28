@@ -519,13 +519,16 @@ cat <<'NOTE'
       fp32 timing is the only one worth comparing against PyTorch.
 
   Two things measured while writing this, so you do not rediscover them:
-    - q8_0 quantizes 881 of 1939 tensors. The rest fall back to F32 because
-      their shapes are not divisible by the block size - including every
-      band_split layer, at shapes like (256, 16) and (256, 48). The frequency
-      mapping most likely to hurt if quantized therefore stays at full
-      precision, which is a point in q8_0's favour. It still has to be
-      measured; this only says where the risk is not.
-    - The converted q8_0 file is 179 MB against a ~700 MB checkpoint.
+    - q8_0 quantizes 881 of 1939 tensors, which sounds like partial coverage
+      and is not. Counted by PARAMETER rather than by tensor it is 99.5%:
+      only 0.82M weights of 174.6M escape. The count is dominated by hundreds
+      of tiny per-band layers, while the transformer's large matrices - the
+      mass of the model - all quantize. The band_split layers do stay at F32,
+      at shapes like (256, 16) and (256, 48), so the frequency mapping is
+      protected; that is worth having but it is half a percent of the weights,
+      not a general reprieve. Assume the whole network runs on 8-bit weights.
+    - The converted q8_0 file is 179 MB against a ~700 MB checkpoint, which is
+      itself the evidence: near-complete quantization by volume.
 
   On Intel graphics, try --backends cpu,sycl as well. Vulkan works, but SYCL
   is Intel's first-class path and generally faster on their hardware.
