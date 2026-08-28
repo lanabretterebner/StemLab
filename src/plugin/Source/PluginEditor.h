@@ -112,6 +112,20 @@ private:
 
     std::vector<Column> columns;
 
+    /** One beat-grid number waiting to be drawn. The rules belong behind
+        the audio, but the numbers have to survive it, so they are gathered
+        on the way through the grid and painted after the waveform blit
+        rather than under it. Held here rather than made per paint so a
+        repaint at the UI rate does not churn the heap. */
+    struct GridLabel
+    {
+        juce::Rectangle<float> bounds;
+        juce::String text;
+        bool bar = false;
+    };
+
+    std::vector<GridLabel> gridLabels;
+
     /** The columns pre-rendered as pixels, so a paint is one blit instead of
         thousands of one-pixel fills. When the view slides by whole columns
         (zoomed playback) the image scrolls and only the newly exposed

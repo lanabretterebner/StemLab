@@ -577,7 +577,10 @@ void StemLaneWaveform::paint(juce::Graphics& g)
                               : -1.0;
 
     // Beat grid behind the waveform: bars read stronger than beats, and the
-    // whole thing stays subordinate to the audio it sits behind.
+    // whole thing stays subordinate to the audio it sits behind. The rules
+    // draw here; the numbers are only gathered, and go on after the audio.
+    gridLabels.clear();
+
     {
         const auto gridBpm = lastDisplay.gridBpm;
         const auto gridBarOne = lastDisplay.gridBarOne;
@@ -623,8 +626,6 @@ void StemLaneWaveform::paint(juce::Graphics& g)
                  */
                 int beatIndex = static_cast<int>(
                     std::floor((snappedStart - gridBarOne) / secondsPerBeat));
-
-                g.setFont(theme::fonts::gridLabel());
 
                 for (double t = gridBarOne + beatIndex * secondsPerBeat;
                      t <= snappedStart + viewLength && t < length;
@@ -674,32 +675,72 @@ void StemLaneWaveform::paint(juce::Graphics& g)
                     if (label.getRight() > inner.getRight())
                         continue;
 
-                    /*
-                     * The numbers carry meaning where the rules above only
-                     * carry rhythm, so they sit well clear of them. On the
-                     * lane well 0.55 and 0.38 measure 5.15:1 and 3.11:1;
-                     * the 0.34/0.20 they replace were 2.75:1 and 1.73:1,
-                     * under the 3:1 that incidental text needs.
-                     */
-                    g.setColour(theme::colours::text().withAlpha(bar ? 0.55f : 0.38f));
-                    g.drawText(text, label, juce::Justification::topLeft, false);
+                    gridLabels.push_back({label, text, bar});
                 }
             }
         }
     }
 
-    if (columns.empty() || !columnImage.isValid())
-        return;
-
-    const float playheadX = secondsToX(juce::jmax(0.0, playNormalised) * length);
+    const bool haveColumns = !columns.empty() && columnImage.isValid();
 
     // The columns land in one blit; the per-column drawing itself lives in
     // renderColumnStrip, which only runs when the picture changes. Images
-    // draw at the current colour's opacity, and the grid labels left a
+    // draw at the current colour's opacity, and the grid rules left a
     // mostly-transparent one behind.
-    g.setOpacity(1.0f);
-    g.drawImageAt(columnImage, static_cast<int>(inner.getX()),
-                  static_cast<int>(inner.getY()));
+    if (haveColumns)
+    {
+        g.setOpacity(1.0f);
+        g.drawImageAt(columnImage, static_cast<int>(inner.getX()),
+                      static_cast<int>(inner.getY()));
+    }
+
+    /*
+     * The numbers go on over the audio, not under it. Drawn with the rules
+     * they were simply painted out: a near-full-scale passage fills the
+     * well top to bottom and the blit took the ruler with it, so the labels
+     * lost most of their ink whatever alpha they were given.
+     *
+     * Each number carries a small plate of the well's own ground colour, so
+     * it reads against the surface its contrast was chosen against - 5.15:1
+     * for a bar, 3.11:1 for a beat - instead of against whatever the audio
+     * happens to be doing underneath. On a quiet lane the plate is the
+     * colour that was already there and nothing shows; on a loud one it is
+     * what keeps the number off the waveform. The rules stay behind the
+     * audio, where rhythm belongs.
+     */
+    if (!gridLabels.empty())
+    {
+        const juce::Font labelFont {theme::fonts::gridLabel()};
+
+        g.setFont(labelFont);
+
+        for (const auto& item : gridLabels)
+        {
+            const auto ink = juce::GlyphArrangement::getStringWidth(labelFont, item.text);
+
+            // The plate starts exactly where drawText starts laying glyphs
+            // and only pads its trailing edge: a plate that reached back
+            // over the bar rule would notch the rule for the label's height,
+            // and the rules are meant to be continuous.
+            const auto plate = item.bounds.withWidth(ink + lanes::gridLabelPlatePadding)
+                                   .getIntersection(inner);
+
+            if (!plate.isEmpty())
+            {
+                g.setColour(
+                    theme::colours::laneWell().withAlpha(lanes::gridLabelPlateAlpha));
+                g.fillRoundedRectangle(plate, lanes::gridLabelPlateRadius);
+            }
+
+            g.setColour(theme::colours::text().withAlpha(item.bar ? 0.55f : 0.38f));
+            g.drawText(item.text, item.bounds, juce::Justification::topLeft, false);
+        }
+    }
+
+    if (!haveColumns)
+        return;
+
+    const float playheadX = secondsToX(juce::jmax(0.0, playNormalised) * length);
 
     // Selection / loop range, live while dragging and persistent after.
     {

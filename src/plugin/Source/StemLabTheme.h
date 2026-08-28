@@ -558,6 +558,15 @@ namespace stemlab::theme
             constexpr float gridLabelMinSpacing = 42.0f;
             constexpr float gridLabelWidth = 26.0f;
             constexpr float gridLabelHeight = 11.0f;
+
+            // Each number sits on a small plate of the well's own ground so
+            // it keeps the contrast it was measured for whatever the audio
+            // under it is doing. On a quiet lane the plate is the colour
+            // already there, so nothing shows; on a loud one it is the only
+            // reason the number is still legible.
+            constexpr float gridLabelPlateAlpha = 0.90f;
+            constexpr float gridLabelPlateRadius = 2.0f;
+            constexpr float gridLabelPlatePadding = 2.5f;
         }
 
         namespace transport
