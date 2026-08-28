@@ -296,6 +296,92 @@ int main()
     }
 
     {
+        // Streaming a file in blocks reads the same profile as holding it.
+        // The cache feeds windows as read blocks arrive, so a window lands
+        // across a block boundary at nearly every hop and has to be
+        // assembled from both blocks rather than restarted in the second.
+        constexpr double rate = 44100.0;
+
+        const auto samples = sine(1200.0, rate, 1.5);
+        const auto whole = analyseMono(samples.data(), samples.size(), rate);
+
+        for (const std::size_t blockSize : {std::size_t{1}, std::size_t{333},
+                                            std::size_t{1024}, std::size_t{4096}})
+        {
+            MonoSpectrumScanner scanner(samples.size(), rate);
+
+            for (std::size_t position = 0; position < samples.size(); position += blockSize)
+            {
+                scanner.push(position, samples.data() + position,
+                             std::min(blockSize, samples.size() - position));
+            }
+
+            const auto streamed = scanner.finish();
+
+            assert(streamed.brightness == whole.brightness);
+            assert(streamed.bands.size() == whole.bands.size());
+
+            for (std::size_t i = 0; i < whole.bands.size(); ++i)
+            {
+                assert(streamed.bands[i].low == whole.bands[i].low);
+                assert(streamed.bands[i].mid == whole.bands[i].mid);
+                assert(streamed.bands[i].high == whole.bands[i].high);
+            }
+        }
+
+        // Handing over only what the scanner asks for - what a reader doing
+        // the mono sum per window does, so that nothing between two windows
+        // is ever touched - reads the same profile again.
+        MonoSpectrumScanner asked(samples.size(), rate);
+
+        while (asked.samplesWanted() > 0 && asked.nextSample() < samples.size())
+        {
+            const auto start = asked.nextSample();
+
+            asked.push(start, samples.data() + start,
+                       std::min(asked.samplesWanted(), samples.size() - start));
+        }
+
+        assert(asked.finish().brightness == whole.brightness);
+    }
+
+    {
+        // Past spectrumMaxFrames the hop outgrows the window, and what falls
+        // between two windows is then skipped rather than buffered - which is
+        // what lets a reader hand over the windows alone.
+        constexpr double rate = 44100.0;
+        constexpr auto windowSize = static_cast<std::size_t>(spectrumFftSize);
+
+        // Long enough for a hop of two windows; the samples are never read,
+        // so the length costs nothing here.
+        MonoSpectrumScanner scanner(windowSize * 2 * spectrumMaxFrames, rate);
+
+        const auto samples = sine(900.0, rate, 0.1);
+
+        assert(scanner.nextSample() == 0);
+        assert(scanner.samplesWanted() == windowSize);
+
+        scanner.push(0, samples.data(), windowSize);
+
+        // One window analysed, and the next one starts a hop along rather
+        // than where this one ended.
+        assert(scanner.samplesWanted() == windowSize);
+        assert(scanner.nextSample() == windowSize * 2);
+
+        // A span lying entirely in the gap leaves the scanner where it was.
+        scanner.push(windowSize, samples.data(), windowSize / 2);
+
+        assert(scanner.samplesWanted() == windowSize);
+        assert(scanner.nextSample() == windowSize * 2);
+
+        // A block reaching from inside the gap into the window contributes
+        // only its overlap with the window.
+        scanner.push(windowSize, samples.data(), windowSize + 8);
+
+        assert(scanner.nextSample() == windowSize * 2 + 8);
+    }
+
+    {
         // Nothing to analyse is an empty profile, not a crash.
         assert(analyseMono(nullptr, 0, 44100.0).isEmpty());
 

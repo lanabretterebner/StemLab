@@ -309,7 +309,7 @@ def fuse_stem_folders(
     log_callback: Callable[[str], None] | None = None,
     progress_callback: Callable[[int, int, str], None] | None = None,
     ready_callback: Callable[[str, Path], None] | None = None,
-    fused_out: dict[str, tuple[np.ndarray, int]] | None = None,
+    fused_callback: Callable[[str, np.ndarray, int], None] | None = None,
 ) -> list[Path]:
     """Fuse all six named stems from two model-output directories.
 
@@ -323,9 +323,12 @@ def fuse_stem_folders(
     "")`` once everything is written. ``ready_callback(stem, path)`` fires
     once per stem as it lands, naming the stem that actually finished
     rather than the in-flight one the progress label carries. All callbacks
-    fire on the calling thread. ``fused_out``, when given, is filled with
-    ``{stem: (audio, sr)}`` exactly as written to disk, letting a
-    same-process caller skip re-decoding the files.
+    fire on the calling thread. ``fused_callback(stem, audio, sr)`` hands
+    over the ``[channels, samples]`` float32 array exactly as written to
+    disk, letting a same-process caller skip re-decoding that file. It is
+    a handover, not a collection: nothing here references the array once
+    the callback returns, so a stem the caller does not keep is freed while
+    the rest of the folder is still fusing.
     """
     roformer_dir = Path(roformer_dir)
     demucs_dir = Path(demucs_dir)
@@ -367,21 +370,34 @@ def fuse_stem_folders(
     # (or a worker); stems that have not started yet must then never start.
     abort = threading.Event()
 
+    # A future holds its result until the future itself is dropped, and
+    # as_completed keeps every future for the length of the loop below, so
+    # returning fused audio would pin all six full-length arrays until the
+    # whole folder is done. A worker parks its result here instead and the
+    # loop lifts it straight back out, leaving only the stems still in
+    # flight and whatever the caller chose to keep.
+    handoff: dict[str, tuple[np.ndarray, int]] = {}
+
     def fuse_one(
         stem: str,
         roformer_path: Path,
         demucs_path: Path,
         output_path: Path,
-    ) -> tuple[np.ndarray, int] | None:
+    ) -> bool:
         if abort.is_set():
-            return None
+            return False
 
-        return fuse_stem_pair(
+        fused = fuse_stem_pair(
             roformer_path=roformer_path,
             demucs_path=demucs_path,
             output_path=output_path,
             stem=stem,
         )
+
+        if fused_callback is not None:
+            handoff[stem] = fused
+
+        return True
 
     pending = [stem for stem, *_ in jobs]
     finished = 0
@@ -401,14 +417,17 @@ def fuse_stem_folders(
 
         try:
             for future in as_completed(futures):
-                fused = future.result()
+                written = future.result()
                 stem = futures[future]
 
-                if fused is None:
+                if not written:
                     continue
 
-                if fused_out is not None:
-                    fused_out[stem] = fused
+                if fused_callback is not None:
+                    # Unpacked straight out of the parking slot: no local
+                    # here outlives the call, so the array survives only as
+                    # long as the callback wants it.
+                    fused_callback(stem, *handoff.pop(stem))
 
                 pending.remove(stem)
                 finished += 1
@@ -426,6 +445,9 @@ def fuse_stem_folders(
             abort.set()
             for future in futures:
                 future.cancel()
+            # A propagating exception keeps this frame alive through its
+            # traceback; anything already parked would ride along with it.
+            handoff.clear()
             raise
 
     if progress_callback:
