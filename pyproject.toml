@@ -17,6 +17,11 @@ dependencies = [
   "scipy>=1.12",
   "soundfile>=0.12",
   "librosa>=0.11",
+  # Resampling. Reached directly by beat_tracking and by the BS-RoFormer
+  # rate alignment in pretrained.py; it arrives transitively through librosa
+  # and beat-this today, which is not a guarantee worth a ModuleNotFoundError
+  # at the user's first 48 kHz separation, after the model has loaded.
+  "soxr>=0.3.2",
   "mido>=1.3",
   "beat-this==1.1.0",
   "pyyaml>=6.0",

@@ -150,7 +150,31 @@ Set-Content -LiteralPath (Join-Path $Engine "python311._pth") -Encoding ASCII -V
 )
 
 $EngineSitePackages = Join-Path $Engine "Lib\site-packages"
-Invoke-Robocopy $VenvSitePackages $EngineSitePackages @("/XD", "__pycache__")
+# Third-party wheels ship their own test suites - tens of megabytes across
+# scipy, numpy, sklearn and numba. Excluding them at the copy rather than
+# sweeping them afterwards means those bytes are never written; the Linux
+# bundle has to delete instead, because install_backend.sh pip-installs
+# straight into its Engine and has no copy seam like this one.
+#
+# What was actually checked, and where: a real pruned Linux cpu Engine
+# (torch, torchaudio, demucs, bs_roformer, audio_separator, einops, soxr).
+# Grepping every non-test .py in it for a module-scope "import <pkg>.tests"
+# found 7 hits, all inside numba and scipy diagnostics helpers - none in
+# torch, torchaudio, demucs, bs_roformer, audio_separator, onnxruntime,
+# librosa or soxr. The only separation-path packages carrying a tests
+# directory at all are einops and torch/fx/passes. That is evidence from a
+# Linux Engine; the wheels are the same on Windows, but this exclusion has
+# never been run on Windows.
+#
+# Plural only - "test" is a name a package can legitimately use for a real
+# submodule, and torch does: torch/test, torch/include/c10/test. Note this
+# is deliberately broader than the Linux selection, which additionally
+# bounds itself to depth >= 2 and carves out */testing/*. robocopy /XD has
+# no depth notion and is case-insensitive, so a top-level
+# Lib\site-packages\tests would also be dropped here and kept there. No
+# such directory exists in a real Engine (checked: zero files recorded
+# across every wheel's RECORD), so the divergence has no instance today.
+Invoke-Robocopy $VenvSitePackages $EngineSitePackages @("/XD", "__pycache__", "tests")
 
 # Some wheels install runtime DLLs beside site-packages rather than inside
 # it: Intel's sycl/opencl runtimes (dependencies of xpu torch) land in the
