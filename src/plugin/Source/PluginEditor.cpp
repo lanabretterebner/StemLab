@@ -1489,6 +1489,21 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
     if (processor.isStandaloneApp())
     {
+        /*
+         * setLookAndFeel above only reaches this editor's own subtree.
+         * Everything JUCE builds for the standalone app itself - the
+         * Audio/MIDI settings dialog, alert windows, its own file chooser -
+         * is created outside that tree and reads the process default instead,
+         * which is why the settings dialog came up in JUCE's slate grey.
+         * Publishing the same instance as the default is what reaches them.
+         *
+         * Gated on the wrapper type, not compiled out: the shared code is
+         * built once and linked into every format, so in a host this would be
+         * hijacking the host's own default - and leaving a dangling one behind
+         * when the plugin is unloaded. The destructor takes it back down.
+         */
+        juce::LookAndFeel::setDefaultLookAndFeel(&lookAndFeel.get());
+
         auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
 
         juce::MessageManager::callAsync(
@@ -2007,6 +2022,21 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 StemLabAudioProcessorEditor::~StemLabAudioProcessorEditor()
 {
     setLookAndFeel(nullptr);
+
+    /*
+     * Take the process default back down while the shared look and feel is
+     * still alive. lookAndFeel is a SharedResourcePointer, so the object it
+     * names dies with the last editor's member - after this body runs - and a
+     * default left pointing at it would be dangling for the rest of shutdown.
+     * The identity check is what makes this safe to run unconditionally: in a
+     * host we never installed it, so the default belongs to someone else and
+     * is left alone. Passing nullptr restores JUCE's own default, so a window
+     * still open - a settings dialog left up - falls back to that rather than
+     * following a dead pointer.
+     */
+    if (&juce::LookAndFeel::getDefaultLookAndFeel() == &lookAndFeel.get())
+        juce::LookAndFeel::setDefaultLookAndFeel(nullptr);
+
     processor.removeChangeListener(this);
     stopTimer();
 }
@@ -2860,19 +2890,36 @@ void StemLabAudioProcessorEditor::showRootLayersMenu(int stemIndex)
      */
     auto* target = rootLanes[static_cast<size_t>(stemIndex)]->getMenuButton();
 
-    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(target),
-                       [safeThis, stemIndex, stemName](int result)
-                       {
-                           if (safeThis == nullptr || result == 0)
-                               return;
-                           if (result == 1)
-                               safeThis->processor.launchRecursiveStemSplit(stemIndex);
-                           else if (result == 2)
-                               safeThis->toggleRootExpanded(stemIndex);
-                           else
-                               safeThis->handleMidiMenuResult(result, stemName, stemIndex, {});
-                           safeThis->refreshFromProcessor();
-                       });
+    /*
+     * Parent the menu to panelContent so it is a child component rather than a
+     * free-floating desktop window: JUCE only clamps a parentless menu against
+     * the whole display, which is how a menu opened near the right-hand edge
+     * ended up mostly outside the window.
+     *
+     * panelContent and not the editor, for two reasons. The scale lives on
+     * panelContent's transform, and setting any parent makes JUCE stop
+     * deriving the menu's scale from the target component - parented to the
+     * editor, which carries no transform, every menu would draw at 1.0 while
+     * the interface ran between 0.70x and 2.50x. And the editor includes the
+     * letterbox band paint() fills with surface(), the same colour the menu
+     * background uses, so a menu could spill into it with no visible edge.
+     *
+     * The same applies to the other four menus below; submenus inherit it.
+     */
+    menu.showMenuAsync(
+        juce::PopupMenu::Options().withTargetComponent(target).withParentComponent(&panelContent),
+        [safeThis, stemIndex, stemName](int result)
+        {
+            if (safeThis == nullptr || result == 0)
+                return;
+            if (result == 1)
+                safeThis->processor.launchRecursiveStemSplit(stemIndex);
+            else if (result == 2)
+                safeThis->toggleRootExpanded(stemIndex);
+            else
+                safeThis->handleMidiMenuResult(result, stemName, stemIndex, {});
+            safeThis->refreshFromProcessor();
+        });
 }
 
 void StemLabAudioProcessorEditor::showChildLayersMenu(const juce::String& itemId)
@@ -2933,8 +2980,19 @@ void StemLabAudioProcessorEditor::showChildLayersMenu(const juce::String& itemId
         }
     }
 
+    /*
+     * Parented to panelContent for the reasons given in showRootLayersMenu.
+     * The mouse position stands in when the lane could not be found: a target
+     * component is what fills the area the menu is placed against, and an
+     * empty one inside a parent resolves to the parent's top-left corner
+     * rather than to anything the user pointed at.
+     */
+    auto options = juce::PopupMenu::Options().withParentComponent(&panelContent);
+
+    options = target != nullptr ? options.withTargetComponent(target) : options.withMousePosition();
+
     menu.showMenuAsync(
-        juce::PopupMenu::Options().withTargetComponent(target),
+        options,
         [safeThis, itemId](int result)
         {
             if (safeThis == nullptr || result == 0)
@@ -3876,7 +3934,10 @@ void StemLabAudioProcessorEditor::showEngineMenu()
 
     auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
 
-    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(engineSelector.get()),
+    // Parented to panelContent for the reasons given in showRootLayersMenu.
+    menu.showMenuAsync(juce::PopupMenu::Options()
+                           .withTargetComponent(engineSelector.get())
+                           .withParentComponent(&panelContent),
                        [safeThis](int result)
                        {
                            if (safeThis == nullptr || result == 0)
@@ -3906,7 +3967,10 @@ void StemLabAudioProcessorEditor::showWaveformColourMenu()
 
     auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
 
-    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(paletteButton.get()),
+    // Parented to panelContent for the reasons given in showRootLayersMenu.
+    menu.showMenuAsync(juce::PopupMenu::Options()
+                           .withTargetComponent(paletteButton.get())
+                           .withParentComponent(&panelContent),
                        [safeThis](int result)
                        {
                            if (safeThis == nullptr || result == 0)
@@ -4031,8 +4095,11 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
 
     auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
 
+    // Parented to panelContent for the reasons given in showRootLayersMenu.
     menu.showMenuAsync(
-        juce::PopupMenu::Options().withTargetComponent(settingsButton.get()),
+        juce::PopupMenu::Options()
+            .withTargetComponent(settingsButton.get())
+            .withParentComponent(&panelContent),
         [safeThis](int result)
         {
             if (safeThis == nullptr)

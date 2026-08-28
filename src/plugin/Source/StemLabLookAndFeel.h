@@ -48,6 +48,14 @@ public:
     void drawCornerResizer(juce::Graphics&, int width, int height, bool mouseOver,
                            bool mouseDown) override;
 
+    /** Deliberately draws nothing. A menu with a parent component paints this
+        over itself (MenuWindow::paintOverChildren), and the stock version is a
+        black double ring that would sit on top of the outline
+        drawPopupMenuBackgroundWithOptions already draws. Nothing else in the
+        app uses a ResizableBorderComponent - the window resizes by its corner,
+        which is drawCornerResizer above. */
+    void drawResizableFrame(juce::Graphics&, int, int, const juce::BorderSize<int>&) override {}
+
     void drawPopupMenuBackgroundWithOptions(juce::Graphics&, int width, int height,
                                             const juce::PopupMenu::Options&) override;
 

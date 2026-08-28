@@ -42,13 +42,35 @@ StemLabLookAndFeel::StemLabLookAndFeel()
     if (interRegular != nullptr)
         setDefaultSansSerifTypeface(interRegular);
 
+    /*
+     * The stock widgets this class does not draw itself - combo boxes, list
+     * boxes, toggles, sliders, table headers - are painted by LookAndFeel_V4
+     * out of its colour scheme, which is JUCE's dark slate by default. That
+     * is what makes the standalone Audio/MIDI dialog the one foreign surface
+     * in the app, so restate the scheme in Nocturne tokens.
+     *
+     * This must run BEFORE the setColour block below: setColourScheme calls
+     * initialiseColours, which rewrites every id that block sets. The nine
+     * values are positional - see ColourScheme::UIColour.
+     */
+    setColourScheme(juce::LookAndFeel_V4::ColourScheme{
+        theme::colours::ground().getARGB(),      // windowBackground
+        theme::colours::surface().getARGB(),     // widgetBackground
+        theme::colours::surface().getARGB(),     // menuBackground
+        theme::colours::outline().getARGB(),     // outline
+        theme::colours::text().getARGB(),        // defaultText
+        theme::colours::accent().getARGB(),      // defaultFill
+        theme::colours::primaryText().getARGB(), // highlightedText
+        theme::colours::primaryFill().getARGB(), // highlightedFill
+        theme::colours::text().getARGB()});      // menuText
+
     setColour(juce::ResizableWindow::backgroundColourId, theme::colours::ground());
 
     setColour(juce::Label::textColourId, theme::colours::text());
 
     setColour(juce::PopupMenu::backgroundColourId, theme::colours::surface());
     setColour(juce::PopupMenu::textColourId, theme::colours::text());
-    setColour(juce::PopupMenu::headerTextColourId, theme::colours::text50());
+    setColour(juce::PopupMenu::headerTextColourId, theme::colours::sectionHeader());
     setColour(juce::PopupMenu::highlightedBackgroundColourId, theme::colours::hoverFill());
     setColour(juce::PopupMenu::highlightedTextColourId, theme::colours::text());
 
@@ -332,11 +354,19 @@ void StemLabLookAndFeel::drawPopupMenuSectionHeaderWithOptions(juce::Graphics& g
 {
     namespace menu = theme::metrics::menu;
 
-    g.setColour(theme::colours::text45());
+    /*
+     * JUCE gives a section header a child component inset by the menu border
+     * on both sides (ItemComponent::resized), while an ordinary row is painted
+     * across the item's whole width. Undo that first, so a heading and the
+     * items under it share a left edge instead of sitting borderSize apart.
+     */
+    const auto row = area.expanded(menu::borderSize, 0);
+
+    g.setColour(theme::colours::sectionHeader());
     g.setFont(juce::Font(theme::fonts::meta()).withExtraKerningFactor(0.04f));
 
     g.drawText(sectionName,
-               area.reduced(menu::rowInsetX + menu::padX, 0)
+               row.reduced(menu::rowInsetX + menu::padX, 0)
                    .withTrimmedLeft(menu::tickColumn + menu::tickGap)
                    .withTrimmedTop(4),
                juce::Justification::bottomLeft, false);

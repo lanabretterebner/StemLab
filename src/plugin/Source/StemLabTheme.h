@@ -69,6 +69,12 @@ namespace stemlab::theme
         inline juce::Colour text50() { return text().withAlpha(0.50f); }
         inline juce::Colour text45() { return text().withAlpha(0.45f); }
 
+        // Menu section headings. Deliberately above the disabled-item colour
+        // (text at metrics::disabledOpacity, which is also 45%), so a heading
+        // never reads as an unavailable command: 60% is 5.49:1 on surface(),
+        // against 3.71:1, and 11px headings need 4.5:1 to clear WCAG AA.
+        inline juce::Colour sectionHeader() { return text().withAlpha(0.60f); }
+
         // Shared interactive roles.
         inline juce::Colour outline() { return text().withAlpha(0.16f); }
         inline juce::Colour hoverFill() { return text().withAlpha(0.07f); }
