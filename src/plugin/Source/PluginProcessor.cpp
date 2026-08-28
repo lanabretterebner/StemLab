@@ -1065,6 +1065,13 @@ public:
         if (!childProcess->start(command,
                                  juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
         {
+            // Every finish() below sends the user to the diagnostics, so a
+            // launch that produced no output at all still has to leave
+            // something there to read. The thread name says which of the
+            // three workers it was - the separation thread needs no such
+            // qualifier because only one job of its kind ever runs.
+            owner.appendEngineLog("Failed to launch " + getThreadName() + " process.\n");
+
             finish(-1);
 
             const juce::ScopedLock lock(processLock);
@@ -1151,7 +1158,26 @@ public:
         }
 
         if (!threadShouldExit() || cancelRequested.load())
+        {
+            /*
+             * The append above is whatever the worker chose to print, and a
+             * worker can die having printed nothing: JUCE's POSIX
+             * ChildProcess forks and the child _exit()s after a failed
+             * execvp, so a missing or non-executable interpreter still
+             * makes start() succeed and then reports 255 with an empty
+             * pipe. Without this line the "see diagnostics" that
+             * finishAnalysisMaintenance() and finishMidiConversion() point
+             * at opens an empty log and a greyed-out Copy item.
+             *
+             * Same line and same reason as the separation thread. A cancel
+             * is not a failure and stays out of the log; the surrounding
+             * guard already keeps a teardown-driven exit quiet.
+             */
+            if (exitCode != 0 && !cancelRequested.load())
+                owner.appendEngineLog("Engine exit code: " + juce::String(exitCode) + "\n");
+
             finish(exitCode);
+        }
     }
 
 private:
@@ -1389,6 +1415,12 @@ public:
             fail("Could not start Windows loopback capture: " + hresultText(hr));
             return;
         }
+
+        // Only now is the recording certain, so only now does the loaded
+        // source give way to it: every failure above leaves the user with
+        // the file they had, and fail()'s explanation appended to that
+        // file's own diagnostics.
+        owner.beginSystemCaptureSource(outputFile);
 
         bool captureFailed = false;
 
@@ -2894,6 +2926,28 @@ void StemLabAudioProcessor::stopHostAudioCapture()
     }
 }
 
+void StemLabAudioProcessor::beginSystemCaptureSource(const juce::File& recordingFile)
+{
+    {
+        const juce::ScopedLock lock(stateLock);
+        captureFile = recordingFile;
+        lastJobDirectory = juce::File();
+        engineLogChunks.clear();
+        engineLogBytes = 0;
+    }
+
+    inputDurationSeconds.store(0.0);
+
+    // The recording's first sample is the one the writer has just been
+    // handed, not the one the click asked for. The beat it belongs on is
+    // therefore the host's position now, after the device open the capture
+    // thread has been sitting in since the click.
+    captureStartPpq.store(isStandaloneApp() ? 0.0 : juce::jmax(0.0, lastKnownHostPpq.load()));
+
+    engineCompletedSuccessfully.store(false);
+    engineProgress.store(0.0);
+}
+
 bool StemLabAudioProcessor::startSystemAudioRecording()
 {
     if (capturing.load() || isEngineRunning())
@@ -2921,22 +2975,29 @@ bool StemLabAudioProcessor::startSystemAudioRecording()
 
     const auto recordingFile = createRecordingFile("system");
 
-    {
-        const juce::ScopedLock lock(stateLock);
-        captureFile = recordingFile;
-        lastJobDirectory = juce::File();
-        engineLogChunks.clear();
-        engineLogBytes = 0;
-    }
-
+    /*
+     * The click gives up nothing that describes the loaded source.
+     *
+     * Reaching the output monitor is the capture thread's first job, and it
+     * fails for reasons only that thread learns about - no PulseAudio or
+     * PipeWire server, no monitor source, an endpoint that refuses to
+     * start. Its fail() can only append an explanation; it has no way to
+     * put back a source, a finished job or a diagnostics log that this
+     * click had already discarded. So the handover waits for
+     * beginSystemCaptureSource(), which the thread calls once its writer is
+     * open - the same order Record In commits in, where the file and the
+     * writer are created before startThreadedInputCapture() replaces
+     * anything.
+     *
+     * The two sample counters are the exception, and safe: they only feed
+     * the recording-time readout that getCapturedSeconds() consults while
+     * `capturing` is set and the drop report the stop path writes, and a
+     * capture that never starts now falls back to inputDurationSeconds,
+     * which still describes the source. Both threads zero them again when
+     * their writer opens.
+     */
     capturedSamples.store(0);
     droppedCaptureSamples.store(0);
-    inputDurationSeconds.store(0.0);
-
-    captureStartPpq.store(isStandaloneApp() ? 0.0 : juce::jmax(0.0, lastKnownHostPpq.load()));
-
-    engineCompletedSuccessfully.store(false);
-    engineProgress.store(0.0);
 
     standaloneRecordingMode.store(recordingSystem);
     capturing.store(true);

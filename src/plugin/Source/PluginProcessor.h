@@ -715,6 +715,12 @@ private:
                                    double startPpq, int recordingMode,
                                    const juce::String& recordingStatus);
 
+    /** Hands the loaded source over to a system capture. Called by the
+        loopback thread once its writer is open, which is the first moment
+        the recording is certain and therefore the first moment the previous
+        source, job and diagnostics may be thrown away. */
+    void beginSystemCaptureSource(const juce::File& recordingFile);
+
     /** The stem file itself, or the playback loop's regions rendered to WAV. */
     juce::File exportLoopedRegions(const juce::File& source, const juce::File& destination);
 

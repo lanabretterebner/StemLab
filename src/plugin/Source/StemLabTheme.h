@@ -346,8 +346,11 @@ namespace stemlab::theme
             /*
                 The window resizes, but the layout does not reflow: the whole
                 panel is drawn at the size above and scaled by one transform,
-                between these bounds. The aspect ratio is fixed, so a lane's
-                proportions are identical at every size.
+                between these bounds. The window is free to take any shape;
+                the panel is not, so a lane's proportions are identical at
+                every size and an off-shape window letterboxes the panel
+                rather than stretching it. These two are the range of that
+                scale, not window sizes.
             */
             constexpr double minScale = 0.70;
             constexpr double maxScale = 2.50;
