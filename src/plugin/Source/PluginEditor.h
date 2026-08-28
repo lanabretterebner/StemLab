@@ -232,8 +232,11 @@ public:
     juce::Component* getMenuButton() const { return menuButton.get(); }
 
     /** Drives the disclosure twisty: shown only when there is something to
-        collapse, pointing down while those children are on screen. */
-    void setChildState(bool hasChildren, bool expanded);
+        collapse, pointing down while those children are on screen.
+        hiddenActivity marks a collapsed row whose hidden descendants are
+        soloed or muted, so state cannot disappear with the rows. */
+    void setChildState(bool hasChildren, bool expanded,
+                       bool hiddenActivity = false, bool hiddenSolo = false);
 
     /** Forwards wheel-zoom from this lane's waveform well to the editor's
         shared zoom stepper. */
@@ -249,6 +252,8 @@ public:
     void paint(juce::Graphics&) override;
     void mouseDrag(const juce::MouseEvent&) override;
     void mouseUp(const juce::MouseEvent&) override;
+    void mouseEnter(const juce::MouseEvent&) override;
+    void mouseExit(const juce::MouseEvent&) override;
 
 private:
     StemLabAudioProcessor& processor;
@@ -267,6 +272,14 @@ private:
     std::unique_ptr<stemlab::widgets::IconButton> menuButton;
     bool hasChildren = false;
     bool externalDragStarted = false;
+    bool hiddenDescendantActive = false;
+    bool hiddenDescendantSoloed = false;
+
+    /** Whether the pointer is anywhere in this row, children included.
+        Cached rather than read in paint(), so a crossing that changes it
+        can schedule the repaint that redraws it. */
+    bool hovered = false;
+    void updateHover();
 
     std::function<void()> refreshEditor;
     std::function<void(int)> showRootMenu;
@@ -402,7 +415,10 @@ private:
     /** One entry point for both twisties and both menu items. */
     void toggleLaneExpanded(int stemIndex, const juce::String& childId);
     bool isLaneExpanded(int stemIndex, const juce::String& childId) const;
-    std::vector<StemLabRecursiveStemInfo> getVisibleRecursiveItems() const;
+    /** Filters an already-fetched tree, so the caller pays for one
+        getRecursiveStemItems() rather than a second lock-and-copy. */
+    std::vector<StemLabRecursiveStemInfo>
+    getVisibleRecursiveItems(const std::vector<StemLabRecursiveStemInfo>& all) const;
     void syncLanes();
 
     juce::String jobSummaryLine() const;
@@ -475,6 +491,13 @@ private:
     std::vector<std::unique_ptr<StemLaneComponent>> childLanes;
     std::array<bool, StemLabAudioProcessor::stemCount> rootExpanded{};
     juce::StringArray collapsedRecursiveIds;
+
+    /** Lanes (root stem names and child item ids) that are collapsed and
+        are hiding a soloed or muted descendant, and whether the hidden
+        state includes a solo. Rebuilt by syncLanes(), read by both lane
+        loops in refreshFromProcessor(). */
+    juce::StringArray hiddenActiveParents;
+    juce::StringArray hiddenSoloParents;
     void layoutLanes();
 
     // Transport.

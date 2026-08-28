@@ -343,6 +343,19 @@ public:
     void setRecursiveStemMute(const juce::String& itemId, bool mute);
     bool isRecursiveStemMuted(const juce::String& itemId) const;
 
+    /**
+     * What the monitor mix is actually doing to a lane, for the interface
+     * to draw. Not the lane's own mute flag: a lane is inaudible when it is
+     * muted, when an ancestor is muted, or when some other lane is soloed.
+     * Answered by the loaded mix itself rather than re-derived, so the
+     * picture cannot disagree with the sound. Message thread only.
+     * A lane the mix does not carry reports audible, so nothing dims
+     * before there is anything to hear.
+     */
+    bool isAnySoloActive() const;
+    bool isStemAudible(int index) const;
+    bool isRecursiveStemAudible(const juce::String& itemId) const;
+
     /*  Stays true while a stopped system capture is still flushing: the WAV
         is not finalised and has not been handed over yet, so nothing that
         consumes the recording - separation, a new take, the transport - may
@@ -724,6 +737,9 @@ private:
     std::shared_ptr<MonitorFlags> monitorFlagsForStem(int index) const;
     std::shared_ptr<MonitorFlags> monitorFlagsForRecursive(const juce::String& itemId) const;
     void clearAllMonitorFlags();
+
+    /** The pointer-taking core behind isStemAudible/isRecursiveStemAudible. */
+    bool isLaneAudible(const StemLabLaneMonitorFlags* flags) const;
 
     /** Solo on a lane is only audible in the stem mix; switch to it. */
     void followSoloIntoStemMix();

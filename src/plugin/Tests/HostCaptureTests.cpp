@@ -88,6 +88,22 @@ int main()
         check(processor.getInputSourceLabel() == capturedFile.getFileName());
         check(processor.getCapturedSeconds() > 0.0);
 
+        // No mix loaded: a Solo cannot silence anything, so no lane may dim.
+        processor.setStemSolo(0, true);
+        check(!processor.isAnySoloActive());
+        for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
+            check(processor.isStemAudible(i));
+        processor.setStemSolo(0, false);
+
+        processor.setStemSelectionRange("vocals", 0.2, 0.5);
+        check(processor.getStemSelectionRange("vocals").active);
+
+        // Loading a source invalidates every lane's loop range: it is
+        // normalised against a file that is gone, and it would keep steering
+        // the transport and trimming every drag and save.
+        check(processor.setInputAudioFile(capturedFile, 0.0, capturedFile.getFileName()));
+        check(!processor.getStemSelectionRange("vocals").active);
+
         const auto sourceBeforeCancelledSelection = processor.getCaptureFile();
         const juce::File cancelledSelection;
         if (cancelledSelection.existsAsFile())

@@ -942,9 +942,27 @@ void StemLaneWaveform::mouseWheelMove(const juce::MouseEvent& event,
         return;
     }
 
-    // A mouse notch is ~0.1, a trackpad tick far less; gather deltas until
-    // they amount to a whole notch, so a notch steps one detent and a
-    // trackpad swipe is not a leap to either end of the range.
+    /*
+     * A physical wheel arrives as one discrete event per notch, and the
+     * per-notch delta is a platform constant nothing like the 0.1 the
+     * accumulator below assumes: X11 sends 50/256 = 0.195
+     * (juce_XWindowSystem_linux.cpp), Windows 60/256 = 0.234. Accumulating
+     * those stepped just under two detents per notch, which left 2x, 4x,
+     * 8x, 16x and 32x unreachable by wheel, and carried the leftover per
+     * lane so the step size depended on which lane the pointer was over.
+     * JUCE already says which kind of device this is: a notch is one
+     * detent, and the accumulator is only for a trackpad's fine deltas.
+     */
+    if (!wheel.isSmooth)
+    {
+        wheelAccumulator = 0.0f;
+        onZoomStep(wheel.deltaY > 0.0f ? 1 : -1);
+        return;
+    }
+
+    // The trackpad path: a fine tick is far less than a detent, so gather
+    // deltas until they amount to a whole one and a swipe is not a leap to
+    // either end of the range.
     constexpr float notch = 0.1f;
 
     wheelAccumulator += wheel.deltaY;
@@ -973,6 +991,22 @@ StemLaneComponent::StemLaneComponent(StemLabAudioProcessor& processorIn, int ste
 {
     setRepaintsOnMouseActivity(true);
 
+    /*
+     * The row's hover highlight covers the whole lane, but almost none of
+     * the lane is the lane: the well fills the row's full height and the
+     * buttons take the rest, so moving between two lanes is a crossing
+     * between two CHILDREN and neither parent is an event target.
+     * setRepaintsOnMouseActivity only ever fires for the target
+     * (juce_Component.cpp internalMouseEnter/Exit), which left the old row
+     * lit and the new one dark. Listening deeply makes every crossing into
+     * or out of a child count as a hover change for the row.
+     *
+     * The price: every mouse override on this class now fires for every
+     * descendant's events, and twice for the lane's own. Keep them all
+     * idempotent.
+     */
+    addMouseListener(this, true);
+
     twisty.onClick = [this]
     {
         if (toggleExpanded)
@@ -996,7 +1030,16 @@ StemLaneComponent::StemLaneComponent(StemLabAudioProcessor& processorIn, int ste
 
     nameLabel.setFont(theme::fonts::laneName());
     nameLabel.setColour(juce::Label::textColourId, theme::colours::text());
-    nameLabel.setInterceptsMouseClicks(false, false);
+    /*
+     * A child lane's name carries the category/confidence tooltip that
+     * setChildInfo attaches, and juce::TooltipWindow only ever asks the
+     * component under the mouse - a label the mouse passes straight
+     * through is never that component, so the tooltip could not appear at
+     * any dwell time. A root name has no tooltip and stays transparent.
+     * Children of the label stay transparent either way: there are none,
+     * and the label must not start swallowing anything else.
+     */
+    nameLabel.setInterceptsMouseClicks(isChildLane(), false);
 
     if (!isChildLane())
         nameLabel.setText(stemDisplayName(stemIndex), juce::dontSendNotification);
@@ -1063,8 +1106,9 @@ StemLaneComponent::StemLaneComponent(StemLabAudioProcessor& processorIn, int ste
     dragButton->setTooltip("Drag this stem to a DAW or a folder");
     dragButton->setMouseCursor(juce::MouseCursor::DraggingHandCursor);
 
-    // Drags on the button are handled by the lane, which owns the file.
-    dragButton->addMouseListener(this, false);
+    // Drags on the button are handled by the lane, which owns the file;
+    // the lane's deep mouse listener above already delivers them. Adding a
+    // second, direct registration here would run mouseDrag twice per event.
 
     // A plain click is a dead end here, so say what the button is for
     // rather than doing nothing at all.
@@ -1104,12 +1148,23 @@ StemLaneComponent::StemLaneComponent(StemLabAudioProcessor& processorIn, int ste
     addAndMakeVisible(*menuButton);
 }
 
-void StemLaneComponent::setChildState(bool laneHasChildren, bool expanded)
+void StemLaneComponent::setChildState(bool laneHasChildren, bool expanded,
+                                      bool hiddenActivity, bool hiddenSolo)
 {
     hasChildren = laneHasChildren;
 
     twisty.setExpanded(expanded);
     twisty.setVisible(laneHasChildren);
+
+    // Called for every lane on every 20 Hz tick, so only an actual change
+    // may repaint: an unconditional one here is a permanent row-repaint
+    // storm that drags each waveform well's image blit along with it.
+    if (hiddenDescendantActive != hiddenActivity || hiddenDescendantSoloed != hiddenSolo)
+    {
+        hiddenDescendantActive = hiddenActivity;
+        hiddenDescendantSoloed = hiddenSolo;
+        repaint();
+    }
 }
 
 void StemLaneComponent::setZoomStepHandler(std::function<void(int)> handler)
@@ -1182,6 +1237,27 @@ void StemLaneComponent::mouseDrag(const juce::MouseEvent& event)
 void StemLaneComponent::mouseUp(const juce::MouseEvent&)
 {
     externalDragStarted = false;
+}
+
+void StemLaneComponent::mouseEnter(const juce::MouseEvent&) { updateHover(); }
+void StemLaneComponent::mouseExit(const juce::MouseEvent&) { updateHover(); }
+
+void StemLaneComponent::updateHover()
+{
+    /*
+     * Asked, not assumed. A mouseExit is dispatched after JUCE has already
+     * assigned the new component under the mouse
+     * (juce_MouseInputSourceImpl.h setComponentUnderMouse), so this reads
+     * the post-move truth - which is what keeps a crossing between two
+     * children of the SAME row from blanking a row that is still hovered.
+     */
+    const bool now = isMouseOver(true) && isEnabled();
+
+    if (now != hovered)
+    {
+        hovered = now;
+        repaint();
+    }
 }
 
 void StemLaneComponent::refresh()
@@ -1263,12 +1339,29 @@ void StemLaneComponent::refresh()
     // ready already carries this refresh's existence answer.
     dragButton->setEnabled(ready);
 
+    /*
+     * Dimmed means "you are not hearing this", not "this lane's own M is
+     * down". Soloing one lane silences the other five and muting an
+     * ancestor silences everything below it; the processor answers from
+     * the mix that is actually playing, so a lane cannot look audible
+     * while the mixer has its gain at zero.
+     */
     if (waveform != nullptr)
-        waveform->setMutedAppearance(muted && !soloed);
+    {
+        const bool audible = isChildLane() ? processor.isRecursiveStemAudible(childId)
+                                           : processor.isStemAudible(stemIndex);
+
+        waveform->setMutedAppearance(!audible);
+    }
 
     // An excluded lane drops to 45% opacity per the spec; only meaningful
     // once stems exist.
     setAlpha(jobDone && !included ? theme::metrics::lanes::excludedOpacity : 1.0f);
+
+    // The lanes are rebuilt and re-laid-out under a stationary pointer
+    // (a split finishing, a twisty collapsing), and a component that did
+    // not exist when the pointer arrived never gets an enter.
+    updateHover();
 }
 
 void StemLaneComponent::resized()
@@ -1320,15 +1413,40 @@ void StemLaneComponent::resized()
 
     if (waveform != nullptr)
         waveform->setBounds(row.withSizeKeepingCentre(row.getWidth(), lanes::wellHeight));
+
+    // A row laid out under a stationary pointer gets no enter for the
+    // children that just moved beneath it.
+    updateHover();
 }
 
 void StemLaneComponent::paint(juce::Graphics& g)
 {
-    if (isMouseOver(true) && isEnabled())
+    if (hovered)
     {
         g.setColour(theme::colours::rowHoverFill());
         g.fillRoundedRectangle(getLocalBounds().toFloat(),
                                theme::metrics::lanes::rowRadius);
+    }
+
+    /*
+     * A collapsed row is still steering the mix through the rows it is
+     * hiding. Mark it, in the gap beside the twisty that hid them, so
+     * a solo cannot go on shaping what you hear with nothing on screen
+     * saying so. Accent for a hidden solo, neutral for a hidden mute:
+     * the same pairing the S and M buttons use.
+     */
+    if (hiddenDescendantActive)
+    {
+        namespace lanes = theme::metrics::lanes;
+
+        const auto size = lanes::hiddenActivityDot;
+
+        g.setColour(hiddenDescendantSoloed ? theme::colours::accent()
+                                           : theme::colours::text75());
+
+        g.fillEllipse(static_cast<float>(twisty.getRight()) + 1.0f,
+                      static_cast<float>(getHeight()) * 0.5f - size * 0.5f,
+                      size, size);
     }
 }
 
@@ -2545,9 +2663,9 @@ void StemLabAudioProcessorEditor::layoutLanes()
     }
 }
 
-std::vector<StemLabRecursiveStemInfo> StemLabAudioProcessorEditor::getVisibleRecursiveItems() const
+std::vector<StemLabRecursiveStemInfo> StemLabAudioProcessorEditor::getVisibleRecursiveItems(
+    const std::vector<StemLabRecursiveStemInfo>& all) const
 {
-    const auto all = processor.getRecursiveStemItems();
     std::vector<StemLabRecursiveStemInfo> visible;
     visible.reserve(all.size());
 
@@ -2578,7 +2696,66 @@ std::vector<StemLabRecursiveStemInfo> StemLabAudioProcessorEditor::getVisibleRec
 
 void StemLabAudioProcessorEditor::syncLanes()
 {
-    const auto items = getVisibleRecursiveItems();
+    // One fetch for the whole tick: getRecursiveStemItems takes a lock,
+    // copies the vector and re-orders it, and this runs at 20 Hz.
+    const auto all = processor.getRecursiveStemItems();
+    const auto items = getVisibleRecursiveItems(all);
+
+    /*
+     * A collapsed row keeps its hidden descendants in the mix: the flags
+     * live on the processor and reach the audio through each entry's
+     * ancestor chain, which knows nothing about which rows are on screen.
+     * Work out which visible row is doing the hiding for every soloed or
+     * muted row that is off screen, so that row can say so.
+     */
+    hiddenActiveParents.clearQuick();
+    hiddenSoloParents.clearQuick();
+
+    for (const auto& item : all)
+    {
+        const bool onScreen = std::any_of(items.begin(), items.end(),
+                                          [&item](const auto& v) { return v.id == item.id; });
+
+        if (onScreen)
+            continue;
+
+        const bool soloed = processor.isRecursiveStemSoloed(item.id);
+        const bool muted = processor.isRecursiveStemMuted(item.id);
+
+        if (!soloed && !muted)
+            continue;
+
+        /*
+         * The row that is actually on screen and doing the hiding: the
+         * deepest visible ancestor, or the root row when the whole root is
+         * collapsed. Depth order falls out of prefix length, because a
+         * child's id is its parent's id plus "/name".
+         */
+        juce::String owner;
+
+        for (const auto& candidate : items)
+            if (item.id.startsWith(candidate.id + "/"))
+                if (candidate.id.length() > owner.length())
+                    owner = candidate.id;
+
+        if (owner.isEmpty())
+        {
+            // Canonicalise: rootStem comes from the manifest and is matched
+            // case-insensitively everywhere else in this file, while
+            // StringArray::contains below is case-sensitive.
+            for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
+                if (StemLabAudioProcessor::getStemName(i).equalsIgnoreCase(item.rootStem))
+                    owner = StemLabAudioProcessor::getStemName(i);
+        }
+
+        if (owner.isEmpty())
+            continue;
+
+        hiddenActiveParents.addIfNotAlreadyThere(owner);
+
+        if (soloed)
+            hiddenSoloParents.addIfNotAlreadyThere(owner);
+    }
 
     bool rebuild = items.size() != childLanes.size();
 
@@ -2609,7 +2786,9 @@ void StemLabAudioProcessorEditor::syncLanes()
                 [this](int stemIndex, juce::String id) { toggleLaneExpanded(stemIndex, id); });
 
             lane->setChildInfo(item);
-            lane->setChildState(item.hasChildren, isLaneExpanded(-1, item.id));
+            lane->setChildState(item.hasChildren, isLaneExpanded(-1, item.id),
+                                hiddenActiveParents.contains(item.id),
+                                hiddenSoloParents.contains(item.id));
             lane->setZoomStepHandler([this](int delta) { stepWaveformZoom(delta); });
             laneContent.addAndMakeVisible(*lane);
             childLanes.push_back(std::move(lane));
@@ -2623,7 +2802,9 @@ void StemLabAudioProcessorEditor::syncLanes()
         {
             childLanes[i]->setChildInfo(items[i]);
             childLanes[i]->setChildState(items[i].hasChildren,
-                                         isLaneExpanded(-1, items[i].id));
+                                         isLaneExpanded(-1, items[i].id),
+                                         hiddenActiveParents.contains(items[i].id),
+                                         hiddenSoloParents.contains(items[i].id));
         }
     }
 }
@@ -3220,8 +3401,13 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
         if (auto* lane = rootLanes[static_cast<size_t>(i)].get())
         {
             const bool hasChildren = rootHasChildren(i);
+            const auto rootName = StemLabAudioProcessor::getStemName(i);
 
-            lane->setChildState(hasChildren, isLaneExpanded(i, {}));
+            // syncLanes() ran first this tick, so the hidden-activity sets
+            // are fresh; do not move this loop above it.
+            lane->setChildState(hasChildren, isLaneExpanded(i, {}),
+                                hiddenActiveParents.contains(rootName),
+                                hiddenSoloParents.contains(rootName));
             lane->refresh();
         }
     }

@@ -485,6 +485,12 @@ namespace stemlab::theme
             // The twisty used to butt straight up against the checkbox.
             constexpr int twistyGap = 6;
 
+            // A collapsed row whose hidden descendants are soloed or muted
+            // carries this dot in the gap beside its twisty, so the state
+            // does not vanish with the rows. Fits the 6px gap with a pixel
+            // of air on each side.
+            constexpr float hiddenActivityDot = 4.0f;
+
             constexpr int includeColumn = 18;
             constexpr int nameColumn = 92;
 

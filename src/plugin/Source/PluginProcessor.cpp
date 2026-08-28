@@ -184,10 +184,7 @@ public:
 
         // Solo is scoped to what is actually in the mix: a lane whose audio
         // never made it in must not be able to silence everything else.
-        bool anySolo = false;
-
-        for (const auto& entry : entries)
-            anySolo = anySolo || entry.soloed();
+        const bool anySolo = anySoloActive();
 
         if (scratch.getNumSamples() < info.numSamples)
             scratch.setSize(2, info.numSamples, false, false, true); // last-resort fallback
@@ -198,7 +195,7 @@ public:
         {
             auto& entry = entries[i];
 
-            const bool audible = anySolo ? entry.soloed() : !entry.muted();
+            const bool audible = isEntryAudible(entry, anySolo);
 
             const float target = audible ? 1.0f : 0.0f;
             const float previous = currentGains[i];
@@ -268,6 +265,53 @@ public:
 
     bool isLooping() const override { return false; }
     void setLooping(bool) override {}
+
+    /** The mixer's own audibility rule, named once so the interface and the
+        audio thread cannot drift apart. Reads only relaxed atomics; safe on
+        either thread, allocates nothing. */
+    bool anySoloActive() const
+    {
+        for (const auto& entry : entries)
+            if (entry.soloed())
+                return true;
+
+        return false;
+    }
+
+    static bool isEntryAudible(const Entry& entry, bool anySolo)
+    {
+        return anySolo ? entry.soloed() : !entry.muted();
+    }
+
+    /** True when at least one entry that answers to these flags is audible.
+        `named` comes back false when no entry in the mix mentions them at
+        all - a lane whose file never loaded, or a mix built before this
+        lane existed - and the caller must then leave the lane alone rather
+        than dim it. Message thread: `entries` is const after construction,
+        but the mix itself is swapped from the message thread. */
+    bool isAudibleThrough(const StemLabLaneMonitorFlags* flags, bool& named) const
+    {
+        const bool anySolo = anySoloActive();
+
+        named = false;
+
+        for (const auto& entry : entries)
+        {
+            const bool mentionsLane =
+                std::any_of(entry.chain.begin(), entry.chain.end(),
+                            [flags](const auto& f) { return f.get() == flags; });
+
+            if (!mentionsLane)
+                continue;
+
+            named = true;
+
+            if (isEntryAudible(entry, anySolo))
+                return true;
+        }
+
+        return false;
+    }
 
 private:
     void joinPreparation()
@@ -2088,9 +2132,15 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
     engineProgress.store(0.0);
     clearRecursiveResults();
 
-    // The previous job's stems are gone as far as monitoring is concerned.
+    // The previous job's stems are gone as far as monitoring is concerned,
+    // and so are the ranges swept over them: they are normalised against a
+    // file that is no longer loaded, and they keep steering the transport
+    // and trimming every drag and save until something clears them.
+    // Clearing after the unload is what guarantees rebuildLoopRegions takes
+    // its empty-set early return instead of seeking a transport mid-swap.
     unloadStemMix();
     clearAllMonitorFlags();
+    clearAllStemSelectionRanges();
 
     if (isAbletonHost())
     {
@@ -2756,6 +2806,33 @@ bool StemLabAudioProcessor::isRecursiveStemMuted(const juce::String& itemId) con
 {
     const auto flags = monitorFlagsForRecursive(itemId);
     return flags != nullptr && flags->mute.load();
+}
+
+bool StemLabAudioProcessor::isAnySoloActive() const
+{
+    return stemMixSource != nullptr && stemMixSource->anySoloActive();
+}
+
+bool StemLabAudioProcessor::isLaneAudible(const StemLabLaneMonitorFlags* flags) const
+{
+    // No mix loaded means nothing is being silenced by anything.
+    if (stemMixSource == nullptr || flags == nullptr)
+        return true;
+
+    bool named = false;
+    const bool audible = stemMixSource->isAudibleThrough(flags, named);
+
+    return named ? audible : true;
+}
+
+bool StemLabAudioProcessor::isStemAudible(int index) const
+{
+    return isLaneAudible(monitorFlagsForStem(index).get());
+}
+
+bool StemLabAudioProcessor::isRecursiveStemAudible(const juce::String& itemId) const
+{
+    return isLaneAudible(monitorFlagsForRecursive(itemId).get());
 }
 
 bool StemLabAudioProcessor::startStandaloneRecording()
