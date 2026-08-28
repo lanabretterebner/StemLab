@@ -74,7 +74,13 @@ def _convert_with_soundfile(input_path: Path, staged: Path) -> bool:
     try:
         import soundfile as sf
 
-        data, sample_rate = sf.read(str(input_path), always_2d=True)
+        # Read at the width being written. Without a dtype soundfile decodes
+        # to float64 - eight bytes a sample, twice the peak this holds - for
+        # data that goes straight back out as PCM_24, which is what libsndfile
+        # produces from int32 by dropping the low eight bits. The whole track
+        # is in memory at once here, immediately before the separator loads
+        # its model, and the hybrid engine pays for it twice.
+        data, sample_rate = sf.read(str(input_path), always_2d=True, dtype="int32")
         sf.write(str(staged), data, sample_rate, subtype="PCM_24")
     except Exception:
         return False

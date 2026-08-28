@@ -161,6 +161,60 @@ class TestRunProgressProcess:
         assert percents == [50.0]
         assert etas == [10.0]
 
+    def test_only_the_first_frame_at_a_reading_reaches_the_log(self):
+        # tqdm redraws its bar many times per percent. Every frame crosses the
+        # pipe into the plugin's diagnostics log, and every frame after the
+        # first at a reading says exactly what that one said.
+        script = (
+            "import sys\n"
+            "out = sys.stdout\n"
+            "out.write('Loading model weights\\n')\n"
+            "for frame in range(30):\n"
+            "    out.write('\\rSeparating:  25%|' + '#' * (frame % 8)\n"
+            "              + '| 3.0/12.0 [00:03<00:09, 1.2s/seconds]')\n"
+            "for frame in range(30):\n"
+            "    out.write('\\rSeparating:  26%|' + '#' * (frame % 8)\n"
+            "              + '| 3.1/12.0 [00:03<00:09, 1.2s/seconds]')\n"
+            "out.write('\\nWarning: falling back to cpu\\n')\n"
+            "out.write('STEMLAB_PROGRESS 26% still going\\n')\n"
+            "out.write('STEMLAB_PROGRESS 26% still going\\n')\n"
+            "out.write('RuntimeError: 26% of the graph failed\\n')\n"
+        )
+        code, percents, downloads, etas, lines = self.run_fake_cli(script)
+
+        assert code == 0
+        assert percents == [25.0, 26.0]
+        assert downloads == []
+
+        # One frame per reading, out of sixty written.
+        assert len([line for line in lines if "|" in line]) == 2
+
+        # Everything that is not a redraw survives whole, including a
+        # protocol line the plugin parses, a repeat of it, and an error that
+        # happens to carry the reading last logged.
+        assert [line for line in lines if "|" not in line] == [
+            "Loading model weights",
+            "Warning: falling back to cpu",
+            "STEMLAB_PROGRESS 26% still going",
+            "STEMLAB_PROGRESS 26% still going",
+            "RuntimeError: 26% of the graph failed",
+        ]
+
+    def test_a_download_bar_is_logged_once_per_percent(self):
+        script = (
+            "import sys\n"
+            "out = sys.stdout\n"
+            "for frame in range(20):\n"
+            "    out.write('\\rmodel:  10%|#| 270M/2.70G [00:05<00:45, 53.9MB/s]')\n"
+            "out.write('\\rmodel:  11%|#| 297M/2.70G [00:05<00:45, 53.9MB/s]')\n"
+            "out.write('\\n')\n"
+        )
+        code, _percents, downloads, _etas, lines = self.run_fake_cli(script)
+
+        assert code == 0
+        assert downloads == [10.0, 11.0]
+        assert len(lines) == 2
+
     def test_exit_code_is_returned(self):
         code, *_ = self.run_fake_cli("raise SystemExit(3)")
         assert code == 3
