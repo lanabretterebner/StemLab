@@ -425,25 +425,40 @@ def test_the_tcl_sweep_only_removes_names_it_recognises(tmp_path):
 
 
 def test_a_failing_removal_does_not_abort_the_install(tmp_path):
-    """Under set -e an unremovable file used to kill a finished install.
+    """Under set -e an unremovable path used to kill a finished install.
 
     The prune runs after every pip install and immediately before the engine
     pointer is written, so aborting there throws away all of the expensive
     work and leaves the Engine undiscoverable.
+
+    The failure is injected by putting an ``rm`` that always fails ahead of
+    the real one on PATH, rather than by making a directory read-only. Root
+    ignores directory permissions, so the permissions version of this test
+    passes without ever reaching the tolerance it is meant to check - and
+    both CI and this container run as root.
     """
     root = tmp_path / "Engine"
     sp = root / "lib" / "python3.11" / "site-packages"
-    sp.mkdir(parents=True)
+    (sp / "pkg" / "tests").mkdir(parents=True)
+    (sp / "pkg" / "tests" / "test_x.py").write_text("x = 1\n")
     (root / ".stemlab-engine").write_text("marker\n")
+    (root / "lib" / "tcl8.6").mkdir(parents=True)
 
-    doomed = sp / "pkg" / "tests"
-    doomed.mkdir(parents=True)
-    (doomed / "test_x.py").write_text("x = 1\n")
-    # Read-only parent: the rm -rf inside cannot unlink its child.
-    (sp / "pkg").chmod(0o500)
+    stub = tmp_path / "stub-bin"
+    stub.mkdir()
+    (stub / "rm").write_text("#!/bin/sh\nexit 1\n")
+    (stub / "rm").chmod(0o755)
 
-    try:
-        result = _run_prune(root)
-        assert result.returncode == 0, result.stdout + result.stderr
-    finally:
-        (sp / "pkg").chmod(0o700)
+    env = dict(os.environ, PATH=f"{stub}{os.pathsep}{os.environ['PATH']}")
+    result = subprocess.run(
+        ["bash", str(INSTALLER), "--prune-only", str(root)],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    # Proof the stub was actually reached: nothing was removed, and the
+    # install still reported success.
+    assert (sp / "pkg" / "tests" / "test_x.py").is_file()
+    assert (root / "lib" / "tcl8.6").is_dir()
