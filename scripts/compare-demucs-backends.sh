@@ -23,6 +23,10 @@
 #                        machine with no GPU.
 #   --overlap N          python demucs overlap (default: 0.25)
 #   --shifts N           python demucs random shifts (default: 0 - see below)
+#   --gpu SUBSTRING      pin the Vulkan adapter (sets WGPU_ADAPTER_NAME), for
+#                        machines that expose more than one
+#   --probe              report python, device and Vulkan adapters, then exit
+#                        without separating anything
 #   --min-si-sdr DB      parity gate, dB (default: 15)
 #   --min-correlation R  parity gate, 0-1 (default: 0.98)
 #   --with-rust-cpu      also run the NdArray CPU build, as a numerical control
@@ -52,6 +56,8 @@ MODEL="htdemucs_6s"
 PY_DEVICE=""
 OVERLAP="0.25"
 SHIFTS="0"
+GPU_PIN=""
+PROBE=0
 MIN_SI_SDR="15"
 MIN_CORR="0.98"
 WITH_RUST_CPU=0
@@ -71,6 +77,8 @@ while [[ $# -gt 0 ]]; do
     --python-device) PY_DEVICE="$2"; shift 2 ;;
     --overlap)       OVERLAP="$2"; shift 2 ;;
     --shifts)        SHIFTS="$2"; shift 2 ;;
+    --gpu)           GPU_PIN="$2"; shift 2 ;;
+    --probe)         PROBE=1; shift ;;
     --min-si-sdr)    MIN_SI_SDR="$2"; shift 2 ;;
     --min-correlation) MIN_CORR="$2"; shift 2 ;;
     --rust-backend)  RUST_BACKEND="$2"; shift 2 ;;
@@ -86,9 +94,18 @@ case "$RUST_BACKEND" in
   vulkan|cpu) ;;
   *) die "--rust-backend must be 'vulkan' or 'cpu' (got: $RUST_BACKEND)" ;;
 esac
-[[ -n "$INPUT" ]] || die "no input file given (try --help)"
-[[ -f "$INPUT" ]] || die "input not found: $INPUT"
-INPUT="$(cd "$(dirname "$INPUT")" && pwd)/$(basename "$INPUT")"
+if [[ -n "$GPU_PIN" ]]; then
+  export WGPU_ADAPTER_NAME="$GPU_PIN"
+fi
+# Laptops that expose an iGPU alongside anything else default to the low-power
+# one unless asked otherwise.
+export WGPU_POWER_PREF="${WGPU_POWER_PREF:-high}"
+
+(( PROBE )) || [[ -n "$INPUT" ]] || die "no input file given (try --help)"
+if [[ -n "$INPUT" ]]; then
+  [[ -f "$INPUT" ]] || die "input not found: $INPUT"
+  INPUT="$(cd "$(dirname "$INPUT")" && pwd)/$(basename "$INPUT")"
+fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 [[ -n "$RS_DIR" ]] || RS_DIR="$REPO_ROOT/third_party/demucs-rs"
@@ -125,34 +142,93 @@ PY
 fi
 info "python device: $PY_DEVICE"
 
-# Is there a real Vulkan GPU, or only a software rasteriser? Both answers are
-# usable, but they must not be confused for each other in the results.
+# Which Vulkan adapter will wgpu actually use? Enumerating matters: a box with
+# a real GPU almost always ALSO exposes llvmpipe, so reading just the first
+# entry can name a GPU that wgpu never picks, or name llvmpipe on a machine
+# that has a perfectly good card. Classify every adapter, report the one wgpu
+# is most likely to choose, and say so when the choice is ambiguous.
 GPU_NAME="n/a"
 GPU_IS_SOFTWARE=0
+
+is_software_adapter() {  # type, name
+  [[ "$1" == *CPU* ]] && return 0
+  grep -qiE 'llvmpipe|lavapipe|swiftshader|softpipe' <<<"$2"
+}
+
 if [[ "$RUST_BACKEND" != "vulkan" ]]; then
   info "rust backend: ndarray cpu (Vulkan checks skipped)"
 elif command -v vulkaninfo >/dev/null 2>&1; then
-  GPU_NAME="$(vulkaninfo --summary 2>/dev/null \
-    | awk '/deviceName/ {sub(/.*= */,""); print; exit}')"
-  [[ -n "$GPU_NAME" ]] || GPU_NAME="unknown"
-  if grep -qiE 'llvmpipe|lavapipe|swiftshader|softwar' <<<"$GPU_NAME"; then
-    GPU_IS_SOFTWARE=1
+  # vulkaninfo --summary prints deviceType before deviceName for each GPU.
+  ADAPTERS="$(vulkaninfo --summary 2>/dev/null | awk '
+      /deviceType/ { sub(/.*= */, ""); gsub(/[ \t\r]+$/, ""); t = $0 }
+      /deviceName/ { sub(/.*= */, ""); gsub(/[ \t\r]+$/, ""); print t "\t" $0 }')"
+
+  if [[ -z "$ADAPTERS" ]]; then
+    warn "vulkaninfo returned no adapters - the Vulkan loader sees no device.
+         The run below will almost certainly fail; install your GPU driver."
+  else
+    info "vulkan adapters visible:"
+    real_count=0; sw_count=0
+    while IFS=$'\t' read -r atype aname; do
+      [[ -n "$aname" ]] || continue
+      if is_software_adapter "$atype" "$aname"; then
+        printf '      %-46s %s  [software]\n' "$aname" "${atype#PHYSICAL_DEVICE_TYPE_}"
+        sw_count=$((sw_count + 1))
+      else
+        printf '      %-46s %s\n' "$aname" "${atype#PHYSICAL_DEVICE_TYPE_}"
+        real_count=$((real_count + 1))
+      fi
+    done <<< "$ADAPTERS"
+
+    # wgpu's HighPerformance preference orders discrete above integrated above
+    # everything else, so mirror that ordering when predicting its choice.
+    for want in DISCRETE_GPU INTEGRATED_GPU VIRTUAL_GPU OTHER; do
+      line="$(grep -m1 "PHYSICAL_DEVICE_TYPE_$want" <<< "$ADAPTERS" || true)"
+      [[ -n "$line" ]] && { GPU_NAME="${line#*$'\t'}"; break; }
+    done
+    if [[ "$GPU_NAME" == "n/a" ]]; then
+      GPU_NAME="$(head -1 <<< "$ADAPTERS")"; GPU_NAME="${GPU_NAME#*$'\t'}"
+      GPU_IS_SOFTWARE=1
+    fi
+
+    if (( real_count > 1 )) || { (( real_count >= 1 )) && (( sw_count >= 1 )); }; then
+      warn "more than one adapter is available; wgpu picks its own and this
+         script can only predict it. Pin it to be certain:
+           WGPU_ADAPTER_NAME='<substring>' $0 ...
+         or pass --gpu '<substring>' to this script."
+    fi
   fi
 elif ls /usr/share/vulkan/icd.d/*.json >/dev/null 2>&1; then
-  warn "vulkaninfo not installed - cannot name the adapter (install vulkan-tools)"
+  warn "vulkaninfo not installed - cannot name the adapter, so a silent
+         fallback to software rendering would go unnoticed. Install it:
+           Debian/Ubuntu  sudo apt install vulkan-tools
+           Fedora         sudo dnf install vulkan-tools
+           Arch           sudo pacman -S vulkan-tools"
 else
-  die "no Vulkan ICD found in /usr/share/vulkan/icd.d - install your GPU's Vulkan driver.
-       Without one, wgpu has nothing to run on and the GPU leg is meaningless."
+  die "no Vulkan ICD found in /usr/share/vulkan/icd.d - install your GPU's
+       Vulkan driver. Without one, wgpu has nothing to run on and the GPU leg
+       is meaningless.
+         NVIDIA         the proprietary driver ships nvidia_icd.json
+         Intel / AMD    Debian/Ubuntu  sudo apt install mesa-vulkan-drivers
+                        Fedora         sudo dnf install mesa-vulkan-drivers
+                        Arch           sudo pacman -S vulkan-intel vulkan-radeon"
 fi
 
-if [[ "$RUST_BACKEND" != "vulkan" ]]; then
-  :
-elif (( GPU_IS_SOFTWARE )); then
-  warn "Vulkan adapter is '$GPU_NAME' - a SOFTWARE rasteriser, not a GPU.
-         The 'vulkan' timing below will be a slow CPU render. Treat it as a
+# Saying this up front matters more than the marker in the summary table: by
+# the time the timings print, a slow number has already been read as "the GPU
+# path is slow" rather than "there was no GPU".
+if [[ "$RUST_BACKEND" == "vulkan" ]] && (( GPU_IS_SOFTWARE )); then
+  warn "the only Vulkan adapter is '$GPU_NAME' - a SOFTWARE rasteriser, not a
+         GPU. The run below will be a slow CPU render. Treat it as a
          correctness check only, never as a performance number."
-else
-  info "vulkan adapter: $GPU_NAME"
+elif [[ "$RUST_BACKEND" == "vulkan" && "$GPU_NAME" != "n/a" ]]; then
+  info "expecting wgpu to choose: $GPU_NAME"
+fi
+
+if (( PROBE )); then
+  [[ -n "${WGPU_ADAPTER_NAME:-}" ]] && info "adapter pinned to: $WGPU_ADAPTER_NAME"
+  info "probe only - nothing separated. Re-run with an audio file to compare."
+  exit 0
 fi
 
 # ------------------------------------------------------------------- build
