@@ -130,3 +130,108 @@ def test_internal_midi_round_trip_drag_lifecycle_and_ableton_payload(tmp_path):
     os.utime(drag_file, (old, old))
     assert cleanup_stale_midi_drag_files(max_age_days=7) == 1
     assert not os.path.exists(drag_file)
+
+
+def _merge_notes_reference(notes, max_gap=0.055):
+    """The straightforward quadratic merge, kept as the definition of correct.
+
+    ``_merge_notes`` indexes by pitch to avoid rescanning every merged note.
+    This is the scan it replaced, so any disagreement between the two is a
+    bug in the index rather than a judgement call.
+    """
+    from dataclasses import replace
+
+    merged = []
+    for note in sorted(notes, key=lambda item: (item.start, item.pitch)):
+        match = next(
+            (
+                index
+                for index in range(len(merged) - 1, -1, -1)
+                if merged[index].pitch == note.pitch
+                and 0.0 <= note.start - merged[index].end <= max_gap
+            ),
+            None,
+        )
+        if match is None:
+            merged.append(note)
+        else:
+            previous = merged[match]
+            merged[match] = replace(
+                previous,
+                end=max(previous.end, note.end),
+                velocity=max(previous.velocity, note.velocity),
+                confidence=max(previous.confidence, note.confidence),
+                pitch_bends=previous.pitch_bends + note.pitch_bends,
+            )
+    return sorted(merged, key=lambda item: (item.start, item.pitch))
+
+
+def _note(pitch, start, end, velocity=90):
+    from stemlab.midi import NoteEvent
+
+    return NoteEvent(
+        pitch=pitch,
+        start=start,
+        end=end,
+        velocity=velocity,
+        confidence=1.0,
+        pitch_bends=[],
+    )
+
+
+def test_merge_notes_reaches_past_a_still_sounding_note():
+    """A held note must not hide an older one the gap window still reaches.
+
+    Indexing only the newest entry per pitch - the obvious way to drop the
+    quadratic scan - gets this wrong: it stops at the sustained note, whose
+    end is still ahead of the new start, and never sees the short note that
+    ended 20 ms ago. The original scan walks past it, so the index has to as
+    well.
+    """
+    from stemlab.midi import _merge_notes
+
+    short = _note(60, 0.00, 0.10)
+    sustained = _note(60, 0.05, 0.50)
+    trailing = _note(60, 0.12, 0.20)
+
+    merged = _merge_notes([short, sustained, trailing])
+
+    assert merged == _merge_notes_reference([short, sustained, trailing])
+    # The short note absorbed the trailing fragment; the sustained one is
+    # untouched.
+    assert [(n.start, n.end) for n in merged] == [(0.00, 0.20), (0.05, 0.50)]
+
+
+def test_merge_notes_matches_the_reference_scan_on_random_input():
+    from stemlab.midi import _merge_notes
+
+    rng = np.random.default_rng(20260828)
+    for _ in range(40):
+        notes = []
+        for _ in range(rng.integers(5, 60)):
+            start = float(rng.uniform(0.0, 4.0))
+            notes.append(
+                _note(
+                    int(rng.integers(48, 55)),
+                    start,
+                    start + float(rng.uniform(0.01, 0.6)),
+                    velocity=int(rng.integers(1, 128)),
+                )
+            )
+        assert _merge_notes(notes) == _merge_notes_reference(notes)
+
+
+def test_merge_notes_is_not_quadratic():
+    """One pitch, thousands of fragments - the shape a long stem produces."""
+    from stemlab.midi import _merge_notes
+
+    notes = [_note(60, i * 0.5, i * 0.5 + 0.1) for i in range(8000)]
+
+    started = time.perf_counter()
+    merged = _merge_notes(notes)
+    elapsed = time.perf_counter() - started
+
+    assert len(merged) == 8000
+    # The quadratic scan needs tens of seconds at this size; the index needs
+    # milliseconds. A second is far above the latter and far below the former.
+    assert elapsed < 1.0, f"_merge_notes took {elapsed:.1f}s for {len(notes)} notes"

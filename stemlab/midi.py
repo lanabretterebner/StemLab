@@ -69,17 +69,33 @@ def _velocity(level: float, reference: float) -> int:
 def _merge_notes(notes: list[NoteEvent], max_gap: float = 0.055) -> list[NoteEvent]:
     """Merge adjacent same-pitch fragments created by pitch/onset jitter."""
     merged: list[NoteEvent] = []
+    # Where each pitch's merged entries sit in ``merged``, oldest first. Only
+    # a same-pitch entry can ever match, so scanning every note merged so far
+    # is quadratic for nothing.
+    positions: dict[int, list[int]] = {}
     for note in sorted(notes, key=lambda item: (item.start, item.pitch)):
-        match = next(
-            (
-                index
-                for index in range(len(merged) - 1, -1, -1)
-                if merged[index].pitch == note.pitch
-                and 0.0 <= note.start - merged[index].end <= max_gap
-            ),
-            None,
-        )
+        candidates = positions.setdefault(note.pitch, [])
+        match = None
+        # Entries still sounding past this note's start: no match now, but a
+        # later note can still close on one of them.
+        reachable: list[int] = []
+        # Newest first, the order the scan this replaces read them in - the
+        # newest entry for a pitch is not always the one that matches.
+        for cursor in range(len(candidates) - 1, -1, -1):
+            index = candidates[cursor]
+            gap = note.start - merged[index].end
+            if 0.0 <= gap <= max_gap:
+                match = index
+                break
+            if gap < 0.0:
+                reachable.append(index)
         if match is None:
+            # Nothing matched, so every entry was looked at. The ones not
+            # collected have fallen more than max_gap behind a start that only
+            # moves forward, and nothing still to come can reach them.
+            reachable.reverse()
+            candidates[:] = reachable
+            candidates.append(len(merged))
             merged.append(note)
         else:
             previous = merged[match]
