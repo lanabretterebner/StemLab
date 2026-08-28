@@ -606,8 +606,18 @@ namespace stemlab::widgets
         if (!isEnabled() || getWidth() <= 0)
             return;
 
-        const auto normalised = juce::jlimit(
-            0.0, 1.0, static_cast<double>(event.position.x) / static_cast<double>(getWidth()));
+        const auto width = static_cast<double>(getWidth());
+
+        // x / width can never reach 1.0: the rightmost pixel of the 518 px
+        // scrubber is 517/518, which on a five-minute source is more than
+        // half a second short of the end. A click in the final pixel column
+        // means the end, and is snapped there. Every other position keeps the
+        // exact x/width mapping that paint()'s fill width is the inverse of,
+        // so the click and the fill stay in agreement.
+        auto normalised = juce::jlimit(0.0, 1.0, static_cast<double>(event.position.x) / width);
+
+        if (static_cast<double>(event.position.x) >= width - 1.0)
+            normalised = 1.0;
 
         position = normalised;
         repaint();

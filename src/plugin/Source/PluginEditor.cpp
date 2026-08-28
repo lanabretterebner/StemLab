@@ -61,10 +61,26 @@ juce::File abletonSetupScript()
 
 juce::String formatSeconds(double seconds)
 {
-    if (seconds < 0.0)
+    // Written as !(>= 0) so a NaN - an unfinished duration, a division by a
+    // zero sample rate - lands here rather than in the cast below, where it
+    // would be undefined behaviour.
+    if (!(seconds >= 0.0))
         return "--:--";
 
-    const int total = juce::jmax(0, static_cast<int>(seconds + 0.5));
+    // A 0.2 s file is a real file. Rounding to whole seconds printed it as
+    // "00:00" in both the source strip and the transport, so a valid source
+    // read as empty; anything under a second therefore carries a tenth. At
+    // least one tenth, so a 40 ms file does not read as zero either - and
+    // exactly zero stays "00:00", which is the one case that is honest.
+    if (seconds > 0.0 && seconds < 1.0)
+        return juce::String::formatted("00:00.%d",
+                                       juce::jlimit(1, 9, static_cast<int>(seconds * 10.0)));
+
+    // Floored, not rounded. Rounding ran the clock up to half a second ahead
+    // of the audio, so a position could read past a length that had not been
+    // reached yet. seconds is non-negative here, so the truncating cast IS
+    // the floor and needs no <cmath>.
+    const int total = static_cast<int>(seconds);
 
     const int minutes = total / 60;
     const int secs = total % 60;
@@ -3172,8 +3188,16 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
         sawSuccessfulJob = false;
     }
 
-    playButton.setEnabled((captureExists || jobDone) && !capturing && !engineRunning);
-    playButton.setShowPause(processor.isTransportPlaying());
+    // A source deleted underneath a running transport must not take the stop
+    // control with it: audio that is playing is reason enough to keep the
+    // button live, whatever the file system now says. A disabled Button never
+    // enters buttonDown, so onClick would otherwise never fire and there
+    // would be no way to stop the sound.
+    const bool transportPlaying = processor.isTransportPlaying();
+
+    playButton.setEnabled((captureExists || jobDone || transportPlaying) && !capturing &&
+                          !engineRunning);
+    playButton.setShowPause(transportPlaying);
 
     const auto transportLength = processor.getTransportLengthSeconds();
     const auto transportPosition = processor.getTransportPositionSeconds();

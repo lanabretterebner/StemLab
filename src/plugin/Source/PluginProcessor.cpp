@@ -301,6 +301,41 @@ juce::String timestampForFilename()
 
 double nowMs() { return juce::Time::getMillisecondCounterHiRes(); }
 
+/*
+    How close to the end counts as "already at the end" when Play is pressed.
+
+    Scrubber::applySeek maps a click to event.position.x / getWidth(). The
+    scrubber is 518 design px wide (880 window - 2*22 panel padding - 34 play
+    - 14 gap - 92 time - 14 gap - 150 A/B - 14 gap), so the rightmost pixel is
+    517/518 = 0.99807 and never 1.0. On a five-minute source that leaves the
+    playhead 300 * (1/518) = 0.58 s inside the track - far outside the 0.01 s
+    guard this replaces, which is why the first press played that 0.58 s and
+    stopped, and only the second press rewound.
+
+    Half a percent of the length is 2.6 scrubber pixels of headroom. The floor
+    keeps short sources usable; the ceiling stops a deliberate seek near the
+    end of a long source silently restarting, and still covers click slop for
+    sources up to 2.0 / (1/518) = 1036 s (17:16).
+*/
+constexpr double endGuardMinSeconds = 0.25;
+constexpr double endGuardMaxSeconds = 2.0;
+constexpr double endGuardFraction = 0.005;
+
+bool transportIsAtEnd(const juce::AudioTransportSource& transport)
+{
+    const auto length = transport.getLengthInSeconds();
+
+    // Nothing loaded: there is no end to be at. The old inline guard called
+    // setPosition(0.0) here, which was a no-op on a transport already at 0.
+    if (length <= 0.0)
+        return false;
+
+    const auto guard =
+        juce::jlimit(endGuardMinSeconds, endGuardMaxSeconds, length * endGuardFraction);
+
+    return transport.getCurrentPosition() >= length - guard;
+}
+
 /*  How much audio the disk writer refused, in the terms the user cares
     about. Reported at stop rather than logged when it happens: the count is
     raised on the audio thread, where nothing may allocate or format text.
@@ -2125,7 +2160,23 @@ void StemLabAudioProcessor::toggleStandalonePlayback()
     const auto source = getCaptureFile();
 
     if (!source.existsAsFile())
+    {
+        // The source can vanish under a running transport - deleted,
+        // unmounted, a temp file swept up. Returning here left the audio
+        // playing with the only stop control pointing at a file that is no
+        // longer there, so this path stops instead of doing nothing.
+        if (previewTransport.isPlaying())
+        {
+            previewTransport.stop();
+            setActionStatus("Source file is gone - stopped");
+        }
+        else
+        {
+            setActionStatus("Source file is gone");
+        }
+
         return;
+    }
 
     if (previewStemIndex.load() != -1)
     {
@@ -2140,10 +2191,8 @@ void StemLabAudioProcessor::toggleStandalonePlayback()
         return;
     }
 
-    if (previewTransport.getCurrentPosition() >= previewTransport.getLengthInSeconds() - 0.01)
-    {
+    if (transportIsAtEnd(previewTransport))
         previewTransport.setPosition(0.0);
-    }
 
     previewTransport.start();
     setActionStatus("Playing source");
@@ -2546,11 +2595,8 @@ void StemLabAudioProcessor::transportTogglePlay()
             return;
         }
 
-        if (stemMixTransport.getCurrentPosition() >=
-            stemMixTransport.getLengthInSeconds() - 0.01)
-        {
+        if (transportIsAtEnd(stemMixTransport))
             stemMixTransport.setPosition(0.0);
-        }
 
         stemMixTransport.start();
         setActionStatus("Playing stems");
