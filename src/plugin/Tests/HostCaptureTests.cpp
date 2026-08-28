@@ -111,6 +111,70 @@ int main()
                                         cancelledSelection.getFileName());
 
         check(processor.getCaptureFile() == sourceBeforeCancelledSelection);
+
+        // A file is a source only if something can read audio out of it.
+        // Size cannot answer that: 64 bytes of text named .wav is bigger
+        // than a WAV header and is not audio at all, and it used to load
+        // and report a ready source with Separate live.
+        const auto textNamedWav = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                      .getChildFile("stemlab-not-audio.wav");
+        textNamedWav.deleteFile();
+        check(textNamedWav.replaceWithText("this is not audio at all, just text\n"));
+        check(!processor.setInputAudioFile(textNamedWav, 0.0, textNamedWav.getFileName()));
+        check(processor.getCaptureFile() == sourceBeforeCancelledSelection);
+        check(textNamedWav.deleteFile());
+
+        const auto emptyWav = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                  .getChildFile("stemlab-empty.wav");
+        emptyWav.deleteFile();
+        check(emptyWav.create());
+        check(!processor.setInputAudioFile(emptyWav, 0.0, emptyWav.getFileName()));
+        check(processor.getCaptureFile() == sourceBeforeCancelledSelection);
+        check(emptyWav.deleteFile());
+
+        // A real WAV with no samples in it: readable, and still not a
+        // source anything can be separated out of.
+        const auto headerOnlyWav = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                       .getChildFile("stemlab-header-only.wav");
+        headerOnlyWav.deleteFile();
+
+        {
+            auto fileStream = std::make_unique<juce::FileOutputStream>(headerOnlyWav);
+            check(fileStream->openedOk());
+
+            juce::WavAudioFormat wav;
+            std::unique_ptr<juce::OutputStream> stream = std::move(fileStream);
+            const auto options = juce::AudioFormatWriter::Options{}
+                                     .withSampleRate(48000.0)
+                                     .withNumChannels(2)
+                                     .withBitsPerSample(16);
+            auto writer = wav.createWriterFor(stream, options);
+            check(writer != nullptr);
+        }
+
+        check(headerOnlyWav.getSize() > 0);
+        check(!processor.setInputAudioFile(headerOnlyWav, 0.0, headerOnlyWav.getFileName()));
+        check(processor.getCaptureFile() == sourceBeforeCancelledSelection);
+        check(headerOnlyWav.deleteFile());
+
+        // The other half of the guard: an extension no bundled decoder
+        // claims is still accepted, because the engine normalizes those
+        // with FFmpeg long before anything here would have to read them.
+        juce::AudioFormatManager bundledFormats;
+        bundledFormats.registerBasicFormats();
+
+        if (bundledFormats.findFormatForFileExtension(".m4a") == nullptr)
+        {
+            const auto engineOnlyFormat =
+                juce::File::getSpecialLocation(juce::File::tempDirectory)
+                    .getChildFile("stemlab-engine-only.m4a");
+            engineOnlyFormat.deleteFile();
+            check(engineOnlyFormat.replaceWithText("stand-in for a container JUCE cannot read\n"));
+            check(processor.setInputAudioFile(engineOnlyFormat, 0.0,
+                                              engineOnlyFormat.getFileName()));
+            check(processor.getCaptureFile() == engineOnlyFormat);
+            check(engineOnlyFormat.deleteFile());
+        }
     }
 
     check(capturedFile.deleteFile());

@@ -2067,11 +2067,13 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
         return false;
     }
 
-    // 44 bytes is a canonical WAV header, and the two recording paths
-    // already treat that as the line between a file and a recording. A
-    // zero-byte file used to sail through here and light up Separate,
+    // A zero-byte file used to sail through here and light up Separate,
     // because nothing below this point looks at the file's size again.
-    if (file.getSize() <= 44)
+    // Size is only allowed to answer this one question - "is there
+    // anything in it at all" - so that the user gets the plain reason
+    // rather than a decoding one. Whether the bytes are audio is decided
+    // by the decoder further down, not by counting them.
+    if (file.getSize() <= 0)
     {
         setActionStatus("Selected audio file is empty");
         return false;
@@ -2095,8 +2097,9 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
 
     if (infoReader != nullptr)
     {
-        // A header-only file is big enough to pass the size guard and
-        // still decodes to nothing. Refuse it here, before the first
+        // A header-only file has a reader and still decodes to nothing:
+        // it is real audio of zero length, which is not a source anything
+        // can be separated out of. Refuse it here, before the first
         // mutation below: everything past this point overwrites the
         // channel count, the sample count and finally captureFile itself,
         // and a later refusal would leave the old source destroyed with
@@ -2123,10 +2126,29 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
     }
     else
     {
-        // This is intentionally not fatal. The Python engine normalizes
-        // compressed/container audio with FFmpeg before RoFormer, so a file
-        // may be perfectly separable even when JUCE has no source-preview
-        // decoder for that specific format.
+        // Nothing here could decode the file. Whether that is fatal depends
+        // on whether anything here was ever meant to: previewFormats claims
+        // a fixed set of extensions - .wav, .aiff, .flac and the rest of
+        // registerBasicFormats - and for one of those, a reader that
+        // refuses the file is the decoder saying the bytes are not the
+        // audio the name promises. Sixty-four bytes of text named .wav used
+        // to reach the bottom of this function and announce "Source ready"
+        // with Separate fully live, because the only thing standing between
+        // it and that was a byte count. This refusal comes before the
+        // stores below, which are already mutation: a later one would leave
+        // the old source torn down with nothing in its place.
+        if (previewFormats.findFormatForFileExtension(file.getFileExtension()) != nullptr)
+        {
+            setActionStatus("Selected file is not audio");
+            return false;
+        }
+
+        // An extension no registered format claims is still let through,
+        // and intentionally so. The Python engine normalizes compressed and
+        // container audio with FFmpeg before RoFormer, so an .m4a or .opus
+        // may be perfectly separable even though nothing here can preview
+        // it, and refusing it would be this side of the app guessing about
+        // formats it does not decode.
         capturedSamples.store(0);
         inputDurationSeconds.store(0.0);
 
