@@ -23,6 +23,9 @@
 #                        machine with no GPU.
 #   --overlap N          python demucs overlap (default: 0.25)
 #   --shifts N           python demucs random shifts (default: 0 - see below)
+#   --repeat N           run demucs-rs N times (default: 1). Use 2 on a first
+#                        Vulkan run: run 1 pays shader compilation, autotune
+#                        and a warmup segment that are cached from then on.
 #   --gpu SUBSTRING      pin the Vulkan adapter (sets WGPU_ADAPTER_NAME), for
 #                        machines that expose more than one
 #   --probe              report python, device and Vulkan adapters, then exit
@@ -57,6 +60,7 @@ PY_DEVICE=""
 OVERLAP="0.25"
 SHIFTS="0"
 GPU_PIN=""
+REPEAT=1
 PROBE=0
 MIN_SI_SDR="15"
 MIN_CORR="0.98"
@@ -78,6 +82,7 @@ while [[ $# -gt 0 ]]; do
     --overlap)       OVERLAP="$2"; shift 2 ;;
     --shifts)        SHIFTS="$2"; shift 2 ;;
     --gpu)           GPU_PIN="$2"; shift 2 ;;
+    --repeat)        REPEAT="$2"; shift 2 ;;
     --probe)         PROBE=1; shift ;;
     --min-si-sdr)    MIN_SI_SDR="$2"; shift 2 ;;
     --min-correlation) MIN_CORR="$2"; shift 2 ;;
@@ -90,6 +95,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+[[ "$REPEAT" =~ ^[1-9][0-9]*$ ]] || die "--repeat must be a positive integer (got: $REPEAT)"
 case "$RUST_BACKEND" in
   vulkan|cpu) ;;
   *) die "--rust-backend must be 'vulkan' or 'cpu' (got: $RUST_BACKEND)" ;;
@@ -394,8 +400,49 @@ fi
 
 # --debug makes demucs-rs emit plain per-checkpoint progress lines on stderr
 # (it costs ~2% and, unlike its indicatif bar, survives a non-tty pipe).
-run_timed "$PRIMARY_LABEL" "$OUT_DIR/$PRIMARY_LABEL" \
-  "$PRIMARY_BIN" --debug -m "$MODEL" -o "$OUT_DIR/$PRIMARY_LABEL" "$INPUT" || true
+#
+# Repeat because the first wgpu run is not comparable to the rest: CubeCL
+# benchmarks kernel variants, the shaders compile, and demucs-rs additionally
+# runs a full 7.8 s warmup segment. All of that is cached globally afterwards,
+# so run 1 measures setup the user only pays once while run N measures the
+# throughput they actually live with.
+RUST_TIMES=()
+for (( run = 1; run <= REPEAT; run++ )); do
+  label="$PRIMARY_LABEL"
+  (( REPEAT > 1 )) && label="$PRIMARY_LABEL (run $run/$REPEAT)"
+  info "running $label"
+  rm -rf "$OUT_DIR/$PRIMARY_LABEL"; mkdir -p "$OUT_DIR/$PRIMARY_LABEL"
+  t0="$(now)"; rc=0
+  "$PRIMARY_BIN" --debug -m "$MODEL" -o "$OUT_DIR/$PRIMARY_LABEL" "$INPUT" \
+    > "$OUT_DIR/$PRIMARY_LABEL.log" 2>&1 || rc=$?
+  t1="$(now)"
+  if (( rc != 0 )); then
+    warn "$PRIMARY_LABEL failed (exit $rc) - see $OUT_DIR/$PRIMARY_LABEL.log"
+    tail -15 "$OUT_DIR/$PRIMARY_LABEL.log" >&2
+    break
+  fi
+  secs="$(elapsed "$t0" "$t1")"
+  RUST_TIMES+=("$secs")
+  info "$label took ${secs}s"
+
+  # The CLI says so itself when the autotune cache was empty, which beats
+  # guessing at where CubeCL keeps it.
+  if grep -q "Pre-compiling GPU shaders" "$OUT_DIR/$PRIMARY_LABEL.log" 2>/dev/null; then
+    if (( REPEAT == 1 )); then
+      warn "that run compiled shaders and ran autotune from cold, which is
+         setup cost paid once, not throughput. Re-run with --repeat 2 for a
+         steady-state number; the second run reuses the cached autotune."
+    else
+      info "  (run $run was cold: shader compilation + autotune)"
+    fi
+  fi
+done
+# Steady state is the last run; with --repeat 1 that is simply the only run.
+if (( ${#RUST_TIMES[@]} )); then
+  printf '%s\n' "${RUST_TIMES[-1]}" > "$OUT_DIR/$PRIMARY_LABEL.seconds"
+else
+  echo "FAILED" > "$OUT_DIR/$PRIMARY_LABEL.seconds"
+fi
 
 if (( WITH_RUST_CPU )); then
   run_timed rust-cpu "$OUT_DIR/rust-cpu" \
@@ -474,11 +521,11 @@ printf '  %-24s %s s%s\n' "demucs-rs ($PRIMARY_LABEL)" "$VK_T" \
 
 "$PYTHON" - "$RESULTS" "$PY_T" "$VK_T" "$CPU_T" "$PY_DEVICE" "$GPU_NAME" \
            "$GPU_IS_SOFTWARE" "$MODEL" "$OVERLAP" "$SHIFTS" "$INPUT" \
-           "${RS_REV:-unknown}" <<'PY'
+           "${RS_REV:-unknown}" "$(IFS=,; echo "${RUST_TIMES[*]:-}")" <<'PY'
 import json, sys
 keys = ["python_seconds","rust_seconds","rust_cpu_control_seconds","python_device",
         "vulkan_adapter","vulkan_is_software","model","overlap","shifts","input",
-        "demucs_rs_revision"]
+        "demucs_rs_revision","rust_all_run_seconds"]
 out, vals = sys.argv[1], sys.argv[2:]
 def num(v):
     try: return float(v)
@@ -487,6 +534,7 @@ d = dict(zip(keys, vals))
 for k in ("python_seconds","rust_seconds","rust_cpu_control_seconds"):
     d[k] = num(d[k])
 d["vulkan_is_software"] = d["vulkan_is_software"] == "1"
+d["rust_all_run_seconds"] = [float(x) for x in d["rust_all_run_seconds"].split(",") if x]
 if d["python_seconds"] and d["rust_seconds"]:
     d["rust_speedup_vs_python"] = round(d["python_seconds"] / d["rust_seconds"], 2)
 json.dump(d, open(out, "w"), indent=2)
