@@ -102,3 +102,40 @@ def test_backend_output_suffixes_do_not_collide():
     assert len(suffixes) == len(set(suffixes))
 
 
+
+
+PORTABLE_BUILD = ROOT / "scripts" / "win" / "build_portable_windows.ps1"
+
+
+def test_engine_copy_excludes_test_suites_by_exact_plural_name():
+    """The exclusion is a string in an array; nothing else guards it.
+
+    'tests' -> 'test*' looks like a harmless widening and is not: torch ships
+    real, imported directories called torch/test and torch/include/c10/test,
+    and a glob would take them. The Linux side has a test for exactly this
+    mutation (tests/test_engine_prune.py); this is its Windows counterpart,
+    and it runs on Linux because the .ps1 itself cannot.
+    """
+    lines = PORTABLE_BUILD.read_text(encoding="utf-8").splitlines()
+    # The invocation, not the whole file: the comment above it necessarily
+    # discusses the singular name in order to explain why it is excluded.
+    calls = [ln for ln in lines if "Invoke-Robocopy $VenvSitePackages" in ln]
+
+    assert len(calls) == 1, calls
+    assert '@("/XD", "__pycache__", "tests")' in calls[0]
+    # Any of these would also match torch's singular, real directories.
+    for widened in ('"test*"', '"*test*"', '"test"'):
+        assert widened not in calls[0], widened
+
+
+def test_the_windows_engine_still_excludes_pycache_everywhere_it_copies():
+    """Three robocopy calls build the Engine; all three must agree.
+
+    Linux deliberately KEEPS __pycache__ (measured: dropping it costs ~2.2x
+    on first import, and on a read-only install every run). Windows has never
+    shipped it. The asymmetry is deliberate but easy to erase by accident, so
+    the three call sites are pinned together rather than individually.
+    """
+    script = PORTABLE_BUILD.read_text(encoding="utf-8")
+
+    assert script.count('"/XD", "__pycache__"') == 3

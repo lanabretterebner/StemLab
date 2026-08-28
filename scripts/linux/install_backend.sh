@@ -21,6 +21,11 @@
 #   ./scripts/install_backend.sh --no-pointer # build-only: skip the discovery
 #                                             pointer (used by the portable
 #                                             bundle builder)
+#
+# --prune-only DIR runs the final prune step against an Engine that already
+# exists and then exits. It sits below the block --help prints (lines 2-19)
+# because it is a test hook for tests/test_engine_prune.py, not something a
+# user has any reason to run.
 
 set -euo pipefail
 
@@ -33,6 +38,8 @@ TORCH_FLAVOR="auto"
 REINSTALL=0
 WRITE_POINTER=1
 DEST=""
+PRUNE_ONLY=""
+PRUNE_ONLY_SET=0
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
@@ -45,6 +52,7 @@ while [[ $# -gt 0 ]]; do
         --dest)      DEST="$2";           shift 2 ;;
         --reinstall) REINSTALL=1;         shift ;;
         --no-pointer) WRITE_POINTER=0;    shift ;;
+        --prune-only) PRUNE_ONLY="$2"; PRUNE_ONLY_SET=1; shift 2 ;;
         -h|--help)
             sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             exit 0 ;;
@@ -53,6 +61,185 @@ while [[ $# -gt 0 ]]; do
             exit 2 ;;
     esac
 done
+
+# -------------------------------------------------------------- prune helpers
+
+# The prune runs at the very end of the build; these live up here because bash
+# needs them defined before that call, and because --prune-only has to answer
+# before the preflight block starts reaching for curl.
+
+# Shrink a finished Engine. Order matters: Tcl/Tk goes first so the strip pass
+# does not spend time on files that are about to be deleted anyway.
+#
+# Measured on a torch 2.11.0+cpu dependency tree: 877.9 MB -> 731.7 MB, of
+# which 98.6 MB is the strip pass and 47.6 MB is bundled test suites.
+prune_engine() {
+    local root="${1:-}"
+
+    # Same rule the --reinstall rm -rf follows: a directory this script did not
+    # create is never touched. set -u does not catch a variable that is set but
+    # empty, and an empty root would turn the tcl/tk globs below into
+    # "rm -rf /lib/tk*".
+    [[ -n "$root" && "$root" == /* && -d "$root" ]] || {
+        echo "Refusing to prune '$root': not an absolute existing directory." >&2
+        return 1
+    }
+
+    [[ -f "$root/.stemlab-engine" ]] || {
+        echo "Refusing to prune $root: no .stemlab-engine marker, so this" >&2
+        echo "installer did not create it." >&2
+        return 1
+    }
+
+    echo "Pruning the Engine..."
+    prune_tcltk "$root"
+    prune_bundled_tests "$root"
+    prune_strip_shared_objects "$root"
+}
+
+# Tcl/Tk is dead weight here: nothing under src/ or scripts/ imports tkinter,
+# and neither does anything pip puts beside it - torch, torchaudio, demucs,
+# bs_roformer and audio-separator were all checked inside a built Engine. It
+# runs headless as a subprocess of the plugin anyway, so a library that lazily
+# picks a GUI backend has no display to pick Tk for and falls back to Agg.
+# Worth 9.0 MB of the pinned interpreter.
+#
+# Left behind deliberately: idlelib, turtle.py and turtledemo import tkinter
+# and stop working after this. They are neither Tcl/Tk nor tkinter, so pruning
+# them is a separate decision rather than a tidy-up to make here.
+#
+# Nothing fails if a path is absent - an unmatched glob must stay a no-op.
+prune_tcltk() {
+    local root="$1"
+    local index
+
+    # Every removal below is tolerant of failure. Under `set -e` a single
+    # read-only file or a racing antivirus would otherwise abort an install
+    # that has already done all of its real work, moments before the engine
+    # pointer is written. A prune that half-finishes costs disk; a prune that
+    # kills the install costs the install.
+    rm -rf "$root"/lib/python3.*/tkinter || true
+    rm -f  "$root"/lib/python3.*/lib-dynload/_tkinter*.so || true
+    rm -rf "$root"/lib/tcl* "$root"/lib/tk* "$root"/lib/libtcl* "$root"/lib/libtk* || true
+
+    # itcl and thread sit beside Tcl under version-numbered directory names -
+    # itcl4.2.4 and thread2.8.9 in the pinned interpreter. Find them by the
+    # index file every Tcl package directory carries rather than by numbers
+    # that move with the next CPython bump. lib/python3.11 and lib/pkgconfig
+    # carry no pkgIndex.tcl, so the sweep cannot reach them.
+    while IFS= read -r -d '' index; do
+        local dir
+        dir="$(dirname "$index")"
+
+        # An allow-list, not an observation. Today only Tcl packages carry a
+        # pkgIndex.tcl at this depth, but "no interpreter directory will ever
+        # ship one" is a property of the current tarball rather than a rule,
+        # and the consequence of being wrong is rm -rf on part of the stdlib.
+        case "$(basename "$dir")" in
+            itcl*|thread*|tcl*|tk*|tdbc*|sqlite3*|tclx*|expect*|itk*) ;;
+            *) continue ;;
+        esac
+
+        rm -rf "$dir" || true
+    done < <(find "$root/lib" -mindepth 2 -maxdepth 2 -name pkgIndex.tcl -print0 2>/dev/null)
+}
+
+# Bundled test suites. Every token of the find below is load-bearing:
+#
+#   -name tests   exact, never "test*" - numpy.testing is public API that
+#                 numpy.ma, scipy.special and sklearn.utils import at run time,
+#                 and a "test*" glob takes it out along with the test suites.
+#   -not -path    keeps the whole numpy/testing subtree, including the
+#                 numpy/testing/tests directory nested inside it.
+#   find . after  the filter above matches ancestors too. Rooted at an absolute
+#   cd            path, an Engine installed under ~/testing/ would match on the
+#                 ancestor and select nothing at all - a prune that silently
+#                 does nothing is worse than no prune.
+#   -type d       a package that ships a *file* called tests keeps it.
+#   -mindepth 2   only test suites nested inside a package; a top-level
+#                 site-packages/tests could be something importable.
+#
+# This leaves the wheels' RECORD hashes stale. pip does not verify them on
+# uninstall or upgrade, so nothing breaks, but an integrity checker would see a
+# modified install tree.
+prune_bundled_tests() {
+    local root="$1"
+    local sp d
+
+    for sp in "$root"/lib/python3.*/site-packages; do
+        [[ -d "$sp" ]] || continue
+
+        while IFS= read -r -d '' d; do
+            # Tolerant for the same reason as prune_tcltk: this runs after
+            # every expensive step and before the pointer write.
+            rm -rf "$sp/$d" || true
+            echo "  removed $d"
+        done < <(cd "$sp" && find . -mindepth 2 -type d -name tests \
+                                    -not -path '*/testing/*' -prune -print0)
+    done
+}
+
+# --strip-unneeded, never plain "strip": it is defined to keep everything
+# needed for relocation processing, so it stays correct across binutils and
+# llvm-strip versions. What plain strip happens to leave in a shared object is
+# an implementation detail, and this is not a good thing to bet an Engine on.
+# Worth 98.6 MB on a torch 2.11.0+cpu install - most of what the prune saves.
+prune_strip_shared_objects() {
+    local root="$1"
+    local f
+    local stripped=0
+
+    # A missing binutils must not fail an otherwise good install - this is a
+    # size optimisation, not part of the build.
+    if ! command -v strip >/dev/null 2>&1; then
+        echo "  strip(1) not found; leaving shared objects as they are."
+        return 0
+    fi
+
+    # Per-file failure is ignored on purpose: site-packages contains .so names
+    # that are not ELF at all, and objects that are already stripped.
+    # -type f so a versioned .so.1.2.3 is not stripped a second time through
+    # the .so symlink beside it.
+    while IFS= read -r -d '' f; do
+        strip --strip-unneeded "$f" 2>/dev/null && stripped=$((stripped + 1)) || true
+    done < <(find "$root" -type f -name '*.so*' -print0)
+
+    echo "  stripped $stripped shared objects."
+}
+
+# __pycache__ stays, and here is the measurement that says so, because deleting
+# it is the obvious next idea and it is a lot of megabytes. A built cpu Engine
+# carries 189 MB of bytecode out of 1431 MB - 13.2%.
+#
+# What it buys back: on numpy + scipy + sklearn + joblib and their vendored
+# .libs, nine fresh processes each importing numpy, scipy.signal,
+# scipy.interpolate, sklearn.decomposition and sklearn.cluster took a median
+# 1362 ms with bytecode and 3049 ms without it and unable to write it back.
+# +1687 ms, 2.24x, on every single run, for four packages, before torch and
+# demucs are in the picture - and the plugin starts a fresh Engine process per
+# job. A writable Engine pays it once and self-heals (3358 ms, then ~1400 ms),
+# but the portable bundle can land somewhere read-only, where it never does.
+# 13% of the size for double the startup is not a trade worth making.
+#
+# The .py sources stay either way - dropping those breaks tracebacks and every
+# tool that reads source.
+
+# Test hook. Answered here so the selection logic can be driven without a
+# network, an interpreter, or a two-gigabyte torch download.
+if [[ "$PRUNE_ONLY_SET" == 1 ]]; then
+    # Gated on the flag having been PASSED, not on its value being non-empty.
+    # "--prune-only ''" is a malformed request to prune; treating it as
+    # "prune-only was not asked for" turned it into a full ~1.4 GB network
+    # install that rewrites the engine pointer. It has already happened once.
+    if [[ -z "$PRUNE_ONLY" ]]; then
+        echo "--prune-only needs a directory." >&2
+        exit 2
+    fi
+
+    [[ "$PRUNE_ONLY" == /* ]] || PRUNE_ONLY="$PWD/$PRUNE_ONLY"
+    prune_engine "$PRUNE_ONLY"
+    exit 0
+fi
 
 # Relative XDG values are invalid per the spec and are ignored by the plugin,
 # so the installer must ignore them the same way or the pointer file lands
@@ -355,6 +542,23 @@ PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install -c "$TORCH_CONSTRAINTS" "$REPO_RO
 
 printf '%s\n' "$TORCH_FLAVOR" > "$FLAVOR_FILE"
 
+# ---------------------------------------------------------------------- prune
+
+# Before the validation block, not after it, so the import check below runs on
+# a pruned Engine rather than an unpruned one. Also after every pip install, so
+# nothing puts back what was just removed.
+#
+# What that check actually proves is narrower than it looks, and the difference
+# matters on a GPU install. It imports stemlab, torch, torchaudio and soxr, so
+# it does cover the CPU shared objects the strip pass rewrites - torchaudio's
+# extension in particular is linked against libtorch and will not load if
+# stripping damaged it. It does NOT dlopen the CUDA/ROCm/XPU kernel libraries:
+# torch.cuda.is_available() probes the driver without loading them. So on
+# cuda, rocm and xpu the strip pass over those trees is unverified by this
+# install, and was never exercised in development either - only the cpu flavor
+# was ever built and pruned.
+prune_engine "$DEST"
+
 # ---------------------------------------------------------------- validation
 
 echo "Verifying the Engine..."
@@ -366,6 +570,12 @@ import stemlab
 import stemlab.recursive
 import torch
 
+# The BS-RoFormer rate alignment reaches for soxr on the first non-44.1 kHz
+# separation, which is well after the model has loaded. It arrives through
+# librosa and beat-this rather than being installed for its own sake, so it
+# is worth failing here instead of there.
+import soxr
+
 # Importing torchaudio is the check, not a formality: its compiled extension
 # is linked against one torch, and loading it against another is how a
 # mismatched Engine fails - at the user's first separation rather than here.
@@ -375,6 +585,7 @@ print(f"  stemlab import: ok")
 print(f"  recursive splitting available: {stemlab.recursive.Separator is not None}")
 print(f"  torch {torch.__version__}, CUDA available: {torch.cuda.is_available()}")
 print(f"  torchaudio {torchaudio.__version__}")
+print(f"  soxr {soxr.__version__}")
 
 if torch.__version__.split("+")[0] != torchaudio.__version__.split("+")[0]:
     print(
