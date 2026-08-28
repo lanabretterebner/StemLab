@@ -406,6 +406,14 @@ private:
     std::atomic<bool> capturing{false};
     std::atomic<int> standaloneRecordingMode{recordingNone};
     std::atomic<juce::int64> capturedSamples{0};
+
+    /*  Samples the threaded writer refused because its FIFO was full.
+        ThreadedWriter::write does not block - it returns false and discards
+        the block - so without this counter a disk hiccup produced a
+        time-compressed recording that still reported success, and the
+        duration readout hid the gap because dropped blocks were counted as
+        written. Non-zero at stop means the file is short by this much. */
+    std::atomic<juce::int64> droppedCaptureSamples{0};
     std::atomic<double> captureStartPpq{-1.0};
     std::atomic<double> lastKnownHostPpq{0.0};
     std::atomic<bool> lastHostPlaying{false};
