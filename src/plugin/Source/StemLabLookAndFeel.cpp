@@ -12,6 +12,125 @@ juce::String variantOf(const juce::Button& button)
     const auto id = button.getComponentID();
     return id.isEmpty() ? "neutral" : id;
 }
+
+/*
+    Tooltip geometry, shared so getTooltipBounds and drawTooltip cannot
+    disagree about where the text goes. A tooltip is what the UI falls back
+    on when something did not fit - a long source path most of all - so text
+    too wide for one line wraps instead of being truncated a second time.
+    Anything that fits keeps the single 22px line it always had.
+
+    A word wrapper is no help here: a path is one unbroken token as far as it
+    is concerned, so it drops everything past the first line's worth. The
+    wrap below therefore breaks where a path actually has seams - after a
+    separator, a space, an underscore, a hyphen, a dot - and splits between
+    characters when even that leaves a run too wide. Nothing is discarded,
+    which is the whole point of the tooltip: the name the strip could not
+    show appears in full nowhere else.
+*/
+constexpr int tooltipMaxWidth = 420;
+constexpr int tooltipPadX = 8;
+constexpr int tooltipPadY = 5;
+constexpr int tooltipLineHeight = 22;
+constexpr int tooltipLineSpacing = 16;
+
+float tooltipTextWidth(const juce::String& text)
+{
+    return juce::GlyphArrangement::getStringWidth(juce::Font(theme::fonts::tooltip()), text);
+}
+
+// Break opportunities: the seams a path or a long filename is assembled
+// from. The separator stays at the end of its line, the way a hyphenated
+// word breaks, so the eye can tell a wrap from a character the name has.
+bool breaksAfter(juce::juce_wchar c)
+{
+    return c == '/' || c == '\\' || c == ' ' || c == '_' || c == '-' || c == '.';
+}
+
+juce::StringArray splitIntoChunks(const juce::String& text)
+{
+    juce::StringArray chunks;
+    juce::String current;
+
+    for (auto c = text.getCharPointer(); ! c.isEmpty(); ++c)
+    {
+        const auto ch = *c;
+
+        if (ch == '\n')
+        {
+            chunks.add(current);
+            chunks.add("\n");
+            current.clear();
+            continue;
+        }
+
+        current += juce::String::charToString(ch);
+
+        if (breaksAfter(ch))
+        {
+            chunks.add(current);
+            current.clear();
+        }
+    }
+
+    if (current.isNotEmpty())
+        chunks.add(current);
+
+    return chunks;
+}
+
+juce::StringArray wrapTooltip(const juce::String& text, float maxWidth)
+{
+    juce::StringArray lines;
+    juce::String line;
+
+    // A line's trailing separator is allowed to sit in the padding rather
+    // than push the next chunk down, so measure without it.
+    const auto fits = [maxWidth](const juce::String& s)
+    { return tooltipTextWidth(s.trimEnd()) <= maxWidth; };
+
+    for (auto chunk : splitIntoChunks(text))
+    {
+        if (chunk == "\n")
+        {
+            lines.add(line.trimEnd());
+            line.clear();
+            continue;
+        }
+
+        if (line.isNotEmpty() && ! fits(line + chunk))
+        {
+            lines.add(line.trimEnd());
+            line.clear();
+        }
+
+        // A chunk with no seam in it can still outrun the column - a
+        // 120-character filename is exactly that - so give it one.
+        while (! fits(line + chunk))
+        {
+            int fit = 0;
+
+            while (fit < chunk.length() && fits(line + chunk.substring(0, fit + 1)))
+                ++fit;
+
+            if (fit == 0)
+                fit = 1; // a column too narrow for one glyph still has to advance
+
+            line += chunk.substring(0, fit);
+            chunk = chunk.substring(fit);
+
+            lines.add(line.trimEnd());
+            line.clear();
+        }
+
+        line += chunk;
+    }
+
+    if (line.isNotEmpty() || lines.isEmpty())
+        lines.add(line.trimEnd());
+
+    return lines;
+}
 } // namespace
 
 StemLabLookAndFeel::StemLabLookAndFeel()
@@ -42,13 +161,35 @@ StemLabLookAndFeel::StemLabLookAndFeel()
     if (interRegular != nullptr)
         setDefaultSansSerifTypeface(interRegular);
 
+    /*
+     * The stock widgets this class does not draw itself - combo boxes, list
+     * boxes, toggles, sliders, table headers - are painted by LookAndFeel_V4
+     * out of its colour scheme, which is JUCE's dark slate by default. That
+     * is what makes the standalone Audio/MIDI dialog the one foreign surface
+     * in the app, so restate the scheme in Nocturne tokens.
+     *
+     * This must run BEFORE the setColour block below: setColourScheme calls
+     * initialiseColours, which rewrites every id that block sets. The nine
+     * values are positional - see ColourScheme::UIColour.
+     */
+    setColourScheme(juce::LookAndFeel_V4::ColourScheme{
+        theme::colours::ground().getARGB(),      // windowBackground
+        theme::colours::surface().getARGB(),     // widgetBackground
+        theme::colours::surface().getARGB(),     // menuBackground
+        theme::colours::outline().getARGB(),     // outline
+        theme::colours::text().getARGB(),        // defaultText
+        theme::colours::accent().getARGB(),      // defaultFill
+        theme::colours::primaryText().getARGB(), // highlightedText
+        theme::colours::primaryFill().getARGB(), // highlightedFill
+        theme::colours::text().getARGB()});      // menuText
+
     setColour(juce::ResizableWindow::backgroundColourId, theme::colours::ground());
 
     setColour(juce::Label::textColourId, theme::colours::text());
 
     setColour(juce::PopupMenu::backgroundColourId, theme::colours::surface());
     setColour(juce::PopupMenu::textColourId, theme::colours::text());
-    setColour(juce::PopupMenu::headerTextColourId, theme::colours::text50());
+    setColour(juce::PopupMenu::headerTextColourId, theme::colours::sectionHeader());
     setColour(juce::PopupMenu::highlightedBackgroundColourId, theme::colours::hoverFill());
     setColour(juce::PopupMenu::highlightedTextColourId, theme::colours::text());
 
@@ -85,30 +226,31 @@ void StemLabLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& b
 
     const bool hover = (highlighted || down) && button.isEnabled();
 
-    // Disabled controls drop to 45% as a whole - fill and border included,
-    // matching the text dim in drawButtonText.
-    const float dim = button.isEnabled() ? 1.0f : theme::metrics::disabledOpacity;
+    // Disabled controls drop as a whole - fill and border included, matching
+    // the text dim in drawButtonText.
+    const auto dimmed = [enabled = button.isEnabled()](juce::Colour c)
+    { return theme::colours::dimIfDisabled(c, enabled); };
 
     if (variant == "primary")
     {
         // The accent glow behind primary actions is painted by the editor
         // (a shadow drawn inside the component would be clipped away).
-        g.setColour((hover ? theme::colours::primaryFillHover() : theme::colours::primaryFill())
-                        .withMultipliedAlpha(dim));
+        g.setColour(dimmed(hover ? theme::colours::primaryFillHover()
+                                 : theme::colours::primaryFill()));
         g.fillRoundedRectangle(bounds, radius);
 
-        g.setColour(theme::colours::primaryEdge().withMultipliedAlpha(dim));
+        g.setColour(dimmed(theme::colours::primaryEdge()));
         g.drawRoundedRectangle(bounds, radius, 1.0f);
         return;
     }
 
     if (variant == "accent-outline")
     {
-        g.setColour((hover ? theme::colours::accentTint13() : theme::colours::accentTint10())
-                        .withMultipliedAlpha(dim));
+        g.setColour(dimmed(hover ? theme::colours::accentTint13()
+                                 : theme::colours::accentTint10()));
         g.fillRoundedRectangle(bounds, radius);
 
-        g.setColour(theme::colours::accent().withMultipliedAlpha(dim));
+        g.setColour(dimmed(theme::colours::accent()));
         g.drawRoundedRectangle(bounds, radius, 1.0f);
         return;
     }
@@ -130,8 +272,8 @@ void StemLabLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& b
     {
         const bool solo = variant == "solo";
 
-        g.setColour((solo ? theme::colours::soloActiveFill() : theme::colours::muteActiveFill())
-                        .withMultipliedAlpha(dim));
+        g.setColour(dimmed(solo ? theme::colours::soloActiveFill()
+                                : theme::colours::muteActiveFill()));
         g.fillRoundedRectangle(bounds, radius);
         return;
     }
@@ -142,7 +284,7 @@ void StemLabLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& b
         g.fillRoundedRectangle(bounds, radius);
     }
 
-    g.setColour(theme::colours::outline().withMultipliedAlpha(dim));
+    g.setColour(dimmed(theme::colours::outline()));
     g.drawRoundedRectangle(bounds, radius, 1.0f);
 }
 
@@ -168,11 +310,16 @@ void StemLabLookAndFeel::drawButtonText(juce::Graphics& g, juce::TextButton& but
             colour = variant == "solo" ? theme::colours::soloActiveText()
                                        : theme::colours::muteActiveText();
         else
-            colour = theme::colours::text45();
+            // S and M are single letters at 10px, where antialiasing eats
+            // most of a translucent stem. text45 measured 3.72:1 on the
+            // panel before rendering and less after; text75 is 7.70:1, so
+            // an untoggled Solo or Mute stays a readable letter rather
+            // than a smudge.
+            colour = theme::colours::text75();
     }
 
     if (!button.isEnabled())
-        colour = colour.withMultipliedAlpha(theme::metrics::disabledOpacity);
+        colour = theme::colours::dimDisabled(colour);
 
     g.setColour(colour);
     g.setFont(getTextButtonFont(button, button.getHeight()));
@@ -260,7 +407,8 @@ void StemLabLookAndFeel::drawPopupMenuItemWithOptions(juce::Graphics& g,
         return;
     }
 
-    const float dim = item.isEnabled ? 1.0f : theme::metrics::disabledOpacity;
+    const auto dimmed = [enabled = item.isEnabled](juce::Colour c)
+    { return theme::colours::dimIfDisabled(c, enabled); };
 
     if (isHighlighted && item.isEnabled)
     {
@@ -279,7 +427,7 @@ void StemLabLookAndFeel::drawPopupMenuItemWithOptions(juce::Graphics& g,
 
     if (item.isTicked)
     {
-        g.setColour(theme::colours::accent().withMultipliedAlpha(dim));
+        g.setColour(dimmed(theme::colours::accent()));
 
         g.strokePath(stemlab::icons::check(tickArea.toFloat()
                                                .withSizeKeepingCentre(
@@ -296,7 +444,7 @@ void StemLabLookAndFeel::drawPopupMenuItemWithOptions(juce::Graphics& g,
 
     if (hasSubMenu)
     {
-        g.setColour(theme::colours::text45().withMultipliedAlpha(dim));
+        g.setColour(dimmed(theme::colours::text45()));
 
         g.strokePath(
             stemlab::icons::chevron(trailing.toFloat().withSizeKeepingCentre(
@@ -308,7 +456,7 @@ void StemLabLookAndFeel::drawPopupMenuItemWithOptions(juce::Graphics& g,
     }
     else if (item.shortcutKeyDescription.isNotEmpty())
     {
-        g.setColour(theme::colours::text45().withMultipliedAlpha(dim));
+        g.setColour(dimmed(theme::colours::text45()));
         g.setFont(theme::fonts::meta());
         g.drawText(item.shortcutKeyDescription, trailing, juce::Justification::centredRight,
                    false);
@@ -318,7 +466,7 @@ void StemLabLookAndFeel::drawPopupMenuItemWithOptions(juce::Graphics& g,
     // and the label stays plain text.
     auto textColour = item.colour != juce::Colour() ? item.colour : theme::colours::text();
 
-    g.setColour(textColour.withMultipliedAlpha(dim));
+    g.setColour(dimmed(textColour));
     g.setFont(getPopupMenuFont());
     g.drawText(item.text, row, juce::Justification::centredLeft, true);
 }
@@ -330,11 +478,19 @@ void StemLabLookAndFeel::drawPopupMenuSectionHeaderWithOptions(juce::Graphics& g
 {
     namespace menu = theme::metrics::menu;
 
-    g.setColour(theme::colours::text45());
+    /*
+     * JUCE gives a section header a child component inset by the menu border
+     * on both sides (ItemComponent::resized), while an ordinary row is painted
+     * across the item's whole width. Undo that first, so a heading and the
+     * items under it share a left edge instead of sitting borderSize apart.
+     */
+    const auto row = area.expanded(menu::borderSize, 0);
+
+    g.setColour(theme::colours::sectionHeader());
     g.setFont(juce::Font(theme::fonts::meta()).withExtraKerningFactor(0.04f));
 
     g.drawText(sectionName,
-               area.reduced(menu::rowInsetX + menu::padX, 0)
+               row.reduced(menu::rowInsetX + menu::padX, 0)
                    .withTrimmedLeft(menu::tickColumn + menu::tickGap)
                    .withTrimmedTop(4),
                juce::Justification::bottomLeft, false);
@@ -410,11 +566,23 @@ juce::Rectangle<int> StemLabLookAndFeel::getTooltipBounds(const juce::String& te
                                                           juce::Point<int> screenPos,
                                                           juce::Rectangle<int> parentArea)
 {
-    const juce::Font font{theme::fonts::tooltip()};
+    const int natural = 2 * tooltipPadX + juce::roundToInt(tooltipTextWidth(text));
 
-    const int width =
-        juce::jmin(260, 16 + juce::roundToInt(juce::GlyphArrangement::getStringWidth(font, text)));
-    const int height = 22;
+    // The tooltip lives inside the editor, so the area it has to fit in can
+    // be narrower than the cap. Wrap to the width the box will really get,
+    // or the height would be counted for lines that never appear.
+    const int cap = juce::jmin(tooltipMaxWidth, parentArea.getWidth());
+
+    const int width = juce::jmin(cap, natural);
+
+    // Only text that hit the cap can wrap, so the wrap is worth running only
+    // then; everything else is one line and its height is known.
+    const int lines = (natural <= cap && ! text.containsChar('\n'))
+                          ? 1
+                          : wrapTooltip(text, static_cast<float>(width - 2 * tooltipPadX)).size();
+
+    const int height = lines > 1 ? lines * tooltipLineSpacing + 2 * tooltipPadY
+                                 : tooltipLineHeight;
 
     return juce::Rectangle<int>(screenPos.x, screenPos.y + 18, width, height)
         .constrainedWithin(parentArea);
@@ -433,9 +601,35 @@ void StemLabLookAndFeel::drawTooltip(juce::Graphics& g, const juce::String& text
     g.setColour(theme::colours::outline());
     g.drawRoundedRectangle(bounds, 6.0f, 1.0f);
 
+    if (height <= tooltipLineHeight)
+    {
+        // A pixel inside the box's own padding, so a string measured to the
+        // pixel cannot pick up an ellipsis from a rounding difference.
+        g.setColour(theme::colours::text());
+        g.setFont(theme::fonts::tooltip());
+        g.drawText(text, bounds.reduced(tooltipPadX - 1.0f, 0.0f),
+                   juce::Justification::centredLeft);
+        return;
+    }
+
+    // The wrapped case. The wrap is recomputed from the width actually
+    // handed down rather than remembered, so a box the tooltip window
+    // trimmed to fit the screen still draws the text that width holds.
+    const auto textArea = bounds.reduced(static_cast<float>(tooltipPadX), 0.0f);
+    const auto lines = wrapTooltip(text, textArea.getWidth());
+
+    const auto block = static_cast<float>(lines.size() * tooltipLineSpacing);
+    auto row = textArea.withSizeKeepingCentre(textArea.getWidth(), block)
+                   .removeFromTop(static_cast<float>(tooltipLineSpacing));
+
     g.setColour(theme::colours::text());
     g.setFont(theme::fonts::tooltip());
-    g.drawText(text, bounds.reduced(7.0f, 0.0f), juce::Justification::centredLeft);
+
+    for (const auto& line : lines)
+    {
+        g.drawText(line, row, juce::Justification::centredLeft, false);
+        row.translate(0.0f, static_cast<float>(tooltipLineSpacing));
+    }
 }
 
 namespace stemlab::icons
@@ -544,6 +738,19 @@ namespace stemlab::icons
         return p;
     }
 
+    juce::Path alert(juce::Rectangle<float> b)
+    {
+        // A plain X rather than a circled warning glyph: at the 16px box
+        // the footer gives this, an ellipse plus stem and dot muddies into
+        // a blob, while two strokes stay legible.
+        juce::Path p;
+        p.startNewSubPath(b.getX(), b.getY());
+        p.lineTo(b.getRight(), b.getBottom());
+        p.startNewSubPath(b.getRight(), b.getY());
+        p.lineTo(b.getX(), b.getBottom());
+        return p;
+    }
+
     juce::Path chevron(juce::Rectangle<float> b, ChevronDirection direction)
     {
         juce::Path p;
@@ -629,39 +836,45 @@ namespace stemlab::icons
     juce::Path dragOut(juce::Rectangle<float> b)
     {
         /*
-         * Drag this stem out: a rounded square, an arrow leaving it
-         * diagonally, and a corner bracket standing in for wherever it is
-         * going.
+         * Drag this stem out: a rounded square, and an arrow leaving it
+         * diagonally. Two elements, not three.
          *
-         * The reference art dashes that second square. At 14px dashes close
-         * up into a grey smear, so it is reduced to the two edges that carry
-         * the meaning.
+         * The reference art puts a dashed destination square opposite the
+         * source. At 14px dashes close up into a grey smear, so it was once
+         * reduced to a corner bracket - but a bracket is the same L shape as
+         * the arrowhead, and at this size the two sat five pixels apart and
+         * read as one arrow with a stray duplicate of its own corner. There
+         * is no room to separate them: moving the bracket far enough to stop
+         * reading as detached puts it on top of the head. A square with an
+         * arrow leaving it already says "drag out" without a third element.
          */
         const auto size = juce::jmin(b.getWidth(), b.getHeight());
 
         juce::Path p;
 
-        // Source: rounded square across the top-left.
-        const auto square = size * 0.52f;
-        p.addRoundedRectangle(b.getX(), b.getY(), square, square, size * 0.12f);
+        // Source: rounded square in the top-left, inset so its 1.4px stroke
+        // stays in the box. The old square ran to the very edge, which put
+        // half the pen outside it and made this glyph read heavier than the
+        // kebab sitting next to it.
+        const auto inset = size * 0.03f;
+        const auto square = size * 0.42f;
+        p.addRoundedRectangle(b.getX() + inset, b.getY() + inset, square, square, size * 0.10f);
 
-        // Target: the far corner of a box, opposite the source.
-        const auto bracket = size * 0.30f;
-        const auto right = b.getX() + size;
-        const auto bottom = b.getY() + size;
-
-        p.startNewSubPath(right, bottom - bracket);
-        p.lineTo(right, bottom);
-        p.lineTo(right - bracket, bottom);
-
-        // The arrow between them, on the diagonal.
-        const auto from = juce::Point<float>(b.getX() + size * 0.34f, b.getY() + size * 0.34f);
-        const auto to = juce::Point<float>(b.getX() + size * 0.74f, b.getY() + size * 0.74f);
+        /*
+         * The arrow, on the diagonal. It starts clear of the square rather
+         * than inside it: the square's corner arc meets the diagonal at
+         * 0.42 of the box and the shaft's round cap reaches back to 0.52, so
+         * roughly a pixel of ground separates them at 14px. The shaft used
+         * to begin at 0.34, well inside the fill, and ate the square's
+         * bottom-right corner.
+         */
+        const auto from = juce::Point<float>(b.getX() + size * 0.56f, b.getY() + size * 0.56f);
+        const auto to = juce::Point<float>(b.getX() + size * 0.93f, b.getY() + size * 0.93f);
 
         p.startNewSubPath(from);
         p.lineTo(to);
 
-        const auto head = size * 0.20f;
+        const auto head = size * 0.24f;
 
         p.startNewSubPath(to.x - head, to.y);
         p.lineTo(to.x, to.y);

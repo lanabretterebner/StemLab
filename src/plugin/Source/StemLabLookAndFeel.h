@@ -48,6 +48,14 @@ public:
     void drawCornerResizer(juce::Graphics&, int width, int height, bool mouseOver,
                            bool mouseDown) override;
 
+    /** Deliberately draws nothing. A menu with a parent component paints this
+        over itself (MenuWindow::paintOverChildren), and the stock version is a
+        black double ring that would sit on top of the outline
+        drawPopupMenuBackgroundWithOptions already draws. Nothing else in the
+        app uses a ResizableBorderComponent - the window resizes by its corner,
+        which is drawCornerResizer above. */
+    void drawResizableFrame(juce::Graphics&, int, int, const juce::BorderSize<int>&) override {}
+
     void drawPopupMenuBackgroundWithOptions(juce::Graphics&, int width, int height,
                                             const juce::PopupMenu::Options&) override;
 
@@ -97,6 +105,10 @@ namespace stemlab::icons
     juce::Path pause(juce::Rectangle<float> bounds);
     juce::Path folder(juce::Rectangle<float> bounds);
     juce::Path check(juce::Rectangle<float> bounds);
+
+    /** Failure: a stroked X, drawn at the same weight as check() so the
+        two footer glyphs read as one family. */
+    juce::Path alert(juce::Rectangle<float> bounds);
 
     /** Which way a chevron points: down discloses, left/right step. */
     enum class ChevronDirection

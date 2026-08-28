@@ -69,6 +69,12 @@ namespace stemlab::theme
         inline juce::Colour text50() { return text().withAlpha(0.50f); }
         inline juce::Colour text45() { return text().withAlpha(0.45f); }
 
+        // Menu section headings. Deliberately above the disabled-item colour
+        // (text at metrics::disabledOpacity, which is also 45%), so a heading
+        // never reads as an unavailable command: 60% is 5.49:1 on surface(),
+        // against 3.71:1, and 11px headings need 4.5:1 to clear WCAG AA.
+        inline juce::Colour sectionHeader() { return text().withAlpha(0.60f); }
+
         // Shared interactive roles.
         inline juce::Colour outline() { return text().withAlpha(0.16f); }
         inline juce::Colour hoverFill() { return text().withAlpha(0.07f); }
@@ -121,6 +127,7 @@ namespace stemlab::theme
         inline juce::Colour progressTrack() { return neutral800(); }
         inline juce::Colour progressFill() { return accent(); }
         inline juce::Colour statusCheck() { return accent(); }
+        inline juce::Colour statusError() { return juce::Colour(0xffff8a93); }
         inline juce::Colour spinner() { return accent(); }
         inline juce::Colour spinnerTrack() { return accent().withAlpha(0.18f); }
     }
@@ -409,7 +416,7 @@ namespace stemlab::theme
                 palette, transport, a rejected click - before settling back
                 on where the selection stands:
 
-                    5 of 6 selected  [Select all] [Deselect all]
+                    5 of 6 stems will be saved  [Select all] [Deselect all]
 
                 The bottom status line is the other half of that split: it
                 reports only the work the plugin is doing.
@@ -484,6 +491,12 @@ namespace stemlab::theme
             // The twisty used to butt straight up against the checkbox.
             constexpr int twistyGap = 6;
 
+            // A collapsed row whose hidden descendants are soloed or muted
+            // carries this dot in the gap beside its twisty, so the state
+            // does not vanish with the rows. Fits the 6px gap with a pixel
+            // of air on each side.
+            constexpr float hiddenActivityDot = 4.0f;
+
             constexpr int includeColumn = 18;
             constexpr int nameColumn = 92;
 
@@ -545,6 +558,15 @@ namespace stemlab::theme
             constexpr float gridLabelMinSpacing = 42.0f;
             constexpr float gridLabelWidth = 26.0f;
             constexpr float gridLabelHeight = 11.0f;
+
+            // Each number sits on a small plate of the well's own ground so
+            // it keeps the contrast it was measured for whatever the audio
+            // under it is doing. On a quiet lane the plate is the colour
+            // already there, so nothing shows; on a loud one it is the only
+            // reason the number is still legible.
+            constexpr float gridLabelPlateAlpha = 0.90f;
+            constexpr float gridLabelPlateRadius = 2.0f;
+            constexpr float gridLabelPlatePadding = 2.5f;
         }
 
         namespace transport
@@ -644,7 +666,71 @@ namespace stemlab::theme
 
         constexpr float disabledOpacity = 0.45f;
 
-        // The editor repaints lanes and re-polls processor state at this rate.
+        /*
+            Disabled foregrounds are floored. Several roles are themselves
+            alpha tokens - text45, text50, outline - so a flat 0.45 multiply
+            lands them near alpha 0.2, which reads as absent rather than as
+            inactive; the magnifier glyph sat at 1.8:1 against the panel.
+
+            The ceiling is what keeps the floor honest. Without it any token
+            quieter than the floor - outline, at 0.16 - would be raised to
+            0.34 and render BRIGHTER dead than alive. Capping at 85% of the
+            live alpha guarantees every role still steps down.
+        */
+        constexpr float disabledAlphaFloor = 0.34f;
+        constexpr float disabledAlphaCeiling = 0.85f;
+
+        // Retune these together: a floor at or above the multiply would make
+        // every fully opaque token brighter disabled than enabled.
+        static_assert(disabledAlphaFloor < disabledOpacity,
+                      "the disabled alpha floor must sit below disabledOpacity");
+
+        // The editor repaints lanes and re-polls processor state at this rate
+        // while anything can change on its own: a job narrating, the transport
+        // moving, a timed readout still counting down.
         constexpr int uiRefreshHz = 20;
+
+        /*
+            ...and at this rate once nothing can. Almost every user action
+            already calls refreshFromProcessor() inside its own handler, so
+            the idle tick is only catching what the editor is never told
+            about; half a second of latency on that is invisible, and it
+            removes 90% of the wakeups an open-but-idle window was costing.
+        */
+        constexpr int uiIdleRefreshHz = 2;
+
+        // Full rate is held this long past the last reason for it, so a
+        // stream of events cannot thrash the timer between the two rates
+        // and a reason that flickers off for one tick does not demote.
+        constexpr int uiIdleHoldMs = 1500;
+    }
+
+    /*
+        colours reopened after metrics: dimming is a colour role and belongs
+        beside the tokens it operates on, but it reads alpha constants that
+        metrics does not declare until above.
+    */
+    namespace colours
+    {
+        /** The one way to dim a colour for a disabled control. A
+            full-strength colour loses 55% exactly as it always has; a colour
+            that already carries alpha is floored so it stays legible, and
+            capped so it still reads weaker than its live self. */
+        inline juce::Colour dimDisabled(juce::Colour colour)
+        {
+            const auto alpha = colour.getFloatAlpha();
+
+            return colour.withAlpha(
+                juce::jmin(alpha * metrics::disabledAlphaCeiling,
+                           juce::jmax(alpha * metrics::disabledOpacity,
+                                      metrics::disabledAlphaFloor)));
+        }
+
+        /** Paint-code sugar, so a widget can route a token through the dim
+            without branching at every call. */
+        inline juce::Colour dimIfDisabled(juce::Colour colour, bool enabled)
+        {
+            return enabled ? colour : dimDisabled(colour);
+        }
     }
 }
