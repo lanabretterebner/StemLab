@@ -19,23 +19,117 @@ juce::String variantOf(const juce::Button& button)
     on when something did not fit - a long source path most of all - so text
     too wide for one line wraps instead of being truncated a second time.
     Anything that fits keeps the single 22px line it always had.
+
+    A word wrapper is no help here: a path is one unbroken token as far as it
+    is concerned, so it drops everything past the first line's worth. The
+    wrap below therefore breaks where a path actually has seams - after a
+    separator, a space, an underscore, a hyphen, a dot - and splits between
+    characters when even that leaves a run too wide. Nothing is discarded,
+    which is the whole point of the tooltip: the name the strip could not
+    show appears in full nowhere else.
 */
-constexpr int tooltipMaxWidth = 260;
+constexpr int tooltipMaxWidth = 420;
 constexpr int tooltipPadX = 8;
+constexpr int tooltipPadY = 5;
 constexpr int tooltipLineHeight = 22;
+constexpr int tooltipLineSpacing = 16;
 
-juce::TextLayout layOutTooltip(const juce::String& text, int width)
+float tooltipTextWidth(const juce::String& text)
 {
-    juce::AttributedString attributed;
-    attributed.setText(text);
-    attributed.setFont(juce::Font(theme::fonts::tooltip()));
-    attributed.setColour(theme::colours::text());
-    attributed.setJustification(juce::Justification::centredLeft);
+    return juce::GlyphArrangement::getStringWidth(juce::Font(theme::fonts::tooltip()), text);
+}
 
-    juce::TextLayout layout;
-    layout.createLayout(attributed, static_cast<float>(width - 2 * tooltipPadX));
+// Break opportunities: the seams a path or a long filename is assembled
+// from. The separator stays at the end of its line, the way a hyphenated
+// word breaks, so the eye can tell a wrap from a character the name has.
+bool breaksAfter(juce::juce_wchar c)
+{
+    return c == '/' || c == '\\' || c == ' ' || c == '_' || c == '-' || c == '.';
+}
 
-    return layout;
+juce::StringArray splitIntoChunks(const juce::String& text)
+{
+    juce::StringArray chunks;
+    juce::String current;
+
+    for (auto c = text.getCharPointer(); ! c.isEmpty(); ++c)
+    {
+        const auto ch = *c;
+
+        if (ch == '\n')
+        {
+            chunks.add(current);
+            chunks.add("\n");
+            current.clear();
+            continue;
+        }
+
+        current += juce::String::charToString(ch);
+
+        if (breaksAfter(ch))
+        {
+            chunks.add(current);
+            current.clear();
+        }
+    }
+
+    if (current.isNotEmpty())
+        chunks.add(current);
+
+    return chunks;
+}
+
+juce::StringArray wrapTooltip(const juce::String& text, float maxWidth)
+{
+    juce::StringArray lines;
+    juce::String line;
+
+    // A line's trailing separator is allowed to sit in the padding rather
+    // than push the next chunk down, so measure without it.
+    const auto fits = [maxWidth](const juce::String& s)
+    { return tooltipTextWidth(s.trimEnd()) <= maxWidth; };
+
+    for (auto chunk : splitIntoChunks(text))
+    {
+        if (chunk == "\n")
+        {
+            lines.add(line.trimEnd());
+            line.clear();
+            continue;
+        }
+
+        if (line.isNotEmpty() && ! fits(line + chunk))
+        {
+            lines.add(line.trimEnd());
+            line.clear();
+        }
+
+        // A chunk with no seam in it can still outrun the column - a
+        // 120-character filename is exactly that - so give it one.
+        while (! fits(line + chunk))
+        {
+            int fit = 0;
+
+            while (fit < chunk.length() && fits(line + chunk.substring(0, fit + 1)))
+                ++fit;
+
+            if (fit == 0)
+                fit = 1; // a column too narrow for one glyph still has to advance
+
+            line += chunk.substring(0, fit);
+            chunk = chunk.substring(fit);
+
+            lines.add(line.trimEnd());
+            line.clear();
+        }
+
+        line += chunk;
+    }
+
+    if (line.isNotEmpty() || lines.isEmpty())
+        lines.add(line.trimEnd());
+
+    return lines;
 }
 } // namespace
 
@@ -472,20 +566,23 @@ juce::Rectangle<int> StemLabLookAndFeel::getTooltipBounds(const juce::String& te
                                                           juce::Point<int> screenPos,
                                                           juce::Rectangle<int> parentArea)
 {
-    const juce::Font font{theme::fonts::tooltip()};
+    const int natural = 2 * tooltipPadX + juce::roundToInt(tooltipTextWidth(text));
 
-    const int width = juce::jmin(tooltipMaxWidth,
-                                 2 * tooltipPadX +
-                                     juce::roundToInt(
-                                         juce::GlyphArrangement::getStringWidth(font, text)));
+    // The tooltip lives inside the editor, so the area it has to fit in can
+    // be narrower than the cap. Wrap to the width the box will really get,
+    // or the height would be counted for lines that never appear.
+    const int cap = juce::jmin(tooltipMaxWidth, parentArea.getWidth());
 
-    // Only text that hit the cap can wrap, so the layout is worth building
-    // only then; everything else is one line and its height is known.
-    const int height =
-        width < tooltipMaxWidth
-            ? tooltipLineHeight
-            : juce::jmax(tooltipLineHeight,
-                         juce::roundToInt(layOutTooltip(text, width).getHeight()) + 10);
+    const int width = juce::jmin(cap, natural);
+
+    // Only text that hit the cap can wrap, so the wrap is worth running only
+    // then; everything else is one line and its height is known.
+    const int lines = (natural <= cap && ! text.containsChar('\n'))
+                          ? 1
+                          : wrapTooltip(text, static_cast<float>(width - 2 * tooltipPadX)).size();
+
+    const int height = lines > 1 ? lines * tooltipLineSpacing + 2 * tooltipPadY
+                                 : tooltipLineHeight;
 
     return juce::Rectangle<int>(screenPos.x, screenPos.y + 18, width, height)
         .constrainedWithin(parentArea);
@@ -515,12 +612,24 @@ void StemLabLookAndFeel::drawTooltip(juce::Graphics& g, const juce::String& text
         return;
     }
 
-    // The wrapped case: the layout carries its own colour, and is centred
-    // vertically so the block sits in the box the way one line does.
+    // The wrapped case. The wrap is recomputed from the width actually
+    // handed down rather than remembered, so a box the tooltip window
+    // trimmed to fit the screen still draws the text that width holds.
     const auto textArea = bounds.reduced(static_cast<float>(tooltipPadX), 0.0f);
-    const auto layout = layOutTooltip(text, width);
+    const auto lines = wrapTooltip(text, textArea.getWidth());
 
-    layout.draw(g, textArea.withSizeKeepingCentre(textArea.getWidth(), layout.getHeight()));
+    const auto block = static_cast<float>(lines.size() * tooltipLineSpacing);
+    auto row = textArea.withSizeKeepingCentre(textArea.getWidth(), block)
+                   .removeFromTop(static_cast<float>(tooltipLineSpacing));
+
+    g.setColour(theme::colours::text());
+    g.setFont(theme::fonts::tooltip());
+
+    for (const auto& line : lines)
+    {
+        g.drawText(line, row, juce::Justification::centredLeft, false);
+        row.translate(0.0f, static_cast<float>(tooltipLineSpacing));
+    }
 }
 
 namespace stemlab::icons
