@@ -1305,9 +1305,11 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
     /*
      * The interface scales instead of reflowing: one design-size layout in
-     * panelContent, warped by a single transform. The constrainer pins the
-     * aspect ratio so the two never disagree, and the limits keep the panel
-     * between legible and absurd.
+     * panelContent, warped by a single transform. Nothing pins the aspect
+     * ratio: resized() fits the whole panel inside whatever shape the window
+     * is given and centres it, so the window is free to take any shape a host
+     * or a window manager hands it. The limits below keep the panel between
+     * legible and absurd.
      */
     panelContent.onPaint = [this](juce::Graphics& g) { paintPanel(g); };
 
@@ -1324,12 +1326,6 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
                     juce::roundToInt(window::width * window::maxScale),
                     juce::roundToInt(window::height * window::maxScale));
 
-    if (auto* boundsConstrainer = getConstrainer())
-    {
-        boundsConstrainer->setFixedAspectRatio(static_cast<double>(window::width) /
-                                               static_cast<double>(window::height));
-    }
-
     if (processor.isStandaloneApp())
     {
         auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
@@ -1343,6 +1339,29 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
                 if (auto* windowComponent =
                         safeThis->findParentComponentOfClass<juce::DocumentWindow>())
                 {
+                    /*
+                     * The limits above sit on the editor's constrainer. The
+                     * standalone window has its own, and that is the one the
+                     * X11 peer reads to publish the window manager's size
+                     * hints: it forwards checkBounds to ours but not the
+                     * numbers, so without this the window manager is told the
+                     * window may be any size at all and a drag can take it
+                     * below anything legible. The numbers are a few pixels
+                     * generous because the window's border - title bar and
+                     * notification strip - is inside them, which only makes
+                     * the advertised minimum safer than the real one.
+                     * Set before the title bar swap: that recreates the peer,
+                     * which is what republishes the hints.
+                     */
+                    if (auto* windowConstrainer = windowComponent->getConstrainer())
+                    {
+                        windowConstrainer->setSizeLimits(
+                            juce::roundToInt(window::width * window::minScale),
+                            juce::roundToInt(window::height * window::minScale),
+                            juce::roundToInt(window::width * window::maxScale),
+                            juce::roundToInt(window::height * window::maxScale));
+                    }
+
                     windowComponent->setUsingNativeTitleBar(true);
                     windowComponent->setName("StemLab");
                 }
@@ -1961,9 +1980,14 @@ void StemLabAudioProcessorEditor::fileDragExit(const juce::StringArray&)
 
 void StemLabAudioProcessorEditor::paint(juce::Graphics& g)
 {
-    // Everything else is drawn by panelContent, which is scaled as a whole.
-    // This covers only the sub-pixel margin aspect-ratio rounding leaves.
-    g.fillAll(theme::colours::ground());
+    // Everything else is drawn by panelContent, which is scaled as a whole and
+    // keeps its own proportions, so at any window shape but the design one this
+    // paints the band along the two edges the centred panel does not reach.
+    // surface() is what paintPanel lays along the panel's own outer edge, so
+    // the band reads as more window rather than as a hole behind the panel -
+    // and painting every pixel here is what stops a host's backdrop, which is
+    // plain black in the VST3 wrapper, from being what fills that gap.
+    g.fillAll(theme::colours::surface());
 }
 
 void StemLabAudioProcessorEditor::paintPanel(juce::Graphics& g)
@@ -2074,16 +2098,31 @@ void StemLabAudioProcessorEditor::resized()
     /*
      * The panel is laid out once at its design size and then scaled as a
      * whole, so every metric in StemLabTheme stays a real pixel value and
-     * nothing has to be re-derived per size. The constrainer holds the
-     * aspect ratio, so both ratios below agree to within a pixel.
+     * nothing has to be re-derived per size. The smaller of the two ratios
+     * wins, which is what lets the panel fit inside any window shape: the
+     * axis that ran out sets the scale, the other keeps the leftover, and
+     * paint() fills that band. Because the scale is read straight out of the
+     * current size, the same window always yields the same scale however the
+     * user got there.
      */
     const auto scale = juce::jmax(0.05, juce::jmin(static_cast<double>(getWidth()) / window::width,
                                                    static_cast<double>(getHeight()) / window::height));
 
-    panelContent.setTransform(juce::AffineTransform::scale(static_cast<float>(scale)));
+    // The offset rides the transform rather than the bounds: a component's
+    // position is applied before its transform, so an offset written into
+    // setBounds would come back out multiplied by the scale. Rounded to whole
+    // pixels so the panel does not land on a half one and blur.
+    const auto offsetX = juce::roundToInt((getWidth() - window::width * scale) * 0.5);
+    const auto offsetY = juce::roundToInt((getHeight() - window::height * scale) * 0.5);
+
+    panelContent.setTransform(juce::AffineTransform::scale(static_cast<float>(scale))
+                                  .translated(static_cast<float>(offsetX),
+                                              static_cast<float>(offsetY)));
     panelContent.setBounds(0, 0, window::width, window::height);
 
-    // Reopening the editor comes back at the size the user left it.
+    // Reopening the editor comes back at the scale the user left it. One
+    // number cannot carry a shape, so a window left off the design aspect
+    // reopens without its band rather than with it.
     processor.setEditorScalePercent(juce::roundToInt(scale * 100.0));
 
     layoutPanel();
