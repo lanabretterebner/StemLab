@@ -60,6 +60,20 @@ warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
 info() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
+resolve_py_device() {
+  local out rc
+  out="$(PYTHONPATH="$REPO_ROOT/src" "$PYTHON" "$REPO_ROOT/scripts/.device_probe.py" 2>&1)"
+  rc=$?
+  if (( rc != 0 )) || [[ -z "$out" ]]; then
+    warn "could not resolve the torch device via StemLab's own resolver:
+         ${out:-no output}
+         Falling back to cpu, which may not be what this machine would use."
+    printf 'cpu'
+    return
+  fi
+  printf '%s' "$out"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dtypes)     DTYPES="$2"; shift 2 ;;
@@ -180,6 +194,14 @@ if (( ${#CONVERTER_MISSING[@]} )); then
 else
   info "converter dependencies: present"
   CONVERTER_READY=1
+fi
+
+PY_DEVICE="$(resolve_py_device)"
+info "torch device StemLab would use: $PY_DEVICE"
+if [[ "$PY_DEVICE" == "cpu" ]]; then
+  info "  (so the PyTorch side is the CPU baseline ggml has to beat)"
+else
+  info "  (so the PyTorch side is GPU-accelerated; ggml has a higher bar than CPU)"
 fi
 
 # ----------------------------------------------------------------- vulkan
@@ -387,13 +409,10 @@ PY_DIR="$OUT_DIR/python"
 rm -rf "$PY_DIR" "$OUT_DIR/_pyin"; mkdir -p "$PY_DIR" "$OUT_DIR/_pyin"
 cp "$INPUT" "$OUT_DIR/_pyin/input.wav"
 
-PY_DEVICE="$("$PYTHON" -c "
-try:
-    import torch
-    print('cuda' if torch.cuda.is_available() else 'cpu')
-except Exception:
-    print('cpu')" 2>/dev/null || echo cpu)"
-info "device: $PY_DEVICE"
+# Ask StemLab's own resolver rather than reimplementing it. The hand-rolled
+# check here only knew cuda and mps, so an Engine installed with the --xpu
+# flavour was benchmarked on CPU, against the wrong baseline entirely.
+info "reference device: $PY_DEVICE"
 
 t0="$(now)"
 PYTHONPATH="$REPO_ROOT/src" "$PYTHON" -m stemlab.bs_roformer_cli \
