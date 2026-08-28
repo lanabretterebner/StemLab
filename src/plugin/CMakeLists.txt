@@ -139,10 +139,23 @@ endif()
 
 include(CTest)
 if (BUILD_TESTING)
+    # These suites state their expectations with assert(), which a Release
+    # build defines away - leaving tests that prove only that the code runs.
+    # Undefining NDEBUG for the test targets alone keeps the library itself
+    # optimised exactly as it ships.
+    function(stemlab_enable_test_assertions target)
+        if (MSVC)
+            target_compile_options(${target} PRIVATE /UNDEBUG)
+        else()
+            target_compile_options(${target} PRIVATE -UNDEBUG)
+        endif()
+    endfunction()
+
     add_executable(StemLabWaveformGridTests Tests/WaveformGridTests.cpp
                    Source/HostIntegrationPolicy.h Source/WaveformGrid.h)
     target_include_directories(StemLabWaveformGridTests PRIVATE Source)
     target_compile_features(StemLabWaveformGridTests PRIVATE cxx_std_20)
+    stemlab_enable_test_assertions(StemLabWaveformGridTests)
     add_test(NAME StemLabWaveformGridTests COMMAND StemLabWaveformGridTests)
 
     # The spectral analysis is deliberately JUCE-free - FFT included - so the
@@ -151,6 +164,7 @@ if (BUILD_TESTING)
         Tests/WaveformAnalysisTests.cpp Source/WaveformAnalysis.h)
     target_include_directories(StemLabWaveformAnalysisTests PRIVATE Source)
     target_compile_features(StemLabWaveformAnalysisTests PRIVATE cxx_std_20)
+    stemlab_enable_test_assertions(StemLabWaveformAnalysisTests)
     add_test(NAME StemLabWaveformAnalysisTests COMMAND StemLabWaveformAnalysisTests)
 
     # The multi-lane loop policy: which ranges merge, where playback jumps.
@@ -158,6 +172,7 @@ if (BUILD_TESTING)
         Tests/LoopRegionsTests.cpp Source/LoopRegions.h)
     target_include_directories(StemLabLoopRegionsTests PRIVATE Source)
     target_compile_features(StemLabLoopRegionsTests PRIVATE cxx_std_20)
+    stemlab_enable_test_assertions(StemLabLoopRegionsTests)
     add_test(NAME StemLabLoopRegionsTests COMMAND StemLabLoopRegionsTests)
 
     # Upstream's host-capture pass: the self-drag guard plus a real
@@ -171,6 +186,7 @@ if (BUILD_TESTING)
     target_link_libraries(StemLabHostCaptureTests PRIVATE StemLabPlugin juce::juce_audio_utils
                                                           juce::juce_audio_formats
                                                           juce::juce_gui_extra)
+    stemlab_enable_test_assertions(StemLabHostCaptureTests)
     add_test(NAME StemLabHostCaptureTests COMMAND StemLabHostCaptureTests)
 endif()
 

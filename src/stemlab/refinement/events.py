@@ -60,13 +60,20 @@ def detect_kick_events(
     # window is centred identically. Summing runs in float64 because the
     # moving-sum accumulator would drift in float32 across a whole song.
     win = max(8, int(sr * 0.008))
-    energy = uniform_filter1d(
+
+    # A float32 destination is safe here: scipy accumulates in the input's
+    # dtype and narrows only on the store, so this holds the float64 sum
+    # cast down, not a float32 running sum. Nothing else refers to the
+    # buffer, so the envelope finishes in place on top of it.
+    energy = np.empty(low.shape, dtype=np.float32)
+    uniform_filter1d(
         np.square(low, dtype=np.float64),
         size=win,
         mode="constant",
         cval=0.0,
-    ).astype(np.float32)
-    env = np.sqrt(np.maximum(energy, 0.0))
+        output=energy,
+    )
+    env = np.sqrt(np.maximum(energy, 0.0, out=energy), out=energy)
 
     # Emphasize attack rather than sustained sub/bass.
     derivative = np.maximum(np.diff(env, prepend=env[0]), 0.0)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import os
 import time
 
@@ -8,12 +9,17 @@ import numpy as np
 import pytest
 import soundfile as sf
 
+import stemlab.midi
 from stemlab.analysis_cache import cleanup_stale_midi_drag_files
 from stemlab.midi import (
     MIDI_ALGORITHM_VERSION,
+    NoteEvent,
+    PitchBendPoint,
+    _merge_notes,
     _smooth_pitch_frames,
     build_ableton_midi_payload,
     convert_stem_to_midi,
+    create_transcription,
     metadata_path_for,
     read_transcription,
 )
@@ -182,3 +188,108 @@ def test_stale_algorithm_version_triggers_retranscription(tmp_path):
     refreshed = read_transcription(metadata_path)
     assert refreshed.algorithm_version == MIDI_ALGORITHM_VERSION
     assert refreshed.notes
+
+
+def _merge_notes_by_linear_scan(notes, max_gap=0.055):
+    """_merge_notes as it read before the per-pitch index, verbatim."""
+    merged: list[NoteEvent] = []
+    for note in sorted(notes, key=lambda item: (item.start, item.pitch)):
+        match = next(
+            (
+                index
+                for index in range(len(merged) - 1, -1, -1)
+                if merged[index].pitch == note.pitch
+                and 0.0 <= note.start - merged[index].end <= max_gap
+            ),
+            None,
+        )
+        if match is None:
+            merged.append(note)
+        else:
+            previous = merged[match]
+            merged[match] = dataclasses.replace(
+                previous,
+                end=max(previous.end, note.end),
+                velocity=max(previous.velocity, note.velocity),
+                confidence=max(previous.confidence, note.confidence),
+                pitch_bends=previous.pitch_bends + note.pitch_bends,
+            )
+    return sorted(merged, key=lambda item: (item.start, item.pitch))
+
+
+def test_merge_notes_picks_what_the_linear_scan_picked():
+    # The predecessor is not always the newest entry for the pitch: an older
+    # one whose end lands inside the gap window is the match even when a
+    # newer one is still sounding, which is what the scan found by walking
+    # past it. An index keyed on the newest entry alone merges nothing here.
+    overlapping = [
+        NoteEvent(0.00, 0.10, 60, 64),
+        NoteEvent(0.05, 1.00, 60, 70),
+        NoteEvent(0.12, 0.20, 60, 80),
+    ]
+    assert _merge_notes(overlapping) == _merge_notes_by_linear_scan(overlapping)
+    assert [(note.start, note.end) for note in _merge_notes(overlapping)] == [
+        (0.00, 0.20),
+        (0.05, 1.00),
+    ]
+
+    rng = np.random.default_rng(20260827)
+    # Sparse across the keyboard; dense on a handful of pitches, where gaps
+    # land inside max_gap constantly; long overlapping notes on two pitches;
+    # and exact duplicates, which merge into themselves.
+    shapes = (
+        (21, 108, 12.0, 0.4),
+        (58, 63, 2.0, 0.06),
+        (60, 62, 2.0, 5.0),
+        (60, 61, 0.4, 0.05),
+    )
+    for trial in range(300):
+        low, high, span, longest = shapes[trial % len(shapes)]
+        count = int(rng.integers(0, 60))
+        notes = []
+        for _ in range(count):
+            start = round(float(rng.uniform(0.0, span)), 4)
+            end = start + round(float(rng.uniform(0.0, longest)), 4)
+            bends = ()
+            if rng.random() < 0.3:
+                bends = (PitchBendPoint(start, round(float(rng.uniform(-2, 2)), 3)),)
+            notes.append(
+                NoteEvent(
+                    start,
+                    end,
+                    int(rng.integers(low, high)),
+                    int(rng.integers(1, 128)),
+                    round(float(rng.random()), 3),
+                    bends,
+                )
+            )
+        if trial % len(shapes) == 3:
+            notes = notes + notes
+
+        assert _merge_notes(notes) == _merge_notes_by_linear_scan(notes)
+
+
+def test_export_hashes_the_stem_once(tmp_path, monkeypatch):
+    sample_rate = 22_050
+    time_axis = np.arange(sample_rate, dtype=np.float32) / sample_rate
+    source = tmp_path / "bass.wav"
+    sf.write(source, (0.4 * np.sin(2.0 * np.pi * 110.0 * time_axis)).astype(np.float32),
+             sample_rate)
+
+    digests: list[str] = []
+    real_hash = stemlab.midi._file_hash
+    monkeypatch.setattr(
+        "stemlab.midi._file_hash",
+        lambda path: (digests.append(str(path)), real_hash(path))[1],
+    )
+
+    # The cache lookup already streamed the whole stem; transcribing it must
+    # not stream it again to arrive at the same digest.
+    convert_stem_to_midi(source, tmp_path / "bass.mid", "bass", bpm=120.0)
+    assert len(digests) == 1
+
+    # A direct caller that has no digest of its own still gets one.
+    digests.clear()
+    transcription = create_transcription(source, "bass", bpm=120.0)
+    assert len(digests) == 1
+    assert transcription.source_hash == real_hash(source)

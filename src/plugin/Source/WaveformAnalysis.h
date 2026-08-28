@@ -206,65 +206,128 @@ inline float brightnessForCentroid(double centroidHz)
 }
 
 /**
- * Analyse mono samples into a profile.
+ * Spectrum analysis over samples arriving a piece at a time.
+ *
+ * The windows are the only samples any of this ever looks at: the hop
+ * stretches so that no more than spectrumMaxFrames of them exist, and nothing
+ * outside one is read. A caller reading a file in blocks can therefore feed
+ * the windows as the blocks arrive, and never has to hold the file - or a
+ * mono copy of it - in memory, which for an hour-long capture is the
+ * difference between a kilobyte and half a gigabyte.
+ *
+ * The sample count and rate are wanted up front because the hop is derived
+ * from them; both are known before a byte is read.
  *
  * Silent frames inherit the previous frame's brightness rather than
  * collapsing to an arbitrary value: a gap between two hi-hat hits should not
  * flash violet in the middle of an otherwise bright lane.
  */
-inline SpectralProfile analyseMono(const float* samples, std::size_t sampleCount,
-                                   double sampleRate)
+class MonoSpectrumScanner
 {
-    SpectralProfile profile;
-
-    if (samples == nullptr || sampleCount == 0 || !(sampleRate > 0.0))
-        return profile;
-
-    profile.lengthSeconds = static_cast<double>(sampleCount) / sampleRate;
-
-    // Stretch the hop rather than the frame: the window stays 1024 wide, so
-    // the frequency resolution of a long file matches a short one.
-    std::size_t hop = spectrumHop;
-
-    if (sampleCount / hop > spectrumMaxFrames)
-        hop = std::max<std::size_t>(spectrumHop, sampleCount / spectrumMaxFrames);
-
-    profile.secondsPerFrame = static_cast<double>(hop) / sampleRate;
-
-    const double binWidth = sampleRate / static_cast<double>(spectrumFftSize);
-
-    // Periodic Hann, computed once and reused across every frame.
-    std::vector<float> window(spectrumFftSize);
-
-    for (int i = 0; i < spectrumFftSize; ++i)
+public:
+    MonoSpectrumScanner(std::size_t sampleCount, double sampleRate)
     {
-        const double phase = 2.0 * 3.14159265358979323846 * static_cast<double>(i) /
-                             static_cast<double>(spectrumFftSize);
+        if (sampleCount == 0 || !(sampleRate > 0.0))
+            return;
 
-        window[static_cast<std::size_t>(i)] = static_cast<float>(0.5 * (1.0 - std::cos(phase)));
+        profile.lengthSeconds = static_cast<double>(sampleCount) / sampleRate;
+
+        // Stretch the hop rather than the frame: the window stays 1024 wide,
+        // so the frequency resolution of a long file matches a short one.
+        if (sampleCount / hop > spectrumMaxFrames)
+            hop = std::max<std::size_t>(spectrumHop, sampleCount / spectrumMaxFrames);
+
+        profile.secondsPerFrame = static_cast<double>(hop) / sampleRate;
+
+        frameCount = (sampleCount + hop - 1) / hop;
+        binWidth = sampleRate / static_cast<double>(spectrumFftSize);
+
+        // Periodic Hann, computed once and reused across every frame.
+        window.resize(windowSize);
+
+        for (std::size_t i = 0; i < windowSize; ++i)
+        {
+            const double phase = 2.0 * 3.14159265358979323846 * static_cast<double>(i) /
+                                 static_cast<double>(windowSize);
+
+            window[i] = static_cast<float>(0.5 * (1.0 - std::cos(phase)));
+        }
+
+        frame.resize(windowSize);
+        magnitudes.resize(windowSize / 2 + 1);
+        pending.reserve(windowSize);
     }
 
-    std::vector<std::complex<float>> frame(spectrumFftSize);
-    std::vector<float> magnitudes(spectrumFftSize / 2 + 1);
+    /** Index in the file of the first sample the next window still wants.
+        Anything before it has either been analysed or falls in the gap
+        between two windows, which a stretched hop never reads. */
+    std::size_t nextSample() const { return framesDone * hop + pending.size(); }
 
-    // Silent frames inherit both measures, same reasoning for both: a gap
-    // between two hi-hat hits must not flash a wrong colour.
-    float previousBrightness = 0.5f;
-    BandLevels previousBands;
-
-    for (std::size_t start = 0; start < sampleCount; start += hop)
+    /** How many samples from nextSample() the next window still wants; zero
+        once every frame has been analysed. */
+    std::size_t samplesWanted() const
     {
-        // A window running past the end is zero-padded rather than dropped,
-        // so the tail of a file is coloured like the rest of it.
-        for (int i = 0; i < spectrumFftSize; ++i)
+        return framesDone < frameCount ? windowSize - pending.size() : 0;
+    }
+
+    /**
+     * Feed samples in file order, position being the file index of samples[0].
+     *
+     * The span may be a whole read block or exactly the samplesWanted() from
+     * nextSample(): what lies between windows is dropped either way. A window
+     * spanning two blocks is held across the calls rather than restarted, so
+     * pushes have to run forward and may not skip what a window wants - a
+     * span starting past nextSample() is refused rather than misassembled.
+     */
+    void push(std::size_t position, const float* samples, std::size_t count)
+    {
+        while (samples != nullptr && count > 0 && framesDone < frameCount)
         {
-            const std::size_t index = start + static_cast<std::size_t>(i);
+            const auto start = nextSample();
 
-            const float sample = index < sampleCount ? samples[index] : 0.0f;
+            if (position + count <= start || position > start)
+                return;
 
-            frame[static_cast<std::size_t>(i)] = {sample * window[static_cast<std::size_t>(i)],
-                                                  0.0f};
+            const auto skipped = start - position;
+
+            samples += skipped;
+            position = start;
+            count -= skipped;
+
+            const auto taken = std::min(count, windowSize - pending.size());
+
+            pending.insert(pending.end(), samples, samples + taken);
+
+            samples += taken;
+            position += taken;
+            count -= taken;
+
+            if (pending.size() == windowSize)
+                analyseWindow();
         }
+    }
+
+    /** The finished profile. A window running past the end of the file is
+        zero-padded rather than dropped, so the tail of a file is coloured
+        like the rest of it. */
+    SpectralProfile finish()
+    {
+        while (framesDone < frameCount)
+        {
+            pending.resize(windowSize, 0.0f);
+            analyseWindow();
+        }
+
+        return std::move(profile);
+    }
+
+private:
+    static constexpr std::size_t windowSize = static_cast<std::size_t>(spectrumFftSize);
+
+    void analyseWindow()
+    {
+        for (std::size_t i = 0; i < windowSize; ++i)
+            frame[i] = {pending[i] * window[i], 0.0f};
 
         forwardFft(frame);
 
@@ -286,9 +349,53 @@ inline SpectralProfile analyseMono(const float* samples, std::size_t sampleCount
             previousBands = bands;
 
         profile.bands.push_back(previousBands);
+
+        ++framesDone;
+
+        // Half-overlapped windows share samples: the tail of this one opens
+        // the next, and only a hop longer than the window leaves a gap.
+        if (hop < windowSize)
+            pending.erase(pending.begin(), pending.begin() + static_cast<std::ptrdiff_t>(hop));
+        else
+            pending.clear();
     }
 
-    return profile;
+    std::size_t hop = static_cast<std::size_t>(spectrumHop);
+    std::size_t frameCount = 0;
+    std::size_t framesDone = 0;
+    double binWidth = 0.0;
+
+    std::vector<float> window;
+    std::vector<float> pending;
+    std::vector<std::complex<float>> frame;
+    std::vector<float> magnitudes;
+
+    SpectralProfile profile;
+
+    // Silent frames inherit both measures, same reasoning for both: a gap
+    // between two hi-hat hits must not flash a wrong colour.
+    float previousBrightness = 0.5f;
+    BandLevels previousBands;
+};
+
+/**
+ * Analyse mono samples into a profile.
+ *
+ * The whole-buffer form of MonoSpectrumScanner, for callers that already hold
+ * the audio; one that reads a file in blocks should drive the scanner instead
+ * of assembling a buffer to pass here.
+ */
+inline SpectralProfile analyseMono(const float* samples, std::size_t sampleCount,
+                                   double sampleRate)
+{
+    if (samples == nullptr || sampleCount == 0 || !(sampleRate > 0.0))
+        return {};
+
+    MonoSpectrumScanner scanner(sampleCount, sampleRate);
+
+    scanner.push(0, samples, sampleCount);
+
+    return scanner.finish();
 }
 
 /*

@@ -13,7 +13,9 @@
  * message thread and kept for as long as the processor lives.
  *
  * Analysis reads the whole stem once, reduces it to a peak envelope, and runs
- * a few thousand FFTs over it. That is well under a second per file and
+ * a few thousand FFTs over it. The read is a stream: neither the file nor a
+ * mono copy of it is ever resident, so an hour-long capture costs the same
+ * memory as a ten-second one. That is well under a second per file and
  * nowhere near a paint call's budget, so lanes ask for a profile and draw
  * nothing until one arrives. The editor already repaints them at the UI
  * refresh rate, so a finished analysis appears on its own without any
@@ -55,11 +57,12 @@ public:
     void retainOnly(const juce::Array<juce::File>& keep);
 
     /**
-     * Low priority while a separation runs - analysis must not compete with
-     * a job the user is actually waiting for - and back to normal when it
+     * Throttled while a separation runs - analysis must not compete with a
+     * job the user is actually waiting for - and back to full speed when it
      * ends, so freshly finished stems get their profiles promptly. Callable
-     * from any thread; the worker applies the change to itself, because
-     * juce::Thread::setPriority only works from the target thread.
+     * from any thread; the worker reads the flag between read blocks, so a
+     * change lands within one block either way and a queued file still
+     * finishes while the flag is set.
      */
     void setSeparationActive(bool active);
 
@@ -80,7 +83,8 @@ private:
     std::map<juce::String, ProfilePtr> profiles;
     std::vector<juce::File> pending;
 
-    /** Desired worker priority; the worker itself applies changes. */
+    /** Set for the length of a separation; the worker rests between read
+        blocks while it is set. */
     std::atomic<bool> separationActive{false};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StemLabWaveformCache)

@@ -59,6 +59,23 @@ namespace
     constexpr int peakSlicesPerTick = 48;
     constexpr int peakMaxSlicesPerFile = 40000;
 
+    /*  REAPER caches a media file's peaks beside it as "<filename>.reapeaks",
+        media extension included. A project that redirects its peaks to
+        another folder leaves nothing here, and a miss means build it, so
+        that case behaves exactly as it did before this check existed.
+
+        Not "strictly newer": peaks are written moments after the media they
+        describe, and both timestamps land in the same second often enough
+        that requiring a later one would rebuild everything every time.
+    */
+    bool peakFileIsCurrent (const juce::File& file)
+    {
+        const auto peaks = file.getSiblingFile (file.getFileName() + ".reapeaks");
+
+        return peaks.existsAsFile()
+            && peaks.getLastModificationTime() >= file.getLastModificationTime();
+    }
+
     // Same palette the Ableton Remote Script uses, so a user moving between
     // hosts sees the same stem identity. The values live in StemLabTheme.
     bool stemColour (const juce::String& stem, int& r, int& g, int& b)
@@ -517,8 +534,10 @@ PeakBuilder::PeakBuilder (const Api& apiIn, const juce::Array<juce::File>& files
         return;
     }
 
+    // Insert, undo, re-insert is how a user retries placement, and the
+    // peaks built by the first attempt are still on disk and still valid.
     for (const auto& file : files)
-        if (file.existsAsFile())
+        if (file.existsAsFile() && ! peakFileIsCurrent (file))
             pending.addIfNotAlreadyThere (file);
 
     if (pending.isEmpty())
@@ -556,6 +575,12 @@ bool PeakBuilder::startNextFile()
     {
         const auto file = pending.removeAndReturn (0);
 
+        // Peaks can arrive between the queue being built and a file's turn -
+        // REAPER builds them itself for anything it draws - and a source
+        // opened for nothing still costs a create, a tick and a destroy.
+        if (peakFileIsCurrent (file))
+            continue;
+
         current =
             api.PCM_Source_CreateFromFile (
                 file.getFullPathName().toRawUTF8());
@@ -574,36 +599,47 @@ bool PeakBuilder::startNextFile()
     return false;
 }
 
+void PeakBuilder::finish()
+{
+    stopTimer();
+    finished = true;
+
+    // The items were drawn before their peaks existed; this is what turns
+    // the empty lanes into waveforms.
+    if (api.UpdateArrange != nullptr)
+        api.UpdateArrange();
+}
+
 void PeakBuilder::timerCallback()
 {
+    // Nothing in flight and nothing left to start: end the run rather than
+    // spend a slice budget - every slice blocks the thread REAPER draws on -
+    // on a list where there is no work to do.
     if (current == nullptr && ! startNextFile())
     {
-        stopTimer();
-        finished = true;
-
-        // The items were drawn before their peaks existed; this is what
-        // turns the empty lanes into waveforms.
-        if (api.UpdateArrange != nullptr)
-            api.UpdateArrange();
-
+        finish();
         return;
     }
 
     for (int slice = 0; slice < peakSlicesPerTick; ++slice)
     {
-        if (api.PCM_Source_BuildPeaks (current, 1) == 0)
-        {
-            closeCurrentSource();
-            return;
-        }
+        // A source that reports itself done, and one that never will, both
+        // end the file here rather than spend the rest of the tick on it.
+        // The cap is the safety valve for the second kind.
+        const bool done = api.PCM_Source_BuildPeaks (current, 1) == 0
+                       || ++slicesOnCurrent >= peakMaxSlicesPerFile;
 
-        if (++slicesOnCurrent >= peakMaxSlicesPerFile)
-        {
-            // A source that never reports itself done must not spin here
-            // for the rest of the session.
-            closeCurrentSource();
-            return;
-        }
+        if (! done)
+            continue;
+
+        closeCurrentSource();
+
+        // Last file: finish now instead of waking once more to find the
+        // list empty.
+        if (pending.isEmpty())
+            finish();
+
+        return;
     }
 }
 }

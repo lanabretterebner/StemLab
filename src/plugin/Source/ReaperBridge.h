@@ -127,6 +127,10 @@ namespace stemlab::reaper
      * tick so a long stem never freezes the UI, and its own PCM_source per
      * file so nothing depends on an item the user may delete meanwhile.
      * Destroying the builder abandons the work safely.
+     *
+     * A file whose ".reapeaks" sidecar is already current is skipped, so
+     * the insert / undo / re-insert cycle a user retries placement with
+     * does not rebuild every peak from scratch each time.
      */
     class PeakBuilder final : private juce::Timer
     {
@@ -140,6 +144,11 @@ namespace stemlab::reaper
         void timerCallback() override;
         bool startNextFile();
         void closeCurrentSource();
+
+        /** Ends the run: stops the timer and asks REAPER to redraw the
+            arrangement, which is what turns the placed items' empty lanes
+            into waveforms. */
+        void finish();
 
         const Api& api;
         juce::Array<juce::File> pending;
