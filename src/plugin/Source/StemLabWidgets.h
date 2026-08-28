@@ -149,6 +149,13 @@ namespace stemlab::widgets
         void setSeparateEnabled(bool enabled);
         bool isSeparateActionEnabled() const noexcept { return separateEnabled; }
 
+        /** Whether the Refine segment accepts clicks. False while a job
+            runs: the flag is read once at launch to build the command
+            line, so a mid-run flip would silently apply to the next job
+            while appearing to change this one. */
+        void setRefineInteractive(bool interactive);
+        bool isRefineInteractive() const noexcept { return refineInteractive; }
+
         /** The action segment's label: "Separate" normally, "Cancel" /
             "Cancelling..." while a job runs (the editor decides). */
         void setActionText(const juce::String& text);
@@ -164,6 +171,7 @@ namespace stemlab::widgets
 
         bool refineOn = true;
         bool separateEnabled = false;
+        bool refineInteractive = true;
         bool hoverRefine = false, hoverSeparate = false;
         juce::String actionText{"Separate"};
 
@@ -253,7 +261,8 @@ namespace stemlab::widgets
 
     /**
      * The footer status indicator: a spinning arc while a job runs, the
-     * check glyph once one has finished, nothing before the first job.
+     * check glyph once one has finished, a red X when the last thing the
+     * status line said was a failure, nothing before the first job.
      * The editor advances the spin from its UI timer via animate().
      */
     class StatusIndicator final : public juce::Component
@@ -263,7 +272,8 @@ namespace stemlab::widgets
         {
             idle,
             running,
-            done
+            done,
+            error
         };
 
         StatusIndicator() { setInterceptsMouseClicks(false, false); }

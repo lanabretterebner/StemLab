@@ -121,6 +121,7 @@ namespace stemlab::theme
         inline juce::Colour progressTrack() { return neutral800(); }
         inline juce::Colour progressFill() { return accent(); }
         inline juce::Colour statusCheck() { return accent(); }
+        inline juce::Colour statusError() { return juce::Colour(0xffff8a93); }
         inline juce::Colour spinner() { return accent(); }
         inline juce::Colour spinnerTrack() { return accent().withAlpha(0.18f); }
     }

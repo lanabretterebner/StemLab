@@ -632,7 +632,8 @@ public:
         if (!childProcess->start(command,
                                  juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
         {
-            owner.setStatus("Could not start StemLab engine");
+            owner.setStatus("Could not start StemLab engine",
+                            StemLabAudioProcessor::statusFailure);
             owner.appendEngineLog("Failed to launch engine process.\n");
             owner.waveformProfiles.setSeparationActive(false);
             owner.mainEngineRunning.store(false);
@@ -783,7 +784,8 @@ public:
             owner.resetReadyStemFiles();
 
             if (!owner.getStatus().startsWithIgnoreCase("Failed - "))
-                owner.setStatus("StemLab engine failed - see Settings > Copy diagnostics");
+                owner.setStatus("StemLab engine failed - see Settings > Copy diagnostics",
+                                StemLabAudioProcessor::statusFailure);
 
             if (exitCode == 0)
             {
@@ -866,7 +868,8 @@ public:
         if (!childProcess->start(command,
                                  juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
         {
-            owner.setStatus("Could not start Recursive Stem Splitting");
+            owner.setStatus("Could not start Recursive Stem Splitting",
+                            StemLabAudioProcessor::statusFailure);
             owner.appendEngineLog("Failed to launch recursive engine process.\n");
             owner.waveformProfiles.setSeparationActive(false);
 
@@ -951,14 +954,21 @@ public:
         }
         else if (exitCode == 0 && manifestFile.existsAsFile())
         {
-            owner.finishRecursiveJob(manifestFile);
-            owner.setEngineProgress(1.0);
-            owner.setStatus("Recursive Stem Splitting complete");
+            // An exit code of zero only says the engine ran. The manifest
+            // can still be unusable, and announcing completion regardless
+            // put the three most specific failure reasons in the codebase
+            // on screen for microseconds before overwriting them.
+            if (owner.finishRecursiveJob(manifestFile))
+            {
+                owner.setEngineProgress(1.0);
+                owner.setStatus("Recursive Stem Splitting complete");
+            }
         }
         else
         {
             if (!owner.getStatus().startsWithIgnoreCase("Failed - "))
-                owner.setStatus("Recursive Stem Splitting failed - see diagnostics");
+                owner.setStatus("Recursive Stem Splitting failed - see diagnostics",
+                                StemLabAudioProcessor::statusFailure);
 
             owner.appendEngineLog("Recursive engine exit code: " + juce::String(exitCode) + "\n");
         }
@@ -3535,6 +3545,11 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
     setStatus("Separating with " + getSeparatorEngineDisplayName() + "...");
 
     engineCompletedSuccessfully.store(false);
+
+    // Snapshot beside the --no-refine decision above, so the summary this
+    // job eventually shows quotes the setting it actually ran with rather
+    // than whatever the toggle happens to say when the summary is drawn.
+    lastJobRefinement.store(refinementEnabled.load());
     engineProgress.store(0.01);
     engineStartMs.store(nowMs());
     engineProgressUpdateMs.store(engineStartMs.load());
@@ -3736,7 +3751,7 @@ bool StemLabAudioProcessor::isRecursiveStemEnabled(const juce::String& itemId) c
     return false;
 }
 
-void StemLabAudioProcessor::finishRecursiveJob(const juce::File& manifestFile)
+bool StemLabAudioProcessor::finishRecursiveJob(const juce::File& manifestFile)
 {
     // The Python side owns separation details. The plugin only consumes the
     // schema-2 tree contract and turns child nodes into selectable UI rows.
@@ -3745,8 +3760,8 @@ void StemLabAudioProcessor::finishRecursiveJob(const juce::File& manifestFile)
 
     if (object == nullptr)
     {
-        setStatus("Recursive result manifest is invalid");
-        return;
+        setStatus("Recursive result manifest is invalid", statusFailure);
+        return false;
     }
 
     const auto parentId = object->getProperty("parent_id").toString();
@@ -3755,8 +3770,8 @@ void StemLabAudioProcessor::finishRecursiveJob(const juce::File& manifestFile)
 
     if (parentId.isEmpty() || rootStem.isEmpty() || children == nullptr)
     {
-        setStatus("Recursive result manifest is incomplete");
-        return;
+        setStatus("Recursive result manifest is incomplete", statusFailure);
+        return false;
     }
 
     std::vector<StemLabRecursiveStemInfo> newItems;
@@ -3792,8 +3807,8 @@ void StemLabAudioProcessor::finishRecursiveJob(const juce::File& manifestFile)
 
     if (newItems.empty())
     {
-        setStatus("Recursive split finished without usable audio files");
-        return;
+        setStatus("Recursive split finished without usable audio files", statusFailure);
+        return false;
     }
 
     {
@@ -3833,6 +3848,8 @@ void StemLabAudioProcessor::finishRecursiveJob(const juce::File& manifestFile)
     }
 
     sendChangeMessage();
+
+    return true;
 }
 
 bool StemLabAudioProcessor::launchRecursiveStemSplit(int rootStemIndex)
@@ -4056,6 +4073,13 @@ double StemLabAudioProcessor::getEngineEstimatedRemainingSeconds() const noexcep
     if (!isEngineRunning())
         return 0.0;
 
+    // No finish time can be promised once a stop has been asked for: the
+    // engine is winding down, not working towards the number it last
+    // reported. -1 rather than 0 so the readout drops the segment entirely
+    // instead of pinning "ETA 00:00", which would be the worse lie.
+    if (engineCancelRequested.load())
+        return -1.0;
+
     const auto now = nowMs();
 
     // Prefer the engine's own estimate - a job-level number since the
@@ -4265,14 +4289,21 @@ juce::File StemLabAudioProcessor::getLastJobDirectory() const
     return lastJobDirectory;
 }
 
-void StemLabAudioProcessor::setStatus(const juce::String& newStatus)
+void StemLabAudioProcessor::setStatus(const juce::String& newStatus, StatusSeverity severity)
 {
     {
         const juce::ScopedLock lock(stateLock);
         status = newStatus;
+        statusSeverity = severity;
     }
 
     sendChangeMessage();
+}
+
+StemLabAudioProcessor::StatusSeverity StemLabAudioProcessor::getStatusSeverity() const
+{
+    const juce::ScopedLock lock(stateLock);
+    return statusSeverity;
 }
 
 void StemLabAudioProcessor::setActionStatus(const juce::String& newStatus)
@@ -4288,6 +4319,16 @@ void StemLabAudioProcessor::setActionStatus(const juce::String& newStatus)
 
 void StemLabAudioProcessor::setEngineProgress(double progress)
 {
+    // A cancel is pending: the job is coming down, so nothing it reports on
+    // the way out is a claim about finishing. Freezing here rather than in
+    // the editor covers all three producers at once - the stdout reader,
+    // the adaptive reader, and the message thread's progress-file poll.
+    // The two writes that must still land during a cancel (the reader
+    // threads' own cancel arms) store engineProgress directly and so are
+    // deliberately not routed through here.
+    if (engineCancelRequested.load())
+        return;
+
     const auto next = juce::jlimit(0.0, 1.0, progress);
 
     // Two threads report progress: the engine reader parsing stdout and the
@@ -4372,7 +4413,7 @@ void StemLabAudioProcessor::handleEngineOutputLine(const juce::String& line)
         const auto message = line.fromFirstOccurrenceOf("STEMLAB_ERROR ", false, false).trim();
 
         if (message.isNotEmpty())
-            setStatus("Failed - " + message);
+            setStatus("Failed - " + message, statusFailure);
 
         return;
     }
@@ -4393,7 +4434,13 @@ void StemLabAudioProcessor::handleEngineOutputLine(const juce::String& line)
 
         const auto stage = payload.fromFirstOccurrenceOf(" ", false, false).trim();
 
-        if (stage.isNotEmpty())
+        // The same guard the progress-file poll already applies (see
+        // refreshEngineProgressFromDisk): once the user has asked to stop,
+        // "Cancelling..." outranks whatever stage the engine is still
+        // narrating on its way down. Progress lines now arrive within
+        // milliseconds of being printed, so without this the footer flips
+        // back to a stage name moments after the click.
+        if (stage.isNotEmpty() && !engineCancelRequested.load())
             setStatus(stage);
 
         return;

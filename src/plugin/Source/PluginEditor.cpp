@@ -1663,7 +1663,27 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
         // on "Cancel" into a fresh multi-minute separation (or a click on
         // "Separate" into cancelling a split someone just started).
         if (separateControlShowsCancel)
+        {
+            /*
+             * Double-clicking a primary button is a common habit, and the
+             * segment becomes "Cancel" the instant the job starts - inside
+             * this very call stack, via the refreshFromProcessor() below.
+             * A click that arrives before the OS double-click interval has
+             * passed since that change was aimed at "Separate", so it is
+             * dropped rather than turned into a cancel. Unsigned wrap makes
+             * the subtraction correct across the counter's ~49-day rollover.
+             */
+            const auto sinceArmed =
+                juce::Time::getMillisecondCounter() - separateCancelArmedMs;
+
+            if (sinceArmed <
+                static_cast<juce::uint32>(juce::MouseEvent::getDoubleClickTimeout()))
+            {
+                return;
+            }
+
             processor.cancelSeparation(); // harmless if the engine just ended
+        }
         else if (!processor.isEngineRunning())
             processor.launchSeparationAndExport();
 
@@ -2888,7 +2908,7 @@ juce::String StemLabAudioProcessorEditor::jobSummaryLine() const
 
     return "Separated " + juce::String(readyCount) + " stems in " + formatSeconds(duration) +
            juce::String::fromUTF8(" \xc2\xb7 refinement ") +
-           (processor.isRefinementEnabled() ? "on" : "off");
+           (processor.wasLastJobRefined() ? "on" : "off");
 }
 
 juce::String StemLabAudioProcessorEditor::displayPath(const juce::File& directory) const
@@ -3022,6 +3042,12 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     // The action segment doubles as Cancel while a job runs.
     const bool cancelPending = processor.isCancelRequested();
 
+    // Stamped on the transition rather than at launch, so the guard also
+    // covers adaptive splits started from a lane's kebab menu - those flip
+    // the segment to "Cancel" without ever passing through onSeparate.
+    if (engineRunning && !separateControlShowsCancel)
+        separateCancelArmedMs = nowMs;
+
     separateControlShowsCancel = engineRunning;
 
     separateControl.setActionText(engineRunning ? (cancelPending ? "Cancelling..." : "Cancel")
@@ -3033,6 +3059,10 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
                          captureExists));
 
     separateControl.setRefineOn(processor.isRefinementEnabled());
+
+    // Refine feeds the engine command line at launch, so it locks with the
+    // rest of the job controls rather than flipping under a running job.
+    separateControl.setRefineInteractive(!engineRunning);
 
     // File block.
     juce::String fileName, fileMeta;
@@ -3210,9 +3240,24 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
     statusLabel.setText(statusText, juce::dontSendNotification);
 
-    statusIndicator.setState(busy      ? widgets::StatusIndicator::State::running
-                             : jobDone ? widgets::StatusIndicator::State::done
-                                       : widgets::StatusIndicator::State::idle);
+    const bool statusIsError =
+        processor.getStatusSeverity() == StemLabAudioProcessor::statusFailure;
+
+    // Only on change: juce::Label::setColour repaints, and this runs at 20 Hz.
+    if (statusIsError != lastStatusWasError)
+    {
+        lastStatusWasError = statusIsError;
+        statusLabel.setColour(juce::Label::textColourId, statusIsError
+                                                             ? theme::colours::statusError()
+                                                             : theme::colours::text50());
+    }
+
+    // busy outranks error, so a failure line left over from a previous job
+    // cannot freeze the spinner while new work is already running.
+    statusIndicator.setState(busy            ? widgets::StatusIndicator::State::running
+                             : statusIsError ? widgets::StatusIndicator::State::error
+                             : jobDone       ? widgets::StatusIndicator::State::done
+                                             : widgets::StatusIndicator::State::idle);
 
     // Same for the accent glows painted behind the primary actions.
     if (separateControl.isSeparateActionEnabled() != lastSeparateGlow)

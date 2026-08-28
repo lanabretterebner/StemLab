@@ -98,6 +98,10 @@ namespace stemlab::icons
     juce::Path folder(juce::Rectangle<float> bounds);
     juce::Path check(juce::Rectangle<float> bounds);
 
+    /** Failure: a stroked X, drawn at the same weight as check() so the
+        two footer glyphs read as one family. */
+    juce::Path alert(juce::Rectangle<float> bounds);
+
     /** Which way a chevron points: down discloses, left/right step. */
     enum class ChevronDirection
     {

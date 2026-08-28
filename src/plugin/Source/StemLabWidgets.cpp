@@ -367,6 +367,15 @@ namespace stemlab::widgets
         }
     }
 
+    void SeparateSplitControl::setRefineInteractive(bool interactive)
+    {
+        if (refineInteractive != interactive)
+        {
+            refineInteractive = interactive;
+            repaint();
+        }
+    }
+
     void SeparateSplitControl::setActionText(const juce::String& text)
     {
         if (actionText != text)
@@ -412,8 +421,8 @@ namespace stemlab::widgets
             juce::Graphics::ScopedSaveState save(g);
             g.reduceClipRegion(refine);
 
-            g.setColour(hoverRefine ? theme::colours::refineFillHover()
-                                    : theme::colours::refineFill());
+            g.setColour(hoverRefine && refineInteractive ? theme::colours::refineFillHover()
+                                                         : theme::colours::refineFill());
             g.fillRoundedRectangle(bounds, radius);
             g.fillRect(bounds.withTrimmedLeft(radius)
                            .withWidth(static_cast<float>(refine.getWidth()) - radius));
@@ -437,7 +446,16 @@ namespace stemlab::widgets
             auto content = refine.reduced(0, 0);
             content.removeFromLeft(source::refinePadLeft);
 
-            g.setColour(theme::colours::refineText());
+            // A locked segment dims exactly the way the action label
+            // already does, so the two halves of the control read as one
+            // disabled thing rather than one greyed and one live.
+            const auto dim = [this](juce::Colour c) {
+                return refineInteractive
+                           ? c
+                           : c.withMultipliedAlpha(theme::metrics::disabledOpacity);
+            };
+
+            g.setColour(dim(theme::colours::refineText()));
             juce::Font refineFont{theme::fonts::refineLabel()};
             g.setFont(refineFont.withExtraKerningFactor(0.02f));
 
@@ -454,14 +472,15 @@ namespace stemlab::widgets
                             .withSizeKeepingCentre(source::pillWidth, source::pillHeight)
                             .toFloat();
 
-            g.setColour(refineOn ? theme::colours::pillTrack() : theme::colours::pillTrackOff());
+            g.setColour(
+                dim(refineOn ? theme::colours::pillTrack() : theme::colours::pillTrackOff()));
             g.fillRoundedRectangle(pill, pill.getHeight() * 0.5f);
 
             const float knob = static_cast<float>(source::pillKnob);
             const float knobY = pill.getCentreY() - knob * 0.5f;
             const float knobX = refineOn ? pill.getRight() - knob - 2.0f : pill.getX() + 2.0f;
 
-            g.setColour(theme::colours::pillKnob());
+            g.setColour(dim(theme::colours::pillKnob()));
             g.fillEllipse(knobX, knobY, knob, knob);
         }
 
@@ -505,6 +524,12 @@ namespace stemlab::widgets
 
         if (refineArea().contains(event.getPosition()))
         {
+            // Return rather than falling through: a click on a locked
+            // Refine segment must do nothing at all, not reach the action
+            // segment sitting next to it.
+            if (!refineInteractive)
+                return;
+
             refineOn = !refineOn;
             repaint();
 
@@ -790,6 +815,17 @@ namespace stemlab::widgets
         const auto square =
             bounds.withSizeKeepingCentre(juce::jmin(bounds.getWidth(), bounds.getHeight()),
                                          juce::jmin(bounds.getWidth(), bounds.getHeight()));
+
+        if (state == State::error)
+        {
+            // reduced(2.5f) rather than the check's 1.5f: a corner-to-corner
+            // X reads visually larger than a tick in the same box.
+            g.setColour(theme::colours::statusError());
+            g.strokePath(stemlab::icons::alert(square.reduced(2.5f)),
+                         juce::PathStrokeType(1.6f, juce::PathStrokeType::curved,
+                                              juce::PathStrokeType::rounded));
+            return;
+        }
 
         if (state == State::done)
         {

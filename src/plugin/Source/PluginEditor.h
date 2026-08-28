@@ -508,6 +508,7 @@ private:
     stemlab::widgets::FadingDivider footerDivider;
     stemlab::widgets::StatusIndicator statusIndicator;
     juce::Label statusLabel;
+    bool lastStatusWasError = false;
     double progressValue = 0.0;
     juce::ProgressBar progressBar{progressValue};
     juce::Label progressLabel;
@@ -540,6 +541,11 @@ private:
     /** What the action segment last rendered as, so a click acts on the
         state the user actually saw. */
     bool separateControlShowsCancel = false;
+
+    /** When the action segment last changed from "Separate" to "Cancel".
+        A click that lands inside the double-click window after that change
+        was aimed at the label the user could still see, not at Cancel. */
+    juce::uint32 separateCancelArmedMs = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StemLabAudioProcessorEditor)
 };

@@ -398,6 +398,11 @@ public:
     double getEngineEstimatedRemainingSeconds() const noexcept;
     void refreshEngineProgressFromDisk();
 
+    /** Whether refinement was on for the job whose summary is on screen.
+        The live setting belongs to the NEXT job, so quoting that one in the
+        summary let a toggle afterwards rewrite what a finished job did. */
+    bool wasLastJobRefined() const noexcept { return lastJobRefinement.load(); }
+
     /**
      * Ask the running separation (main or adaptive) to stop. Writes the
      * cancel sentinel the engine's watchdog honors - the engine shuts down
@@ -408,6 +413,20 @@ public:
     bool isCancelRequested() const noexcept { return engineCancelRequested.load(); }
 
     juce::String getStatus() const;
+
+    /**
+     * Whether the status line is reporting a failure rather than progress.
+     * The severity travels with the string under the same lock, so an
+     * ordinary setStatus resets it without any caller having to remember
+     * to - the footer can never be left red next to a healthy message.
+     */
+    enum StatusSeverity
+    {
+        statusInfo = 0,
+        statusFailure
+    };
+
+    StatusSeverity getStatusSeverity() const;
 
     /**
      * Feedback for things the user changed - model, palette, transport,
@@ -626,7 +645,7 @@ private:
 #endif
 
     void stopCapture();
-    void setStatus(const juce::String&);
+    void setStatus(const juce::String&, StatusSeverity = statusInfo);
     void setActionStatus(const juce::String&);
     void setEngineProgress(double progress);
     void handleEngineOutputLine(const juce::String& line);
@@ -646,7 +665,9 @@ private:
     /** Pre-queue waveform analyses for the finished job's stems. */
     void warmCompletedStemProfiles();
 
-    void finishRecursiveJob(const juce::File& manifestFile);
+    /** False when the manifest was unusable - the caller must not then
+        announce the split as complete over the reason this published. */
+    bool finishRecursiveJob(const juce::File& manifestFile);
     void clearRecursiveResults();
 
     /**
@@ -885,6 +906,7 @@ private:
 
     juce::String engineCommand{"stemlab-plugin-job"};
     juce::String status{"Ready"};
+    StatusSeverity statusSeverity = statusInfo;
 
     // User-action feedback (header readout), separate from the work status
     // above so a palette change can never overwrite "Separating...".
@@ -955,6 +977,10 @@ private:
     // shorter adaptive-split jobs that may follow it.
     std::atomic<double> mainJobDurationSeconds{0.0};
     std::atomic<bool> engineCompletedSuccessfully{false};
+
+    // Snapshotted at launch, where the --no-refine decision is made, so the
+    // finished job's summary and the command it actually ran cannot differ.
+    std::atomic<bool> lastJobRefinement{true};
 
     /*
         Engine-reported seconds remaining (STEMLAB_ETA lines) and when the

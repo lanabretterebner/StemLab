@@ -544,6 +544,19 @@ namespace stemlab::icons
         return p;
     }
 
+    juce::Path alert(juce::Rectangle<float> b)
+    {
+        // A plain X rather than a circled warning glyph: at the 16px box
+        // the footer gives this, an ellipse plus stem and dot muddies into
+        // a blob, while two strokes stay legible.
+        juce::Path p;
+        p.startNewSubPath(b.getX(), b.getY());
+        p.lineTo(b.getRight(), b.getBottom());
+        p.startNewSubPath(b.getRight(), b.getY());
+        p.lineTo(b.getX(), b.getBottom());
+        return p;
+    }
+
     juce::Path chevron(juce::Rectangle<float> b, ChevronDirection direction)
     {
         juce::Path p;
