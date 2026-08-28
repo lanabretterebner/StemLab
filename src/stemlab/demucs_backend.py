@@ -19,11 +19,13 @@ DEFAULT_DEMUCS_MODEL = "htdemucs_6s"
 PACKAGED_DEMUCS_SIGNATURE = "5c90dfd2"
 PACKAGED_DEMUCS_FILENAME = "5c90dfd2-34c22ccb.th"
 
-# Cross-fade fraction between Demucs' sliding analysis windows. The upstream
-# default of 0.25 re-processes a quarter of every window (~17% extra forward
-# passes) for smoothing headroom the htdemucs family does not need; 0.10 keeps
-# the window seams inaudible while dropping that redundant compute.
-DEMUCS_OVERLAP = 0.10
+# Cross-fade fraction between Demucs' sliding analysis windows, kept at the
+# upstream default. It was lowered to 0.10 on the reasoning that htdemucs did
+# not need the smoothing headroom, but that was never measured, and the same
+# commit verified everything else it touched numerically. Restored until a
+# measurement says otherwise: a quality setting nobody checked is not a
+# setting we should be shipping below its default.
+DEMUCS_OVERLAP = 0.25
 
 
 def _work_directory(output_dir: Path) -> tempfile.TemporaryDirectory:
