@@ -459,6 +459,7 @@ bool StemLabSystemLoopbackThread::openWriter (
 
     owner.systemCaptureSampleRate.store (captureSampleRate);
     owner.capturedSamples.store (0);
+    owner.droppedCaptureSamples.store (0);
 
     return true;
 }

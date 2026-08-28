@@ -3697,7 +3697,7 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
 
     menu.addSeparator();
 
-    menu.addItem(4, "Copy diagnostics to clipboard", processor.getEngineLog().isNotEmpty());
+    menu.addItem(4, "Copy diagnostics to clipboard", processor.hasEngineLog());
 
     // The version this binary was built as (project VERSION in CMakeLists,
     // stamped by JUCE). Informational, so never selectable.
