@@ -64,6 +64,8 @@ target_sources(FIStemPlugin
         Source/HostIntegrationPolicy.h
         Source/SelfFileDragGuard.h
         Source/WaveformGrid.h
+        Source/LinuxSystemCapture.cpp
+        Source/LinuxSystemCapture.h
 )
 
 include(CTest)
@@ -109,6 +111,42 @@ if (WIN32)
         PRIVATE
             ole32
             uuid
+    )
+elseif (UNIX AND NOT APPLE)
+    # JUCE already propagates X11/freetype/ALSA through its own targets. What
+    # it does not add is the dynamic loader, which juce_audio_devices needs to
+    # pick up JACK at runtime, and which LinuxSystemCapture needs to resolve
+    # libpulse, or the thread library on some toolchains.
+    find_package(Threads REQUIRED)
+
+    target_link_libraries(FIStemPlugin
+        PRIVATE
+            Threads::Threads
+            ${CMAKE_DL_LIBS}
+    )
+
+    # The PulseAudio client library is dlopen'd at runtime rather than linked,
+    # so it is not a load-time dependency of the plugin - but the headers are
+    # still needed to build against the real ABI instead of hand-copied
+    # declarations. Say so here rather than letting the compiler report a
+    # missing include from inside LinuxSystemCapture.cpp.
+    include(CheckIncludeFile)
+    check_include_file("pulse/simple.h" STEMLAB_HAVE_PULSE_HEADERS)
+
+    if (NOT STEMLAB_HAVE_PULSE_HEADERS)
+        message(FATAL_ERROR
+            "pulse/simple.h was not found. System-audio capture on Linux needs "
+            "the PulseAudio client headers at build time (libpulse-dev on "
+            "Debian/Ubuntu, libpulse-devel on Fedora, libpulse on Arch). The "
+            "library itself is loaded at runtime, so it is not linked here.")
+    endif()
+
+    # JACK is loaded with dlopen, so enabling it costs nothing at link time and
+    # gives Standalone users on PipeWire/JACK a working device.
+    target_compile_definitions(FIStemPlugin
+        PUBLIC
+            JUCE_JACK=1
+            JUCE_ALSA=1
     )
 endif()
 

@@ -1,0 +1,74 @@
+diff --git a/modules/juce_gui_basics/native/juce_DragAndDrop_linux.cpp b/modules/juce_gui_basics/native/juce_DragAndDrop_linux.cpp
+index 5a8f7f5..58ba67b 100644
+--- a/modules/juce_gui_basics/native/juce_DragAndDrop_linux.cpp
++++ b/modules/juce_gui_basics/native/juce_DragAndDrop_linux.cpp
+@@ -115,6 +115,13 @@ public:
+         if (canDrop)
+         {
+             sendExternalDragAndDropDrop();
++
++            // STEMLAB_DND_PATCH: the gesture is over the moment the drop is
++            // sent. The data handshake (SelectionRequest -> XdndFinished)
++            // carries on by itself, and a target that never sends
++            // XdndFinished used to leave `dragging` set for the life of the
++            // process, refusing every later drag.
++            externalDragGestureFinished();
+         }
+         else
+         {
+@@ -349,9 +356,24 @@ public:
+             X11Symbols::getInstance()->xUngrabPointer (getDisplay(), CurrentTime);
+         }
+ 
+-        NullCheckedInvocation::invoke (completionCallback);
++        externalDragGestureFinished();
++    }
+ 
+-        dragging = false;
++    /*
++        STEMLAB_DND_PATCH: everything a finished gesture must not leave behind
++        for the next one. The callback is invoked here and then cleared, so a
++        late XdndFinished cannot run it twice and a target that never sends one
++        cannot swallow it entirely.
++    */
++    void externalDragGestureFinished()
++    {
++        dragging        = false;
++        canDrop         = false;
++        expectingStatus = false;
++        silentRect      = {};
++
++        NullCheckedInvocation::invoke (completionCallback);
++        completionCallback = nullptr;
+     }
+ 
+     bool externalDragInit (::Window window, bool text, const String& str, std::function<void()>&& cb)
+diff --git a/modules/juce_gui_basics/native/juce_XWindowSystem_linux.cpp b/modules/juce_gui_basics/native/juce_XWindowSystem_linux.cpp
+index 41ef54c..349f96a 100644
+--- a/modules/juce_gui_basics/native/juce_XWindowSystem_linux.cpp
++++ b/modules/juce_gui_basics/native/juce_XWindowSystem_linux.cpp
+@@ -2926,8 +2926,12 @@ bool XWindowSystem::externalDragFileInit (LinuxComponentPeer* peer, const String
+ {
+     auto& dragState = dragAndDropStateMap[peer];
+ 
++    // STEMLAB_DND_PATCH: a new gesture can only begin after the previous
++    // button release, so a state still marked dragging is a leftover - a drop
++    // whose handshake never finished, typically. Clear it rather than
++    // refusing every drag for the rest of the session.
+     if (dragState.isDragging())
+-        return false;
++        dragState.externalResetDragAndDrop();
+ 
+     StringArray uriList;
+ 
+@@ -2946,8 +2950,9 @@ bool XWindowSystem::externalDragTextInit (LinuxComponentPeer* peer, const String
+ {
+     auto& dragState = dragAndDropStateMap[peer];
+ 
++    // STEMLAB_DND_PATCH: same leftover-state reset as externalDragFileInit.
+     if (dragState.isDragging())
+-        return false;
++        dragState.externalResetDragAndDrop();
+ 
+     return dragState.externalDragInit ((::Window) peer->getNativeHandle(), true, text, std::move (callback));
+ }

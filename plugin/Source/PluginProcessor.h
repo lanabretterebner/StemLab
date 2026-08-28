@@ -406,6 +406,11 @@ private:
     std::atomic<bool> capturing{false};
     std::atomic<int> standaloneRecordingMode{recordingNone};
     std::atomic<juce::int64> capturedSamples{0};
+
+    /*  The rate the system capture opened its device at, which need not be
+        the rate the host prepared this plugin at. Written by the capture
+        thread before it reports any samples, read by getCapturedSeconds. */
+    std::atomic<double> systemCaptureSampleRate{0.0};
     std::atomic<double> captureStartPpq{-1.0};
     std::atomic<double> lastKnownHostPpq{0.0};
     std::atomic<bool> lastHostPlaying{false};

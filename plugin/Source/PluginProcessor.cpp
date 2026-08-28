@@ -18,6 +18,10 @@
 #include <wrl/client.h>
 #endif
 
+#if JUCE_LINUX
+#include "LinuxSystemCapture.h"
+#endif
+
 namespace
 {
 juce::String timestampForFilename()
@@ -1441,7 +1445,7 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
     {
         const juce::ScopedLock lock(stateLock);
         captureFile = file;
-        lastJobDirectory = {};
+        lastJobDirectory = juce::File();
         engineLog.clear();
 
         inputSourceLabel = sourceLabel.isNotEmpty() ? sourceLabel : file.getFileName();
@@ -2733,7 +2737,7 @@ bool StemLabAudioProcessor::startThreadedInputCapture(const juce::String& prefix
     {
         const juce::ScopedLock lock(stateLock);
         captureFile = recordingFile;
-        lastJobDirectory = {};
+        lastJobDirectory = juce::File();
         engineLog.clear();
     }
 
@@ -2826,7 +2830,7 @@ bool StemLabAudioProcessor::startSystemAudioRecording()
 
     stopStandalonePlayback();
 
-#if JUCE_WINDOWS
+#if JUCE_WINDOWS || JUCE_LINUX
     if (systemLoopbackThread != nullptr)
     {
         systemLoopbackThread->signalThreadShouldExit();
@@ -2846,7 +2850,7 @@ bool StemLabAudioProcessor::startSystemAudioRecording()
     {
         const juce::ScopedLock lock(stateLock);
         captureFile = recordingFile;
-        lastJobDirectory = {};
+        lastJobDirectory = juce::File();
         engineLog.clear();
     }
 
@@ -2863,18 +2867,22 @@ bool StemLabAudioProcessor::startSystemAudioRecording()
 
     systemLoopbackThread = std::make_unique<StemLabSystemLoopbackThread>(*this, recordingFile);
 
+#if JUCE_WINDOWS
     setStatus("Recording system audio - Windows default output");
+#else
+    setStatus("Recording system audio - default output monitor");
+#endif
     systemLoopbackThread->startThread();
     return true;
 #else
-    setStatus("System audio recording is currently Windows-only");
+    setStatus("System audio recording is not supported on this platform");
     return false;
 #endif
 }
 
 void StemLabAudioProcessor::stopSystemAudioRecording()
 {
-#if JUCE_WINDOWS
+#if JUCE_WINDOWS || JUCE_LINUX
     if (standaloneRecordingMode.load() != recordingSystem && systemLoopbackThread == nullptr)
     {
         return;
@@ -2987,6 +2995,21 @@ double StemLabAudioProcessor::getCapturedSeconds() const noexcept
 
         if (duration > 0.0)
             return duration;
+    }
+
+    /*
+        System capture opens the device at its own rate, which is not
+        necessarily the rate the host prepared this plugin at - the Linux
+        monitor source is always 48 kHz. Reading the duration off
+        currentSampleRate would then be wrong by whatever the two differ by,
+        so the capture publishes the rate it actually opened.
+    */
+    if (standaloneRecordingMode.load() == recordingSystem)
+    {
+        const auto captureRate = systemCaptureSampleRate.load();
+
+        if (captureRate > 0.0)
+            return static_cast<double>(capturedSamples.load()) / captureRate;
     }
 
     if (currentSampleRate <= 0.0)
@@ -3947,7 +3970,7 @@ void StemLabAudioProcessor::finishCancelledJob(const juce::File& cleanupDirector
         engineCompletedSuccessfully.store(false);
         const juce::ScopedLock lock(stateLock);
         if (lastJobDirectory == cleanupDirectory)
-            lastJobDirectory = {};
+            lastJobDirectory = juce::File();
     }
 
     engineProgress.store(0.0);
@@ -4759,7 +4782,13 @@ juce::String StemLabAudioProcessor::discoverEngineCommand() const
 
             // Development fallbacks.
             ".venv/Scripts/stemlab-plugin-job.exe", ".venv/Scripts/stemlab-plugin-job",
-            "venv/Scripts/stemlab-plugin-job.exe", "venv/Scripts/stemlab-plugin-job"};
+            "venv/Scripts/stemlab-plugin-job.exe", "venv/Scripts/stemlab-plugin-job",
+
+            // The same two layouts as they exist off Windows: a portable
+            // runtime keeps its interpreter in Engine/bin, and a venv puts
+            // its console scripts in bin rather than Scripts.
+            "Engine/bin/python3", "engine/bin/python3",
+            ".venv/bin/stemlab-plugin-job", "venv/bin/stemlab-plugin-job"};
 
         for (int depth = 0; depth < 10 && root.exists(); ++depth)
         {
@@ -4820,6 +4849,37 @@ juce::String StemLabAudioProcessor::discoverEngineCommand() const
         if (installedRuntime.existsAsFile())
             return installedRuntime.getFullPathName();
     }
+
+#if ! JUCE_WINDOWS
+    {
+        /*
+            The XDG counterpart of the LOCALAPPDATA pointer above: the Linux
+            backend installer (scripts/linux_backend.sh) writes the path of
+            the interpreter it just built here, because a DAW started from a
+            desktop launcher does not inherit the shell's PATH and would
+            otherwise never find it.
+        */
+        const auto xdgConfig =
+            juce::SystemStats::getEnvironmentVariable("XDG_CONFIG_HOME", {}).trim();
+
+        const auto configHome =
+            juce::File::isAbsolutePath(xdgConfig)
+                ? juce::File(xdgConfig)
+                : juce::File::getSpecialLocation(juce::File::userHomeDirectory)
+                      .getChildFile(".config");
+
+        const auto portablePointer =
+            configHome.getChildFile("FI-STEM").getChildFile("portable_engine_path.txt");
+
+        if (portablePointer.existsAsFile())
+        {
+            const juce::File portableRuntime(portablePointer.loadFileAsString().trim());
+
+            if (portableRuntime.existsAsFile())
+                return portableRuntime.getFullPathName();
+        }
+    }
+#endif
 
 #ifdef STEMLAB_DEV_REPO_ROOT
     {
