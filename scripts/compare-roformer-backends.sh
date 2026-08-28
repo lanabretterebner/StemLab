@@ -206,8 +206,18 @@ if command -v vulkaninfo >/dev/null 2>&1; then
     (( VULKAN_USABLE )) || { GPU_IS_SOFTWARE=1; GPU_NAME="$(head -1 <<<"$ADAPTERS" | cut -f2)"; }
   fi
 fi
-(( VULKAN_USABLE )) || warn "no usable Vulkan GPU found; the vulkan backend will be skipped
-         unless you ask for it explicitly with --backends vulkan"
+if (( ! VULKAN_USABLE )); then
+  if (( GPU_IS_SOFTWARE )); then
+    warn "the only Vulkan adapter is '$GPU_NAME', a SOFTWARE rasteriser. It will
+         run and produce a timing, and that timing will measure a CPU renderer
+         rather than a GPU. The vulkan backend is skipped unless you ask for it
+         explicitly with --backends vulkan, and if you do, treat its number as
+         a correctness check only."
+  else
+    warn "no Vulkan adapter found; the vulkan backend will be skipped unless you
+         ask for it explicitly with --backends vulkan."
+  fi
+fi
 
 if [[ -z "$BACKENDS" ]]; then
   BACKENDS="cpu"
@@ -265,7 +275,12 @@ info "BSRoformer.cpp $SRC_REV   ggml $GGML_REV"
 # its own build tree. GGML_CUDA defaults ON upstream, which fails or silently
 # misbuilds on a machine without CUDA - turn it off explicitly every time.
 build_backend() {
-  local backend="$1" dir="$SRC_DIR/build-$backend" flags=(-DGGML_CUDA=OFF)
+  # Separate statements: within one `local`, bash expands every word before
+  # applying any assignment, so `local a=$1 b=$a` reads an unset `a` and dies
+  # under `set -u`.
+  local backend="$1"
+  local dir="$SRC_DIR/build-$backend"
+  local flags=(-DGGML_CUDA=OFF)
   case "$backend" in
     cpu)    ;;
     vulkan) flags+=(-DGGML_VULKAN=ON) ;;
@@ -469,7 +484,7 @@ step "Summary"
 printf '  %-22s %10s  %s\n' "configuration" "seconds" "vs PyTorch"
 printf '  %-22s %10s  %s\n' "python ($PY_DEVICE)" "$PY_SECONDS" "reference"
 for entry in "${RESULTS[@]}"; do
-  IFS='|' read -r label steady dir all <<< "$entry"
+  IFS='|' read -r label steady _ _ <<< "$entry"
   if [[ "$steady" == "FAILED" ]]; then
     printf '  %-22s %10s  %s\n' "$label" "-" "did not complete"
   else
