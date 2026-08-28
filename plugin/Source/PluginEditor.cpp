@@ -2466,7 +2466,7 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
 
     menu.addSeparator();
 
-    menu.addItem(4, "Copy diagnostics to clipboard", processor.getEngineLog().isNotEmpty());
+    menu.addItem(4, "Copy diagnostics to clipboard", processor.hasEngineLog());
 
     if (processor.isStandaloneApp())
     {

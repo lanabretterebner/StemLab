@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include <array>
 #include <atomic>
+#include <deque>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -240,6 +241,10 @@ public:
 
     juce::String getStatus() const;
     juce::String getEngineLog() const;
+
+    /** Whether getEngineLog() would return anything, without paying for the
+        join - the editor asks this every time it builds the settings menu. */
+    bool hasEngineLog() const;
     juce::File getLastJobDirectory() const;
 
     /** Compact key/BPM text for the currently loaded original source. */
@@ -469,7 +474,14 @@ private:
 
     juce::String engineCommand{"stemlab-plugin-job"};
     juce::String status{"Ready"};
-    juce::String engineLog;
+    /*  Chunks in arrival order rather than one juce::String: appending to a
+        50 KB String re-measured it, reallocated it to an exact fit and
+        copied it on every line, and the character-count trim walked the
+        whole UTF-8 buffer once the cap was reached. Only getEngineLog()
+        pays for the join. Guarded by stateLock; engineLogBytes tracks the
+        UTF-8 size the trim budget is spent against. */
+    std::deque<juce::String> engineLogChunks;
+    size_t engineLogBytes = 0;
 
     std::array<std::atomic<bool>, stemCount> stemEnabled;
     std::atomic<bool> refinementEnabled{true};

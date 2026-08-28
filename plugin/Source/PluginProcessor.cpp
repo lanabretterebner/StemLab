@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 #include <functional>
 
 #if defined(JucePlugin_Build_Standalone) && JucePlugin_Build_Standalone
@@ -20,6 +21,103 @@
 
 namespace
 {
+/*
+    Splits a child process's output into lines BEFORE decoding UTF-8.
+
+    Each 4 KB read was converted to a String on its own, so a multibyte
+    character straddling a read boundary decoded as replacement garbage on
+    both sides of the split. Holding the undecoded bytes until a newline
+    arrives removes the boundary entirely.
+*/
+struct Utf8LineBuffer
+{
+    std::vector<char> pending;
+
+    /*  A carriage-return progress bar carries no newline at all, so nothing
+        below can retire its bytes: pip and tqdm redrawing a model download
+        grew this buffer for the length of the download and then emitted the
+        whole thing as one line. One screenful of redraws is the entire
+        useful history of a bar.
+    */
+    static constexpr size_t maxPendingBytes = 8192;
+
+    template <typename Fn>
+    void feed(const char* bytes, int count, Fn&& onLine)
+    {
+        // Only the bytes that just arrived can complete a line, and the
+        // reader feeds a byte at a time: rescanning from the front would
+        // make a long run without a newline - a progress bar redrawing over
+        // carriage returns - cost time in the square of its length.
+        const auto scanFrom = pending.size();
+
+        pending.insert(pending.end(), bytes, bytes + count);
+
+        size_t start = 0;
+
+        for (size_t i = scanFrom; i < pending.size(); ++i)
+        {
+            if (pending[i] != '\n')
+                continue;
+
+            const auto line =
+                juce::String::fromUTF8(pending.data() + start, static_cast<int>(i - start))
+                    .trimEnd();
+
+            if (line.isNotEmpty())
+                onLine(line);
+
+            start = i + 1;
+        }
+
+        pending.erase(pending.begin(), pending.begin() + static_cast<long>(start));
+
+        if (pending.size() > maxPendingBytes)
+        {
+            // The tail after the last carriage return is the bar's current
+            // frame; everything before it has already been drawn over. '\r'
+            // is ASCII, so cutting there can never split a UTF-8 sequence.
+            const auto lastReturn = std::find(pending.rbegin(), pending.rend(), '\r');
+
+            if (lastReturn != pending.rend())
+            {
+                pending.erase(pending.begin(), lastReturn.base());
+            }
+            else
+            {
+                // Not a progress bar, just a process emitting a line longer
+                // than the budget: give up what is there rather than hold it.
+                const auto line =
+                    juce::String::fromUTF8(pending.data(), static_cast<int>(pending.size()))
+                        .trimEnd();
+
+                pending.clear();
+
+                if (line.isNotEmpty())
+                    onLine(line);
+            }
+        }
+
+        // The next feed() scans from pending.size() as it stands now, so any
+        // truncation above must leave the buffer, not an old offset, as the
+        // single source of where scanning resumes.
+    }
+
+    template <typename Fn>
+    void flush(Fn&& onLine)
+    {
+        if (pending.empty())
+            return;
+
+        const auto line =
+            juce::String::fromUTF8(pending.data(), static_cast<int>(pending.size())).trim();
+
+        pending.clear();
+
+        if (line.isNotEmpty())
+            onLine(line);
+    }
+};
+
 juce::String timestampForFilename()
 {
     return juce::Time::getCurrentTime().formatted("%Y%m%d_%H%M%S");
@@ -208,24 +306,25 @@ public:
             return;
         }
 
-        std::array<char, 4096> buffer{};
-        juce::String pendingOutput;
+        /*
+            One byte per read, not a bufferful.
 
-        auto consumeLines = [&owner = owner, &pendingOutput]
-        {
-            while (true)
-            {
-                const auto newline = pendingOutput.indexOfChar('\n');
-                if (newline < 0)
-                    break;
+            juce::ChildProcess::readProcessOutput does not return what is
+            available - it fills the whole buffer before it returns. On POSIX
+            that is a plain fread of the requested size; on Windows it is a
+            PeekNamedPipe/ReadFile loop with 1 ms sleeps until the count is
+            met. Asking for 4 KB therefore blocked until the engine had
+            produced 4 KB, so a protocol of short progress lines reached the
+            UI in bursts minutes apart instead of as it was written.
 
-                auto line = pendingOutput.substring(0, newline).trimEnd();
-                pendingOutput = pendingOutput.substring(newline + 1);
+            Asking for one byte returns as soon as one exists, and the line
+            buffer reassembles them.
+        */
+        char byte = 0;
+        Utf8LineBuffer lines;
 
-                if (line.isNotEmpty())
-                    owner.handleEngineOutputLine(line);
-            }
-        };
+        auto onLine = [&owner = owner](const juce::String& line)
+        { owner.handleEngineOutputLine(line); };
 
         while (process->isRunning())
         {
@@ -235,14 +334,16 @@ public:
             if (cancelRequested.load() && nowMs() - cancelStartedMs.load() > 2500.0)
                 process->kill();
 
-            const auto bytes =
-                process->readProcessOutput(buffer.data(), static_cast<int>(buffer.size() - 1));
+            const auto bytes = process->readProcessOutput(&byte, 1);
 
             if (bytes > 0)
             {
-                buffer[static_cast<size_t>(bytes)] = '\0';
-                pendingOutput += juce::String::fromUTF8(buffer.data(), bytes);
-                consumeLines();
+                lines.feed(&byte, bytes, onLine);
+
+                // More may already be waiting: only an empty pipe is worth
+                // sleeping on, and sleeping per byte would be far slower
+                // than the bufferful this replaces.
+                continue;
             }
 
             wait(35);
@@ -250,19 +351,15 @@ public:
 
         while (true)
         {
-            const auto bytes =
-                process->readProcessOutput(buffer.data(), static_cast<int>(buffer.size() - 1));
+            const auto bytes = process->readProcessOutput(&byte, 1);
 
             if (bytes <= 0)
                 break;
 
-            buffer[static_cast<size_t>(bytes)] = '\0';
-            pendingOutput += juce::String::fromUTF8(buffer.data(), bytes);
-            consumeLines();
+            lines.feed(&byte, bytes, onLine);
         }
 
-        if (pendingOutput.trim().isNotEmpty())
-            owner.handleEngineOutputLine(pendingOutput.trim());
+        lines.flush(onLine);
 
         const auto exitCode = process->getExitCode();
         process.reset();
@@ -392,24 +489,25 @@ public:
             return;
         }
 
-        std::array<char, 4096> buffer{};
-        juce::String pendingOutput;
+        /*
+            One byte per read, not a bufferful.
 
-        auto consumeLines = [&owner = owner, &pendingOutput]
-        {
-            while (true)
-            {
-                const auto newline = pendingOutput.indexOfChar('\n');
-                if (newline < 0)
-                    break;
+            juce::ChildProcess::readProcessOutput does not return what is
+            available - it fills the whole buffer before it returns. On POSIX
+            that is a plain fread of the requested size; on Windows it is a
+            PeekNamedPipe/ReadFile loop with 1 ms sleeps until the count is
+            met. Asking for 4 KB therefore blocked until the engine had
+            produced 4 KB, so a protocol of short progress lines reached the
+            UI in bursts minutes apart instead of as it was written.
 
-                auto line = pendingOutput.substring(0, newline).trimEnd();
-                pendingOutput = pendingOutput.substring(newline + 1);
+            Asking for one byte returns as soon as one exists, and the line
+            buffer reassembles them.
+        */
+        char byte = 0;
+        Utf8LineBuffer lines;
 
-                if (line.isNotEmpty())
-                    owner.handleEngineOutputLine(line);
-            }
-        };
+        auto onLine = [&owner = owner](const juce::String& line)
+        { owner.handleEngineOutputLine(line); };
 
         while (process->isRunning())
         {
@@ -419,14 +517,16 @@ public:
             if (cancelRequested.load() && nowMs() - cancelStartedMs.load() > 2500.0)
                 process->kill();
 
-            const auto bytes =
-                process->readProcessOutput(buffer.data(), static_cast<int>(buffer.size() - 1));
+            const auto bytes = process->readProcessOutput(&byte, 1);
 
             if (bytes > 0)
             {
-                buffer[static_cast<size_t>(bytes)] = '\0';
-                pendingOutput += juce::String::fromUTF8(buffer.data(), bytes);
-                consumeLines();
+                lines.feed(&byte, bytes, onLine);
+
+                // More may already be waiting: only an empty pipe is worth
+                // sleeping on, and sleeping per byte would be far slower
+                // than the bufferful this replaces.
+                continue;
             }
 
             wait(35);
@@ -434,19 +534,15 @@ public:
 
         while (true)
         {
-            const auto bytes =
-                process->readProcessOutput(buffer.data(), static_cast<int>(buffer.size() - 1));
+            const auto bytes = process->readProcessOutput(&byte, 1);
 
             if (bytes <= 0)
                 break;
 
-            buffer[static_cast<size_t>(bytes)] = '\0';
-            pendingOutput += juce::String::fromUTF8(buffer.data(), bytes);
-            consumeLines();
+            lines.feed(&byte, bytes, onLine);
         }
 
-        if (pendingOutput.trim().isNotEmpty())
-            owner.handleEngineOutputLine(pendingOutput.trim());
+        lines.flush(onLine);
 
         const auto exitCode = process->getExitCode();
         process.reset();
@@ -1442,7 +1538,8 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
         const juce::ScopedLock lock(stateLock);
         captureFile = file;
         lastJobDirectory = {};
-        engineLog.clear();
+        engineLogChunks.clear();
+        engineLogBytes = 0;
 
         inputSourceLabel = sourceLabel.isNotEmpty() ? sourceLabel : file.getFileName();
     }
@@ -2734,7 +2831,8 @@ bool StemLabAudioProcessor::startThreadedInputCapture(const juce::String& prefix
         const juce::ScopedLock lock(stateLock);
         captureFile = recordingFile;
         lastJobDirectory = {};
-        engineLog.clear();
+        engineLogChunks.clear();
+        engineLogBytes = 0;
     }
 
     capturedSamples.store(0);
@@ -2847,7 +2945,8 @@ bool StemLabAudioProcessor::startSystemAudioRecording()
         const juce::ScopedLock lock(stateLock);
         captureFile = recordingFile;
         lastJobDirectory = {};
-        engineLog.clear();
+        engineLogChunks.clear();
+        engineLogBytes = 0;
     }
 
     capturedSamples.store(0);
@@ -3279,7 +3378,8 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
     {
         const juce::ScopedLock lock(stateLock);
         lastJobDirectory = job;
-        engineLog.clear();
+        engineLogChunks.clear();
+        engineLogBytes = 0;
     }
 
     if (isAbletonHost())
@@ -4052,7 +4152,27 @@ void StemLabAudioProcessor::postUiStatus(const juce::String& message) { setStatu
 juce::String StemLabAudioProcessor::getEngineLog() const
 {
     const juce::ScopedLock lock(stateLock);
-    return engineLog;
+
+    // Joined through a stream rather than String::operator+=, which
+    // re-measures the accumulated text on every append.
+    juce::MemoryOutputStream joined(engineLogBytes + 1);
+
+    for (const auto& chunk : engineLogChunks)
+        joined << chunk;
+
+    // Decoded explicitly rather than through toString(), which sniffs the
+    // leading bytes for a byte-order mark the engine's output never has.
+    return juce::String::fromUTF8(static_cast<const char*>(joined.getData()),
+                                  static_cast<int>(joined.getDataSize()));
+}
+
+bool StemLabAudioProcessor::hasEngineLog() const
+{
+    // appendEngineLog never stores an empty chunk, so emptiness here is the
+    // same answer getEngineLog().isNotEmpty() gives - without the join. The
+    // settings menu asks this every time it is built.
+    const juce::ScopedLock lock(stateLock);
+    return !engineLogChunks.empty();
 }
 
 juce::File StemLabAudioProcessor::getLastJobDirectory() const
@@ -4145,13 +4265,21 @@ void StemLabAudioProcessor::appendEngineLog(const juce::String& text)
 {
     {
         const juce::ScopedLock lock(stateLock);
-        engineLog += text;
 
-        constexpr int maxLogCharacters = 50000;
+        // Appending to one juce::String cost a strlen, an exact-fit realloc
+        // and a full copy per line, and the character-count trim then walked
+        // every code point of the 50 KB cap on every line after that. Whole
+        // chunks leave the front instead, so the cost of a line no longer
+        // depends on how much has been logged.
+        engineLogBytes += static_cast<size_t>(text.getNumBytesAsUTF8());
+        engineLogChunks.push_back(text);
 
-        if (engineLog.length() > maxLogCharacters)
+        constexpr size_t maxLogBytes = 50000;
+
+        while (engineLogBytes > maxLogBytes && engineLogChunks.size() > 1)
         {
-            engineLog = engineLog.substring(engineLog.length() - maxLogCharacters);
+            engineLogBytes -= static_cast<size_t>(engineLogChunks.front().getNumBytesAsUTF8());
+            engineLogChunks.pop_front();
         }
     }
 
