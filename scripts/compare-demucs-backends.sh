@@ -196,15 +196,23 @@ fi
 info "python:  $PYTHON ($("$PYTHON" -c 'import demucs; print("demucs", demucs.__version__)'))"
 
 if [[ -z "$PY_DEVICE" ]]; then
-  PY_DEVICE="$("$PYTHON" - <<'PY'
-try:
-    import torch
-    print("cuda" if torch.cuda.is_available()
-          else ("mps" if torch.backends.mps.is_available() else "cpu"))
-except Exception:
-    print("cpu")
-PY
-)"
+resolve_py_device() {
+  local out rc
+  out="$(PYTHONPATH="$REPO_ROOT/src" "$PYTHON" "$REPO_ROOT/scripts/.device_probe.py" 2>&1)"
+  rc=$?
+  if (( rc != 0 )) || [[ -z "$out" ]]; then
+    warn "could not resolve the torch device via StemLab's own resolver:
+         ${out:-no output}
+         Falling back to cpu, which may not be what this machine would use."
+    printf 'cpu'
+    return
+  fi
+  printf '%s' "$out"
+}
+  # Ask StemLab's own resolver rather than reimplementing it. The hand-rolled
+  # check here only knew cuda and mps, so an Engine installed with the --xpu
+  # flavour was benchmarked on CPU, against the wrong baseline entirely.
+  PY_DEVICE="$(resolve_py_device)"
 fi
 info "python device: $PY_DEVICE"
 
