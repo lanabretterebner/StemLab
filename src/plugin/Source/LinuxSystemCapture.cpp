@@ -460,6 +460,13 @@ bool StemLabSystemLoopbackThread::openWriter (
     owner.systemCaptureSampleRate.store (captureSampleRate);
     owner.capturedSamples.store (0);
 
+    // Only now is the recording certain, so only now does the loaded source
+    // give way to it. Everything that can fail - dlopen'ing libpulse,
+    // finding the monitor source, pa_simple_new, creating this file and
+    // this writer - has already happened, and none of those failures can
+    // put a source back that the Record PC click had discarded.
+    owner.beginSystemCaptureSource (outputFile);
+
     return true;
 }
 
