@@ -112,21 +112,87 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # ---------------------------------------------------------------- preflight
 
-command -v cargo >/dev/null || die "cargo not found - install Rust from https://rustup.rs"
-
-PYTHON="${PYTHON:-}"
-if [[ -z "$PYTHON" ]]; then
-  for candidate in \
-      "$HOME/.local/share/StemLab/Engine/bin/python" \
-      "$REPO_ROOT/.venv/bin/python" \
-      python3 python; do
-    if command -v "$candidate" >/dev/null 2>&1 && \
-       "$candidate" -c "import demucs" >/dev/null 2>&1; then
-      PYTHON="$candidate"; break
-    fi
-  done
+# --probe is for surveying a machine before committing to anything, so a
+# missing toolchain is a finding to report there, not a reason to stop.
+if ! command -v cargo >/dev/null; then
+  if (( PROBE )); then
+    warn "cargo not found - install Rust from https://rustup.rs before a real run"
+  else
+    die "cargo not found - install Rust from https://rustup.rs"
+  fi
 fi
-[[ -n "$PYTHON" ]] || die "no python with the 'demucs' package found (set PYTHON=/path/to/python)"
+
+# Find an interpreter that actually has demucs. StemLab's Linux installer
+# records the exact interpreter it built in a pointer file, so consult that
+# before guessing at directory layouts.
+PYTHON="${PYTHON:-}"
+TRIED=()
+
+try_python() {  # path -> 0 if it exists and imports demucs
+  local candidate="$1"
+  [[ -n "$candidate" ]] || return 1
+  if ! command -v "$candidate" >/dev/null 2>&1; then
+    TRIED+=("$candidate  (not found)")
+    return 1
+  fi
+  if ! "$candidate" -c "import demucs" >/dev/null 2>&1; then
+    TRIED+=("$candidate  (no demucs)")
+    return 1
+  fi
+  PYTHON="$candidate"
+  return 0
+}
+
+if [[ -n "$PYTHON" ]]; then
+  "$PYTHON" -c "import demucs" >/dev/null 2>&1 \
+    || die "PYTHON=$PYTHON cannot import demucs"
+else
+  CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+  DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+  POINTER="$CONFIG_HOME/StemLab/portable_engine_path.txt"
+
+  # The pointer file holds the full path to the Engine interpreter.
+  if [[ -r "$POINTER" ]]; then
+    try_python "$(head -1 "$POINTER" | tr -d '\r')" || true
+  else
+    TRIED+=("$POINTER  (no pointer file)")
+  fi
+
+  if [[ -z "$PYTHON" ]]; then
+    for candidate in \
+        "$DATA_HOME/StemLab/Engine/bin/python" \
+        "${STEMLAB_INSTALL_DIR:-/opt/StemLab}/Engine/bin/python" \
+        "$REPO_ROOT/.venv/bin/python" \
+        python3 python; do
+      try_python "$candidate" && break
+    done
+  fi
+fi
+
+if [[ -z "$PYTHON" ]]; then
+  printf '\033[31merror:\033[0m no python with the '"'"'demucs'"'"' package was found.\n' >&2
+  printf '       Tried, in order:\n' >&2
+  printf '         %s\n' "${TRIED[@]}" >&2
+  cat >&2 <<'HELP'
+
+       Fix it whichever way suits:
+         - Point at an interpreter you already have:
+             PYTHON=/path/to/python scripts/compare-demucs-backends.sh ...
+         - Install StemLab's own Engine (this is what the app uses):
+             ./scripts/linux/install_backend.sh --cuda    # or --cpu / --xpu / --rocm
+         - Or just get demucs into a throwaway venv, which is all this
+           comparison needs:
+             python3 -m venv /tmp/demucs-venv
+             /tmp/demucs-venv/bin/pip install demucs soundfile
+             PYTHON=/tmp/demucs-venv/bin/python scripts/compare-demucs-backends.sh ...
+
+       Note the venv also needs torch built for your GPU if you want
+       --python-device cuda to work; plain "pip install demucs" pulls the
+       default torch wheel, which on Linux is already CUDA-enabled.
+HELP
+  exit 1
+fi
+
 info "python:  $PYTHON ($("$PYTHON" -c 'import demucs; print("demucs", demucs.__version__)'))"
 
 if [[ -z "$PY_DEVICE" ]]; then
@@ -205,7 +271,10 @@ elif ls /usr/share/vulkan/icd.d/*.json >/dev/null 2>&1; then
            Fedora         sudo dnf install vulkan-tools
            Arch           sudo pacman -S vulkan-tools"
 else
-  die "no Vulkan ICD found in /usr/share/vulkan/icd.d - install your GPU's
+  # Fatal for a real run, but --probe exists precisely to discover this, so
+  # there it is the answer rather than an abort.
+  no_icd() { (( PROBE )) && warn "$1" || die "$1"; }
+  no_icd "no Vulkan ICD found in /usr/share/vulkan/icd.d - install your GPU's
        Vulkan driver. Without one, wgpu has nothing to run on and the GPU leg
        is meaningless.
          NVIDIA         the proprietary driver ships nvidia_icd.json
