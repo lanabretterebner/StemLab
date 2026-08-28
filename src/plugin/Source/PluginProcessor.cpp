@@ -348,18 +348,18 @@ double nowMs() { return juce::Time::getMillisecondCounterHiRes(); }
 /*
     How close to the end counts as "already at the end" when Play is pressed.
 
-    Scrubber::applySeek maps a click to event.position.x / getWidth(). The
-    scrubber is 518 design px wide (880 window - 2*22 panel padding - 34 play
-    - 14 gap - 92 time - 14 gap - 150 A/B - 14 gap), so the rightmost pixel is
-    517/518 = 0.99807 and never 1.0. On a five-minute source that leaves the
-    playhead 300 * (1/518) = 0.58 s inside the track - far outside the 0.01 s
-    guard this replaces, which is why the first press played that 0.58 s and
-    stopped, and only the second press rewound.
+    A transport that has run out does not always report exactly its own
+    length, and the scrubber's last pixel is not the only way to ask for the
+    end: dragging past the bar, or clicking the pixel beside the last one,
+    lands a hair inside it. Play has to rewind for all of those, or the press
+    plays a sliver of audio and stops instead of starting the track.
 
-    Half a percent of the length is 2.6 scrubber pixels of headroom. The floor
-    keeps short sources usable; the ceiling stops a deliberate seek near the
-    end of a long source silently restarting, and still covers click slop for
-    sources up to 2.0 / (1/518) = 1036 s (17:16).
+    Half a percent of the length is about two and a half scrubber pixels. The
+    floor keeps short sources usable, where that fraction is too small to
+    cover anything; the ceiling stops a deliberate seek near the end of a long
+    source silently restarting - the scrubber addresses the end exactly, so
+    the guard no longer has to reach far enough to cover a mapping that could
+    not.
 */
 constexpr double endGuardMinSeconds = 0.25;
 constexpr double endGuardMaxSeconds = 2.0;

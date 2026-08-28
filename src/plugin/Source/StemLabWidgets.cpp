@@ -607,16 +607,41 @@ namespace stemlab::widgets
             return;
 
         const auto width = static_cast<double>(getWidth());
+        const auto x = static_cast<double>(event.position.x);
 
-        // x / width can never reach 1.0: the rightmost pixel of the 518 px
-        // scrubber is 517/518, which on a five-minute source is more than
-        // half a second short of the end. A click in the final pixel column
-        // means the end, and is snapped there. Every other position keeps the
-        // exact x/width mapping that paint()'s fill width is the inverse of,
-        // so the click and the fill stay in agreement.
-        auto normalised = juce::jlimit(0.0, 1.0, static_cast<double>(event.position.x) / width);
+        auto normalised = juce::jlimit(0.0, 1.0, x / width);
 
-        if (static_cast<double>(event.position.x) >= width - 1.0)
+        /*
+            x / width can never reach 1.0, so the end of the track has to be
+            claimed by the last pixel of the bar - and that pixel is further
+            from width than it looks.
+
+            JUCE hit-tests a component by rounding the local point to whole
+            units, so no click is ever delivered past width - 0.5. The panel
+            is drawn through a scale transform as well, which puts adjacent
+            screen pixels 1 / scale apart in local units and leaves the bar's
+            right edge wherever the scale lands it, usually mid-pixel. The
+            rightmost pixel the pointer can actually reach therefore sits
+            somewhere in [width - 0.5 - 1/scale, width - 0.5) - 516.7 of 518
+            at the default window size, which is short of the width - 1 this
+            replaces. That is why the snap never fired, and why clicking the
+            end of a twenty-minute source used to land three seconds inside
+            it and take two presses of Play to restart.
+
+            That interval is exactly one screen pixel wide, so snapping all
+            of it makes the final pixel mean the end at every window size
+            while leaving the pixel before it a position of its own rather
+            than a second helping of the end.
+
+            The start needs no such help: the clamp above already pulls the
+            bar's leftmost pixel, whose local x is fractionally negative, up
+            to 0.0.
+        */
+        const auto scale =
+            static_cast<double>(juce::Component::getApproximateScaleFactorForComponent(this));
+        const auto screenPixel = scale > 0.0 ? 1.0 / scale : 1.0;
+
+        if (x >= width - 0.5 - screenPixel)
             normalised = 1.0;
 
         position = normalised;
