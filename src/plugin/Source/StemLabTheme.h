@@ -645,7 +645,55 @@ namespace stemlab::theme
 
         constexpr float disabledOpacity = 0.45f;
 
+        /*
+            Disabled foregrounds are floored. Several roles are themselves
+            alpha tokens - text45, text50, outline - so a flat 0.45 multiply
+            lands them near alpha 0.2, which reads as absent rather than as
+            inactive; the magnifier glyph sat at 1.8:1 against the panel.
+
+            The ceiling is what keeps the floor honest. Without it any token
+            quieter than the floor - outline, at 0.16 - would be raised to
+            0.34 and render BRIGHTER dead than alive. Capping at 85% of the
+            live alpha guarantees every role still steps down.
+        */
+        constexpr float disabledAlphaFloor = 0.34f;
+        constexpr float disabledAlphaCeiling = 0.85f;
+
+        // Retune these together: a floor at or above the multiply would make
+        // every fully opaque token brighter disabled than enabled.
+        static_assert(disabledAlphaFloor < disabledOpacity,
+                      "the disabled alpha floor must sit below disabledOpacity");
+
         // The editor repaints lanes and re-polls processor state at this rate.
         constexpr int uiRefreshHz = 20;
+    }
+
+    /*
+        colours reopened after metrics: dimming is a colour role and belongs
+        beside the tokens it operates on, but it reads alpha constants that
+        metrics does not declare until above.
+    */
+    namespace colours
+    {
+        /** The one way to dim a colour for a disabled control. A
+            full-strength colour loses 55% exactly as it always has; a colour
+            that already carries alpha is floored so it stays legible, and
+            capped so it still reads weaker than its live self. */
+        inline juce::Colour dimDisabled(juce::Colour colour)
+        {
+            const auto alpha = colour.getFloatAlpha();
+
+            return colour.withAlpha(
+                juce::jmin(alpha * metrics::disabledAlphaCeiling,
+                           juce::jmax(alpha * metrics::disabledOpacity,
+                                      metrics::disabledAlphaFloor)));
+        }
+
+        /** Paint-code sugar, so a widget can route a token through the dim
+            without branching at every call. */
+        inline juce::Colour dimIfDisabled(juce::Colour colour, bool enabled)
+        {
+            return enabled ? colour : dimDisabled(colour);
+        }
     }
 }

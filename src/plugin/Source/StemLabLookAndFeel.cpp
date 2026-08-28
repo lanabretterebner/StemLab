@@ -85,30 +85,31 @@ void StemLabLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& b
 
     const bool hover = (highlighted || down) && button.isEnabled();
 
-    // Disabled controls drop to 45% as a whole - fill and border included,
-    // matching the text dim in drawButtonText.
-    const float dim = button.isEnabled() ? 1.0f : theme::metrics::disabledOpacity;
+    // Disabled controls drop as a whole - fill and border included, matching
+    // the text dim in drawButtonText.
+    const auto dimmed = [enabled = button.isEnabled()](juce::Colour c)
+    { return theme::colours::dimIfDisabled(c, enabled); };
 
     if (variant == "primary")
     {
         // The accent glow behind primary actions is painted by the editor
         // (a shadow drawn inside the component would be clipped away).
-        g.setColour((hover ? theme::colours::primaryFillHover() : theme::colours::primaryFill())
-                        .withMultipliedAlpha(dim));
+        g.setColour(dimmed(hover ? theme::colours::primaryFillHover()
+                                 : theme::colours::primaryFill()));
         g.fillRoundedRectangle(bounds, radius);
 
-        g.setColour(theme::colours::primaryEdge().withMultipliedAlpha(dim));
+        g.setColour(dimmed(theme::colours::primaryEdge()));
         g.drawRoundedRectangle(bounds, radius, 1.0f);
         return;
     }
 
     if (variant == "accent-outline")
     {
-        g.setColour((hover ? theme::colours::accentTint13() : theme::colours::accentTint10())
-                        .withMultipliedAlpha(dim));
+        g.setColour(dimmed(hover ? theme::colours::accentTint13()
+                                 : theme::colours::accentTint10()));
         g.fillRoundedRectangle(bounds, radius);
 
-        g.setColour(theme::colours::accent().withMultipliedAlpha(dim));
+        g.setColour(dimmed(theme::colours::accent()));
         g.drawRoundedRectangle(bounds, radius, 1.0f);
         return;
     }
@@ -130,8 +131,8 @@ void StemLabLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& b
     {
         const bool solo = variant == "solo";
 
-        g.setColour((solo ? theme::colours::soloActiveFill() : theme::colours::muteActiveFill())
-                        .withMultipliedAlpha(dim));
+        g.setColour(dimmed(solo ? theme::colours::soloActiveFill()
+                                : theme::colours::muteActiveFill()));
         g.fillRoundedRectangle(bounds, radius);
         return;
     }
@@ -142,7 +143,7 @@ void StemLabLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& b
         g.fillRoundedRectangle(bounds, radius);
     }
 
-    g.setColour(theme::colours::outline().withMultipliedAlpha(dim));
+    g.setColour(dimmed(theme::colours::outline()));
     g.drawRoundedRectangle(bounds, radius, 1.0f);
 }
 
@@ -172,7 +173,7 @@ void StemLabLookAndFeel::drawButtonText(juce::Graphics& g, juce::TextButton& but
     }
 
     if (!button.isEnabled())
-        colour = colour.withMultipliedAlpha(theme::metrics::disabledOpacity);
+        colour = theme::colours::dimDisabled(colour);
 
     g.setColour(colour);
     g.setFont(getTextButtonFont(button, button.getHeight()));
@@ -260,7 +261,8 @@ void StemLabLookAndFeel::drawPopupMenuItemWithOptions(juce::Graphics& g,
         return;
     }
 
-    const float dim = item.isEnabled ? 1.0f : theme::metrics::disabledOpacity;
+    const auto dimmed = [enabled = item.isEnabled](juce::Colour c)
+    { return theme::colours::dimIfDisabled(c, enabled); };
 
     if (isHighlighted && item.isEnabled)
     {
@@ -279,7 +281,7 @@ void StemLabLookAndFeel::drawPopupMenuItemWithOptions(juce::Graphics& g,
 
     if (item.isTicked)
     {
-        g.setColour(theme::colours::accent().withMultipliedAlpha(dim));
+        g.setColour(dimmed(theme::colours::accent()));
 
         g.strokePath(stemlab::icons::check(tickArea.toFloat()
                                                .withSizeKeepingCentre(
@@ -296,7 +298,7 @@ void StemLabLookAndFeel::drawPopupMenuItemWithOptions(juce::Graphics& g,
 
     if (hasSubMenu)
     {
-        g.setColour(theme::colours::text45().withMultipliedAlpha(dim));
+        g.setColour(dimmed(theme::colours::text45()));
 
         g.strokePath(
             stemlab::icons::chevron(trailing.toFloat().withSizeKeepingCentre(
@@ -308,7 +310,7 @@ void StemLabLookAndFeel::drawPopupMenuItemWithOptions(juce::Graphics& g,
     }
     else if (item.shortcutKeyDescription.isNotEmpty())
     {
-        g.setColour(theme::colours::text45().withMultipliedAlpha(dim));
+        g.setColour(dimmed(theme::colours::text45()));
         g.setFont(theme::fonts::meta());
         g.drawText(item.shortcutKeyDescription, trailing, juce::Justification::centredRight,
                    false);
@@ -318,7 +320,7 @@ void StemLabLookAndFeel::drawPopupMenuItemWithOptions(juce::Graphics& g,
     // and the label stays plain text.
     auto textColour = item.colour != juce::Colour() ? item.colour : theme::colours::text();
 
-    g.setColour(textColour.withMultipliedAlpha(dim));
+    g.setColour(dimmed(textColour));
     g.setFont(getPopupMenuFont());
     g.drawText(item.text, row, juce::Justification::centredLeft, true);
 }

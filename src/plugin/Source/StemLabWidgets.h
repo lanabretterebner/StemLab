@@ -192,6 +192,12 @@ namespace stemlab::widgets
         void mouseDown(const juce::MouseEvent&) override;
         void mouseDrag(const juce::MouseEvent&) override;
 
+        /** juce::Button repaints itself when its enablement flips; a plain
+            Component does not, and paint() reads isEnabled(). Without this
+            the bar keeps whichever look it had when it was last drawn for
+            some other reason - a hover, or a position that moved. */
+        void enablementChanged() override { repaint(); }
+
     private:
         void applySeek(const juce::MouseEvent&);
 
@@ -224,6 +230,9 @@ namespace stemlab::widgets
         void mouseDrag(const juce::MouseEvent&) override;
         void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
+        /** paint() reads isEnabled(); see Scrubber above. */
+        void enablementChanged() override { repaint(); }
+
     private:
         void applyDrag(const juce::MouseEvent&);
 
@@ -250,6 +259,9 @@ namespace stemlab::widgets
         void mouseMove(const juce::MouseEvent&) override;
         void mouseExit(const juce::MouseEvent&) override;
         void mouseUp(const juce::MouseEvent&) override;
+
+        /** paint() reads isEnabled(); see Scrubber above. */
+        void enablementChanged() override { repaint(); }
 
     private:
         juce::String labels[2];

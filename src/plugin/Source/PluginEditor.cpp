@@ -2993,13 +2993,25 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
                           juce::dontSendNotification);
     }
 
-    // Zoom is a view control, not a job control: it stays live whenever
-    // there is a waveform to look at, including while a job runs.
-    const bool haveWaveform = jobDone || captureExists;
+    /*
+     * Zoom is a view control, not a job control: it stays live whenever
+     * there is a waveform to look at, including while a job runs - which is
+     * when the lanes begin drawing stems as the engine announces them. A
+     * loaded source is not a drawn waveform: before the first job every
+     * lane's file is empty, so the wells are blank and walking the slider
+     * from 1x to 64x repaints nothing at all.
+     */
+    const bool haveWaveform = jobDone || engineRunning;
 
     zoomResetButton->setEnabled(haveWaveform);
     zoomSlider.setEnabled(haveWaveform);
-    zoomLabel.setAlpha(haveWaveform ? 1.0f : theme::metrics::disabledOpacity);
+
+    // The readout dims through its text colour rather than component alpha:
+    // 50% text at 45% alpha is 1.9:1 against the panel, and the floor in
+    // dimDisabled only applies to a colour. Label::colourChanged repaints
+    // only when the value actually moves, so this is free on most ticks.
+    zoomLabel.setColour(juce::Label::textColourId,
+                        theme::colours::dimIfDisabled(theme::colours::text50(), haveWaveform));
 
     // ------------------------------------------------------- source strip
 
@@ -3351,7 +3363,7 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
         if (item.selected)
             ++selectedCount;
 
-    saveButton.setEnabled(jobDone && !engineRunning && !capturing);
+    saveButton.setEnabled(jobDone && !engineRunning && !capturing && selectedCount > 0);
     insertButton.setEnabled(jobDone && !engineRunning && !capturing && selectedCount > 0);
     retryButton.setEnabled(jobDone && !engineRunning);
 
