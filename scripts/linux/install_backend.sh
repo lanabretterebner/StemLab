@@ -304,8 +304,23 @@ PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install \
 # the installed 2.11.0+cpu, while "torch==2.11.0+cpu" names a wheel PyPI
 # does not carry and would fail the resolve outright.
 TORCH_CONSTRAINTS="$DEST/.stemlab-torch-constraints.txt"
+
+# audio-separator -> onnx2torch-py313 -> onnx-weekly, which is a rolling
+# NIGHTLY, not a release. Unpinned, every rebuild resolves to whatever was
+# published that week, so two bundles built days apart carry different onnx
+# and a user's install never matches CI's.
+#
+# The pin cannot be permanent: PyPI keeps only about the last 29 of these,
+# an ~11-month window, so this exact build will eventually be deleted. The
+# install therefore retries without the pin rather than failing outright,
+# and says so - a reproducible build is worth having, but not at the cost of
+# an installer that stops working a year from now. When that warning
+# appears, refresh ONNX_WEEKLY_PIN to a version that still exists.
+ONNX_WEEKLY_PIN="1.23.0.dev20260824"
+
 printf 'torch==%s\ntorchaudio==%s\n' "$TORCH_VERSION" "$TORCH_VERSION" \
     > "$TORCH_CONSTRAINTS"
+printf 'onnx-weekly==%s\n' "$ONNX_WEEKLY_PIN" >> "$TORCH_CONSTRAINTS"
 
 # Recursive/adaptive stem splitting needs audio-separator. The project's own
 # "recursive" extra pins the CUDA onnxruntime unconditionally, so install the
@@ -313,11 +328,27 @@ printf 'torch==%s\ntorchaudio==%s\n' "$TORCH_VERSION" "$TORCH_VERSION" \
 # flavor gets the CPU runtime (onnxruntime has no PyPI build for ROCm/XPU, so
 # the recursive stage runs on CPU there - the main separation still offloads).
 if [[ "$TORCH_FLAVOR" == "cuda" ]]; then
-    PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install \
-        -c "$TORCH_CONSTRAINTS" "audio-separator[gpu]==0.44.5"
+    SEPARATOR_SPEC="audio-separator[gpu]==0.44.5"
 else
+    SEPARATOR_SPEC="audio-separator[cpu]==0.44.5"
+fi
+
+if ! PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install \
+        -c "$TORCH_CONSTRAINTS" "$SEPARATOR_SPEC"; then
+    # Almost always the pinned nightly having aged out of PyPI. Drop just
+    # that pin - never the torch ones, which exist to stop the flavor being
+    # replaced - and carry on unreproducibly rather than not at all.
+    echo
+    echo "WARNING: installing $SEPARATOR_SPEC failed with onnx-weekly pinned to"
+    echo "         $ONNX_WEEKLY_PIN. That nightly has most likely been removed"
+    echo "         from PyPI. Retrying unpinned: the install will succeed but"
+    echo "         this build is no longer reproducible. Refresh"
+    echo "         ONNX_WEEKLY_PIN in scripts/linux/install_backend.sh to a"
+    echo "         version that still exists." >&2
+    grep -v '^onnx-weekly==' "$TORCH_CONSTRAINTS" > "$TORCH_CONSTRAINTS.notonnx"
+    mv "$TORCH_CONSTRAINTS.notonnx" "$TORCH_CONSTRAINTS"
     PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install \
-        -c "$TORCH_CONSTRAINTS" "audio-separator[cpu]==0.44.5"
+        -c "$TORCH_CONSTRAINTS" "$SEPARATOR_SPEC"
 fi
 
 PYTHONNOUSERSITE=1 "$PYTHON" -s -m pip install -c "$TORCH_CONSTRAINTS" "$REPO_ROOT"

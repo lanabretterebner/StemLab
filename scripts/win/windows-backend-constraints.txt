@@ -4,3 +4,10 @@
 torch==2.9.1
 torchaudio==2.9.1
 torchvision==0.24.1
+
+# audio-separator -> onnx2torch-py313 -> onnx-weekly, which is a rolling
+# nightly rather than a release: unpinned, every setup resolves to whatever
+# was published that week. PyPI keeps only about 29 of these (~11 months), so
+# when pip reports this version as unavailable, refresh it to one that still
+# exists rather than dropping the pin.
+onnx-weekly==1.23.0.dev20260824
