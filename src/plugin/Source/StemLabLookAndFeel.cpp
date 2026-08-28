@@ -12,6 +12,31 @@ juce::String variantOf(const juce::Button& button)
     const auto id = button.getComponentID();
     return id.isEmpty() ? "neutral" : id;
 }
+
+/*
+    Tooltip geometry, shared so getTooltipBounds and drawTooltip cannot
+    disagree about where the text goes. A tooltip is what the UI falls back
+    on when something did not fit - a long source path most of all - so text
+    too wide for one line wraps instead of being truncated a second time.
+    Anything that fits keeps the single 22px line it always had.
+*/
+constexpr int tooltipMaxWidth = 260;
+constexpr int tooltipPadX = 8;
+constexpr int tooltipLineHeight = 22;
+
+juce::TextLayout layOutTooltip(const juce::String& text, int width)
+{
+    juce::AttributedString attributed;
+    attributed.setText(text);
+    attributed.setFont(juce::Font(theme::fonts::tooltip()));
+    attributed.setColour(theme::colours::text());
+    attributed.setJustification(juce::Justification::centredLeft);
+
+    juce::TextLayout layout;
+    layout.createLayout(attributed, static_cast<float>(width - 2 * tooltipPadX));
+
+    return layout;
+}
 } // namespace
 
 StemLabLookAndFeel::StemLabLookAndFeel()
@@ -191,7 +216,12 @@ void StemLabLookAndFeel::drawButtonText(juce::Graphics& g, juce::TextButton& but
             colour = variant == "solo" ? theme::colours::soloActiveText()
                                        : theme::colours::muteActiveText();
         else
-            colour = theme::colours::text45();
+            // S and M are single letters at 10px, where antialiasing eats
+            // most of a translucent stem. text45 measured 3.72:1 on the
+            // panel before rendering and less after; text75 is 7.70:1, so
+            // an untoggled Solo or Mute stays a readable letter rather
+            // than a smudge.
+            colour = theme::colours::text75();
     }
 
     if (!button.isEnabled())
@@ -444,9 +474,18 @@ juce::Rectangle<int> StemLabLookAndFeel::getTooltipBounds(const juce::String& te
 {
     const juce::Font font{theme::fonts::tooltip()};
 
-    const int width =
-        juce::jmin(260, 16 + juce::roundToInt(juce::GlyphArrangement::getStringWidth(font, text)));
-    const int height = 22;
+    const int width = juce::jmin(tooltipMaxWidth,
+                                 2 * tooltipPadX +
+                                     juce::roundToInt(
+                                         juce::GlyphArrangement::getStringWidth(font, text)));
+
+    // Only text that hit the cap can wrap, so the layout is worth building
+    // only then; everything else is one line and its height is known.
+    const int height =
+        width < tooltipMaxWidth
+            ? tooltipLineHeight
+            : juce::jmax(tooltipLineHeight,
+                         juce::roundToInt(layOutTooltip(text, width).getHeight()) + 10);
 
     return juce::Rectangle<int>(screenPos.x, screenPos.y + 18, width, height)
         .constrainedWithin(parentArea);
@@ -465,9 +504,23 @@ void StemLabLookAndFeel::drawTooltip(juce::Graphics& g, const juce::String& text
     g.setColour(theme::colours::outline());
     g.drawRoundedRectangle(bounds, 6.0f, 1.0f);
 
-    g.setColour(theme::colours::text());
-    g.setFont(theme::fonts::tooltip());
-    g.drawText(text, bounds.reduced(7.0f, 0.0f), juce::Justification::centredLeft);
+    if (height <= tooltipLineHeight)
+    {
+        // A pixel inside the box's own padding, so a string measured to the
+        // pixel cannot pick up an ellipsis from a rounding difference.
+        g.setColour(theme::colours::text());
+        g.setFont(theme::fonts::tooltip());
+        g.drawText(text, bounds.reduced(tooltipPadX - 1.0f, 0.0f),
+                   juce::Justification::centredLeft);
+        return;
+    }
+
+    // The wrapped case: the layout carries its own colour, and is centred
+    // vertically so the block sits in the box the way one line does.
+    const auto textArea = bounds.reduced(static_cast<float>(tooltipPadX), 0.0f);
+    const auto layout = layOutTooltip(text, width);
+
+    layout.draw(g, textArea.withSizeKeepingCentre(textArea.getWidth(), layout.getHeight()));
 }
 
 namespace stemlab::icons
@@ -674,39 +727,45 @@ namespace stemlab::icons
     juce::Path dragOut(juce::Rectangle<float> b)
     {
         /*
-         * Drag this stem out: a rounded square, an arrow leaving it
-         * diagonally, and a corner bracket standing in for wherever it is
-         * going.
+         * Drag this stem out: a rounded square, and an arrow leaving it
+         * diagonally. Two elements, not three.
          *
-         * The reference art dashes that second square. At 14px dashes close
-         * up into a grey smear, so it is reduced to the two edges that carry
-         * the meaning.
+         * The reference art puts a dashed destination square opposite the
+         * source. At 14px dashes close up into a grey smear, so it was once
+         * reduced to a corner bracket - but a bracket is the same L shape as
+         * the arrowhead, and at this size the two sat five pixels apart and
+         * read as one arrow with a stray duplicate of its own corner. There
+         * is no room to separate them: moving the bracket far enough to stop
+         * reading as detached puts it on top of the head. A square with an
+         * arrow leaving it already says "drag out" without a third element.
          */
         const auto size = juce::jmin(b.getWidth(), b.getHeight());
 
         juce::Path p;
 
-        // Source: rounded square across the top-left.
-        const auto square = size * 0.52f;
-        p.addRoundedRectangle(b.getX(), b.getY(), square, square, size * 0.12f);
+        // Source: rounded square in the top-left, inset so its 1.4px stroke
+        // stays in the box. The old square ran to the very edge, which put
+        // half the pen outside it and made this glyph read heavier than the
+        // kebab sitting next to it.
+        const auto inset = size * 0.03f;
+        const auto square = size * 0.42f;
+        p.addRoundedRectangle(b.getX() + inset, b.getY() + inset, square, square, size * 0.10f);
 
-        // Target: the far corner of a box, opposite the source.
-        const auto bracket = size * 0.30f;
-        const auto right = b.getX() + size;
-        const auto bottom = b.getY() + size;
-
-        p.startNewSubPath(right, bottom - bracket);
-        p.lineTo(right, bottom);
-        p.lineTo(right - bracket, bottom);
-
-        // The arrow between them, on the diagonal.
-        const auto from = juce::Point<float>(b.getX() + size * 0.34f, b.getY() + size * 0.34f);
-        const auto to = juce::Point<float>(b.getX() + size * 0.74f, b.getY() + size * 0.74f);
+        /*
+         * The arrow, on the diagonal. It starts clear of the square rather
+         * than inside it: the square's corner arc meets the diagonal at
+         * 0.42 of the box and the shaft's round cap reaches back to 0.52, so
+         * roughly a pixel of ground separates them at 14px. The shaft used
+         * to begin at 0.34, well inside the fill, and ate the square's
+         * bottom-right corner.
+         */
+        const auto from = juce::Point<float>(b.getX() + size * 0.56f, b.getY() + size * 0.56f);
+        const auto to = juce::Point<float>(b.getX() + size * 0.93f, b.getY() + size * 0.93f);
 
         p.startNewSubPath(from);
         p.lineTo(to);
 
-        const auto head = size * 0.20f;
+        const auto head = size * 0.24f;
 
         p.startNewSubPath(to.x - head, to.y);
         p.lineTo(to.x, to.y);

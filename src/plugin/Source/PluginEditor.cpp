@@ -671,7 +671,14 @@ void StemLaneWaveform::paint(juce::Graphics& g)
                     if (label.getRight() > inner.getRight())
                         continue;
 
-                    g.setColour(theme::colours::text().withAlpha(bar ? 0.34f : 0.20f));
+                    /*
+                     * The numbers carry meaning where the rules above only
+                     * carry rhythm, so they sit well clear of them. On the
+                     * lane well 0.55 and 0.38 measure 5.15:1 and 3.11:1;
+                     * the 0.34/0.20 they replace were 2.75:1 and 1.73:1,
+                     * under the 3:1 that incidental text needs.
+                     */
+                    g.setColour(theme::colours::text().withAlpha(bar ? 0.55f : 0.38f));
                     g.drawText(text, label, juce::Justification::topLeft, false);
                 }
             }
@@ -3201,8 +3208,8 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
     /*
      * The lanes only carry stems once a job has produced them, so both
-     * pills and the readout stay dark until then - "0 of 6 selected" over
-     * six empty lanes is noise, not information.
+     * pills and the readout stay dark until then - "0 of 6 stems will be
+     * saved" over six empty lanes is noise, not information.
      */
     const auto [includedLanes, totalLanes] = laneSelectionCounts();
 
@@ -3230,7 +3237,8 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
         userStatusLabel.setText(actionFresh ? actionText
                                 : lanesLive ? juce::String(includedLanes) + " of " +
-                                                  juce::String(totalLanes) + " selected"
+                                                  juce::String(totalLanes) +
+                                                  " stems will be saved"
                                             : juce::String(),
                                 juce::dontSendNotification);
     }
@@ -3413,6 +3421,30 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
     fileNameLabel.setText(fileName, juce::dontSendNotification);
     fileMetaLabel.setText(fileMeta, juce::dontSendNotification);
+
+    /*
+     * The strip gives the name whatever the buttons leave over - about 20
+     * characters at design size - and the full path appears nowhere else in
+     * the window, so a long name loses the part that identifies it. Carry
+     * the path in a tooltip, but only while the text does not fit: an
+     * always-on tooltip over a name that is already fully readable is just
+     * noise. The test is "does not fit" rather than "was ellipsized"
+     * because drawFittedText squeezes to 70% before it ellipsizes, and a
+     * squeezed 120-character name is no more readable than a clipped one.
+     */
+    {
+        const juce::Font nameFont{theme::fonts::bodyMedium()};
+
+        const auto available = static_cast<float>(
+            fileNameLabel.getWidth() - fileNameLabel.getBorderSize().getLeftAndRight());
+
+        const bool clipped =
+            available > 0.0f &&
+            juce::GlyphArrangement::getStringWidth(nameFont, fileName) > available;
+
+        fileNameLabel.setTooltip(clipped && captureExists ? captureFile.getFullPathName()
+                                                          : juce::String());
+    }
 
     // ---------------------------------------------------------- transport
 
@@ -3652,9 +3684,21 @@ void StemLabAudioProcessorEditor::chooseStandaloneAudioFile()
     if (!processor.usesLocalFileWorkflow() || processor.isCapturing())
         return;
 
+    /*
+     * Start where the current source lives, the way chooseEngineExecutable
+     * does. Handing the chooser the file itself rather than its folder both
+     * opens that folder and preselects the file, so working through several
+     * takes from one folder does not mean navigating back from $HOME every
+     * time. After a capture the source is a recording under the job root and
+     * the dialog opens there - still where the audio actually is.
+     */
+    auto start = processor.getCaptureFile();
+
+    if (!start.existsAsFile())
+        start = juce::File::getSpecialLocation(juce::File::userHomeDirectory);
+
     audioFileChooser = std::make_unique<juce::FileChooser>(
-        "Choose audio file", juce::File::getSpecialLocation(juce::File::userHomeDirectory),
-        "*.wav;*.flac;*.mp3;*.aiff;*.aif;*.ogg");
+        "Choose audio file", start, "*.wav;*.flac;*.mp3;*.aiff;*.aif;*.ogg");
 
     audioFileChooser->launchAsync(juce::FileBrowserComponent::openMode |
                                       juce::FileBrowserComponent::canSelectFiles,

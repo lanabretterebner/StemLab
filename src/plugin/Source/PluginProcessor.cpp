@@ -2067,6 +2067,16 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
         return false;
     }
 
+    // 44 bytes is a canonical WAV header, and the two recording paths
+    // already treat that as the line between a file and a recording. A
+    // zero-byte file used to sail through here and light up Separate,
+    // because nothing below this point looks at the file's size again.
+    if (file.getSize() <= 44)
+    {
+        setActionStatus("Selected audio file is empty");
+        return false;
+    }
+
     // Loading a source clears the job directory and result state that the
     // running engine thread still reports into. Swapping it mid-job left the
     // finished stems unreachable while the UI announced them as done, so
@@ -2085,6 +2095,19 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
 
     if (infoReader != nullptr)
     {
+        // A header-only file is big enough to pass the size guard and
+        // still decodes to nothing. Refuse it here, before the first
+        // mutation below: everything past this point overwrites the
+        // channel count, the sample count and finally captureFile itself,
+        // and a later refusal would leave the old source destroyed with
+        // no new one in its place.
+        if (infoReader->lengthInSamples <= 0 || infoReader->sampleRate <= 0.0)
+        {
+            infoReader.reset();
+            setActionStatus("Selected audio file contains no audio");
+            return false;
+        }
+
         currentInputChannels = static_cast<int>(infoReader->numChannels);
 
         if (infoReader->sampleRate > 0.0)

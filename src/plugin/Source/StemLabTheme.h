@@ -416,7 +416,7 @@ namespace stemlab::theme
                 palette, transport, a rejected click - before settling back
                 on where the selection stands:
 
-                    5 of 6 selected  [Select all] [Deselect all]
+                    5 of 6 stems will be saved  [Select all] [Deselect all]
 
                 The bottom status line is the other half of that split: it
                 reports only the work the plugin is doing.
