@@ -123,11 +123,16 @@ def run_progress_process(
     if cancellation:
         cancellation.raise_if_cancelled()
 
+    # Buffered, even though drain_cr_lf_stream takes one byte at a time: a
+    # BufferedReader refills from whatever the pipe already holds rather than
+    # waiting for a full buffer, so fragments still arrive as promptly as
+    # unbuffered reads while costing one read(2) per refill instead of one per
+    # byte - on the machine that is at that moment running the model.
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        bufsize=0,
+        bufsize=-1,
         env=child_process_env(),
     )
     assert process.stdout is not None
