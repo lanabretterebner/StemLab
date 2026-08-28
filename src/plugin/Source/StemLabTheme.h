@@ -676,8 +676,24 @@ namespace stemlab::theme
         static_assert(disabledAlphaFloor < disabledOpacity,
                       "the disabled alpha floor must sit below disabledOpacity");
 
-        // The editor repaints lanes and re-polls processor state at this rate.
+        // The editor repaints lanes and re-polls processor state at this rate
+        // while anything can change on its own: a job narrating, the transport
+        // moving, a timed readout still counting down.
         constexpr int uiRefreshHz = 20;
+
+        /*
+            ...and at this rate once nothing can. Almost every user action
+            already calls refreshFromProcessor() inside its own handler, so
+            the idle tick is only catching what the editor is never told
+            about; half a second of latency on that is invisible, and it
+            removes 90% of the wakeups an open-but-idle window was costing.
+        */
+        constexpr int uiIdleRefreshHz = 2;
+
+        // Full rate is held this long past the last reason for it, so a
+        // stream of events cannot thrash the timer between the two rates
+        // and a reason that flickers off for one tick does not demote.
+        constexpr int uiIdleHoldMs = 1500;
     }
 
     /*

@@ -17,10 +17,12 @@
  * mono copy of it is ever resident, so an hour-long capture costs the same
  * memory as a ten-second one. That is well under a second per file and
  * nowhere near a paint call's budget, so lanes ask for a profile and draw
- * nothing until one arrives. The editor already repaints them at the UI
- * refresh rate, so a finished analysis appears on its own without any
- * completion plumbing. Owned by the processor rather than the editor, so
- * closing and reopening the window does not re-read and re-FFT every stem.
+ * nothing until one arrives. Completion is still not signalled: a lane
+ * without a profile polls this cache from the editor's timer, and a poll
+ * that comes back with something holds the editor at its full refresh rate
+ * so the rest of the stems land at the same pace. Owned by the processor
+ * rather than the editor, so closing and reopening the window does not
+ * re-read and re-FFT every stem.
  */
 class StemLabWaveformCache final : private juce::Thread
 {

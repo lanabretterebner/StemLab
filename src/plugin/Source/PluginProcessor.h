@@ -732,6 +732,11 @@ private:
     void rebuildLoopRegions();
     void applyPreviewLoopTick();
 
+    /** Arms the loop enforcer if there is anything to enforce. The timer
+        stops itself once playback stops, so every path that starts a
+        transport has to arm it again. */
+    void startLoopTimerIfRegions();
+
     using MonitorFlags = StemLabLaneMonitorFlags;
 
     std::shared_ptr<MonitorFlags> monitorFlagsForStem(int index) const;

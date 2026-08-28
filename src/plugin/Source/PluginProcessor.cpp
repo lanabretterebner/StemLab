@@ -2268,6 +2268,7 @@ void StemLabAudioProcessor::toggleStandalonePlayback()
         previewTransport.setPosition(0.0);
 
     previewTransport.start();
+    startLoopTimerIfRegions();
     setActionStatus("Playing source");
 }
 
@@ -2580,7 +2581,10 @@ bool StemLabAudioProcessor::ensureStemMixLoaded()
     // A split finishing mid-playback rebuilds the mix underneath the user;
     // the clock keeps running rather than stopping on them.
     if (wasPlaying)
+    {
         stemMixTransport.start();
+        startLoopTimerIfRegions();
+    }
 
     stemMixJobDirectory = job;
     stemMixTreeGeneration = generation;
@@ -2612,7 +2616,10 @@ void StemLabAudioProcessor::switchAudioMonitor(bool useMix)
     audioMonitorIsMix.store(useMix);
 
     if (wasPlaying)
+    {
         to.start();
+        startLoopTimerIfRegions();
+    }
 }
 
 bool StemLabAudioProcessor::isStemMonitorAvailable() { return ensureStemMixLoaded(); }
@@ -2643,7 +2650,10 @@ void StemLabAudioProcessor::setMonitorMode(int mode)
                     juce::jlimit(0.0, previewTransport.getLengthInSeconds(), position));
 
                 if (wasPlaying && !audioMonitorIsMix.load())
+                {
                     previewTransport.start();
+                    startLoopTimerIfRegions();
+                }
             }
         }
     }
@@ -2672,6 +2682,7 @@ void StemLabAudioProcessor::transportTogglePlay()
             stemMixTransport.setPosition(0.0);
 
         stemMixTransport.start();
+        startLoopTimerIfRegions();
         setActionStatus("Playing stems");
         return;
     }
@@ -7208,6 +7219,9 @@ void StemLabAudioProcessor::rebuildLoopRegions()
         return;
     }
 
+    // Armed here and re-armed from every transport start: the enforcer
+    // stops itself once playback does, so the timer's lifetime follows
+    // playback rather than the existence of a range.
     loopTimer.startTimer(30);
 
     // Sweeping a range pulls the playhead into the loop right away, playing
@@ -7221,8 +7235,43 @@ void StemLabAudioProcessor::rebuildLoopRegions()
             transport.setPosition(*target * length);
 }
 
+void StemLabAudioProcessor::startLoopTimerIfRegions()
+{
+    if (!loopRegionsSnapshot().empty())
+        loopTimer.startTimer(30);
+}
+
 void StemLabAudioProcessor::applyPreviewLoopTick()
 {
+    auto& transport = activeTransport();
+    const bool playing = transport.isPlaying();
+
+    bool haveRegions = false;
+
+    {
+        const juce::ScopedLock lock(selectionLock);
+        haveRegions = !loopRegionsNormalised.empty();
+    }
+
+    /*
+     * Ahead of the copy, and ahead of everything else. This runs 33 times a
+     * second, and it used to keep running - allocating a fresh region vector
+     * on every one of them - for the life of the process after a single
+     * swept range, whether or not anything was playing and whether or not
+     * the editor was even open.
+     *
+     * previewLoopWasPlaying is load-bearing in this gate: the transport
+     * stops itself at end of file, and the branch below that restarts it
+     * from the first region needs a tick after that has happened. One more
+     * tick is exactly what carrying the previous playing state buys.
+     */
+    if (!haveRegions || (!playing && !previewLoopWasPlaying))
+    {
+        previewLoopWasPlaying = playing;
+        loopTimer.stopTimer();
+        return;
+    }
+
     std::vector<stemlab::loops::Region> merged;
 
     {
@@ -7230,11 +7279,18 @@ void StemLabAudioProcessor::applyPreviewLoopTick()
         merged = loopRegionsNormalised;
     }
 
-    auto& transport = activeTransport();
     const auto length = transport.getLengthInSeconds();
 
+    // Both early-outs leave nothing this tick can enforce, so they carry the
+    // same bookkeeping the tail does. Without it a transport that stopped
+    // under a source with no length - or under regions too short to loop -
+    // would leave previewLoopWasPlaying stuck true, and the gate above would
+    // keep the timer awake on a tick that can never do anything.
     if (merged.empty() || length <= 0.0)
+    {
+        previewLoopWasPlaying = playing;
         return;
+    }
 
     // A region too small to hold even one tick would pin the transport.
     merged.erase(std::remove_if(merged.begin(), merged.end(),
@@ -7243,9 +7299,10 @@ void StemLabAudioProcessor::applyPreviewLoopTick()
                  merged.end());
 
     if (merged.empty())
+    {
+        previewLoopWasPlaying = playing;
         return;
-
-    const bool playing = transport.isPlaying();
+    }
 
     if (playing)
     {

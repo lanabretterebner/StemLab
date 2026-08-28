@@ -37,6 +37,13 @@ public:
         the well land here instead of scrolling the lane list. */
     std::function<void(int)> onZoomStep;
 
+    /** Fired after this well has moved the shared transport - a click-seek
+        or a swept loop range. Only the clicked well knows about it
+        synchronously; every other lane's playhead, the clock and the
+        scrubber would otherwise wait for the editor's next tick, which is
+        half a second away once the editor has demoted itself. */
+    std::function<void()> onTransportSeek;
+
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
     void mouseDrag(const juce::MouseEvent&) override;
@@ -47,8 +54,13 @@ public:
     /** The editor's UI timer calls this instead of a blanket repaint: it asks
         the processor what the well would show now and repaints only when that
         differs from the last tick - and when just the playhead moved, only
-        the two thin strips it left and entered. A still lane costs nothing. */
-    void timerRefresh();
+        the two thin strips it left and entered. A still lane costs nothing.
+
+        Returns whether anything actually changed. The editor uses that to
+        hold its full refresh rate while wells are still coming to life -
+        an arriving analysis is the one thing here that is not driven by a
+        user action or by a processor state the editor already polls. */
+    bool timerRefresh();
 
 private:
     /** One drawn column: the shape of the audio under it, per channel, and
@@ -168,17 +180,22 @@ private:
         ask after that belongs to the rate-limited poll. */
     bool profileRequested = false;
 
-    /** Timer ticks left before the next cache poll. */
-    int profilePollCountdown = 0;
+    /** When the cache was last asked about currentFile. */
+    juce::uint32 lastProfilePollMs = 0;
 
     /*
         Analysis completion is not signalled, so a lane without a profile
         polls the cache - and each ask costs a handful of stats, in a
         window where every lane is waiting because stems now arrive while
-        later ones are still separating. At theme::metrics::uiRefreshHz
-        this trades poll latency for that traffic.
+        later ones are still separating. This trades poll latency for that
+        traffic.
+
+        Denominated in milliseconds rather than ticks on purpose: the
+        editor's timer changes rate (see theme::metrics::uiIdleRefreshHz),
+        and a cadence counted in ticks would have quietly become ten times
+        slower the moment it did.
     */
-    static constexpr int profilePollTicks = 4;
+    static constexpr int profilePollIntervalMs = 200;
 
     juce::String stemIdentity;
     juce::String selectionId;
@@ -220,11 +237,11 @@ public:
     void refresh();
 
     /** Forwards the editor's UI tick to the waveform well's change-detecting
-        refresh; the lane's own widgets repaint through their setters. */
-    void timerRefreshWaveform()
+        refresh; the lane's own widgets repaint through their setters.
+        Returns whether the well actually redrew anything. */
+    bool timerRefreshWaveform()
     {
-        if (waveform != nullptr)
-            waveform->timerRefresh();
+        return waveform != nullptr && waveform->timerRefresh();
     }
 
     /** What a lane menu anchors to, so it opens under the button that
@@ -241,6 +258,11 @@ public:
     /** Forwards wheel-zoom from this lane's waveform well to the editor's
         shared zoom stepper. */
     void setZoomStepHandler(std::function<void(int)> handler);
+
+    /** Forwards a seek made in this lane's well to the editor, so the rest
+        of the interface catches up in the same event rather than on the
+        next timer tick. */
+    void setTransportSeekHandler(std::function<void()> handler);
 
     bool isChildLane() const noexcept { return childId.isNotEmpty(); }
     juce::String getChildId() const { return childId; }
@@ -363,6 +385,26 @@ private:
     void showFirstRunWelcome();
     void launchAbletonSetup();
     void refreshFromProcessor();
+
+    /** Retunes the UI timer, cheaply: a no-op unless the rate actually
+        moves, so the steady state never resets JUCE's timer counter. */
+    void applyRefreshRate(int hz);
+
+    /** Hold the full refresh rate for theme::metrics::uiIdleHoldMs. For
+        anything that changes the interface without going through
+        refreshFromProcessor's own decision - an asynchronous announcement
+        from the processor, a seek, an analysis landing. */
+    void requestFastFrames();
+
+    /** Ticks every lane's waveform well. Returns whether any of them
+        actually redrew, which is what keeps the editor at full rate while
+        stems are still arriving. */
+    bool refreshLaneWaveforms();
+
+    /** Someone moved the shared playhead from inside the interface. Brings
+        the whole editor - every lane, the clock, the scrubber - level with
+        it in the same event instead of on the next tick. */
+    void handleTransportMoved();
 
     /** Draws and lays out the panel in its own (design-size) coordinates. */
     void paintPanel(juce::Graphics&);
@@ -512,9 +554,20 @@ private:
     juce::String lastRawStatus;
     juce::uint32 lastStatusChangeMs = 0;
 
-    // Divides the UI timer for the Ableton bridge-status poll: status text
-    // does not need 50 ms latency, and the poll costs file I/O.
-    int abletonBridgePollTick = 0;
+    // Rate-limits the Ableton bridge-status poll: status text does not need
+    // 50 ms latency, and the poll costs file I/O. A wall-clock deadline
+    // rather than a tick divider, because the UI timer changes rate.
+    juce::uint32 lastAbletonStatusPollMs = 0;
+
+    /** What startTimerHz was last given; 0 until the constructor arms it.
+        The editor runs at theme::metrics::uiRefreshHz while something can
+        change on its own and drops to uiIdleRefreshHz when nothing can. */
+    int currentRefreshHz = 0;
+
+    /** Full rate is held until this stamp. juce::uint32 like every other
+        millisecond counter here, and compared through a signed difference
+        so the ~49-day wrap does not read as "forever". */
+    juce::uint32 fastFramesUntilMs = 0;
 
     // The header readout shows a freshly posted user-action message for a
     // few seconds before reverting to the selection count. The revision
@@ -536,6 +589,16 @@ private:
     juce::ProgressBar progressBar{progressValue};
     juce::Label progressLabel;
     juce::Label pathLabel;
+
+    /** The last measured job path, and the width its text shaped to inside
+        a label of lastJobPathLabelWidth. Shaping a whole path through
+        GlyphArrangement on every refresh - to place one folder icon - is
+        pure waste for a string that only changes when the user picks a
+        different job folder. */
+    juce::String lastJobPath;
+    int lastJobPathWidth = 0;
+    int lastJobPathLabelWidth = 0;
+
     juce::TextButton changeFolderButton{"Change"};
     juce::TextButton saveButton{"Save Stems"};
     juce::TextButton retryButton{"Retry"};

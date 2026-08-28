@@ -175,7 +175,10 @@ void StemLaneWaveform::setFile(const juce::File& file)
     currentFile = file;
     currentFileExists = file.existsAsFile();
     profileRequested = false;
-    profilePollCountdown = 0;
+
+    // Zero, not "now": the next tick should ask about the new file at once
+    // rather than serving out the previous file's poll interval.
+    lastProfilePollMs = 0;
     profile.reset();
     columns.clear();
     columnImage = juce::Image();
@@ -759,7 +762,7 @@ void StemLaneWaveform::paint(juce::Graphics& g)
 bool StemLaneWaveform::fetchProfile()
 {
     profileRequested = true;
-    profilePollCountdown = profilePollTicks;
+    lastProfilePollMs = juce::Time::getMillisecondCounter();
 
     // A stem can be announced before its file is written, so an existence
     // that was false is the only one worth re-testing.
@@ -775,20 +778,32 @@ bool StemLaneWaveform::fetchProfile()
     return profile != nullptr;
 }
 
-void StemLaneWaveform::timerRefresh()
+bool StemLaneWaveform::timerRefresh()
 {
     if (profile == nullptr)
     {
         // Still waiting on the analysis thread. Asking the cache is what
         // both queues the file and picks the answer up, and the repaint
         // is only worth scheduling once there is something to draw.
-        if (--profilePollCountdown > 0)
-            return;
+        if (juce::Time::getMillisecondCounter() - lastProfilePollMs <
+            static_cast<juce::uint32>(profilePollIntervalMs))
+        {
+            return false;
+        }
 
-        if (fetchProfile())
-            repaint();
+        /*
+         * Only an ARRIVAL is reported, never the waiting. A lane whose file
+         * does not exist keeps polling forever (StemLabWaveformCache::get
+         * answers nullptr for it), and profile == nullptr is trivially true
+         * for all six lanes with nothing loaded - so "still waiting" as a
+         * signal would pin the editor at full rate for the life of the
+         * process. What lands here is bounded by construction.
+         */
+        if (!fetchProfile())
+            return false;
 
-        return;
+        repaint();
+        return true;
     }
 
     const auto now = readDisplayState();
@@ -817,12 +832,12 @@ void StemLaneWaveform::timerRefresh()
     lastDisplayValid = true;
 
     if (samePicture && !playheadMoved)
-        return;
+        return false;
 
     if (!samePicture)
     {
         repaint();
-        return;
+        return true;
     }
 
     /*
@@ -836,7 +851,7 @@ void StemLaneWaveform::timerRefresh()
     if (!(geometry.viewLength > 0.0) || !(now.transportLength > 0.0))
     {
         repaint();
-        return;
+        return true;
     }
 
     const auto xFor = [this, &geometry, &now](double transportPosition)
@@ -858,6 +873,8 @@ void StemLaneWaveform::timerRefresh()
         repaint(juce::Rectangle<float>(x - margin, 0.0f, margin * 2.0f,
                                        static_cast<float>(getHeight()))
                     .getSmallestIntegerContainer());
+
+    return true;
 }
 
 void StemLaneWaveform::mouseDown(const juce::MouseEvent& event)
@@ -917,6 +934,13 @@ void StemLaneWaveform::mouseUp(const juce::MouseEvent& event)
         // Through timerRefresh rather than a plain repaint, so the captured
         // state paint draws picks the change up immediately.
         timerRefresh();
+
+        // Storing or clearing a range pulls the shared playhead into it
+        // (rebuildLoopRegions), which is a seek every other lane has to
+        // hear about.
+        if (onTransportSeek)
+            onTransportSeek();
+
         return;
     }
 
@@ -925,6 +949,9 @@ void StemLaneWaveform::mouseUp(const juce::MouseEvent& event)
 
     processor.transportSeekNormalised(normalisedForX(event.mouseDownPosition.x));
     timerRefresh();
+
+    if (onTransportSeek)
+        onTransportSeek();
 }
 
 void StemLaneWaveform::mouseDoubleClick(const juce::MouseEvent&)
@@ -934,6 +961,9 @@ void StemLaneWaveform::mouseDoubleClick(const juce::MouseEvent&)
     {
         processor.clearStemSelectionRange(selectionId);
         timerRefresh();
+
+        if (onTransportSeek)
+            onTransportSeek();
     }
 }
 
@@ -1178,6 +1208,12 @@ void StemLaneComponent::setZoomStepHandler(std::function<void(int)> handler)
 {
     if (waveform != nullptr)
         waveform->onZoomStep = std::move(handler);
+}
+
+void StemLaneComponent::setTransportSeekHandler(std::function<void()> handler)
+{
+    if (waveform != nullptr)
+        waveform->onTransportSeek = std::move(handler);
 }
 
 void StemLaneComponent::setChildInfo(const StemLabRecursiveStemInfo& info)
@@ -1869,6 +1905,9 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
         rootLanes[static_cast<size_t>(i)]->setZoomStepHandler(
             [this](int delta) { stepWaveformZoom(delta); });
 
+        rootLanes[static_cast<size_t>(i)]->setTransportSeekHandler(
+            [this] { handleTransportMoved(); });
+
         laneContent.addAndMakeVisible(*rootLanes[static_cast<size_t>(i)]);
     }
 
@@ -1887,7 +1926,14 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     panelContent.addAndMakeVisible(timeLabel);
 
     scrubber.onSeek = [this](double normalised)
-    { processor.transportSeekNormalised(normalised); };
+    {
+        processor.transportSeekNormalised(normalised);
+
+        // The thumb repaints itself inside Scrubber::applySeek; this is for
+        // the six wells and the clock, which otherwise trail the pointer by
+        // a whole tick - half a second once the editor has demoted.
+        handleTransportMoved();
+    };
     panelContent.addAndMakeVisible(scrubber);
 
     abControl.setSelectedIndex(0);
@@ -2010,7 +2056,13 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     setSize(juce::roundToInt(window::width * scale),
             juce::roundToInt(window::height * scale));
 
-    startTimerHz(theme::metrics::uiRefreshHz);
+    /*
+     * Armed at full rate and left for the first refresh to judge: opening
+     * onto an idle processor demotes on the spot, opening onto a running
+     * job leaves the full rate standing. Neither case has to be guessed at
+     * here, before anything has been read.
+     */
+    applyRefreshRate(theme::metrics::uiRefreshHz);
     refreshFromProcessor();
 
     if (processor.isStandaloneApp())
@@ -2827,6 +2879,7 @@ void StemLabAudioProcessorEditor::syncLanes()
                                 hiddenActiveParents.contains(item.id),
                                 hiddenSoloParents.contains(item.id));
             lane->setZoomStepHandler([this](int delta) { stepWaveformZoom(delta); });
+            lane->setTransportSeekHandler([this] { handleTransportMoved(); });
             laneContent.addAndMakeVisible(*lane);
             childLanes.push_back(std::move(lane));
         }
@@ -3093,8 +3146,78 @@ bool StemLabAudioProcessorEditor::isLaneExpanded(int stemIndex,
            rootExpanded[static_cast<size_t>(stemIndex)];
 }
 
+void StemLabAudioProcessorEditor::applyRefreshRate(int hz)
+{
+    /*
+     * Message thread only - every caller is already on it, which is what
+     * juce::Timer asserts. Retuning from inside timerCallback is legal: a
+     * running timer just has its counter reset. The equality guard is what
+     * keeps a steady state from resetting that counter on every tick, which
+     * would postpone the next callback forever.
+     */
+    if (hz == currentRefreshHz)
+        return;
+
+    currentRefreshHz = hz;
+    startTimerHz(hz);
+}
+
+void StemLabAudioProcessorEditor::requestFastFrames()
+{
+    fastFramesUntilMs = juce::Time::getMillisecondCounter() + theme::metrics::uiIdleHoldMs;
+    applyRefreshRate(theme::metrics::uiRefreshHz);
+}
+
+bool StemLabAudioProcessorEditor::refreshLaneWaveforms()
+{
+    // Not a blanket repaint: each well compares what it would draw against
+    // the last tick and repaints only what actually changed, so idle lanes
+    // cost nothing and a moving playhead costs two thin strips.
+    bool changed = false;
+
+    // Call first, accumulate second: || would short-circuit past every lane
+    // after the first one that redrew.
+    for (auto& lane : rootLanes)
+        if (lane != nullptr)
+            changed = lane->timerRefreshWaveform() || changed;
+
+    for (auto& lane : childLanes)
+        if (lane != nullptr)
+            changed = lane->timerRefreshWaveform() || changed;
+
+    return changed;
+}
+
+void StemLabAudioProcessorEditor::handleTransportMoved()
+{
+    /*
+     * Order matters, and so does the guard. Promoting first means the timer
+     * takes over within 50 ms; the synchronous catch-up is only needed for
+     * the event that finds the editor slow, which is the one whose lag
+     * would otherwise be half a second.
+     *
+     * Scrubber::applySeek fires from mouseDrag as well as mouseDown, at
+     * whatever rate the pointer reports - well above 20 Hz on most devices.
+     * Refreshing the whole editor on every one of those would cost more
+     * during a drag than the timer this stage is here to slow down, and buy
+     * nothing: after the first event the promoted timer is already
+     * refreshing at exactly the rate a drag used to see.
+     */
+    const bool wasSlow = currentRefreshHz != theme::metrics::uiRefreshHz;
+
+    requestFastFrames();
+
+    if (wasSlow)
+    {
+        refreshFromProcessor();
+        refreshLaneWaveforms();
+    }
+}
+
 void StemLabAudioProcessorEditor::timerCallback()
 {
+    const auto nowMs = juce::Time::getMillisecondCounter();
+
     processor.refreshEngineProgressFromDisk();
 
     // A finished adaptive split hands the parent's place in the stem mix to
@@ -3105,31 +3228,34 @@ void StemLabAudioProcessorEditor::timerCallback()
     // REAPER or a plain host is pure disk traffic at the timer rate.
     if (processor.getHostIntegration() == StemLabAudioProcessor::hostIntegrationAbletonLive)
     {
-        // The clip reply is what Import from DAW is actively waiting on,
-        // so it keeps the full tick rate. The bridge status feeds a status
-        // line, which does not need 50 ms latency: every 5th tick (4 Hz)
-        // divides its steady-state file traffic accordingly.
+        /*
+         * The clip reply is what Import from DAW is actively waiting on, so
+         * it keeps the full tick rate - and the wait it serves lives inside
+         * isBackgroundWorkRunning(), so the editor is at full rate for
+         * exactly that window anyway. The bridge status feeds a status line,
+         * which does not need 50 ms latency: a 250 ms deadline divides its
+         * steady-state file traffic accordingly.
+         *
+         * A deadline rather than a tick divider because the tick itself
+         * changes rate: "every 5th tick" would have meant 2.5 s at idle.
+         */
         processor.refreshAbletonSourceClipFromDisk();
 
-        if (++abletonBridgePollTick >= 5)
+        if (nowMs - lastAbletonStatusPollMs >= 250)
         {
-            abletonBridgePollTick = 0;
+            lastAbletonStatusPollMs = nowMs;
             processor.refreshAbletonBridgeStatusFromDisk();
         }
     }
 
+    // Decides the rate for the next tick, from the state it just read.
     refreshFromProcessor();
 
-    // Not a blanket repaint: each well compares what it would draw against
-    // the last tick and repaints only what actually changed, so idle lanes
-    // cost nothing and a moving playhead costs two thin strips.
-    for (auto& lane : rootLanes)
-        if (lane != nullptr)
-            lane->timerRefreshWaveform();
-
-    for (auto& lane : childLanes)
-        if (lane != nullptr)
-            lane->timerRefreshWaveform();
+    // An analysis landing is the one change here that nothing announces and
+    // no processor poll covers, so arrival holds the full rate over the
+    // moment a finished job fills its six wells.
+    if (refreshLaneWaveforms())
+        requestFastFrames();
 
     // The record dot's pulse and the status spinner are functions of the
     // clock at paint time; keep them animating from the UI timer.
@@ -3145,13 +3271,19 @@ void StemLabAudioProcessorEditor::timerCallback()
 void StemLabAudioProcessorEditor::changeListenerCallback(juce::ChangeBroadcaster*)
 {
     /*
-     * Deliberately empty. The UI timer already runs refreshFromProcessor
-     * unconditionally at 20 Hz, which bounds status latency at 50 ms;
-     * refreshing here as well let a chatty engine - sendChangeMessage per
-     * stdout line - multiply that into a refresh storm. User actions that
-     * want feedback inside the same event keep their direct
-     * refreshFromProcessor() calls.
+     * Deliberately not a refresh. A chatty engine - sendChangeMessage per
+     * stdout line - would multiply this into a refresh storm, and user
+     * actions that want feedback inside the same event keep their own
+     * direct refreshFromProcessor() calls.
+     *
+     * What it does do is hold the full refresh rate for a moment. The
+     * editor drops to theme::metrics::uiIdleRefreshHz when nothing on
+     * screen can change on its own, and an announcement from the processor
+     * is precisely the case that is not visible from here: promoting
+     * restores the 50 ms bound on status latency that the old unconditional
+     * 20 Hz tick used to provide, and costs at most one startTimerHz.
      */
+    requestFastFrames();
 }
 
 juce::String StemLabAudioProcessorEditor::jobSummaryLine() const
@@ -3221,6 +3353,11 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     // The header readout: a fresh user-action message holds it for a few
     // seconds, then the selection count takes back over. Work the plugin
     // is doing never appears here - that is the bottom status line's job.
+    // Hoisted out of the block below because the refresh-rate decision at
+    // the end of this function needs it: a readout on a 4 s clock is one of
+    // the few things that expires without anyone touching anything.
+    bool actionFresh = false;
+
     {
         const auto actionRevision = processor.getActionStatusRevision();
 
@@ -3232,8 +3369,7 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
         const auto actionText = processor.getActionStatus();
 
-        const bool actionFresh =
-            actionText.isNotEmpty() && nowMs - actionStatusShownMs < 4000;
+        actionFresh = actionText.isNotEmpty() && nowMs - actionStatusShownMs < 4000;
 
         userStatusLabel.setText(actionFresh ? actionText
                                 : lanesLive ? juce::String(includedLanes) + " of " +
@@ -3631,11 +3767,23 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     // path shorter than the reserved column.
     if (!folderIconBounds.isEmpty() && pathLabel.getWidth() > 0)
     {
-        const juce::Font pathFont{theme::fonts::footerPath()};
+        // Measured only when there is something new to measure. Constructing
+        // a Font and shaping a whole path through GlyphArrangement is not
+        // free, and this runs on every refresh for a string that changes
+        // when the user picks a different job folder - which is to say
+        // almost never.
+        if (jobPath != lastJobPath || pathLabel.getWidth() != lastJobPathLabelWidth)
+        {
+            const juce::Font pathFont{theme::fonts::footerPath()};
 
-        const int textWidth = juce::jmin(
-            pathLabel.getWidth(),
-            juce::roundToInt(juce::GlyphArrangement::getStringWidth(pathFont, jobPath)) + 1);
+            lastJobPath = jobPath;
+            lastJobPathLabelWidth = pathLabel.getWidth();
+            lastJobPathWidth = juce::jmin(
+                pathLabel.getWidth(),
+                juce::roundToInt(juce::GlyphArrangement::getStringWidth(pathFont, jobPath)) + 1);
+        }
+
+        const int textWidth = lastJobPathWidth;
 
         const int textLeft =
             pathLabel.getRight() - pathLabel.getBorderSize().getRight() - textWidth;
@@ -3677,6 +3825,43 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
         lastPrimaryGlow = primaryGlow;
         panelContent.repaint(insertButton.getBounds().getUnion(saveButton.getBounds()).expanded(14));
     }
+
+    // ------------------------------------------------------- refresh rate
+
+    /*
+     * Last, because it reads state this pass computed. An open window with
+     * nothing happening in it used to cost twenty full refreshes a second
+     * forever; almost every user action already refreshes synchronously
+     * from its own handler, so the timer only has to keep pace with things
+     * that move without being touched.
+     *
+     * These four are all of them. Everything animated on screen - the
+     * spinner, the record dot, the status dots - is a function of the wall
+     * clock drawn only while busy or capturing, which busy covers. The
+     * playhead, the elapsed clock and the ETA move under a running
+     * transport or a running job. And two readouts expire on a deadline
+     * somebody is watching: the header's 4 s action message, and the 5 s
+     * wait before the summary line replaces a finished job's last words.
+     * Once the summary has taken over, showSummary stays true and there is
+     * nothing left to wait for.
+     *
+     * Hover is deliberately absent: every hover in this interface repaints
+     * from its own mouse events, so none of it needs a frame from here.
+     */
+    const bool needsFrames = busy // engine, analysis, MIDI, capture, an awaited Live clip
+                             || processor.isTransportPlaying() // playhead, clock, scrubber
+                             || actionFresh                // header readout still on its 4 s clock
+                             || (jobDone && !showSummary); // the 5 s swap to the summary line
+
+    if (needsFrames)
+        fastFramesUntilMs = nowMs + theme::metrics::uiIdleHoldMs;
+
+    // Signed on purpose: getMillisecondCounter wraps about every 49 days,
+    // and an unsigned comparison would read the wrap as "held forever" and
+    // pin the editor at full rate for the rest of the session.
+    applyRefreshRate(static_cast<juce::int32>(fastFramesUntilMs - nowMs) > 0
+                         ? theme::metrics::uiRefreshHz
+                         : theme::metrics::uiIdleRefreshHz);
 }
 
 void StemLabAudioProcessorEditor::chooseStandaloneAudioFile()
@@ -3952,13 +4137,7 @@ void StemLabAudioProcessorEditor::applyWaveformZoomIndex(int index)
     // The lanes only redraw on the timer, which is a whole frame away; a
     // zoom change has to show now, and it has to go through the wells'
     // captured display state or the paint would still frame the old view.
-    for (auto& lane : rootLanes)
-        if (lane != nullptr)
-            lane->timerRefreshWaveform();
-
-    for (auto& lane : childLanes)
-        if (lane != nullptr)
-            lane->timerRefreshWaveform();
+    refreshLaneWaveforms();
 }
 
 void StemLabAudioProcessorEditor::stepWaveformZoom(int delta)
