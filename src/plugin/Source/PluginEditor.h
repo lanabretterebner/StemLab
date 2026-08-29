@@ -291,6 +291,7 @@ public:
     void mouseUp(const juce::MouseEvent&) override;
     void mouseEnter(const juce::MouseEvent&) override;
     void mouseExit(const juce::MouseEvent&) override;
+    void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
 private:
     StemLabAudioProcessor& processor;
