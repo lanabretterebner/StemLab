@@ -363,3 +363,85 @@ class TestCommandLine:
 
         assert result.returncode == 1
         assert "STEMLAB_ERROR" in result.stdout
+
+
+class TestTheDownloaderIsNotRunThroughPipsLauncher:
+    """A shipped Engine is built in one directory and run from another.
+
+    Pip writes an absolute interpreter path into every console script it
+    generates, so in a shipped Engine that path names a machine the user does
+    not have. Exec'ing such a launcher reports ENOENT against the *launcher*,
+    which is why the first report of this read as a missing file that was
+    plainly present:
+
+        FileNotFoundError: [Errno 2] No such file or directory:
+            '~/.local/share/StemLab/Engine/bin/bs-roformer-download'
+
+    Checking the file exists first - which this module did - cannot catch it.
+    So the property worth pinning is not "we handle the error"; it is that the
+    launcher beside the interpreter is never the thing we run.
+    """
+
+    def test_it_runs_the_module_under_the_running_interpreter(self):
+        command = model_manager.bs_roformer_download_command("some-model")
+
+        assert command[0] == sys.executable
+        assert command[1:] == ["-m", "stemlab.bs_roformer_download_cli", "some-model"]
+
+    def test_a_launcher_beside_the_interpreter_is_still_not_used(self, tmp_path, monkeypatch):
+        # The regression itself: a launcher sitting right there, existing,
+        # executable, and unrunnable. Nothing about it may change the command.
+        engine_bin = tmp_path / "bin"
+        engine_bin.mkdir()
+        interpreter = engine_bin / "python3"
+        interpreter.write_text("")
+
+        for name in ("bs-roformer-download", "bs-roformer-download.exe"):
+            launcher = engine_bin / name
+            launcher.write_text("#!/nonexistent/build/machine/python\n")
+            launcher.chmod(0o755)
+
+        monkeypatch.setattr(sys, "executable", str(interpreter))
+
+        command = model_manager.bs_roformer_download_command()
+
+        assert command == [str(interpreter), "-m", "stemlab.bs_roformer_download_cli"]
+        assert not any(part.endswith("bs-roformer-download") for part in command)
+
+    def test_the_module_it_names_is_importable(self):
+        # -m fails at the point of use, in a child, on a machine that is
+        # already having a bad day. Cheaper to find out here.
+        import importlib.util
+
+        assert importlib.util.find_spec("stemlab.bs_roformer_download_cli") is not None
+
+    def test_downloading_the_roformer_goes_through_it(self, tmp_path, monkeypatch):
+        seen = {}
+        fetched = tmp_path / "BS-Rofo-SW-Fixed.ckpt"
+        fetched.write_bytes(b"weights")
+
+        def fake_child(command, label, progress, cancellation, span):
+            seen["command"] = list(command)
+
+        monkeypatch.setattr(model_manager, "_run_child", fake_child)
+        monkeypatch.setattr(model_manager, "locate", lambda _id: fetched)
+
+        model_manager.download("roformer")
+
+        assert seen["command"] == model_manager.bs_roformer_download_command(
+            model_manager.ROFORMER_MODEL_ID
+        )
+
+
+class TestAFailedDownloadSaysWhatTheChildSaid:
+    def test_the_error_carries_the_last_of_the_output(self, monkeypatch):
+        # An exit code alone has sent more than one person reading source.
+        script = "import sys; print('could not reach huggingface.co'); sys.exit(1)"
+
+        with pytest.raises(RuntimeError) as caught:
+            model_manager._run_child(
+                [sys.executable, "-c", script], "Downloading", None, None, (0.0, 1.0)
+            )
+
+        assert "could not reach huggingface.co" in str(caught.value)
+        assert "1" in str(caught.value)

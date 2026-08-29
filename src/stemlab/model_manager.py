@@ -33,6 +33,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
@@ -616,10 +617,14 @@ def _run_child(
 
     The owners of these transfers report through tqdm, and runtime.py already
     knows how to recognise a byte-rate bar. Rather than re-parse it here the
-    child's output is simply relayed to the log while the span advances on
-    activity, because a download that is moving is the only thing the user
-    needs to see and an exact percentage from three different bar formats is
-    not worth the fragility.
+    span simply advances on activity, because a download that is moving is
+    the only thing the user needs to see and an exact percentage from three
+    different bar formats is not worth the fragility.
+
+    The last few lines are kept even so. They are not shown while the transfer
+    is healthy - a progress bar redrawn a thousand times is noise - but when
+    the child dies they are the only account of why, and an exit code on its
+    own has sent more than one person reading source code.
     """
     start, end = span
 
@@ -643,6 +648,7 @@ def _run_child(
     )
 
     fraction = start
+    tail: deque[str] = deque(maxlen=5)
     try:
         assert process.stdout is not None
         for raw in process.stdout:
@@ -654,6 +660,8 @@ def _run_child(
             if not text:
                 continue
 
+            tail.append(text)
+
             # Creep towards the end of the span on every line the child
             # emits, never reaching it: the span closes when the child does.
             fraction = min(end - 0.01, fraction + (end - start) * 0.02)
@@ -664,36 +672,23 @@ def _run_child(
         process.wait()
 
     if process.returncode != 0:
-        raise RuntimeError(f"{label} failed with exit code {process.returncode}")
+        said = " | ".join(tail) if tail else "no output"
+        raise RuntimeError(f"{label} failed with exit code {process.returncode}: {said}")
 
     if progress:
         progress(end, label)
 
 
-def _bs_roformer_download_executable() -> str:
-    """Locate upstream's downloader the same way stemlab-models does."""
-    python_dir = Path(sys.executable).resolve().parent
+def bs_roformer_download_command(*arguments: str) -> list[str]:
+    """The command that runs upstream's downloader on this machine.
 
-    local = next(
-        (
-            candidate
-            for candidate in (
-                python_dir / "bs-roformer-download.exe",
-                python_dir / "bs-roformer-download",
-            )
-            if candidate.exists()
-        ),
-        None,
-    )
-
-    exe = str(local) if local is not None else shutil.which("bs-roformer-download")
-
-    if exe is None:
-        raise RuntimeError(
-            "bs-roformer-download was not found. Install StemLab with: python -m pip install -e ."
-        )
-
-    return exe
+    Never the pip launcher beside the interpreter, even though it is right
+    there and looks runnable: a shipped Engine was built somewhere else, so
+    the interpreter baked into that launcher does not exist here and exec'ing
+    it reports the launcher itself as missing. ``console_entry`` explains the
+    failure; this goes through the module that sidesteps it.
+    """
+    return [sys.executable, "-m", "stemlab.bs_roformer_download_cli", *arguments]
 
 
 def download(
@@ -722,7 +717,7 @@ def download(
 
     if model_id == "roformer":
         _run_child(
-            [_bs_roformer_download_executable(), ROFORMER_MODEL_ID],
+            bs_roformer_download_command(ROFORMER_MODEL_ID),
             f"Downloading {model.label}",
             progress,
             cancellation,

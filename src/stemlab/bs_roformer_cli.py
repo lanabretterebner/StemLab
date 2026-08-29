@@ -12,18 +12,15 @@ code it does not own.
 from __future__ import annotations
 
 import sys
-from importlib.metadata import entry_points
+
+from .console_entry import load_console_entry
 
 
 def main() -> int:
     """Run the installed ``bs-roformer-infer`` console script in-process."""
-    matches = [ep for ep in entry_points(group="console_scripts") if ep.name == "bs-roformer-infer"]
-    if not matches:
-        raise RuntimeError("bs-roformer-infer is not installed in the StemLab runtime.")
-
-    # Resolving the entry point imports its module, so the separator classes
+    # Loading the entry point imports its module, so the separator classes
     # exist by the time compiling is armed - but the model itself has not run.
-    entry = matches[0].load()
+    entry = load_console_entry("bs-roformer-infer")
 
     from .compile_support import arm_torch_compile
 

@@ -148,6 +148,8 @@ Pure helpers behind the lanes: `WaveformGrid.h` (beat-grid math),
 | `pipeline.py` | Public router for RoFormer, Demucs, hybrid, and refinement |
 | `pretrained.py` | BS-RoFormer process adapter |
 | `bs_roformer_cli.py` | Relocatable launcher for `bs-roformer-infer` |
+| `bs_roformer_download_cli.py` | Relocatable launcher for `bs-roformer-download` |
+| `console_entry.py` | Calls an installed console script without pip's launcher |
 | `demucs_backend.py` | Demucs process adapter and output normalization |
 | `hybrid.py` | Spectral fusion of model estimates |
 | `device.py` | Device selection for PyTorch backends (CUDA/XPU/CPU) |

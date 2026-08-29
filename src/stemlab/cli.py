@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import argparse
-import shutil
 import subprocess
-import sys
-from pathlib import Path
 
 from .pipeline import DEFAULT_ENGINE, ENGINE_CHOICES, separate
 from .pretrained import DEFAULT_MODEL
@@ -66,26 +63,11 @@ def refine_main() -> None:
 
 def models_main() -> None:
     """CLI entry: ``stemlab-models`` — list installed RoFormer models."""
-    python_dir = Path(sys.executable).resolve().parent
+    from .model_manager import bs_roformer_download_command
 
-    local = next(
-        (
-            candidate
-            for candidate in (
-                python_dir / "bs-roformer-download.exe",
-                python_dir / "bs-roformer-download",
-            )
-            if candidate.exists()
-        ),
-        None,
-    )
-
-    exe = str(local) if local is not None else shutil.which("bs-roformer-download")
-    if exe is None:
-        raise SystemExit(
-            "bs-roformer-download was not found. Install StemLab with: python -m pip install -e ."
-        )
-    subprocess.run([exe, "--list-models"], check=True)
+    # Not the pip launcher next to the interpreter: in a shipped Engine its
+    # shebang names a build machine's Python and exec'ing it fails.
+    subprocess.run(bs_roformer_download_command("--list-models"), check=True)
 
 
 if __name__ == "__main__":
