@@ -149,6 +149,13 @@ namespace stemlab::widgets
         void setSeparateEnabled(bool enabled);
         bool isSeparateActionEnabled() const noexcept { return separateEnabled; }
 
+        /** Whether the Refine segment accepts clicks. False while a job
+            runs: the flag is read once at launch to build the command
+            line, so a mid-run flip would silently apply to the next job
+            while appearing to change this one. */
+        void setRefineInteractive(bool interactive);
+        bool isRefineInteractive() const noexcept { return refineInteractive; }
+
         /** The action segment's label: "Separate" normally, "Cancel" /
             "Cancelling..." while a job runs (the editor decides). */
         void setActionText(const juce::String& text);
@@ -164,6 +171,7 @@ namespace stemlab::widgets
 
         bool refineOn = true;
         bool separateEnabled = false;
+        bool refineInteractive = true;
         bool hoverRefine = false, hoverSeparate = false;
         juce::String actionText{"Separate"};
 
@@ -183,6 +191,12 @@ namespace stemlab::widgets
         void paint(juce::Graphics&) override;
         void mouseDown(const juce::MouseEvent&) override;
         void mouseDrag(const juce::MouseEvent&) override;
+
+        /** juce::Button repaints itself when its enablement flips; a plain
+            Component does not, and paint() reads isEnabled(). Without this
+            the bar keeps whichever look it had when it was last drawn for
+            some other reason - a hover, or a position that moved. */
+        void enablementChanged() override { repaint(); }
 
     private:
         void applySeek(const juce::MouseEvent&);
@@ -216,6 +230,9 @@ namespace stemlab::widgets
         void mouseDrag(const juce::MouseEvent&) override;
         void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
+        /** paint() reads isEnabled(); see Scrubber above. */
+        void enablementChanged() override { repaint(); }
+
     private:
         void applyDrag(const juce::MouseEvent&);
 
@@ -243,6 +260,9 @@ namespace stemlab::widgets
         void mouseExit(const juce::MouseEvent&) override;
         void mouseUp(const juce::MouseEvent&) override;
 
+        /** paint() reads isEnabled(); see Scrubber above. */
+        void enablementChanged() override { repaint(); }
+
     private:
         juce::String labels[2];
         int selected = 1;
@@ -253,7 +273,8 @@ namespace stemlab::widgets
 
     /**
      * The footer status indicator: a spinning arc while a job runs, the
-     * check glyph once one has finished, nothing before the first job.
+     * check glyph once one has finished, a red X when the last thing the
+     * status line said was a failure, nothing before the first job.
      * The editor advances the spin from its UI timer via animate().
      */
     class StatusIndicator final : public juce::Component
@@ -263,7 +284,8 @@ namespace stemlab::widgets
         {
             idle,
             running,
-            done
+            done,
+            error
         };
 
         StatusIndicator() { setInterceptsMouseClicks(false, false); }

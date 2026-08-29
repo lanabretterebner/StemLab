@@ -19,14 +19,15 @@ namespace stemlab::widgets
                              .withSizeKeepingCentre(lanes::checkbox, lanes::checkbox)
                              .toFloat();
 
-        const float dim = isEnabled() ? 1.0f : theme::metrics::disabledOpacity;
+        const auto dimmed = [enabled = isEnabled()](juce::Colour c)
+        { return theme::colours::dimIfDisabled(c, enabled); };
 
         if (getToggleState())
         {
-            g.setColour(theme::colours::checkboxFill().withMultipliedAlpha(dim));
+            g.setColour(dimmed(theme::colours::checkboxFill()));
             g.fillRoundedRectangle(box, lanes::checkboxRadius);
 
-            g.setColour(theme::colours::checkboxCheck().withMultipliedAlpha(dim));
+            g.setColour(dimmed(theme::colours::checkboxCheck()));
             g.strokePath(stemlab::icons::check(box.reduced(3.5f)),
                          juce::PathStrokeType(1.8f, juce::PathStrokeType::curved,
                                               juce::PathStrokeType::rounded));
@@ -39,7 +40,7 @@ namespace stemlab::widgets
                 g.fillRoundedRectangle(box, lanes::checkboxRadius);
             }
 
-            g.setColour(theme::colours::checkboxBorder().withMultipliedAlpha(dim));
+            g.setColour(dimmed(theme::colours::checkboxBorder()));
             g.drawRoundedRectangle(box.reduced(lanes::checkboxBorder * 0.5f),
                                    lanes::checkboxRadius, lanes::checkboxBorder);
         }
@@ -62,7 +63,8 @@ namespace stemlab::widgets
 
         const bool hover = (highlighted || down) && isEnabled();
 
-        const float dim = isEnabled() ? 1.0f : theme::metrics::disabledOpacity;
+        const auto dimmed = [enabled = isEnabled()](juce::Colour c)
+        { return theme::colours::dimIfDisabled(c, enabled); };
 
         if (hover)
         {
@@ -74,7 +76,7 @@ namespace stemlab::widgets
 
         if (outlined)
         {
-            g.setColour(theme::colours::outline().withMultipliedAlpha(dim));
+            g.setColour(dimmed(theme::colours::outline()));
             g.drawRoundedRectangle(bounds, radius, 1.0f);
         }
 
@@ -82,7 +84,7 @@ namespace stemlab::widgets
                               ? theme::colours::text()
                               : (hover ? theme::colours::accent() : theme::colours::text45());
 
-        iconColour = iconColour.withMultipliedAlpha(dim);
+        iconColour = dimmed(iconColour);
 
         g.setColour(iconColour);
 
@@ -139,7 +141,8 @@ namespace stemlab::widgets
 
         const bool hover = (highlighted || down) && isEnabled();
 
-        const float dim = isEnabled() ? 1.0f : theme::metrics::disabledOpacity;
+        const auto dimmed = [enabled = isEnabled()](juce::Colour c)
+        { return theme::colours::dimIfDisabled(c, enabled); };
 
         if (hover)
         {
@@ -147,7 +150,7 @@ namespace stemlab::widgets
             g.fillRoundedRectangle(bounds, header::selectorRadius);
         }
 
-        g.setColour(theme::colours::outline().withMultipliedAlpha(dim));
+        g.setColour(dimmed(theme::colours::outline()));
         g.drawRoundedRectangle(bounds, header::selectorRadius, 1.0f);
 
         auto content = getLocalBounds().reduced(header::selectorPadX, 0);
@@ -157,8 +160,7 @@ namespace stemlab::widgets
                                   .withSizeKeepingCentre(static_cast<float>(header::selectorIcon),
                                                          static_cast<float>(header::selectorIcon));
 
-        g.setColour((hover ? theme::colours::accent() : theme::colours::text75())
-                        .withMultipliedAlpha(dim));
+        g.setColour(dimmed(hover ? theme::colours::accent() : theme::colours::text75()));
 
         if (makeIcon)
             g.fillPath(makeIcon(iconArea));
@@ -171,14 +173,14 @@ namespace stemlab::widgets
                 .withSizeKeepingCentre(static_cast<float>(header::selectorCaret),
                                        static_cast<float>(header::selectorCaret) * 0.55f);
 
-        g.setColour(theme::colours::text45().withMultipliedAlpha(dim));
+        g.setColour(dimmed(theme::colours::text45()));
         g.strokePath(stemlab::icons::chevron(caretArea, stemlab::icons::ChevronDirection::down),
                      juce::PathStrokeType(1.3f, juce::PathStrokeType::curved,
                                           juce::PathStrokeType::rounded));
 
         content.removeFromRight(header::selectorGap);
 
-        g.setColour(theme::colours::text().withMultipliedAlpha(dim));
+        g.setColour(dimmed(theme::colours::text()));
         g.setFont(theme::fonts::bodyMedium());
         g.drawText(label, content, juce::Justification::centredLeft, false);
     }
@@ -205,10 +207,10 @@ namespace stemlab::widgets
 
         const bool hover = (highlighted || down) && isEnabled();
 
-        const float dim = isEnabled() ? 1.0f : theme::metrics::disabledOpacity;
+        const auto dimmed = [enabled = isEnabled()](juce::Colour c)
+        { return theme::colours::dimIfDisabled(c, enabled); };
 
-        auto colour = (hover ? theme::colours::accent() : theme::colours::text45())
-                          .withMultipliedAlpha(dim);
+        auto colour = dimmed(hover ? theme::colours::accent() : theme::colours::text45());
 
         g.setColour(colour);
 
@@ -257,7 +259,7 @@ namespace stemlab::widgets
         auto accent = theme::colours::accent();
 
         if (!isEnabled())
-            accent = accent.withMultipliedAlpha(theme::metrics::disabledOpacity);
+            accent = theme::colours::dimDisabled(accent);
 
         g.setColour(accent);
         g.drawEllipse(circle, 1.0f);
@@ -293,7 +295,8 @@ namespace stemlab::widgets
 
         const bool hover = (highlighted || down) && isEnabled();
 
-        const float dim = isEnabled() ? 1.0f : theme::metrics::disabledOpacity;
+        const auto dimmed = [enabled = isEnabled()](juce::Colour c)
+        { return theme::colours::dimIfDisabled(c, enabled); };
 
         if (hover)
         {
@@ -301,7 +304,7 @@ namespace stemlab::widgets
             g.fillRoundedRectangle(bounds, theme::metrics::buttons::radius);
         }
 
-        g.setColour(theme::colours::outline().withMultipliedAlpha(dim));
+        g.setColour(dimmed(theme::colours::outline()));
         g.drawRoundedRectangle(bounds, theme::metrics::buttons::radius, 1.0f);
 
         // The accent dot doubles as the recording indicator: solid when
@@ -318,8 +321,7 @@ namespace stemlab::widgets
                                                                         juce::MathConstants<double>::pi)));
         }
 
-        if (!isEnabled())
-            dotColour = dotColour.withMultipliedAlpha(theme::metrics::disabledOpacity);
+        dotColour = dimmed(dotColour);
 
         auto content = getLocalBounds().reduced(theme::metrics::buttons::padX, 0);
 
@@ -332,12 +334,7 @@ namespace stemlab::widgets
 
         content.removeFromLeft(6);
 
-        auto textColour = theme::colours::text();
-
-        if (!isEnabled())
-            textColour = textColour.withMultipliedAlpha(theme::metrics::disabledOpacity);
-
-        g.setColour(textColour);
+        g.setColour(dimmed(theme::colours::text()));
         g.setFont(theme::fonts::body());
         g.drawText(getButtonText(), content, juce::Justification::centredLeft, false);
     }
@@ -363,6 +360,15 @@ namespace stemlab::widgets
         if (separateEnabled != enabled)
         {
             separateEnabled = enabled;
+            repaint();
+        }
+    }
+
+    void SeparateSplitControl::setRefineInteractive(bool interactive)
+    {
+        if (refineInteractive != interactive)
+        {
+            refineInteractive = interactive;
             repaint();
         }
     }
@@ -402,7 +408,12 @@ namespace stemlab::widgets
 
         // The outer glow is painted by the editor behind this control - a
         // shadow drawn in here would be clipped to the component bounds.
-        g.setColour(theme::colours::primaryFill());
+        //
+        // Only the action half of this fill survives: the Refine segment
+        // overpaints it below, so dimming the whole shell dims the action
+        // segment alone, which is the half the flag speaks for.
+        g.setColour(theme::colours::dimIfDisabled(theme::colours::primaryFill(),
+                                                  separateEnabled));
         g.fillRoundedRectangle(bounds, radius);
 
         const auto refine = refineArea();
@@ -412,8 +423,8 @@ namespace stemlab::widgets
             juce::Graphics::ScopedSaveState save(g);
             g.reduceClipRegion(refine);
 
-            g.setColour(hoverRefine ? theme::colours::refineFillHover()
-                                    : theme::colours::refineFill());
+            g.setColour(hoverRefine && refineInteractive ? theme::colours::refineFillHover()
+                                                         : theme::colours::refineFill());
             g.fillRoundedRectangle(bounds, radius);
             g.fillRect(bounds.withTrimmedLeft(radius)
                            .withWidth(static_cast<float>(refine.getWidth()) - radius));
@@ -437,7 +448,13 @@ namespace stemlab::widgets
             auto content = refine.reduced(0, 0);
             content.removeFromLeft(source::refinePadLeft);
 
-            g.setColour(theme::colours::refineText());
+            // A locked segment dims exactly the way the action label
+            // already does, so the two halves of the control read as one
+            // disabled thing rather than one greyed and one live.
+            const auto dim = [this](juce::Colour c)
+            { return theme::colours::dimIfDisabled(c, refineInteractive); };
+
+            g.setColour(dim(theme::colours::refineText()));
             juce::Font refineFont{theme::fonts::refineLabel()};
             g.setFont(refineFont.withExtraKerningFactor(0.02f));
 
@@ -454,14 +471,15 @@ namespace stemlab::widgets
                             .withSizeKeepingCentre(source::pillWidth, source::pillHeight)
                             .toFloat();
 
-            g.setColour(refineOn ? theme::colours::pillTrack() : theme::colours::pillTrackOff());
+            g.setColour(
+                dim(refineOn ? theme::colours::pillTrack() : theme::colours::pillTrackOff()));
             g.fillRoundedRectangle(pill, pill.getHeight() * 0.5f);
 
             const float knob = static_cast<float>(source::pillKnob);
             const float knobY = pill.getCentreY() - knob * 0.5f;
             const float knobX = refineOn ? pill.getRight() - knob - 2.0f : pill.getX() + 2.0f;
 
-            g.setColour(theme::colours::pillKnob());
+            g.setColour(dim(theme::colours::pillKnob()));
             g.fillEllipse(knobX, knobY, knob, knob);
         }
 
@@ -469,18 +487,37 @@ namespace stemlab::widgets
         {
             auto separate = getLocalBounds().withTrimmedLeft(refine.getRight() + 1);
 
-            auto textColour = theme::colours::primaryText();
-
-            if (!separateEnabled)
-                textColour = textColour.withMultipliedAlpha(theme::metrics::disabledOpacity);
-
-            g.setColour(textColour);
+            g.setColour(theme::colours::dimIfDisabled(theme::colours::primaryText(),
+                                                      separateEnabled));
             g.setFont(theme::fonts::separateLabel());
             g.drawText(actionText, separate, juce::Justification::centred, false);
         }
 
-        g.setColour(theme::colours::primaryEdge());
-        g.drawRoundedRectangle(bounds, radius, 1.0f);
+        /*
+         * The edge is drawn twice, clipped, rather than once for both
+         * halves: Refine and the action segment lock independently - Refine
+         * keeps toggling before a source is loaded, and stops while a job
+         * runs - so a single outline would have to lie about one of them.
+         *
+         * No +1 on the action half's trim, unlike the hover wash and the
+         * label above: the two clips have to meet exactly, or a pixel of
+         * the outline goes unpainted at the seam.
+         */
+        {
+            juce::Graphics::ScopedSaveState save(g);
+            g.reduceClipRegion(refine);
+            g.setColour(theme::colours::dimIfDisabled(theme::colours::primaryEdge(),
+                                                      refineInteractive));
+            g.drawRoundedRectangle(bounds, radius, 1.0f);
+        }
+
+        {
+            juce::Graphics::ScopedSaveState save(g);
+            g.reduceClipRegion(getLocalBounds().withTrimmedLeft(refine.getRight()));
+            g.setColour(theme::colours::dimIfDisabled(theme::colours::primaryEdge(),
+                                                      separateEnabled));
+            g.drawRoundedRectangle(bounds, radius, 1.0f);
+        }
     }
 
     void SeparateSplitControl::mouseMove(const juce::MouseEvent& event)
@@ -505,6 +542,12 @@ namespace stemlab::widgets
 
         if (refineArea().contains(event.getPosition()))
         {
+            // Return rather than falling through: a click on a locked
+            // Refine segment must do nothing at all, not reach the action
+            // segment sitting next to it.
+            if (!refineInteractive)
+                return;
+
             refineOn = !refineOn;
             repaint();
 
@@ -537,17 +580,23 @@ namespace stemlab::widgets
     {
         namespace transport = theme::metrics::transport;
 
+        // The track has to dim as well as the fill: with nothing loaded the
+        // editor forces the position to 0, so the fill has no width and the
+        // track is the only thing on screen to say the bar is inert.
+        const auto dimmed = [enabled = isEnabled()](juce::Colour c)
+        { return theme::colours::dimIfDisabled(c, enabled); };
+
         auto track = getLocalBounds()
                          .toFloat()
                          .withSizeKeepingCentre(static_cast<float>(getWidth()),
                                                 static_cast<float>(transport::scrubHeight));
 
-        g.setColour(theme::colours::scrubTrack());
+        g.setColour(dimmed(theme::colours::scrubTrack()));
         g.fillRoundedRectangle(track, transport::scrubRadius);
 
         auto fill = track.withWidth(track.getWidth() * static_cast<float>(position));
 
-        g.setColour(theme::colours::scrubFill());
+        g.setColour(dimmed(theme::colours::scrubFill()));
         g.fillRoundedRectangle(fill, transport::scrubRadius);
     }
 
@@ -557,8 +606,43 @@ namespace stemlab::widgets
         if (!isEnabled() || getWidth() <= 0)
             return;
 
-        const auto normalised = juce::jlimit(
-            0.0, 1.0, static_cast<double>(event.position.x) / static_cast<double>(getWidth()));
+        const auto width = static_cast<double>(getWidth());
+        const auto x = static_cast<double>(event.position.x);
+
+        auto normalised = juce::jlimit(0.0, 1.0, x / width);
+
+        /*
+            x / width can never reach 1.0, so the end of the track has to be
+            claimed by the last pixel of the bar - and that pixel is further
+            from width than it looks.
+
+            JUCE hit-tests a component by rounding the local point to whole
+            units, so no click is ever delivered past width - 0.5. The panel
+            is drawn through a scale transform as well, which puts adjacent
+            screen pixels 1 / scale apart in local units and leaves the bar's
+            right edge wherever the scale lands it, usually mid-pixel. The
+            rightmost pixel the pointer can actually reach therefore sits
+            somewhere in [width - 0.5 - 1/scale, width - 0.5) - 516.7 of 518
+            at the default window size, which is short of the width - 1 this
+            replaces. That is why the snap never fired, and why clicking the
+            end of a twenty-minute source used to land three seconds inside
+            it and take two presses of Play to restart.
+
+            That interval is exactly one screen pixel wide, so snapping all
+            of it makes the final pixel mean the end at every window size
+            while leaving the pixel before it a position of its own rather
+            than a second helping of the end.
+
+            The start needs no such help: the clamp above already pulls the
+            bar's leftmost pixel, whose local x is fractionally negative, up
+            to 0.0.
+        */
+        const auto scale =
+            static_cast<double>(juce::Component::getApproximateScaleFactorForComponent(this));
+        const auto screenPixel = scale > 0.0 ? 1.0 / scale : 1.0;
+
+        if (x >= width - 0.5 - screenPixel)
+            normalised = 1.0;
 
         position = normalised;
         repaint();
@@ -600,7 +684,8 @@ namespace stemlab::widgets
     {
         namespace header = theme::metrics::header;
 
-        const float dim = isEnabled() ? 1.0f : theme::metrics::disabledOpacity;
+        const auto dimmed = [enabled = isEnabled()](juce::Colour c)
+        { return theme::colours::dimIfDisabled(c, enabled); };
 
         const auto travel = knobTravel();
         const auto knobX = travel.getStart() +
@@ -611,19 +696,19 @@ namespace stemlab::widgets
 
         const auto radius = static_cast<float>(header::zoomTrackHeight) * 0.5f;
 
-        g.setColour(theme::colours::pillTrackOff().withMultipliedAlpha(dim));
+        g.setColour(dimmed(theme::colours::pillTrackOff()));
         g.fillRoundedRectangle(track, radius);
 
         // Fill up to the knob's centre rather than to the pointer, so the
         // bar and the knob agree at both ends of the travel.
-        g.setColour(theme::colours::accent().withMultipliedAlpha(dim));
+        g.setColour(dimmed(theme::colours::accent()));
         g.fillRoundedRectangle(track.withWidth(juce::jmax(radius * 2.0f, knobX)), radius);
 
         const auto knob = juce::Rectangle<float>(static_cast<float>(header::zoomKnob),
                                                  static_cast<float>(header::zoomKnob))
                               .withCentre({knobX, getLocalBounds().toFloat().getCentreY()});
 
-        g.setColour(theme::colours::accent300().withMultipliedAlpha(dim));
+        g.setColour(dimmed(theme::colours::accent300()));
         g.fillEllipse(knob);
     }
 
@@ -699,9 +784,10 @@ namespace stemlab::widgets
 
         const auto bounds = getLocalBounds().toFloat().reduced(0.5f);
 
-        const float dim = isEnabled() ? 1.0f : theme::metrics::disabledOpacity;
+        const auto dimmed = [enabled = isEnabled()](juce::Colour c)
+        { return theme::colours::dimIfDisabled(c, enabled); };
 
-        g.setColour(theme::colours::outline().withMultipliedAlpha(dim));
+        g.setColour(dimmed(theme::colours::outline()));
         g.drawRoundedRectangle(bounds, transport::abRadius, 1.0f);
 
         const int half = getWidth() / 2;
@@ -726,10 +812,10 @@ namespace stemlab::widgets
 
             if (isActive)
             {
-                g.setColour(theme::colours::accentTint10().withMultipliedAlpha(dim));
+                g.setColour(dimmed(theme::colours::accentTint10()));
                 g.fillRoundedRectangle(pill, pillRadius);
 
-                g.setColour(theme::colours::accent().withMultipliedAlpha(dim));
+                g.setColour(dimmed(theme::colours::accent()));
                 g.drawRoundedRectangle(pill, pillRadius, 1.0f);
             }
             else if (hovered == i && isEnabled())
@@ -738,12 +824,8 @@ namespace stemlab::widgets
                 g.fillRoundedRectangle(pill, pillRadius);
             }
 
-            auto textColour = isActive ? theme::colours::accent() : theme::colours::text50();
-
-            if (!isEnabled())
-                textColour = textColour.withMultipliedAlpha(theme::metrics::disabledOpacity);
-
-            g.setColour(textColour);
+            g.setColour(dimmed(isActive ? theme::colours::accent()
+                                        : theme::colours::text50()));
             g.setFont(theme::fonts::time());
             g.drawText(labels[i], segment, juce::Justification::centred, false);
         }
@@ -790,6 +872,17 @@ namespace stemlab::widgets
         const auto square =
             bounds.withSizeKeepingCentre(juce::jmin(bounds.getWidth(), bounds.getHeight()),
                                          juce::jmin(bounds.getWidth(), bounds.getHeight()));
+
+        if (state == State::error)
+        {
+            // reduced(2.5f) rather than the check's 1.5f: a corner-to-corner
+            // X reads visually larger than a tick in the same box.
+            g.setColour(theme::colours::statusError());
+            g.strokePath(stemlab::icons::alert(square.reduced(2.5f)),
+                         juce::PathStrokeType(1.6f, juce::PathStrokeType::curved,
+                                              juce::PathStrokeType::rounded));
+            return;
+        }
 
         if (state == State::done)
         {

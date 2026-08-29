@@ -184,10 +184,7 @@ public:
 
         // Solo is scoped to what is actually in the mix: a lane whose audio
         // never made it in must not be able to silence everything else.
-        bool anySolo = false;
-
-        for (const auto& entry : entries)
-            anySolo = anySolo || entry.soloed();
+        const bool anySolo = anySoloActive();
 
         if (scratch.getNumSamples() < info.numSamples)
             scratch.setSize(2, info.numSamples, false, false, true); // last-resort fallback
@@ -198,7 +195,7 @@ public:
         {
             auto& entry = entries[i];
 
-            const bool audible = anySolo ? entry.soloed() : !entry.muted();
+            const bool audible = isEntryAudible(entry, anySolo);
 
             const float target = audible ? 1.0f : 0.0f;
             const float previous = currentGains[i];
@@ -269,6 +266,53 @@ public:
     bool isLooping() const override { return false; }
     void setLooping(bool) override {}
 
+    /** The mixer's own audibility rule, named once so the interface and the
+        audio thread cannot drift apart. Reads only relaxed atomics; safe on
+        either thread, allocates nothing. */
+    bool anySoloActive() const
+    {
+        for (const auto& entry : entries)
+            if (entry.soloed())
+                return true;
+
+        return false;
+    }
+
+    static bool isEntryAudible(const Entry& entry, bool anySolo)
+    {
+        return anySolo ? entry.soloed() : !entry.muted();
+    }
+
+    /** True when at least one entry that answers to these flags is audible.
+        `named` comes back false when no entry in the mix mentions them at
+        all - a lane whose file never loaded, or a mix built before this
+        lane existed - and the caller must then leave the lane alone rather
+        than dim it. Message thread: `entries` is const after construction,
+        but the mix itself is swapped from the message thread. */
+    bool isAudibleThrough(const StemLabLaneMonitorFlags* flags, bool& named) const
+    {
+        const bool anySolo = anySoloActive();
+
+        named = false;
+
+        for (const auto& entry : entries)
+        {
+            const bool mentionsLane =
+                std::any_of(entry.chain.begin(), entry.chain.end(),
+                            [flags](const auto& f) { return f.get() == flags; });
+
+            if (!mentionsLane)
+                continue;
+
+            named = true;
+
+            if (isEntryAudible(entry, anySolo))
+                return true;
+        }
+
+        return false;
+    }
+
 private:
     void joinPreparation()
     {
@@ -300,6 +344,41 @@ juce::String timestampForFilename()
 }
 
 double nowMs() { return juce::Time::getMillisecondCounterHiRes(); }
+
+/*
+    How close to the end counts as "already at the end" when Play is pressed.
+
+    A transport that has run out does not always report exactly its own
+    length, and the scrubber's last pixel is not the only way to ask for the
+    end: dragging past the bar, or clicking the pixel beside the last one,
+    lands a hair inside it. Play has to rewind for all of those, or the press
+    plays a sliver of audio and stops instead of starting the track.
+
+    Half a percent of the length is about two and a half scrubber pixels. The
+    floor keeps short sources usable, where that fraction is too small to
+    cover anything; the ceiling stops a deliberate seek near the end of a long
+    source silently restarting - the scrubber addresses the end exactly, so
+    the guard no longer has to reach far enough to cover a mapping that could
+    not.
+*/
+constexpr double endGuardMinSeconds = 0.25;
+constexpr double endGuardMaxSeconds = 2.0;
+constexpr double endGuardFraction = 0.005;
+
+bool transportIsAtEnd(const juce::AudioTransportSource& transport)
+{
+    const auto length = transport.getLengthInSeconds();
+
+    // Nothing loaded: there is no end to be at. The old inline guard called
+    // setPosition(0.0) here, which was a no-op on a transport already at 0.
+    if (length <= 0.0)
+        return false;
+
+    const auto guard =
+        juce::jlimit(endGuardMinSeconds, endGuardMaxSeconds, length * endGuardFraction);
+
+    return transport.getCurrentPosition() >= length - guard;
+}
 
 /*  How much audio the disk writer refused, in the terms the user cares
     about. Reported at stop rather than logged when it happens: the count is
@@ -632,7 +711,8 @@ public:
         if (!childProcess->start(command,
                                  juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
         {
-            owner.setStatus("Could not start StemLab engine");
+            owner.setStatus("Could not start StemLab engine",
+                            StemLabAudioProcessor::statusFailure);
             owner.appendEngineLog("Failed to launch engine process.\n");
             owner.waveformProfiles.setSeparationActive(false);
             owner.mainEngineRunning.store(false);
@@ -783,7 +863,8 @@ public:
             owner.resetReadyStemFiles();
 
             if (!owner.getStatus().startsWithIgnoreCase("Failed - "))
-                owner.setStatus("StemLab engine failed - see Settings > Copy diagnostics");
+                owner.setStatus("StemLab engine failed - see Settings > Copy diagnostics",
+                                StemLabAudioProcessor::statusFailure);
 
             if (exitCode == 0)
             {
@@ -866,7 +947,8 @@ public:
         if (!childProcess->start(command,
                                  juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
         {
-            owner.setStatus("Could not start Recursive Stem Splitting");
+            owner.setStatus("Could not start Recursive Stem Splitting",
+                            StemLabAudioProcessor::statusFailure);
             owner.appendEngineLog("Failed to launch recursive engine process.\n");
             owner.waveformProfiles.setSeparationActive(false);
 
@@ -951,14 +1033,21 @@ public:
         }
         else if (exitCode == 0 && manifestFile.existsAsFile())
         {
-            owner.finishRecursiveJob(manifestFile);
-            owner.setEngineProgress(1.0);
-            owner.setStatus("Recursive Stem Splitting complete");
+            // An exit code of zero only says the engine ran. The manifest
+            // can still be unusable, and announcing completion regardless
+            // put the three most specific failure reasons in the codebase
+            // on screen for microseconds before overwriting them.
+            if (owner.finishRecursiveJob(manifestFile))
+            {
+                owner.setEngineProgress(1.0);
+                owner.setStatus("Recursive Stem Splitting complete");
+            }
         }
         else
         {
             if (!owner.getStatus().startsWithIgnoreCase("Failed - "))
-                owner.setStatus("Recursive Stem Splitting failed - see diagnostics");
+                owner.setStatus("Recursive Stem Splitting failed - see diagnostics",
+                                StemLabAudioProcessor::statusFailure);
 
             owner.appendEngineLog("Recursive engine exit code: " + juce::String(exitCode) + "\n");
         }
@@ -1978,6 +2067,18 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
         return false;
     }
 
+    // A zero-byte file used to sail through here and light up Separate,
+    // because nothing below this point looks at the file's size again.
+    // Size is only allowed to answer this one question - "is there
+    // anything in it at all" - so that the user gets the plain reason
+    // rather than a decoding one. Whether the bytes are audio is decided
+    // by the decoder further down, not by counting them.
+    if (file.getSize() <= 0)
+    {
+        setActionStatus("Selected audio file is empty");
+        return false;
+    }
+
     // Loading a source clears the job directory and result state that the
     // running engine thread still reports into. Swapping it mid-job left the
     // finished stems unreachable while the UI announced them as done, so
@@ -1996,6 +2097,20 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
 
     if (infoReader != nullptr)
     {
+        // A header-only file has a reader and still decodes to nothing:
+        // it is real audio of zero length, which is not a source anything
+        // can be separated out of. Refuse it here, before the first
+        // mutation below: everything past this point overwrites the
+        // channel count, the sample count and finally captureFile itself,
+        // and a later refusal would leave the old source destroyed with
+        // no new one in its place.
+        if (infoReader->lengthInSamples <= 0 || infoReader->sampleRate <= 0.0)
+        {
+            infoReader.reset();
+            setActionStatus("Selected audio file contains no audio");
+            return false;
+        }
+
         currentInputChannels = static_cast<int>(infoReader->numChannels);
 
         if (infoReader->sampleRate > 0.0)
@@ -2011,10 +2126,29 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
     }
     else
     {
-        // This is intentionally not fatal. The Python engine normalizes
-        // compressed/container audio with FFmpeg before RoFormer, so a file
-        // may be perfectly separable even when JUCE has no source-preview
-        // decoder for that specific format.
+        // Nothing here could decode the file. Whether that is fatal depends
+        // on whether anything here was ever meant to: previewFormats claims
+        // a fixed set of extensions - .wav, .aiff, .flac and the rest of
+        // registerBasicFormats - and for one of those, a reader that
+        // refuses the file is the decoder saying the bytes are not the
+        // audio the name promises. Sixty-four bytes of text named .wav used
+        // to reach the bottom of this function and announce "Source ready"
+        // with Separate fully live, because the only thing standing between
+        // it and that was a byte count. This refusal comes before the
+        // stores below, which are already mutation: a later one would leave
+        // the old source torn down with nothing in its place.
+        if (previewFormats.findFormatForFileExtension(file.getFileExtension()) != nullptr)
+        {
+            setActionStatus("Selected file is not audio");
+            return false;
+        }
+
+        // An extension no registered format claims is still let through,
+        // and intentionally so. The Python engine normalizes compressed and
+        // container audio with FFmpeg before RoFormer, so an .m4a or .opus
+        // may be perfectly separable even though nothing here can preview
+        // it, and refusing it would be this side of the app guessing about
+        // formats it does not decode.
         capturedSamples.store(0);
         inputDurationSeconds.store(0.0);
 
@@ -2043,9 +2177,15 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
     engineProgress.store(0.0);
     clearRecursiveResults();
 
-    // The previous job's stems are gone as far as monitoring is concerned.
+    // The previous job's stems are gone as far as monitoring is concerned,
+    // and so are the ranges swept over them: they are normalised against a
+    // file that is no longer loaded, and they keep steering the transport
+    // and trimming every drag and save until something clears them.
+    // Clearing after the unload is what guarantees rebuildLoopRegions takes
+    // its empty-set early return instead of seeking a transport mid-swap.
     unloadStemMix();
     clearAllMonitorFlags();
+    clearAllStemSelectionRanges();
 
     if (isAbletonHost())
     {
@@ -2115,12 +2255,40 @@ void StemLabAudioProcessor::toggleStandalonePlayback()
     const auto source = getCaptureFile();
 
     if (!source.existsAsFile())
+    {
+        // The source can vanish under a running transport - deleted,
+        // unmounted, a temp file swept up. Returning here left the audio
+        // playing with the only stop control pointing at a file that is no
+        // longer there, so this path stops instead of doing nothing.
+        if (previewTransport.isPlaying())
+        {
+            previewTransport.stop();
+            setActionStatus("Source file is gone - stopped");
+        }
+        else
+        {
+            setActionStatus("Source file is gone");
+        }
+
         return;
+    }
 
     if (previewStemIndex.load() != -1)
     {
         if (!loadPreviewFile(source, -1))
+        {
+            // The other early return that could strand a playing transport:
+            // swapping a stem preview back to the source can fail on a file
+            // a job has just rewritten, and returning alone would leave the
+            // sound going with nothing left to stop it.
+            if (previewTransport.isPlaying())
+            {
+                previewTransport.stop();
+                setActionStatus("Could not reload the source - stopped");
+            }
+
             return;
+        }
     }
 
     if (previewTransport.isPlaying())
@@ -2130,12 +2298,11 @@ void StemLabAudioProcessor::toggleStandalonePlayback()
         return;
     }
 
-    if (previewTransport.getCurrentPosition() >= previewTransport.getLengthInSeconds() - 0.01)
-    {
+    if (transportIsAtEnd(previewTransport))
         previewTransport.setPosition(0.0);
-    }
 
     previewTransport.start();
+    startLoopTimerIfRegions();
     setActionStatus("Playing source");
 }
 
@@ -2448,7 +2615,10 @@ bool StemLabAudioProcessor::ensureStemMixLoaded()
     // A split finishing mid-playback rebuilds the mix underneath the user;
     // the clock keeps running rather than stopping on them.
     if (wasPlaying)
+    {
         stemMixTransport.start();
+        startLoopTimerIfRegions();
+    }
 
     stemMixJobDirectory = job;
     stemMixTreeGeneration = generation;
@@ -2480,7 +2650,10 @@ void StemLabAudioProcessor::switchAudioMonitor(bool useMix)
     audioMonitorIsMix.store(useMix);
 
     if (wasPlaying)
+    {
         to.start();
+        startLoopTimerIfRegions();
+    }
 }
 
 bool StemLabAudioProcessor::isStemMonitorAvailable() { return ensureStemMixLoaded(); }
@@ -2511,7 +2684,10 @@ void StemLabAudioProcessor::setMonitorMode(int mode)
                     juce::jlimit(0.0, previewTransport.getLengthInSeconds(), position));
 
                 if (wasPlaying && !audioMonitorIsMix.load())
+                {
                     previewTransport.start();
+                    startLoopTimerIfRegions();
+                }
             }
         }
     }
@@ -2525,14 +2701,15 @@ void StemLabAudioProcessor::transportTogglePlay()
         return;
 
     /*
-        Stopping comes before everything else and needs nothing loaded:
-        whatever is playing is, by definition, already loaded.
+        Stopping the mix comes before loading it, and needs nothing loaded:
+        whatever is playing is, by definition, already loaded. A recursive
+        split deletes and rewrites the tree it is splitting, so
+        ensureStemMixLoaded() below can fail at exactly the moment the user
+        wants the sound to stop.
 
-        Both branches below reach for a file first - ensureStemMixLoaded()
-        here, getCaptureFile() in toggleStandalonePlayback - and either can
-        fail: a recursive split deletes and rewrites the tree it is splitting.
-        Gating the stop behind that load is what let a job leave the
-        transport rolling with no way to stop it.
+        The source path is not hoisted with it: toggleStandalonePlayback
+        stops on its own and names the reason ("Source file is gone"), which
+        a generic stop here would replace with something less useful.
     */
     if (stemMixTransport.isPlaying())
     {
@@ -2541,25 +2718,21 @@ void StemLabAudioProcessor::transportTogglePlay()
         return;
     }
 
-    if (previewTransport.isPlaying())
-    {
-        previewTransport.stop();
-        setActionStatus("Source paused");
-        return;
-    }
-
     if (audioMonitorIsMix.load())
     {
         if (!ensureStemMixLoaded())
             return;
 
-        if (stemMixTransport.getCurrentPosition() >=
-            stemMixTransport.getLengthInSeconds() - 0.01)
-        {
+        // main's stop for this branch is not repeated here: it was hoisted to
+        // the top of the function, above every load, so a copy inside the
+        // branch would be unreachable. transportIsAtEnd is main's end guard -
+        // a proportion of the length rather than a flat 0.01 s, which a click
+        // on the last pixel of the scrub bar could never reach.
+        if (transportIsAtEnd(stemMixTransport))
             stemMixTransport.setPosition(0.0);
-        }
 
         stemMixTransport.start();
+        startLoopTimerIfRegions();
         setActionStatus("Playing stems");
         return;
     }
@@ -2717,6 +2890,33 @@ bool StemLabAudioProcessor::isRecursiveStemMuted(const juce::String& itemId) con
 {
     const auto flags = monitorFlagsForRecursive(itemId);
     return flags != nullptr && flags->mute.load();
+}
+
+bool StemLabAudioProcessor::isAnySoloActive() const
+{
+    return stemMixSource != nullptr && stemMixSource->anySoloActive();
+}
+
+bool StemLabAudioProcessor::isLaneAudible(const StemLabLaneMonitorFlags* flags) const
+{
+    // No mix loaded means nothing is being silenced by anything.
+    if (stemMixSource == nullptr || flags == nullptr)
+        return true;
+
+    bool named = false;
+    const bool audible = stemMixSource->isAudibleThrough(flags, named);
+
+    return named ? audible : true;
+}
+
+bool StemLabAudioProcessor::isStemAudible(int index) const
+{
+    return isLaneAudible(monitorFlagsForStem(index).get());
+}
+
+bool StemLabAudioProcessor::isRecursiveStemAudible(const juce::String& itemId) const
+{
+    return isLaneAudible(monitorFlagsForRecursive(itemId).get());
 }
 
 bool StemLabAudioProcessor::startStandaloneRecording()
@@ -3552,6 +3752,11 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
     setStatus("Separating with " + getSeparatorEngineDisplayName() + "...");
 
     engineCompletedSuccessfully.store(false);
+
+    // Snapshot beside the --no-refine decision above, so the summary this
+    // job eventually shows quotes the setting it actually ran with rather
+    // than whatever the toggle happens to say when the summary is drawn.
+    lastJobRefinement.store(refinementEnabled.load());
     engineProgress.store(0.01);
     engineStartMs.store(nowMs());
     engineProgressUpdateMs.store(engineStartMs.load());
@@ -3753,7 +3958,7 @@ bool StemLabAudioProcessor::isRecursiveStemEnabled(const juce::String& itemId) c
     return false;
 }
 
-void StemLabAudioProcessor::finishRecursiveJob(const juce::File& manifestFile)
+bool StemLabAudioProcessor::finishRecursiveJob(const juce::File& manifestFile)
 {
     // The Python side owns separation details. The plugin only consumes the
     // schema-2 tree contract and turns child nodes into selectable UI rows.
@@ -3762,8 +3967,8 @@ void StemLabAudioProcessor::finishRecursiveJob(const juce::File& manifestFile)
 
     if (object == nullptr)
     {
-        setStatus("Recursive result manifest is invalid");
-        return;
+        setStatus("Recursive result manifest is invalid", statusFailure);
+        return false;
     }
 
     const auto parentId = object->getProperty("parent_id").toString();
@@ -3772,8 +3977,8 @@ void StemLabAudioProcessor::finishRecursiveJob(const juce::File& manifestFile)
 
     if (parentId.isEmpty() || rootStem.isEmpty() || children == nullptr)
     {
-        setStatus("Recursive result manifest is incomplete");
-        return;
+        setStatus("Recursive result manifest is incomplete", statusFailure);
+        return false;
     }
 
     std::vector<StemLabRecursiveStemInfo> newItems;
@@ -3809,8 +4014,8 @@ void StemLabAudioProcessor::finishRecursiveJob(const juce::File& manifestFile)
 
     if (newItems.empty())
     {
-        setStatus("Recursive split finished without usable audio files");
-        return;
+        setStatus("Recursive split finished without usable audio files", statusFailure);
+        return false;
     }
 
     {
@@ -3850,6 +4055,8 @@ void StemLabAudioProcessor::finishRecursiveJob(const juce::File& manifestFile)
     }
 
     sendChangeMessage();
+
+    return true;
 }
 
 bool StemLabAudioProcessor::launchRecursiveStemSplit(int rootStemIndex)
@@ -4084,6 +4291,13 @@ double StemLabAudioProcessor::getEngineEstimatedRemainingSeconds() const noexcep
     if (!isEngineRunning())
         return 0.0;
 
+    // No finish time can be promised once a stop has been asked for: the
+    // engine is winding down, not working towards the number it last
+    // reported. -1 rather than 0 so the readout drops the segment entirely
+    // instead of pinning "ETA 00:00", which would be the worse lie.
+    if (engineCancelRequested.load())
+        return -1.0;
+
     const auto now = nowMs();
 
     // Prefer the engine's own estimate - a job-level number since the
@@ -4293,14 +4507,21 @@ juce::File StemLabAudioProcessor::getLastJobDirectory() const
     return lastJobDirectory;
 }
 
-void StemLabAudioProcessor::setStatus(const juce::String& newStatus)
+void StemLabAudioProcessor::setStatus(const juce::String& newStatus, StatusSeverity severity)
 {
     {
         const juce::ScopedLock lock(stateLock);
         status = newStatus;
+        statusSeverity = severity;
     }
 
     sendChangeMessage();
+}
+
+StemLabAudioProcessor::StatusSeverity StemLabAudioProcessor::getStatusSeverity() const
+{
+    const juce::ScopedLock lock(stateLock);
+    return statusSeverity;
 }
 
 void StemLabAudioProcessor::setActionStatus(const juce::String& newStatus)
@@ -4316,6 +4537,16 @@ void StemLabAudioProcessor::setActionStatus(const juce::String& newStatus)
 
 void StemLabAudioProcessor::setEngineProgress(double progress)
 {
+    // A cancel is pending: the job is coming down, so nothing it reports on
+    // the way out is a claim about finishing. Freezing here rather than in
+    // the editor covers all three producers at once - the stdout reader,
+    // the adaptive reader, and the message thread's progress-file poll.
+    // The two writes that must still land during a cancel (the reader
+    // threads' own cancel arms) store engineProgress directly and so are
+    // deliberately not routed through here.
+    if (engineCancelRequested.load())
+        return;
+
     const auto next = juce::jlimit(0.0, 1.0, progress);
 
     // Two threads report progress: the engine reader parsing stdout and the
@@ -4400,7 +4631,7 @@ void StemLabAudioProcessor::handleEngineOutputLine(const juce::String& line)
         const auto message = line.fromFirstOccurrenceOf("STEMLAB_ERROR ", false, false).trim();
 
         if (message.isNotEmpty())
-            setStatus("Failed - " + message);
+            setStatus("Failed - " + message, statusFailure);
 
         return;
     }
@@ -4421,7 +4652,13 @@ void StemLabAudioProcessor::handleEngineOutputLine(const juce::String& line)
 
         const auto stage = payload.fromFirstOccurrenceOf(" ", false, false).trim();
 
-        if (stage.isNotEmpty())
+        // The same guard the progress-file poll already applies (see
+        // refreshEngineProgressFromDisk): once the user has asked to stop,
+        // "Cancelling..." outranks whatever stage the engine is still
+        // narrating on its way down. Progress lines now arrive within
+        // milliseconds of being printed, so without this the footer flips
+        // back to a stage name moments after the click.
+        if (stage.isNotEmpty() && !engineCancelRequested.load())
             setStatus(stage);
 
         return;
@@ -7043,6 +7280,9 @@ void StemLabAudioProcessor::rebuildLoopRegions()
         return;
     }
 
+    // Armed here and re-armed from every transport start: the enforcer
+    // stops itself once playback does, so the timer's lifetime follows
+    // playback rather than the existence of a range.
     loopTimer.startTimer(30);
 
     // Sweeping a range pulls the playhead into the loop right away, playing
@@ -7056,8 +7296,43 @@ void StemLabAudioProcessor::rebuildLoopRegions()
             transport.setPosition(*target * length);
 }
 
+void StemLabAudioProcessor::startLoopTimerIfRegions()
+{
+    if (!loopRegionsSnapshot().empty())
+        loopTimer.startTimer(30);
+}
+
 void StemLabAudioProcessor::applyPreviewLoopTick()
 {
+    auto& transport = activeTransport();
+    const bool playing = transport.isPlaying();
+
+    bool haveRegions = false;
+
+    {
+        const juce::ScopedLock lock(selectionLock);
+        haveRegions = !loopRegionsNormalised.empty();
+    }
+
+    /*
+     * Ahead of the copy, and ahead of everything else. This runs 33 times a
+     * second, and it used to keep running - allocating a fresh region vector
+     * on every one of them - for the life of the process after a single
+     * swept range, whether or not anything was playing and whether or not
+     * the editor was even open.
+     *
+     * previewLoopWasPlaying is load-bearing in this gate: the transport
+     * stops itself at end of file, and the branch below that restarts it
+     * from the first region needs a tick after that has happened. One more
+     * tick is exactly what carrying the previous playing state buys.
+     */
+    if (!haveRegions || (!playing && !previewLoopWasPlaying))
+    {
+        previewLoopWasPlaying = playing;
+        loopTimer.stopTimer();
+        return;
+    }
+
     std::vector<stemlab::loops::Region> merged;
 
     {
@@ -7065,11 +7340,18 @@ void StemLabAudioProcessor::applyPreviewLoopTick()
         merged = loopRegionsNormalised;
     }
 
-    auto& transport = activeTransport();
     const auto length = transport.getLengthInSeconds();
 
+    // Both early-outs leave nothing this tick can enforce, so they carry the
+    // same bookkeeping the tail does. Without it a transport that stopped
+    // under a source with no length - or under regions too short to loop -
+    // would leave previewLoopWasPlaying stuck true, and the gate above would
+    // keep the timer awake on a tick that can never do anything.
     if (merged.empty() || length <= 0.0)
+    {
+        previewLoopWasPlaying = playing;
         return;
+    }
 
     // A region too small to hold even one tick would pin the transport.
     merged.erase(std::remove_if(merged.begin(), merged.end(),
@@ -7078,9 +7360,10 @@ void StemLabAudioProcessor::applyPreviewLoopTick()
                  merged.end());
 
     if (merged.empty())
+    {
+        previewLoopWasPlaying = playing;
         return;
-
-    const bool playing = transport.isPlaying();
+    }
 
     if (playing)
     {
