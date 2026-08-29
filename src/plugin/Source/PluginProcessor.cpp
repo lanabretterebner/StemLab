@@ -2308,7 +2308,19 @@ void StemLabAudioProcessor::toggleStandalonePlayback()
     if (previewStemIndex.load() != -1)
     {
         if (!loadPreviewFile(source, -1))
+        {
+            // The other early return that could strand a playing transport:
+            // swapping a stem preview back to the source can fail on a file
+            // a job has just rewritten, and returning alone would leave the
+            // sound going with nothing left to stop it.
+            if (previewTransport.isPlaying())
+            {
+                previewTransport.stop();
+                setActionStatus("Could not reload the source - stopped");
+            }
+
             return;
+        }
     }
 
     if (previewTransport.isPlaying())
@@ -2720,18 +2732,34 @@ void StemLabAudioProcessor::transportTogglePlay()
     if (capturing.load())
         return;
 
+    /*
+        Stopping the mix comes before loading it, and needs nothing loaded:
+        whatever is playing is, by definition, already loaded. A recursive
+        split deletes and rewrites the tree it is splitting, so
+        ensureStemMixLoaded() below can fail at exactly the moment the user
+        wants the sound to stop.
+
+        The source path is not hoisted with it: toggleStandalonePlayback
+        stops on its own and names the reason ("Source file is gone"), which
+        a generic stop here would replace with something less useful.
+    */
+    if (stemMixTransport.isPlaying())
+    {
+        stemMixTransport.stop();
+        setActionStatus("Paused");
+        return;
+    }
+
     if (audioMonitorIsMix.load())
     {
         if (!ensureStemMixLoaded())
             return;
 
-        if (stemMixTransport.isPlaying())
-        {
-            stemMixTransport.stop();
-            setActionStatus("Paused");
-            return;
-        }
-
+        // main's stop for this branch is not repeated here: it was hoisted to
+        // the top of the function, above every load, so a copy inside the
+        // branch would be unreachable. transportIsAtEnd is main's end guard -
+        // a proportion of the length rather than a flat 0.01 s, which a click
+        // on the last pixel of the scrub bar could never reach.
         if (transportIsAtEnd(stemMixTransport))
             stemMixTransport.setPosition(0.0);
 
@@ -4071,6 +4099,13 @@ bool StemLabAudioProcessor::launchRecursiveStemSplit(int rootStemIndex)
         return false;
     }
 
+    // Before anything else, exactly as launchSeparationAndExport does. The
+    // editor disables the transport controls for the duration of a job, so
+    // playback left running here is playback the user cannot stop; and the
+    // recursive output directory is deleted below, which can be the very
+    // file the transport is reading.
+    stopStandalonePlayback();
+
     const auto rootStem = getStemName(rootStemIndex);
     const bool isVocals = rootStem.equalsIgnoreCase("vocals");
     const bool isDrums = rootStem.equalsIgnoreCase("drums");
@@ -4161,6 +4196,10 @@ bool StemLabAudioProcessor::launchRecursiveAction(const juce::String& itemId,
 {
     if (!hasSuccessfulJob() || isEngineRunning())
         return false;
+
+    // See launchRecursiveStemSplit: a job greys out the transport, so it has
+    // to leave playback stopped rather than unstoppable.
+    stopStandalonePlayback();
 
     StemLabRecursiveStemInfo target;
     bool found = false;
