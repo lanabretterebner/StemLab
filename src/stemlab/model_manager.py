@@ -83,9 +83,25 @@ def inductor_cache_dir() -> Path:
     return resolved()
 
 
-def _compile_marker(model_id: str) -> Path:
+def _locatable_inductor_cache_dir() -> Path | None:
+    """inductor_cache_dir, or None when it cannot be placed.
+
+    It resolves through the managed analysis directory, which falls back to
+    the home directory - and that is not always nameable, see _home. Status
+    must survive that; compiling is free to fail loudly, so only the reporting
+    paths go through here.
+    """
+    try:
+        return inductor_cache_dir()
+    except (RuntimeError, OSError):
+        return None
+
+
+def _compile_marker(model_id: str) -> Path | None:
     """Records that a warm-up ran, beside the cache it warmed."""
-    return inductor_cache_dir().parent / f"stemlab_warm_{model_id}.json"
+    cache = _locatable_inductor_cache_dir()
+
+    return cache.parent / f"stemlab_warm_{model_id}.json" if cache is not None else None
 
 
 # ----------------------------------------------------------- the registry
@@ -227,7 +243,7 @@ def _beat_this_directories() -> list[Path]:
     return candidates
 
 
-def _recursive_model_dir() -> Path:
+def _recursive_model_dir() -> Path | None:
     """Mirror of recursive.default_model_dir."""
     packaged = os.environ.get("STEMLAB_RECURSIVE_MODEL_DIR")
     if packaged:
@@ -237,29 +253,49 @@ def _recursive_model_dir() -> Path:
     if local:
         return Path(local) / "StemLab" / "Models" / "Recursive"
 
-    return Path.home() / ".stemlab" / "models" / "recursive"
+    home = _home()
+    return home / ".stemlab" / "models" / "recursive" if home is not None else None
 
 
 # --------------------------------------------------------------- locating
 
 
-def _roformer_directory() -> Path:
+def _home() -> Path | None:
+    """The user's home, or None where the platform cannot name one.
+
+    Path.home() raises on Windows when neither USERPROFILE nor
+    HOMEDRIVE/HOMEPATH is set - a service account, or any process handed a
+    stripped environment. Locating must not raise there. This module's whole
+    promise is that it answers on a broken install, and "there is no home, so
+    nothing of ours is in it" is a perfectly good answer.
+    """
+    try:
+        return Path.home()
+    except (RuntimeError, OSError):
+        return None
+
+
+def _roformer_directory() -> Path | None:
     packaged = os.environ.get("BS_ROFORMER_MODELS_PATH")
     if packaged:
         return Path(packaged).expanduser()
-    return Path.home() / ".cache" / "bs-roformer-infer"
+
+    home = _home()
+    return home / ".cache" / "bs-roformer-infer" if home is not None else None
 
 
-def _torch_hub_checkpoints() -> Path:
-    home = os.environ.get("TORCH_HOME")
-    if home:
-        return Path(home).expanduser() / "hub" / "checkpoints"
-    return Path.home() / ".cache" / "torch" / "hub" / "checkpoints"
+def _torch_hub_checkpoints() -> Path | None:
+    override = os.environ.get("TORCH_HOME")
+    if override:
+        return Path(override).expanduser() / "hub" / "checkpoints"
+
+    home = _home()
+    return home / ".cache" / "torch" / "hub" / "checkpoints" if home is not None else None
 
 
-def _largest_checkpoint(directory: Path) -> Path | None:
+def _largest_checkpoint(directory: Path | None) -> Path | None:
     """The biggest weight file under a directory, or None if there is none."""
-    if not directory.is_dir():
+    if directory is None or not directory.is_dir():
         return None
 
     candidates = [
@@ -290,7 +326,11 @@ def locate(model_id: str) -> Path | None:
         return None
 
     if model_id == "roformer":
-        return _largest_checkpoint(_roformer_directory() / ROFORMER_MODEL_ID)
+        directory = _roformer_directory()
+
+        return _largest_checkpoint(
+            directory / ROFORMER_MODEL_ID if directory is not None else None
+        )
 
     if model_id == "demucs":
         packaged = os.environ.get("STEMLAB_DEMUCS_MODEL_REPO")
@@ -299,6 +339,9 @@ def locate(model_id: str) -> Path | None:
             Path(packaged).expanduser() if packaged else _torch_hub_checkpoints()
         )
 
+        if directory is None:
+            return None
+
         # htdemucs_6s is a bag of models, so several signature files land in
         # the hub cache. The one the packaged path names is the marker for
         # the set being present.
@@ -306,7 +349,12 @@ def locate(model_id: str) -> Path | None:
         return candidate if candidate.is_file() else None
 
     if model_id in RECURSIVE_FILENAMES:
-        candidate = _recursive_model_dir() / RECURSIVE_FILENAMES[model_id]
+        directory = _recursive_model_dir()
+
+        if directory is None:
+            return None
+
+        candidate = directory / RECURSIVE_FILENAMES[model_id]
         return candidate if candidate.is_file() else None
 
     raise KeyError(f"Unknown model id: {model_id}")
@@ -321,7 +369,7 @@ def _compile_state(model_id: str) -> dict[str, object]:
 
     marker = _compile_marker(model_id)
 
-    if not marker.is_file():
+    if marker is None or not marker.is_file():
         return {"compiled": False, "reason": ""}
 
     try:
@@ -370,26 +418,68 @@ class ManagedCache:
     warning: str = ""
 
 
-def caches() -> tuple[ManagedCache, ...]:
-    analysis = managed_analysis_dir()
+def _huggingface_cache() -> Path | None:
+    override = os.environ.get("HF_HOME")
+    if override:
+        return Path(override).expanduser()
 
-    return (
-        ManagedCache("compile", "Compiled kernels", inductor_cache_dir()),
-        ManagedCache(
-            "huggingface",
-            "HuggingFace hub",
-            Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")).expanduser(),
+    home = _home()
+    return home / ".cache" / "huggingface" if home is not None else None
+
+
+def _analysis_dir() -> Path | None:
+    """StemLab's analysis directory, or None when it cannot be placed.
+
+    managed_analysis_dir falls back to the home directory, which is not
+    always nameable - see _home. A cache we cannot locate is one we can
+    neither size nor clear, so it is left out rather than reported wrongly.
+    """
+    try:
+        return managed_analysis_dir()
+    except (RuntimeError, OSError):
+        return None
+
+
+def caches() -> tuple[ManagedCache, ...]:
+    analysis = _analysis_dir()
+    roformer = _roformer_directory()
+
+    # Anything whose path cannot be resolved is omitted: the interface offers
+    # a size and a Clear for every row, and it can honestly offer neither.
+    candidates = (
+        ("compile", "Compiled kernels", _locatable_inductor_cache_dir(), ""),
+        ("huggingface", "HuggingFace hub", _huggingface_cache(), ""),
+        ("torch-hub", "Torch hub", _torch_hub_checkpoints(), ""),
+        (
+            "bs-roformer",
+            "BS-RoFormer",
+            roformer / ROFORMER_MODEL_ID if roformer is not None else None,
+            "",
         ),
-        ManagedCache("torch-hub", "Torch hub", _torch_hub_checkpoints()),
-        ManagedCache("bs-roformer", "BS-RoFormer", _roformer_directory() / ROFORMER_MODEL_ID),
-        ManagedCache(
+        (
             "analysis",
             "Key & BPM results",
-            analysis / "analysis.sqlite3",
-            warning="Also removes saved BPM, key and meter corrections",
+            analysis / "analysis.sqlite3" if analysis is not None else None,
+            "Also removes saved BPM, key and meter corrections",
         ),
-        ManagedCache("device-probe", "Device probe", analysis / "device_probe.json"),
-        ManagedCache("midi-staging", "MIDI drag staging", analysis / "MidiDrag"),
+        (
+            "device-probe",
+            "Device probe",
+            analysis / "device_probe.json" if analysis is not None else None,
+            "",
+        ),
+        (
+            "midi-staging",
+            "MIDI drag staging",
+            analysis / "MidiDrag" if analysis is not None else None,
+            "",
+        ),
+    )
+
+    return tuple(
+        ManagedCache(identifier, label, path, warning=warning)
+        for identifier, label, path, warning in candidates
+        if path is not None
     )
 
 
@@ -777,7 +867,12 @@ def compile_model(
     if not isinstance(elapsed, (int, float)) or elapsed <= 0.0:
         elapsed = time.monotonic() - began
 
-    _compile_marker(model_id).write_text(
+    marker = _compile_marker(model_id)
+
+    if marker is None:
+        raise RuntimeError("There is nowhere to record the warm-up on this machine")
+
+    marker.write_text(
         json.dumps(
             {
                 "torch": _torch_version(),
@@ -818,7 +913,7 @@ def delete_model(model_id: str) -> int:
         sidecar.unlink()
 
     marker = _compile_marker(model_id)
-    if marker.is_file():
+    if marker is not None and marker.is_file():
         marker.unlink()
 
     return freed
