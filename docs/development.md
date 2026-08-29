@@ -151,6 +151,7 @@ Pure helpers behind the lanes: `WaveformGrid.h` (beat-grid math),
 | `demucs_backend.py` | Demucs process adapter and output normalization |
 | `hybrid.py` | Spectral fusion of model estimates |
 | `device.py` | Device selection for PyTorch backends (CUDA/XPU/CPU) |
+| `compile_support.py` | Opt-in `torch.compile` gate for the RoFormer models |
 | `plugin_job.py` | JUCE command arguments, progress files, Ableton manifest |
 | `recursive_job.py` | JUCE command bridge for adaptive stem jobs |
 | `runtime.py` | Child-process output, progress/ETA, and cancel watchdog |
@@ -166,6 +167,36 @@ Pure helpers behind the lanes: `WaveformGrid.h` (beat-grid math),
 | `refinement/adaptive_cancel.py` | Constrained spectral subtraction |
 | `refinement/kick.py` | Per-event kick-bleed correction |
 | `refinement/pipeline.py` | Applies refinement across a stem folder |
+
+### Compiled inference (opt-in)
+
+BS-RoFormer spends most of a forward pass in dense matmuls spread over many
+small layers, so TorchInductor is worth roughly 1.5x once its kernels are
+built. It is off by default because the toolchain it needs is not everywhere:
+
+| Variable | Effect |
+| --- | --- |
+| `STEMLAB_TORCH_COMPILE` | `1`/`true`/`yes`/`on` compiles BS-RoFormer and Mel-Band RoFormer. Anything else, including unset, runs eager. |
+| `STEMLAB_TORCH_COMPILE_CACHE` | Where generated kernels live. Defaults to `torchinductor/` under the managed analysis directory. |
+
+`compile_support.compile_support_status()` decides whether a device can be
+compiled at all and reports why when it cannot:
+
+| Platform | Compiles? | Blocker |
+| --- | --- | --- |
+| Linux NVIDIA / AMD ROCm / Intel XPU | yes | - |
+| Windows NVIDIA | only with the third-party `triton-windows` wheel | PyTorch's Windows CUDA wheels ship no Triton |
+| Windows Intel XPU | yes | - |
+| Windows AMD ROCm | no | no Triton for ROCm on Windows |
+| CPU (any OS) | only with a host C++ compiler | inductor's CPU backend shells out to `g++`/`cl` |
+| DirectML | no | `privateuseone` has no inductor backend |
+
+Two properties the guards exist to preserve. A missing C++ compiler makes
+inductor raise `InvalidCxxCompiler` from the *first traced call* rather than
+from `torch.compile`, so the fallback wraps the call, not the wrap. And
+because every separation is a fresh subprocess, the cache directory has to be
+stable or compiling is a guaranteed loss - the first run pays about two
+minutes, later runs load kernels instead of building them.
 
 ## Stable Contracts
 
