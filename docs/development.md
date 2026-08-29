@@ -170,10 +170,13 @@ Pure helpers behind the lanes: `WaveformGrid.h` (beat-grid math),
 | Module | Responsibility |
 | --- | --- |
 | `audio.py` | Shared WAV/FLAC loading, saving, resampling, and stem lookup |
+| `resample.py` | Sample-rate conversion shared by every separation backend |
 | `cli.py` | `stemlab-separate` / `stemlab-refine` / `stemlab-models` entries |
 | `pipeline.py` | Public router for RoFormer, Demucs, hybrid, and refinement |
 | `pretrained.py` | BS-RoFormer process adapter |
 | `bs_roformer_cli.py` | Relocatable launcher for `bs-roformer-infer` |
+| `bs_roformer_download_cli.py` | The same launcher for `bs-roformer-download` |
+| `console_entry.py` | Runs an installed console script without pip's baked-in path |
 | `bs_roformer_download_cli.py` | Relocatable launcher for `bs-roformer-download` |
 | `console_entry.py` | Calls an installed console script without pip's launcher |
 | `demucs_backend.py` | Demucs process adapter and output normalization |
