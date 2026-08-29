@@ -2580,11 +2580,23 @@ bool StemLabAudioProcessor::ensureStemMixLoaded()
         if (reader == nullptr || reader->sampleRate <= 0.0)
             continue;
 
-        // All stems of one job share the job's sample rate; a stray
-        // mismatch would drift against the shared clock, so skip it rather
-        // than sum it out of time.
+        // All stems of one job share the job's sample rate; a stray mismatch
+        // would drift against the shared clock, so skip it rather than sum it
+        // out of time.
+        //
+        // Skipping SILENTLY is what turned a real bug into an unreadable one:
+        // recursive children came back at audio-separator's own 44.1 kHz
+        // default, so on a 48 kHz session every child of a split was dropped
+        // here and the parent stem's Solo and Mute appeared to stop working -
+        // there was nothing left in the mix answering to them. The rate is
+        // matched at the source now; this says so if it ever drifts again.
         if (mixRate > 0.0 && !juce::approximatelyEqual(reader->sampleRate, mixRate))
+        {
+            appendEngineLog("Left " + lane.file.getFileName() + " out of the monitor mix: " +
+                            juce::String(reader->sampleRate, 0) + " Hz against the mix's " +
+                            juce::String(mixRate, 0) + " Hz.\n");
             continue;
+        }
 
         mixRate = reader->sampleRate;
 
