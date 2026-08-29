@@ -3536,8 +3536,21 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
     separateControlShowsCancel = engineRunning;
 
-    separateControl.setActionText(engineRunning ? (cancelPending ? "Cancelling..." : "Cancel")
-                                                : "Separate");
+    const juce::String actionText{engineRunning ? (cancelPending ? "Cancelling..." : "Cancel")
+                                                : "Separate"};
+
+    separateControl.setActionText(actionText);
+
+    // The action segment's own tip. Guarded because this runs on every timer
+    // tick, and because the segment means two different things: it starts a
+    // job, or it stops the one running.
+    if (actionText != lastSeparateActionText)
+    {
+        lastSeparateActionText = actionText;
+
+        separateControl.setTooltip(engineRunning ? "Stop the running separation"
+                                                 : "Split the loaded audio into stems");
+    }
 
     separateControl.setSeparateEnabled(
         engineRunning ? !cancelPending
@@ -3821,8 +3834,11 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
         engineSelector->setLabel(processor.getSeparatorEngineDisplayName());
 
-        separateControl.setTooltip("Runs after " + processor.getSeparatorEngineDisplayName() +
-                                   " separation");
+        // Refine's tip, not the whole control's: setting it here used to
+        // describe Refine while hovering Separate.
+        separateControl.setRefineTooltip("Runs after " +
+                                         processor.getSeparatorEngineDisplayName() +
+                                         " separation");
     }
 
     progressValue = processor.getEngineProgress();

@@ -160,6 +160,20 @@ namespace stemlab::widgets
             "Cancelling..." while a job runs (the editor decides). */
         void setActionText(const juce::String& text);
 
+        /** The tip shown over the Refine segment.
+
+            This is one component holding two segments, so the single
+            tooltip a SettableTooltipClient carries described whichever
+            segment was set last - Refine's text appeared over Separate.
+            setTooltip() still describes the action segment; this describes
+            Refine, and getTooltip() picks between them by what is hovered. */
+        void setRefineTooltip(const juce::String& text) { refineTooltip = text; }
+
+        juce::String getTooltip() override
+        {
+            return hoverRefine ? refineTooltip : juce::SettableTooltipClient::getTooltip();
+        }
+
         void paint(juce::Graphics&) override;
         void resized() override {}
         void mouseMove(const juce::MouseEvent&) override;
@@ -174,6 +188,7 @@ namespace stemlab::widgets
         bool refineInteractive = true;
         bool hoverRefine = false, hoverSeparate = false;
         juce::String actionText{"Separate"};
+        juce::String refineTooltip;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SeparateSplitControl)
     };

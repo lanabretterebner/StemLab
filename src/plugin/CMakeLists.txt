@@ -177,6 +177,15 @@ if (BUILD_TESTING)
     stemlab_enable_test_assertions(StemLabLoopRegionsTests)
     add_test(NAME StemLabLoopRegionsTests COMMAND StemLabLoopRegionsTests)
 
+    # How a track name and a take/clip name become one source label, which
+    # names the window's source strip and every exported stem.
+    add_executable(StemLabSourceLabelTests
+        Tests/SourceLabelTests.cpp Source/SourceLabel.h)
+    target_include_directories(StemLabSourceLabelTests PRIVATE Source)
+    target_compile_features(StemLabSourceLabelTests PRIVATE cxx_std_20)
+    stemlab_enable_test_assertions(StemLabSourceLabelTests)
+    add_test(NAME StemLabSourceLabelTests COMMAND StemLabSourceLabelTests)
+
     # Upstream's host-capture pass: the self-drag guard plus a real
     # processor capturing processBlock audio, so this one links the plugin.
     add_executable(StemLabHostCaptureTests Tests/HostCaptureTests.cpp

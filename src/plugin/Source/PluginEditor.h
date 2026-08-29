@@ -676,6 +676,7 @@ private:
     /** What the action segment last rendered as, so a click acts on the
         state the user actually saw. */
     bool separateControlShowsCancel = false;
+    juce::String lastSeparateActionText;
 
     /** When the action segment last changed from "Separate" to "Cancel".
         A click that lands inside the double-click window after that change
