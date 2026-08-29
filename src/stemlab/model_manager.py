@@ -18,8 +18,10 @@ On ``torch.compile``: the warm-up itself is owned elsewhere and is not
 implemented here. What this module settles is everything around it - which
 models can be warmed at all, how the plugin asks for one, and how "already
 compiled" is decided - so the UI and the backend can land separately. See
-``compile_model`` for the seam and ``COMPILE_UPSTREAM`` for why two of the
-five families are out of reach wherever the warm-up ends up living.
+``compile_model`` for the seam. Which models can be warmed is not this
+module's judgement either: compile_support decides what gets patched, and
+only the RoFormer separators are, so the rest report why rather than
+offering an action that would do nothing.
 """
 
 from __future__ import annotations
@@ -49,40 +51,35 @@ ProgressCallback = Callable[[float, str], None]
 # ---------------------------------------------------------------- compile
 
 
-# The model is loaded and run inside this process, so torch.compile can wrap
-# it and the warm-up populates a cache the real run reads.
+# compile_support arms torch.compile for this model, so warming its kernels
+# ahead of a job is worth offering.
 COMPILE_SUPPORTED = "supported"
 
-# The model only ever exists inside a third-party process running upstream's
-# own un-compiled code: pretrained.py and demucs_backend.py do not import
-# torch at all, they build an argv and hand it to run_progress_process. A
-# warm-up on our side would compile a graph nothing later executes, so the
-# honest answer is that compiling is not reachable rather than that it did
-# nothing. Closing this means replacing the shell-out with an in-process
-# loader, which is a change to the separation path and not to this module.
-COMPILE_UPSTREAM = "upstream-process"
-
-# Loaded in-process, but by audio-separator, which owns the model object and
-# serves some architectures through ONNX Runtime rather than torch. Reaching
-# the nn.Module means reaching into its internals, and for the ONNX ones
-# there is no nn.Module to reach.
-COMPILE_FOREIGN = "third-party-loader"
-
-
-def compile_root() -> Path:
-    """StemLab's private directory for compile artifacts and their markers."""
-    # Sibling of the analysis directory rather than inside it: that one is a
-    # SQLite database plus MIDI staging the user may well want to clear on
-    # its own, and inductor output has a very different lifetime.
-    return managed_analysis_dir().parent / "Compile"
+# Nothing compiles this model today. Demucs and the audio-separator models
+# run through backends compile_support does not patch: Demucs in its own
+# process running upstream's uncompiled code, the adaptive models inside
+# audio-separator, which owns the object and serves some architectures
+# through ONNX Runtime, where there is no nn.Module to wrap at all.
+COMPILE_UNWIRED = "not-wired"
 
 
 def inductor_cache_dir() -> Path:
-    return compile_root() / "inductor"
+    """Where compiled kernels live - compile_support owns this path.
+
+    Asking it rather than deciding here is load-bearing. Every separation is
+    a fresh subprocess, so warming only pays if the warm-up writes to the
+    directory the separation later reads; a second opinion about where that
+    is would fill a cache nothing consults and look exactly like compiling
+    having no effect.
+    """
+    from .compile_support import inductor_cache_dir as resolved
+
+    return resolved()
 
 
 def _compile_marker(model_id: str) -> Path:
-    return compile_root() / f"{model_id}.json"
+    """Records that a warm-up ran, beside the cache it warmed."""
+    return inductor_cache_dir().parent / f"stemlab_warm_{model_id}.json"
 
 
 # ----------------------------------------------------------- the registry
@@ -110,37 +107,38 @@ MODELS: tuple[ManagedModel, ...] = (
         label="BS-RoFormer",
         purpose="Separation - RoFormer and Hybrid engines",
         approx_bytes=699_412_152,
-        compile_support=COMPILE_UPSTREAM,
-        compile_note="Runs inside the bs-roformer-infer process",
+        compile_support=COMPILE_SUPPORTED,
     ),
     ManagedModel(
         id="demucs",
         label="Demucs htdemucs_6s",
         purpose="Separation - Demucs and Hybrid engines",
         approx_bytes=54_996_327,
-        compile_support=COMPILE_UPSTREAM,
-        compile_note="Runs inside the demucs.separate process",
+        compile_support=COMPILE_UNWIRED,
+        compile_note="Demucs runs its own uncompiled process",
     ),
     ManagedModel(
         id="beat-this-fast",
         label="Beat This! small",
         purpose="Key & BPM analysis - Fast",
         approx_bytes=8_451_101,
-        compile_support=COMPILE_SUPPORTED,
+        compile_support=COMPILE_UNWIRED,
+        compile_note="Beat This! is not among the patched models",
     ),
     ManagedModel(
         id="beat-this-accurate",
         label="Beat This! final",
         purpose="Key & BPM analysis - Accurate",
         approx_bytes=81_058_141,
-        compile_support=COMPILE_SUPPORTED,
+        compile_support=COMPILE_UNWIRED,
+        compile_note="Beat This! is not among the patched models",
     ),
     ManagedModel(
         id="recursive-vocals",
         label="UVR-BVE lead/backing",
         purpose="Adaptive split - vocal layers",
         approx_bytes=0,
-        compile_support=COMPILE_FOREIGN,
+        compile_support=COMPILE_UNWIRED,
         compile_note="Loaded by audio-separator",
     ),
     ManagedModel(
@@ -148,7 +146,7 @@ MODELS: tuple[ManagedModel, ...] = (
         label="MDX23C DrumSep",
         purpose="Adaptive split - drum components",
         approx_bytes=0,
-        compile_support=COMPILE_FOREIGN,
+        compile_support=COMPILE_UNWIRED,
         compile_note="Loaded by audio-separator",
     ),
     ManagedModel(
@@ -156,7 +154,7 @@ MODELS: tuple[ManagedModel, ...] = (
         label="Mel-Band de-reverb",
         purpose="Adaptive split - vocal de-reverb",
         approx_bytes=0,
-        compile_support=COMPILE_FOREIGN,
+        compile_support=COMPILE_UNWIRED,
         compile_note="Loaded by audio-separator",
     ),
 )
@@ -370,7 +368,7 @@ def caches() -> tuple[ManagedCache, ...]:
     analysis = managed_analysis_dir()
 
     return (
-        ManagedCache("compile", "Compiled kernels", compile_root()),
+        ManagedCache("compile", "Compiled kernels", inductor_cache_dir()),
         ManagedCache(
             "huggingface",
             "HuggingFace hub",
@@ -411,6 +409,32 @@ def _directory_bytes(path: Path) -> int:
 # ----------------------------------------------------------------- status
 
 
+def _compile_environment() -> tuple[bool, bool, str]:
+    """Whether compiling was asked for, whether this machine can, and why not.
+
+    compile_support decides both, and its probe needs torch to answer the
+    second. Status runs on every editor open and must not import torch, so an
+    absent answer is reported as absent rather than guessed at.
+    """
+    try:
+        from . import compile_support
+    except Exception as exc:  # noqa: BLE001 - an unimportable backend is an answer
+        return False, False, f"compile support is unavailable: {exc}"
+
+    requested = compile_support.compile_requested()
+
+    if not requested:
+        return False, False, "Set STEMLAB_TORCH_COMPILE=1 to compile separations"
+
+    if "torch" not in sys.modules:
+        # Only reachable once someone opted in, and then the cost is theirs to
+        # pay knowingly rather than on every editor open.
+        return True, False, "Compile support has not been probed in this process"
+
+    supported, reason = compile_support.compile_support_status("cpu")
+    return True, supported, reason
+
+
 def status() -> dict[str, object]:
     """Everything the plugin needs to draw the Model Manager, as plain data."""
     models = []
@@ -449,15 +473,22 @@ def status() -> dict[str, object]:
         entry for entry in models if entry["compileSupport"] == COMPILE_SUPPORTED
     ]
 
+    requested, supported, support_reason = _compile_environment()
+
     return {
         "models": models,
         "caches": cache_entries,
+        # Straight from compile_support, so the Model Manager can say why
+        # compiling is off - an unset opt-in and a missing C++ compiler look
+        # identical from the outside and need very different advice.
+        "compileRequested": requested,
+        "compileSupported": supported,
+        "compileReason": support_reason,
         # The plugin's auto-show condition, decided here so the rule lives in
         # one place rather than being re-derived in C++.
         "anyModelMissing": bool(missing),
-        "anyCompilePending": any(
-            entry["present"] and not entry["compiled"] for entry in compilable
-        ),
+        "anyCompilePending": bool(requested and supported)
+        and any(entry["present"] and not entry["compiled"] for entry in compilable),
         "offlineForced": os.environ.get("HF_HUB_OFFLINE") == "1",
         "torch": _torch_version(),
     }
@@ -664,15 +695,20 @@ def compile_model(
     compiled" is decided - is settled so that the UI and the implementation
     can land independently.
 
-    To provide the backend, define ``stemlab.model_compile`` exposing:
+    ``compile_support`` added the compiling itself and deliberately left
+    warming out of scope, so the cache is only ever populated by real jobs
+    paying the cold cost - measured there at 114.8 s against 27.4 s warm.
+    Warming is what closes that, and it is the piece still missing.
+
+    To provide it, define ``stemlab.model_compile`` exposing:
 
         warm_up(model_id, device, progress, cancellation) -> float
 
-    returning the elapsed seconds. It should place inductor output under
-    ``inductor_cache_dir()`` by exporting ``TORCHINDUCTOR_CACHE_DIR`` before
-    torch is imported, and warm the shapes production actually runs, since an
-    inductor entry is keyed on the graph and a differently shaped dummy fills
-    the cache with something no real run asks for.
+    returning the elapsed seconds. It must write into ``inductor_cache_dir()``
+    - compile_support's own path, which is why this module asks rather than
+    deciding - and warm the shapes production runs, since an inductor entry
+    is keyed on the graph and a differently shaped dummy fills the cache with
+    something no real run asks for.
 
     On success this writes the marker ``_compile_state`` reads, so a backend
     only has to do the warming and does not have to know how state is
@@ -696,7 +732,6 @@ def compile_model(
             "No compile backend is installed: stemlab.model_compile is missing"
         ) from exc
 
-    compile_root().mkdir(parents=True, exist_ok=True)
     inductor_cache_dir().mkdir(parents=True, exist_ok=True)
 
     if progress:

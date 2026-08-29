@@ -143,34 +143,65 @@ class TestMirroredConstantsHaveNotDrifted:
 
 
 class TestCompileSeam:
-    def test_unreachable_models_say_why_rather_than_failing_silently(self):
-        for model_id in ("roformer", "demucs"):
+    def test_models_no_backend_patches_say_why_rather_than_failing_silently(self):
+        # compile_support patches the RoFormer separators and nothing else, so
+        # everything else must explain itself rather than offer a dead action.
+        for model_id in ("demucs", "beat-this-fast", "recursive-drums"):
             model = model_manager.MODELS_BY_ID[model_id]
 
-            assert model.compile_support == model_manager.COMPILE_UPSTREAM
-            assert model.compile_note, "an unreachable model must explain itself"
+            assert model.compile_support == model_manager.COMPILE_UNWIRED
+            assert model.compile_note, "an unwired model must explain itself"
 
             with pytest.raises(model_manager.CompileUnavailable):
                 model_manager.compile_model(model_id)
 
+    def test_roformer_is_offered_because_compile_support_patches_it(self):
+        model = model_manager.MODELS_BY_ID["roformer"]
+
+        assert model.compile_support == model_manager.COMPILE_SUPPORTED
+
+    def test_the_cache_is_the_one_compile_support_actually_reads(self):
+        # A second opinion about this path would warm a directory no
+        # separation consults, which looks exactly like compiling doing
+        # nothing. Worth a test precisely because it would fail silently.
+        compile_support = _engine_module("compile_support")
+
+        assert model_manager.inductor_cache_dir() == compile_support.inductor_cache_dir()
+
     def test_status_carries_the_reason_a_model_cannot_be_compiled(self):
         entries = {entry["id"]: entry for entry in model_manager.status()["models"]}
 
-        assert entries["roformer"]["compiled"] is False
-        assert entries["roformer"]["reason"]
+        assert entries["demucs"]["compiled"] is False
+        assert entries["demucs"]["reason"]
+
+    def test_status_explains_an_unset_opt_in_rather_than_just_saying_no(
+        self, monkeypatch
+    ):
+        monkeypatch.delenv("STEMLAB_TORCH_COMPILE", raising=False)
+        payload = model_manager.status()
+
+        assert payload["compileRequested"] is False
+        assert "STEMLAB_TORCH_COMPILE" in payload["compileReason"]
+
+    def test_nothing_is_pending_while_compiling_is_switched_off(self, monkeypatch):
+        # Otherwise the Model Manager would invite itself open to offer a
+        # warm-up that the separation would not use anyway.
+        monkeypatch.delenv("STEMLAB_TORCH_COMPILE", raising=False)
+
+        assert model_manager.status()["anyCompilePending"] is False
 
     def test_a_downloaded_model_with_no_backend_reports_unavailable(self, tmp_path, monkeypatch):
         # The seam, not the warm-up: with the weights in place and no
         # stemlab.model_compile installed, asking to compile must say so
         # rather than claim success or raise something unrecognisable.
-        weights = tmp_path / "small0.ckpt"
+        weights = tmp_path / "model.ckpt"
         weights.write_bytes(b"not really a checkpoint")
 
         monkeypatch.setattr(model_manager, "locate", lambda _id: weights)
         monkeypatch.setitem(sys.modules, "stemlab.model_compile", None)
 
         with pytest.raises(model_manager.CompileUnavailable):
-            model_manager.compile_model("beat-this-fast")
+            model_manager.compile_model("roformer")
 
 
 class TestRemoval:
