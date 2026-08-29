@@ -428,9 +428,13 @@ class TestTheDownloaderIsNotRunThroughPipsLauncher:
 
         model_manager.download("roformer")
 
-        assert seen["command"] == model_manager.bs_roformer_download_command(
-            model_manager.ROFORMER_MODEL_ID
-        )
+        assert seen["command"] == [
+            sys.executable,
+            "-m",
+            "stemlab.bs_roformer_download_cli",
+            "--model",
+            model_manager.ROFORMER_MODEL_ID,
+        ]
 
 
 class TestAFailedDownloadSaysWhatTheChildSaid:
@@ -445,3 +449,133 @@ class TestAFailedDownloadSaysWhatTheChildSaid:
 
         assert "could not reach huggingface.co" in str(caught.value)
         assert "1" in str(caught.value)
+
+
+class TestTheDownloaderIsGivenArgumentsItAccepts:
+    """The first version of this shipped the model as a bare positional.
+
+    Upstream's parser takes ``--model`` (repeatable, dest="models") and
+    rejects a positional with ``error: unrecognized arguments`` and exit code
+    2, so every download failed - before and after the launcher fix, which is
+    why fixing the launcher alone did not make downloading work.
+
+    The test below is deliberately not written against
+    bs_roformer_download_command: an expectation derived from the code under
+    test agrees with it whether or not either is right, which is exactly how
+    the wrong argv survived a green suite.
+    """
+
+    def _download_arguments(self):
+        command = model_manager.bs_roformer_download_command(
+            "--model", model_manager.ROFORMER_MODEL_ID
+        )
+        # Everything the entry point itself sees: past the interpreter, -m,
+        # and the module name.
+        return command[3:]
+
+    def test_the_model_is_passed_as_an_option_not_a_positional(self):
+        assert self._download_arguments() == ["--model", model_manager.ROFORMER_MODEL_ID]
+
+    def test_upstreams_own_parser_accepts_it(self, monkeypatch):
+        # The only check that cannot be wrong about what upstream takes,
+        # because it asks upstream. Needs bs_roformer importable, which costs
+        # torch - true in an Engine and in a dev install, not in plain CI.
+        download = pytest.importorskip(
+            "bs_roformer.download", reason="bs-roformer-infer is not installed here"
+        )
+
+        monkeypatch.setattr(
+            sys, "argv", ["bs-roformer-download", *self._download_arguments()]
+        )
+
+        parsed = download.parse_args()
+        selected = download._resolve_models(parsed)
+
+        # Not just "it parsed": an unknown identifier prints a complaint,
+        # resolves to nothing, and still exits 0, which would leave the
+        # failure to the on-disk check afterwards.
+        assert [model.slug for model in selected] == [model_manager.ROFORMER_MODEL_ID]
+
+    def test_listing_models_is_the_flag_upstream_documents(self):
+        command = model_manager.bs_roformer_download_command("--list-models")
+
+        assert command[3:] == ["--list-models"]
+
+
+class TestDemucsIsFoundWhereItActuallyLands:
+    """`get_model` prefers the HuggingFace hub over the legacy .th repo.
+
+    demucs.pretrained.get_model tries adefossez/HTDemucs-6s first, and that
+    repository exists, so on a machine with a reachable hub the weights arrive
+    as safetensors in the HF cache and 5c90dfd2-34c22ccb.th is never written.
+    Looking only for the .th turned a successful download into "Demucs still
+    is not on disk after downloading it", and showed a working Demucs as
+    missing in the inventory.
+    """
+
+    def _hf_snapshot(self, root: Path) -> Path:
+        snapshot = (
+            root / "hub" / model_manager.DEMUCS_HF_DIRECTORY / "snapshots" / "abc123"
+        )
+        snapshot.mkdir(parents=True)
+        return snapshot
+
+    def test_the_huggingface_copy_counts_as_installed(self, tmp_path, monkeypatch):
+        snapshot = self._hf_snapshot(tmp_path)
+        (snapshot / "5c90dfd2.safetensors").write_bytes(b"x" * 2048)
+
+        monkeypatch.setenv("HF_HOME", str(tmp_path))
+        monkeypatch.setenv("TORCH_HOME", str(tmp_path / "empty-torch"))
+        monkeypatch.delenv("STEMLAB_DEMUCS_MODEL_REPO", raising=False)
+
+        found = model_manager.locate("demucs")
+
+        assert found is not None
+        assert found.name == "5c90dfd2.safetensors"
+
+    def test_the_legacy_checkpoint_still_wins_when_it_is_there(self, tmp_path, monkeypatch):
+        # A packaged release ships the .th and sets HF_HUB_OFFLINE; that path
+        # must not start depending on a hub cache it deliberately avoids.
+        snapshot = self._hf_snapshot(tmp_path)
+        (snapshot / "5c90dfd2.safetensors").write_bytes(b"x" * 2048)
+
+        torch_home = tmp_path / "torch"
+        checkpoints = torch_home / "hub" / "checkpoints"
+        checkpoints.mkdir(parents=True)
+        (checkpoints / model_manager.DEMUCS_CHECKPOINT).write_bytes(b"y" * 4096)
+
+        monkeypatch.setenv("HF_HOME", str(tmp_path))
+        monkeypatch.setenv("TORCH_HOME", str(torch_home))
+        monkeypatch.delenv("STEMLAB_DEMUCS_MODEL_REPO", raising=False)
+
+        assert model_manager.locate("demucs").name == model_manager.DEMUCS_CHECKPOINT
+
+    def test_neither_present_is_still_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+        monkeypatch.setenv("TORCH_HOME", str(tmp_path / "torch"))
+        monkeypatch.delenv("STEMLAB_DEMUCS_MODEL_REPO", raising=False)
+
+        assert model_manager.locate("demucs") is None
+
+    def test_hf_hub_cache_wins_over_hf_home(self, tmp_path, monkeypatch):
+        # huggingface_hub's own precedence, and the two are not the same
+        # directory: HF_HUB_CACHE names the hub folder, HF_HOME its parent.
+        cache = tmp_path / "explicit"
+        snapshot = cache / model_manager.DEMUCS_HF_DIRECTORY / "snapshots" / "abc123"
+        snapshot.mkdir(parents=True)
+        (snapshot / "5c90dfd2.safetensors").write_bytes(b"x" * 2048)
+
+        monkeypatch.setenv("HF_HUB_CACHE", str(cache))
+        monkeypatch.setenv("HF_HOME", str(tmp_path / "unused"))
+        monkeypatch.setenv("TORCH_HOME", str(tmp_path / "torch"))
+        monkeypatch.delenv("STEMLAB_DEMUCS_MODEL_REPO", raising=False)
+
+        assert model_manager.locate("demucs") is not None
+
+    def test_the_mirrored_cache_name_matches_demucs(self):
+        # The drift guard: demucs owns this naming, we only copy it.
+        hf = pytest.importorskip("demucs.hf", reason="demucs is not installed here")
+
+        expected = f"{hf.DEFAULT_NAMESPACE}/{hf.hf_repo_name(model_manager.DEMUCS_MODEL_NAME)}"
+
+        assert model_manager.DEMUCS_HF_DIRECTORY == "models--" + expected.replace("/", "--")
