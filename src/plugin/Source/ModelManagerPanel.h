@@ -38,9 +38,13 @@ namespace stemlab::widgets
         /** Shown in place of the list when the engine could not be asked. */
         void setUnavailable(const juce::String& reason);
 
+        /** The compile switch and a note about it when it is not usable. */
+        void setCompileState(bool enabled, bool supported, const juce::String& reason);
+
         std::function<void(juce::StringArray)> onDownload;
         std::function<void(juce::StringArray)> onCompile;
         std::function<void(juce::StringArray, juce::StringArray)> onRemove;
+        std::function<void(bool)> onCompileEnabled;
         std::function<void()> onCancel;
         std::function<void()> onClose;
 
@@ -74,6 +78,8 @@ namespace stemlab::widgets
 
         juce::Label titleLabel;
         juce::Label summaryLabel;
+        juce::Label compileLabel;
+        juce::ToggleButton compileToggle{"Compile separations"};
         juce::Label activityLabel;
         juce::Label unavailableLabel;
 

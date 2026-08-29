@@ -47,6 +47,12 @@ from .runtime import (
 
 ProgressCallback = Callable[[float, str], None]
 
+# Exit code for a run that was asked for something it could not do, and did
+# nothing else: compiling switched off, or a model nothing patches. Distinct
+# from 0 so the caller does not report "complete" over the reason, and from 1
+# so it is not dressed up as a failure - nothing broke.
+NOT_APPLICABLE_EXIT_CODE = 3
+
 
 # ---------------------------------------------------------------- compile
 
@@ -409,12 +415,23 @@ def _directory_bytes(path: Path) -> int:
 # ----------------------------------------------------------------- status
 
 
-def _compile_environment() -> tuple[bool, bool, str]:
+def _best_device() -> str:
+    """The device a job would run on, for asking whether it can be compiled."""
+    try:
+        from .device import pick_best_device
+
+        return pick_best_device()
+    except Exception:
+        return "cpu"
+
+
+def _compile_environment(probe: bool) -> tuple[bool, bool, str]:
     """Whether compiling was asked for, whether this machine can, and why not.
 
-    compile_support decides both, and its probe needs torch to answer the
-    second. Status runs on every editor open and must not import torch, so an
-    absent answer is reported as absent rather than guessed at.
+    compile_support decides both, and answering the second means importing
+    torch, which costs seconds. Status runs on every editor open, so that is
+    paid only when ``probe`` asks for it - which the plugin does when someone
+    turns compiling on, not on every refresh.
     """
     try:
         from . import compile_support
@@ -426,16 +443,17 @@ def _compile_environment() -> tuple[bool, bool, str]:
     if not requested:
         return False, False, "Set STEMLAB_TORCH_COMPILE=1 to compile separations"
 
-    if "torch" not in sys.modules:
-        # Only reachable once someone opted in, and then the cost is theirs to
-        # pay knowingly rather than on every editor open.
-        return True, False, "Compile support has not been probed in this process"
+    if not probe and "torch" not in sys.modules:
+        # Unprobed, and deliberately not dressed up as a finding: saying so
+        # would put "not been probed" in front of every user who turned
+        # compiling on. The caller that needs the answer asks for it.
+        return True, True, ""
 
-    supported, reason = compile_support.compile_support_status("cpu")
+    supported, reason = compile_support.compile_support_status(_best_device())
     return True, supported, reason
 
 
-def status() -> dict[str, object]:
+def status(*, probe_compile: bool = False) -> dict[str, object]:
     """Everything the plugin needs to draw the Model Manager, as plain data."""
     models = []
 
@@ -473,7 +491,7 @@ def status() -> dict[str, object]:
         entry for entry in models if entry["compileSupport"] == COMPILE_SUPPORTED
     ]
 
-    requested, supported, support_reason = _compile_environment()
+    requested, supported, support_reason = _compile_environment(probe_compile)
 
     return {
         "models": models,
@@ -739,16 +757,22 @@ def compile_model(
 
     began = time.monotonic()
 
-    elapsed = model_compile.warm_up(
-        model_id,
-        device=device,
-        progress=(
-            (lambda fraction, stage: progress(start + (end - start) * fraction, stage))
-            if progress
-            else None
-        ),
-        cancellation=cancellation,
-    )
+    try:
+        elapsed = model_compile.warm_up(
+            model_id,
+            device=device,
+            progress=(
+                (lambda fraction, stage: progress(start + (end - start) * fraction, stage))
+                if progress
+                else None
+            ),
+            cancellation=cancellation,
+        )
+    except model_compile.WarmUpUnavailable as exc:
+        # A state, not a failure: compiling switched off, or a machine with no
+        # toolchain. Reported the same way an unpatched model is, so a run
+        # whose downloads all succeeded does not come back red.
+        raise CompileUnavailable(str(exc)) from exc
 
     if not isinstance(elapsed, (int, float)) or elapsed <= 0.0:
         elapsed = time.monotonic() - began
@@ -867,6 +891,11 @@ def _main() -> None:
     )
 
     parser.add_argument("--status", action="store_true", help="report what is on disk")
+    parser.add_argument(
+        "--probe-compile",
+        action="store_true",
+        help="also ask whether this machine can compile, which imports torch",
+    )
     parser.add_argument("--output", help="where --status writes its JSON")
     parser.add_argument("--download", action="append", default=[], metavar="ID")
     parser.add_argument("--download-missing", action="store_true")
@@ -881,7 +910,7 @@ def _main() -> None:
     token = CancellationToken(Path(args.cancel_file) if args.cancel_file else None)
 
     if args.status:
-        payload = status()
+        payload = status(probe_compile=args.probe_compile)
         text = json.dumps(payload, indent=1)
 
         if args.output:
@@ -906,6 +935,7 @@ def _main() -> None:
     spans = _spans(work)
     index = 0
     freed = 0
+    refused = 0
 
     for model_id in downloads:
         token.raise_if_cancelled()
@@ -927,6 +957,7 @@ def _main() -> None:
             # build cannot do, and saying so beats a red error on a job whose
             # downloads all succeeded.
             print(f"STEMLAB_PROGRESS {spans[index][1] * 100:.0f} {exc}", flush=True)
+            refused += 1
         index += 1
 
     for model_id in removals:
@@ -940,6 +971,12 @@ def _main() -> None:
         freed += delete_cache(cache_id)
         _emit_progress(spans[index][1], f"Cleared {cache_id}")
         index += 1
+
+    if refused and refused == work:
+        # Everything asked for was refused, so the reason printed above is the
+        # whole outcome. Leaving it as the last word beats overwriting it with
+        # a completion the user would reasonably read as "it compiled".
+        raise SystemExit(NOT_APPLICABLE_EXIT_CODE)
 
     if freed > 0:
         print(f"STEMLAB_PROGRESS 100 Reclaimed {_human_bytes(freed)}", flush=True)

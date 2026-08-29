@@ -511,8 +511,13 @@ public:
         juce::int64 bytes = 0;
     };
 
-    /** Ask the engine what is on disk. Cheap, and safe to call on open. */
-    bool refreshModelInventory();
+    /** Ask the engine what is on disk. Cheap, and safe to call on open.
+
+        @param probeCompile also ask whether this machine can compile, which
+                            imports torch in the child and costs seconds. Only
+                            worth it when the answer is about to be shown.
+    */
+    bool refreshModelInventory(bool probeCompile = false);
 
     bool isModelInventoryRunning() const noexcept { return modelInventoryRunning.load(); }
     bool isModelJobRunning() const noexcept { return modelJobRunning.load(); }
@@ -532,6 +537,17 @@ public:
         one place. Both are false until an inventory has been read. */
     bool isAnyModelMissing() const noexcept { return anyModelMissing.load(); }
     bool isAnyCompilePending() const noexcept { return anyCompilePending.load(); }
+
+    /** Whether compiling was asked for, whether this machine can, and why
+        not. Straight from the engine: an unset opt-in and a missing C++
+        compiler look identical from here and need opposite advice. */
+    bool isCompileRequested() const noexcept { return compileRequested.load(); }
+
+    /** Turn compiled inference on or off for every job this plugin starts. */
+    void setTorchCompileEnabled(bool enabled);
+    bool isTorchCompileEnabled() const noexcept { return torchCompileEnabled.load(); }
+    bool isCompileSupported() const noexcept { return compileSupported.load(); }
+    juce::String getCompileReason() const;
 
     bool startModelDownload(const juce::StringArray& modelIds);
     bool startModelCompile(const juce::StringArray& modelIds);
@@ -764,6 +780,9 @@ private:
     void finishSourceAnalysis(const juce::File& source, const juce::File& result, int exitCode);
 
     /** Shared by download, compile and removal: they differ only in argv. */
+    /** Publish the compile preference where child processes will read it. */
+    void exportTorchCompilePreference() const;
+
     bool launchModelJob(const juce::StringArray& arguments, const juce::String& label);
     void finishModelInventory(const juce::File& output, int exitCode);
     void finishModelJob(const juce::String& label, int exitCode);
@@ -1195,6 +1214,10 @@ private:
     std::atomic<bool> modelJobRunning{false};
     std::atomic<bool> anyModelMissing{false};
     std::atomic<bool> anyCompilePending{false};
+    std::atomic<bool> compileRequested{false};
+    std::atomic<bool> torchCompileEnabled{false};
+    std::atomic<bool> compileSupported{false};
+    juce::String compileReason;
 
     juce::File modelInventoryFile;
     juce::File modelJobCancelFile;

@@ -526,6 +526,14 @@ private:
     bool modelManagerDismissed = false;
     bool modelManagerAutoShown = false;
 
+    /*
+     * Set once a model job has run while the manager was open. The outcome of
+     * one lands on the processor's status line, which is behind the overlay's
+     * scrim and unreadable there, so the panel keeps showing that line after
+     * the job ends rather than clearing it the moment it stops being busy.
+     */
+    bool modelJobReported = false;
+
     // Header.
     juce::Label titleLabel;
     std::unique_ptr<stemlab::widgets::IconButton> enginePrevButton;

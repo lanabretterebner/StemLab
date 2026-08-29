@@ -27,6 +27,35 @@ ROFORMER_SAMPLE_RATE = 44100
 _RESAMPLE_BLOCK_FRAMES = 1 << 16
 
 
+def build_roformer_command(
+    input_folder: Path,
+    store_dir: Path,
+    device: str,
+    model: str,
+) -> list[str]:
+    """The argv that runs BS-RoFormer over one staging folder.
+
+    Extracted so the cache warm-up can run byte-for-byte the same invocation
+    a separation does. An inductor entry is keyed on the graph, so a warm-up
+    that reached the model any other way could trace shapes no job asks for
+    and fill the cache with kernels nothing reads - a failure with no error
+    anywhere. One builder means there is nothing to keep in step.
+    """
+    return [
+        sys.executable,
+        "-m",
+        "stemlab.bs_roformer_cli",
+        "--input_folder",
+        str(input_folder),
+        "--store_dir",
+        str(store_dir),
+        "--device",
+        device,
+        "--model",
+        model,
+    ]
+
+
 def _find_ffmpeg() -> str | None:
     """Locate ffmpeg next to this interpreter, then on PATH."""
     python_dir = Path(sys.executable).resolve().parent
@@ -428,19 +457,7 @@ class RoFormerBackend:
                 # also keeps the output canonicalisation below unchanged.
                 aligned.replace(staged)
 
-            command = [
-                sys.executable,
-                "-m",
-                "stemlab.bs_roformer_cli",
-                "--input_folder",
-                str(staging),
-                "--store_dir",
-                str(output_dir),
-                "--device",
-                device,
-                "--model",
-                self.model,
-            ]
+            command = build_roformer_command(staging, output_dir, device, self.model)
 
             self._log("Starting pretrained BS-RoFormer separation...")
             self._log(f"Model: {self.model}")
