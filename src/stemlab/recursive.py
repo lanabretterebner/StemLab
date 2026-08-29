@@ -25,6 +25,10 @@ if TYPE_CHECKING:
 
 # Models proven/selected for StemLab's first recursive pass.
 VOCAL_MODEL = "UVR-BVE-4B_SN-44100-2.pth"
+# Only when the input's own rate cannot be read; audio-separator's own
+# default, so this changes nothing that was not already broken.
+RECURSIVE_FALLBACK_SAMPLE_RATE = 44100
+
 DRUM_MODEL = "MDX23C-DrumSep-aufr33-jarredou.ckpt"
 DEVERB_MODEL = "dereverb_mel_band_roformer_less_aggressive_anvuew_sdr_18.8050.ckpt"
 FOREGROUND_MODEL = "StemLab Adaptive Foreground DSP v1"
@@ -196,7 +200,19 @@ def __getattr__(name: str) -> object:
         return None
 
 
-def _separator(output_dir: Path, model_dir: Path) -> "Separator":
+def _source_sample_rate(input_path: Path) -> int:
+    """The rate of the stem being split, which is the session's rate."""
+    import soundfile as sf
+
+    try:
+        rate = int(sf.info(str(input_path)).samplerate)
+    except Exception:
+        return RECURSIVE_FALLBACK_SAMPLE_RATE
+
+    return rate if rate > 0 else RECURSIVE_FALLBACK_SAMPLE_RATE
+
+
+def _separator(output_dir: Path, model_dir: Path, sample_rate: int) -> "Separator":
     separator_cls = _require_separator()
     output_dir.mkdir(parents=True, exist_ok=True)
     model_dir.mkdir(parents=True, exist_ok=True)
@@ -204,6 +220,14 @@ def _separator(output_dir: Path, model_dir: Path) -> "Separator":
         output_dir=str(output_dir),
         model_file_dir=str(model_dir),
         output_format="WAV",
+        # audio-separator defaults this to 44100 and both loads and writes at
+        # it, so on any session that is not 44.1 kHz the children came back at
+        # a different rate from the stem they were split out of. The plugin's
+        # monitor mix takes its rate from the first lane it reads and skips
+        # every lane that disagrees, so those children were dropped from the
+        # mix entirely - silently, which is what made a split look like it had
+        # broken the parent stem's Solo and Mute.
+        sample_rate=sample_rate,
         normalization_threshold=0.9,
         amplification_threshold=0.0,
         use_soundfile=True,
@@ -401,7 +425,7 @@ def split_drums(
     if progress:
         progress(4.0, "Loading recursive drum model")
 
-    separator = _separator(output_dir, model_dir)
+    separator = _separator(output_dir, model_dir, _source_sample_rate(input_path))
     _load_model(separator, DRUM_MODEL, "drum separation", progress, model_dir)
 
     if progress:
@@ -475,7 +499,7 @@ def split_vocals(
     if progress:
         progress(4.0, "Loading lead/backing vocal model")
 
-    separator = _separator(output_dir, model_dir)
+    separator = _separator(output_dir, model_dir, _source_sample_rate(input_path))
     _load_model(separator, VOCAL_MODEL, "lead/backing vocal", progress, model_dir)
 
     if progress:
@@ -654,7 +678,7 @@ def deverb_vocal(
     if progress:
         progress(4.0, "Loading vocal de-reverb model")
 
-    separator = _separator(output_dir, model_dir)
+    separator = _separator(output_dir, model_dir, _source_sample_rate(input_path))
     _load_model(separator, DEVERB_MODEL, "vocal de-reverb", progress, model_dir)
 
     if progress:
