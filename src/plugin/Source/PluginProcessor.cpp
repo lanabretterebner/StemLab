@@ -494,6 +494,34 @@ struct Utf8LineBuffer
  * Matches python, pythonw, python3 and versioned names such as python3.11, on
  * either platform, without also matching neighbours like python-config.
  */
+/**
+ * The console script a pip install lays down for one worker module.
+ *
+ * Only the interpreter form can be handed a module name. A pip install
+ * instead puts one executable per entry point beside the engine, named for
+ * what it does rather than for the module behind it, so the name has to be
+ * translated. Every worker the plugin launches needs an entry here; a module
+ * missing from this list yields no command at all, which the callers report,
+ * rather than silently launching whichever worker happened to be listed
+ * last. Keep it in step with [project.scripts] in pyproject.toml.
+ */
+juce::String consoleScriptFor(const juce::String& moduleName)
+{
+    if (moduleName == "stemlab.recursive_job")
+        return "stemlab-recursive-job";
+
+    if (moduleName == "stemlab.source_analysis")
+        return "stemlab-source-analysis";
+
+    if (moduleName == "stemlab.midi")
+        return "stemlab-midi-job";
+
+    if (moduleName == "stemlab.model_manager")
+        return "stemlab-model-manager";
+
+    return {};
+}
+
 bool looksLikePythonInterpreter(const juce::File& file)
 {
     const auto name = file.getFileNameWithoutExtension().toLowerCase();
@@ -3858,22 +3886,27 @@ StemLabAudioProcessor::makePythonModuleCommand(const juce::String& moduleName) c
         return command;
     }
 
+    const auto script = consoleScriptFor(moduleName);
+
+    if (script.isEmpty())
+        return {};
+
     if (fileName.containsIgnoreCase("stemlab-plugin-job"))
     {
-        // Development installs place both workers in the same environment.
-        auto recursiveExecutable = commandFile.getSiblingFile(
-            fileName.replace("stemlab-plugin-job", "stemlab-recursive-job"));
+        // Development installs place every worker in the same environment.
+        auto executable =
+            commandFile.getSiblingFile(fileName.replace("stemlab-plugin-job", script));
 
-        if (recursiveExecutable.existsAsFile())
+        if (executable.existsAsFile())
         {
-            command.add(recursiveExecutable.getFullPathName());
+            command.add(executable.getFullPathName());
             return command;
         }
     }
 
     if (commandName.equalsIgnoreCase("stemlab-plugin-job"))
     {
-        command.add("stemlab-recursive-job");
+        command.add(script);
         return command;
     }
 
