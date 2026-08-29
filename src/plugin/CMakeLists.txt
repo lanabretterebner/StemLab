@@ -186,6 +186,17 @@ if (BUILD_TESTING)
     stemlab_enable_test_assertions(StemLabSourceLabelTests)
     add_test(NAME StemLabSourceLabelTests COMMAND StemLabSourceLabelTests)
 
+    # Which wheel events a lane forwards to the viewport and which it drops.
+    # Links JUCE but needs no display: it asserts against MouseEvent identity,
+    # not a window.
+    add_executable(StemLabLaneWheelDispatchTests Tests/LaneWheelDispatchTests.cpp)
+    target_compile_features(StemLabLaneWheelDispatchTests PRIVATE cxx_std_20)
+    target_link_libraries(StemLabLaneWheelDispatchTests PRIVATE juce::juce_gui_basics)
+    target_compile_definitions(StemLabLaneWheelDispatchTests PRIVATE
+        JUCE_STANDALONE_APPLICATION=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    stemlab_enable_test_assertions(StemLabLaneWheelDispatchTests)
+    add_test(NAME StemLabLaneWheelDispatchTests COMMAND StemLabLaneWheelDispatchTests)
+
     # Upstream's host-capture pass: the self-drag guard plus a real
     # processor capturing processBlock audio, so this one links the plugin.
     add_executable(StemLabHostCaptureTests Tests/HostCaptureTests.cpp

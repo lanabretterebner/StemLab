@@ -1327,6 +1327,35 @@ void StemLaneComponent::mouseUp(const juce::MouseEvent&)
 void StemLaneComponent::mouseEnter(const juce::MouseEvent&) { updateHover(); }
 void StemLaneComponent::mouseExit(const juce::MouseEvent&) { updateHover(); }
 
+void StemLaneComponent::mouseWheelMove(const juce::MouseEvent& event,
+                                       const juce::MouseWheelDetails& wheel)
+{
+    /*
+     * Listening deeply for the row's hover highlight (see the constructor)
+     * has JUCE replay every descendant's mouse event here as well - the
+     * wheel included, through MouseListenerList::sendMouseEvent. The
+     * descendant's own chain has already decided what the wheel meant: the
+     * waveform well zooms and consumes it, and anything else forwards it to
+     * the viewport. Component::mouseWheelMove then forwarded the replay to
+     * the viewport a second time, so a wheel over the well zoomed AND
+     * scrolled the lane list, and a wheel anywhere else on the lane scrolled
+     * it twice over.
+     *
+     * Only the lane's own events carry on up. The replays are already spoken
+     * for, and eventComponent still names the component the wheel actually
+     * landed on (HierarchyChecker keeps it there while that component is
+     * alive), so the two are told apart by asking.
+     *
+     * It took a deep enough stem tree to make the list scrollable before any
+     * of this was visible - with everything on screen the extra scroll had
+     * nowhere to go.
+     */
+    if (event.eventComponent != this)
+        return;
+
+    Component::mouseWheelMove(event, wheel);
+}
+
 void StemLaneComponent::updateHover()
 {
     /*
@@ -2260,6 +2289,21 @@ bool StemLabAudioProcessorEditor::keyPressed(const juce::KeyPress& key)
     if (key == juce::KeyPress::escapeKey)
     {
         processor.clearAllStemSelectionRanges();
+        return true;
+    }
+
+    // Space is the transport key everywhere else. It asks the play button
+    // whether there is anything to play rather than repeating the condition,
+    // so the key can never start playback the button itself would refuse -
+    // mid-capture, mid-job, or with no audio loaded. Unhandled when it
+    // cannot act, leaving the key to whatever else wants it.
+    if (key == juce::KeyPress::spaceKey)
+    {
+        if (!playButton.isEnabled())
+            return false;
+
+        processor.transportTogglePlay();
+        refreshFromProcessor();
         return true;
     }
 
