@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -56,7 +57,11 @@ class TestStatusNeedsNothingOptional:
             ],
             capture_output=True,
             text=True,
-            env={"PYTHONPATH": str(source), "PATH": "/usr/bin:/bin", "HOME": str(Path.home())},
+            # Inherited, not hand-built. A constructed environment has to name
+            # every variable the child needs, and Path.home() reads USERPROFILE
+            # on Windows rather than HOME - so a POSIX-shaped env left the child
+            # with no home at all and every model reporting as unlocatable.
+            env={**os.environ, "PYTHONPATH": str(source)},
         )
 
         assert probe.returncode == 0, probe.stderr
@@ -71,6 +76,35 @@ class TestStatusNeedsNothingOptional:
             # None is a fine answer; an exception is not, because the probe
             # runs before anything is known to be installed.
             model_manager.locate(model.id)
+
+    def test_it_survives_a_machine_with_no_nameable_home(self, monkeypatch):
+        """Path.home() raises on Windows with no USERPROFILE or HOMEDRIVE.
+
+        A release build hit exactly this: locate() reached Path.home() for the
+        RoFormer cache and the whole probe died. Linux hides it, because
+        Path.home() falls back to the passwd database there, so the guard has
+        to be tested by making home unnameable rather than by unsetting a
+        variable.
+        """
+
+        def no_home():
+            raise RuntimeError("Could not determine home directory.")
+
+        monkeypatch.setattr(Path, "home", staticmethod(no_home))
+
+        for model in model_manager.MODELS:
+            # Absent is the right answer. Raising is not.
+            assert model_manager.locate(model.id) is None
+
+        payload = model_manager.status()
+
+        assert len(payload["models"]) == len(model_manager.MODELS)
+        assert payload["anyModelMissing"] is True
+
+        # A cache whose path cannot be resolved is left out rather than
+        # offered with a size and a Clear that could not work.
+        for entry in payload["caches"]:
+            assert entry["path"]
 
     def test_status_reports_one_entry_per_model_and_cache(self):
         payload = model_manager.status()
@@ -293,7 +327,11 @@ class TestCommandLine:
             [sys.executable, "-m", "stemlab.model_manager", *args],
             capture_output=True,
             text=True,
-            env={"PYTHONPATH": str(source), "PATH": "/usr/bin:/bin", "HOME": str(Path.home())},
+            # Inherited, not hand-built. A constructed environment has to name
+            # every variable the child needs, and Path.home() reads USERPROFILE
+            # on Windows rather than HOME - so a POSIX-shaped env left the child
+            # with no home at all and every model reporting as unlocatable.
+            env={**os.environ, "PYTHONPATH": str(source)},
         )
 
     def test_status_writes_json_and_announces_its_path(self, tmp_path):
