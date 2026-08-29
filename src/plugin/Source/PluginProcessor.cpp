@@ -1,6 +1,7 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include "ReaperBridge.h"
+#include "SourceLabel.h"
 #include "StemLabPaths.h"
 #include "WaveformGrid.h"
 
@@ -3598,18 +3599,11 @@ void StemLabAudioProcessor::refreshAbletonSourceClipFromDisk()
         return;
     }
 
-    juce::String label;
-
-    if (trackName.isNotEmpty())
-        label += trackName;
-
-    if (clipName.isNotEmpty())
-    {
-        if (label.isNotEmpty())
-            label += " / ";
-
-        label += clipName;
-    }
+    // Live names a track after the clip it holds, so an imported "Song.wav"
+    // gave "Song.wav / Song" - the same name twice, in the window and on
+    // every stem the label names.
+    juce::String label{stemlab::source::joinSourceLabel (trackName.toStdString(),
+                                                         clipName.toStdString())};
 
     if (label.isEmpty())
         label = juce::File(path).getFileName();

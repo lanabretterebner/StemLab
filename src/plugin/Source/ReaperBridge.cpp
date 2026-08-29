@@ -1,4 +1,5 @@
 #include "ReaperBridge.h"
+#include "SourceLabel.h"
 #include "StemLabTheme.h"
 
 namespace stemlab::reaper
@@ -190,13 +191,13 @@ SourceItem querySelectedItem (const Api& api)
     const auto trackName = readTrackName (api, track);
     const auto takeName = readTakeName (api, take);
 
-    if (trackName.isNotEmpty() && takeName.isNotEmpty())
-        result.label = trackName + " / " + takeName;
-    else if (takeName.isNotEmpty())
-        result.label = takeName;
-    else if (trackName.isNotEmpty())
-        result.label = trackName;
-    else
+    // REAPER names an imported item's track after the file and its take
+    // after the file without the extension, so joining them blindly gave
+    // "Song.wav / Song" - here and on every stem the label goes on to name.
+    result.label = stemlab::source::joinSourceLabel (trackName.toStdString(),
+                                                     takeName.toStdString());
+
+    if (result.label.isEmpty())
         result.label = file.getFileName();
 
     result.file = file;
