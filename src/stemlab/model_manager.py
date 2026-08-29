@@ -418,7 +418,7 @@ def _compile_environment() -> tuple[bool, bool, str]:
     """
     try:
         from . import compile_support
-    except Exception as exc:  # noqa: BLE001 - an unimportable backend is an answer
+    except Exception as exc:
         return False, False, f"compile support is unavailable: {exc}"
 
     requested = compile_support.compile_requested()
@@ -957,11 +957,15 @@ def main() -> None:
     try:
         _main()
     except JobCancelled:
+        # A cancel is a user action, not a failure: report it as such and
+        # leave the "Failed - ..." status for real errors.
         print("STEMLAB_CANCELLED", flush=True)
-        raise SystemExit(130)
-    except Exception as exc:  # noqa: BLE001 - the boundary reports, it does not judge
+        raise SystemExit(130) from None
+    except Exception as exc:
+        # The plugin reads the failure reason from this line, and the
+        # traceback the re-raise prints is what "copy diagnostics" collects.
         print(f"STEMLAB_ERROR {exc}", flush=True)
-        raise SystemExit(1)
+        raise
 
 
 if __name__ == "__main__":
