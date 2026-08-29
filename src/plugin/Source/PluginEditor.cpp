@@ -2012,6 +2012,14 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     changeFolderButton.onClick = [this] { chooseJobRootFolder(); };
     panelContent.addAndMakeVisible(changeFolderButton);
 
+    openFolderButton = std::make_unique<widgets::IconButton>(
+        "open-job-folder", [](juce::Rectangle<float> b) { return stemlab::icons::folder(b); },
+        static_cast<float>(theme::metrics::footer::folderIcon), true, 0.0f, false);
+
+    openFolderButton->setTooltip("Open the output folder");
+    openFolderButton->onClick = [this] { revealJobFolder(); };
+    panelContent.addAndMakeVisible(*openFolderButton);
+
     // Footer actions vary by host. Standalone / generic host: saving is the
     // primary action. REAPER: Insert Stems is primary, saving secondary.
     // Ableton: sending is primary (send-only workflow, plus Retry for the
@@ -2356,15 +2364,6 @@ void StemLabAudioProcessorEditor::paintPanel(juce::Graphics& g)
         }
     }
 
-    // Folder icon beside the output path.
-    if (!folderIconBounds.isEmpty())
-    {
-        g.setColour(theme::colours::text50());
-        g.strokePath(stemlab::icons::folder(folderIconBounds.toFloat()),
-                     juce::PathStrokeType(1.2f, juce::PathStrokeType::curved,
-                                          juce::PathStrokeType::rounded));
-    }
-
     if (dragActive)
     {
         g.setColour(theme::colours::accentTint10());
@@ -2643,6 +2642,9 @@ void StemLabAudioProcessorEditor::layoutPanel()
 
         folderIconBounds = row.removeFromRight(footer::folderIcon)
                                .withSizeKeepingCentre(footer::folderIcon, footer::folderIcon);
+
+        if (openFolderButton != nullptr)
+            openFolderButton->setBounds(folderIconBounds);
 
         row.removeFromRight(footer::statusRightMargin);
 
@@ -3636,15 +3638,24 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
         sawSuccessfulJob = false;
     }
 
-    // A source deleted underneath a running transport must not take the stop
-    // control with it: audio that is playing is reason enough to keep the
-    // button live, whatever the file system now says. A disabled Button never
-    // enters buttonDown, so onClick would otherwise never fire and there
-    // would be no way to stop the sound.
+    /*
+        Two ways the stop control vanished from under playing audio, and
+        playing is reason enough to keep the button live against both.
+
+        A source deleted underneath a running transport, whatever the file
+        system now says. And a job started while a stem was auditioning:
+        starting playback is rightly gated on !engineRunning, but stopping it
+        never is, so that gate has to sit inside the parentheses rather than
+        around the whole condition.
+
+        A disabled Button never enters buttonDown, so its onClick never
+        fires. Greying this out is what made the sound unstoppable rather
+        than merely awkward.
+    */
     const bool transportPlaying = processor.isTransportPlaying();
 
-    playButton.setEnabled((captureExists || jobDone || transportPlaying) && !capturing &&
-                          !engineRunning);
+    playButton.setEnabled(transportPlaying ||
+                          ((captureExists || jobDone) && !capturing && !engineRunning));
     playButton.setShowPause(transportPlaying);
 
     const auto transportLength = processor.getTransportLengthSeconds();
@@ -3846,10 +3857,20 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
         if (placed.getX() != folderIconBounds.getX())
         {
-            panelContent.repaint(folderIconBounds.expanded(2));
             folderIconBounds = placed;
-            panelContent.repaint(folderIconBounds.expanded(2));
+
+            // Moving the button repaints both the vacated and the new
+            // rectangle by itself, so this no longer does it by hand.
+            if (openFolderButton != nullptr)
+                openFolderButton->setBounds(folderIconBounds);
         }
+    }
+
+    if (openFolderButton != nullptr)
+    {
+        // The path is only meaningful once there is a folder to point at,
+        // and the icon should not invite a click that opens nothing.
+        openFolderButton->setEnabled(processor.getJobRootDirectory().isDirectory());
     }
 
     changeFolderButton.setEnabled(!engineRunning);
@@ -3973,6 +3994,51 @@ void StemLabAudioProcessorEditor::chooseSaveFolder()
                                          if (folder.isDirectory())
                                              processor.saveSelectedStemsTo(folder);
                                      });
+}
+
+void StemLabAudioProcessorEditor::revealJobFolder()
+{
+    const auto folder = processor.getJobRootDirectory();
+
+    if (!folder.isDirectory())
+    {
+        processor.postUiStatus("No output folder yet");
+        return;
+    }
+
+    /*
+        revealToUser() opens the file manager with the item selected on
+        Windows and macOS. On Linux JUCE shells out to xdg-open, which has no
+        notion of selecting an item and which is absent on a minimal desktop -
+        and a failure there is silent, so the click would do nothing at all
+        with no explanation. Hence the explicit fallbacks and the status line.
+    */
+#if JUCE_LINUX
+    const char* const openers[] = {"xdg-open", "gio", "nautilus", "dolphin", "thunar", "nemo"};
+
+    for (const auto* opener : openers)
+    {
+        juce::ChildProcess process;
+        juce::StringArray command{opener};
+
+        if (juce::String(opener) == "gio")
+            command.add("open");
+
+        command.add(folder.getFullPathName());
+
+        if (process.start(command))
+        {
+            processor.postUiStatus("Opened the output folder");
+            return;
+        }
+    }
+
+    juce::SystemClipboard::copyTextToClipboard(folder.getFullPathName());
+    processor.postUiStatus("No file manager found - path copied to the clipboard");
+#else
+    folder.revealToUser();
+    processor.postUiStatus("Opened the output folder");
+#endif
 }
 
 void StemLabAudioProcessorEditor::chooseJobRootFolder()
