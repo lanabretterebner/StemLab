@@ -25,6 +25,22 @@ if TYPE_CHECKING:
 
 # Models proven/selected for StemLab's first recursive pass.
 VOCAL_MODEL = "UVR-BVE-4B_SN-44100-2.pth"
+# Only when the input's own rate cannot be read; audio-separator's own
+# default, so this changes nothing that was not already broken.
+RECURSIVE_FALLBACK_SAMPLE_RATE = 44100
+
+# audio-separator's VR backend - the one that runs .pth models, which here
+# means VOCAL_MODEL - always emits 44.1 kHz no matter what it is asked for.
+# vr_separator converts its spectrogram back to a waveform and resamples it to
+# a hardcoded ``target_sr=44100``; it never reads the Separator's
+# ``sample_rate``. common_separator then uses that ``sample_rate`` purely as
+# the header value it writes the file with. So asking the VR backend for
+# 48 kHz resamples nothing - it stamps 44.1 kHz audio as 48 kHz, and the child
+# plays back 8.8% fast and about 1.5 semitones sharp against its own parent.
+# The MDXC backend that runs the .ckpt models (DRUM_MODEL, DEVERB_MODEL) does
+# honour the requested rate end to end, which is why only vocals drifted.
+VR_BACKEND_SAMPLE_RATE = 44100
+
 DRUM_MODEL = "MDX23C-DrumSep-aufr33-jarredou.ckpt"
 DEVERB_MODEL = "dereverb_mel_band_roformer_less_aggressive_anvuew_sdr_18.8050.ckpt"
 FOREGROUND_MODEL = "StemLab Adaptive Foreground DSP v1"
@@ -196,7 +212,100 @@ def __getattr__(name: str) -> object:
         return None
 
 
-def _separator(output_dir: Path, model_dir: Path) -> "Separator":
+def _backend_sample_rate(model_filename: str, source_rate: int) -> int:
+    """The rate the backend behind ``model_filename`` will really produce.
+
+    Asking for a rate a backend ignores is worse than asking for the rate it
+    honours: the request is silently dropped but still becomes the file's
+    header. Ask each backend for what it can actually deliver and put the
+    result back on the session's rate afterwards.
+    """
+    if Path(model_filename).suffix.lower() == ".pth":
+        return VR_BACKEND_SAMPLE_RATE
+    return source_rate
+
+
+def _conform_sample_rate(
+    paths: Iterable[Path],
+    target_rate: int,
+    target_frames: int | None,
+    progress: ProgressCallback | None = None,
+) -> None:
+    """Put children on the parent's rate, and on its exact length.
+
+    A no-op whenever the backend already wrote the rate that was asked of it,
+    so it is safe to run after every split. The length is pinned to the
+    parent's because a child that is one sample longer or shorter drifts
+    against the stem it was split out of, and the plugin's Solo and Mute
+    subtract those children from that same parent. ``target_frames`` of None
+    means the parent's length could not be read, which is not the same as it
+    being zero - pinning to a failed probe would truncate every child to
+    silence, so the resampler's own length is kept instead.
+    """
+    import soundfile as sf
+
+    from .resample import resample_file
+
+    for path in sorted(paths):
+        try:
+            rate = int(sf.info(str(path)).samplerate)
+        except Exception:
+            # A file whose rate cannot be read is also a file this cannot
+            # mis-rate, and output_dir holds whatever the backend left behind
+            # as well as the children. Stepping over it leaves it exactly as
+            # the backend wrote it, which is the status quo for anything this
+            # function was never going to touch.
+            continue
+
+        if rate == target_rate:
+            continue
+
+        if progress:
+            progress(90.0, f"Returning {path.name} to {target_rate} Hz")
+
+        restored = path.with_name(f"{path.stem}_stemlab_rate{path.suffix}")
+        try:
+            resample_file(path, restored, target_rate, out_frames=target_frames)
+            # A file cannot be rewritten underneath its own reader, so the
+            # resample lands beside the child and then takes its place.
+            restored.replace(path)
+        except Exception as exc:
+            restored.unlink(missing_ok=True)
+            # Fail the split rather than publish this child. Left alone it
+            # would play, which is worse than an error: nothing downstream
+            # inspects a child's rate, so the only report would be the user
+            # hearing it drift against the stem it came out of.
+            raise RuntimeError(
+                f"Could not return {path.name} to the session's rate of "
+                f"{target_rate} Hz. It holds {rate} Hz audio and would play "
+                "back at the wrong pitch and speed against its own parent."
+            ) from exc
+
+
+def _source_rate_and_frames(input_path: Path) -> tuple[int, int | None]:
+    """The parent stem's rate and length, which its children have to match.
+
+    A length of None says the probe failed. soundfile is not the only reader
+    in this pipeline - audio-separator reaches audio through librosa, which
+    can open formats libsndfile will not - so a stem that cannot be probed
+    here can still separate perfectly well, and must not be truncated for it.
+    """
+    import soundfile as sf
+
+    try:
+        info = sf.info(str(input_path))
+    except Exception:
+        return RECURSIVE_FALLBACK_SAMPLE_RATE, None
+
+    rate = int(info.samplerate)
+    frames = int(info.frames)
+    return (
+        rate if rate > 0 else RECURSIVE_FALLBACK_SAMPLE_RATE,
+        frames if frames > 0 else None,
+    )
+
+
+def _separator(output_dir: Path, model_dir: Path, sample_rate: int) -> "Separator":
     separator_cls = _require_separator()
     output_dir.mkdir(parents=True, exist_ok=True)
     model_dir.mkdir(parents=True, exist_ok=True)
@@ -204,6 +313,14 @@ def _separator(output_dir: Path, model_dir: Path) -> "Separator":
         output_dir=str(output_dir),
         model_file_dir=str(model_dir),
         output_format="WAV",
+        # audio-separator defaults this to 44100 and both loads and writes at
+        # it, so on any session that is not 44.1 kHz the children came back at
+        # a different rate from the stem they were split out of. The plugin's
+        # monitor mix takes its rate from the first lane it reads and skips
+        # every lane that disagrees, so those children were dropped from the
+        # mix entirely - silently, which is what made a split look like it had
+        # broken the parent stem's Solo and Mute.
+        sample_rate=sample_rate,
         normalization_threshold=0.9,
         amplification_threshold=0.0,
         use_soundfile=True,
@@ -401,7 +518,10 @@ def split_drums(
     if progress:
         progress(4.0, "Loading recursive drum model")
 
-    separator = _separator(output_dir, model_dir)
+    source_rate, source_frames = _source_rate_and_frames(input_path)
+    separator = _separator(
+        output_dir, model_dir, _backend_sample_rate(DRUM_MODEL, source_rate)
+    )
     _load_model(separator, DRUM_MODEL, "drum separation", progress, model_dir)
 
     if progress:
@@ -423,6 +543,7 @@ def split_drums(
     }
     result = separator.separate(str(input_path), custom_output_names=custom_names)
     paths = _resolved_outputs(output_dir, result)
+    _conform_sample_rate(paths, source_rate, source_frames, progress)
 
     children = _children_from_outputs(
         paths,
@@ -475,7 +596,10 @@ def split_vocals(
     if progress:
         progress(4.0, "Loading lead/backing vocal model")
 
-    separator = _separator(output_dir, model_dir)
+    source_rate, source_frames = _source_rate_and_frames(input_path)
+    separator = _separator(
+        output_dir, model_dir, _backend_sample_rate(VOCAL_MODEL, source_rate)
+    )
     _load_model(separator, VOCAL_MODEL, "lead/backing vocal", progress, model_dir)
 
     if progress:
@@ -492,6 +616,7 @@ def split_vocals(
     }
     result = separator.separate(str(input_path), custom_output_names=custom_names)
     paths = _resolved_outputs(output_dir, result)
+    _conform_sample_rate(paths, source_rate, source_frames, progress)
 
     children = _children_from_outputs(
         paths,
@@ -654,7 +779,10 @@ def deverb_vocal(
     if progress:
         progress(4.0, "Loading vocal de-reverb model")
 
-    separator = _separator(output_dir, model_dir)
+    source_rate, source_frames = _source_rate_and_frames(input_path)
+    separator = _separator(
+        output_dir, model_dir, _backend_sample_rate(DEVERB_MODEL, source_rate)
+    )
     _load_model(separator, DEVERB_MODEL, "vocal de-reverb", progress, model_dir)
 
     if progress:
@@ -670,6 +798,7 @@ def deverb_vocal(
     }
     result = separator.separate(str(input_path), custom_output_names=custom_names)
     paths = _resolved_outputs(output_dir, result)
+    _conform_sample_rate(paths, source_rate, source_frames, progress)
 
     children = _children_from_outputs(
         paths,

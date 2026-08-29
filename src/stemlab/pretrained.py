@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 from .device import resolve_torch_device
+from .resample import resample_file as _resample_file
 from .runtime import CancellationToken, run_progress_process
 
 DEFAULT_MODEL = "roformer-model-bs-roformer-sw-by-jarredou"
@@ -19,12 +20,6 @@ DEFAULT_MODEL = "roformer-model-bs-roformer-sw-by-jarredou"
 # edge 8.8% too high (~1.5 semitones), which costs separation quality and
 # adds bleed. The upstream CLI does not resample, so StemLab does it here.
 ROFORMER_SAMPLE_RATE = 44100
-
-# Resampling happens in blocks, not whole files: decoding a six-minute
-# stereo track and resampling it in one call measured 251 MB of extra peak
-# memory against none at all streamed, and it lands immediately before the
-# separator loads its model. Block and whole-file results are identical.
-_RESAMPLE_BLOCK_FRAMES = 1 << 16
 
 
 def build_roformer_command(
@@ -135,83 +130,6 @@ def _rate_and_frames(path: Path) -> tuple[int, int]:
 
     info = sf.info(str(path))
     return int(info.samplerate), int(info.frames)
-
-
-def _resample_file(
-    source: Path,
-    destination: Path,
-    out_rate: int,
-    out_frames: int | None = None,
-    widen_narrow_pcm: bool = False,
-) -> int:
-    """Rewrite ``source`` at ``out_rate`` and return the frames written.
-
-    ``out_frames`` is supplied by the caller rather than computed here
-    because soxr's output length is not a stable function of the input
-    length: resampling 48 kHz to 44.1 kHz gave ``ceil(n * out / in)`` for
-    4099 frames but one frame less for 65537 and for 999983. A stem that
-    is a sample longer or shorter than the session drifts against every
-    other track, so the length is trimmed or zero-padded to what was asked
-    for instead of being trusted.
-    """
-    import numpy as np
-    import soundfile as sf
-    import soxr
-
-    info = sf.info(str(source))
-    subtype = info.subtype
-
-    if widen_narrow_pcm and subtype in {"PCM_S8", "PCM_U8", "PCM_16"}:
-        # Only ever the model's throwaway input file, which is written once
-        # and read once: widening keeps the extra trip through 44.1 kHz from
-        # re-quantising it, and PCM_24 is already what the ffmpeg branch
-        # stages. Stems keep whatever width they were written at - those are
-        # the deliverable, and nothing may change their format silently.
-        subtype = "PCM_24"
-
-    resampler = soxr.ResampleStream(
-        info.samplerate,
-        out_rate,
-        info.channels,
-        dtype="float32",
-        quality="HQ",
-    )
-    written = 0
-
-    with (
-        sf.SoundFile(str(source)) as reader,
-        sf.SoundFile(
-            str(destination),
-            "w",
-            samplerate=out_rate,
-            channels=info.channels,
-            subtype=subtype,
-        ) as writer,
-    ):
-        while True:
-            # soundfile hands back (frames, channels), which is the layout
-            # soxr expects. Nothing here may transpose: a channel-major
-            # array is read as a handful of frames with thousands of
-            # channels and is returned silently unresampled.
-            block = reader.read(_RESAMPLE_BLOCK_FRAMES, dtype="float32", always_2d=True)
-            last = block.shape[0] < _RESAMPLE_BLOCK_FRAMES
-            resampled = resampler.resample_chunk(block, last=last)
-
-            if out_frames is not None and written + resampled.shape[0] > out_frames:
-                resampled = resampled[: max(0, out_frames - written)]
-
-            if resampled.shape[0]:
-                writer.write(resampled)
-                written += resampled.shape[0]
-
-            if last:
-                break
-
-        if out_frames is not None and written < out_frames:
-            writer.write(np.zeros((out_frames - written, info.channels), dtype="float32"))
-            written = out_frames
-
-    return written
 
 
 def _restore_stem_sample_rate(

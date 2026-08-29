@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -56,7 +57,11 @@ class TestStatusNeedsNothingOptional:
             ],
             capture_output=True,
             text=True,
-            env={"PYTHONPATH": str(source), "PATH": "/usr/bin:/bin", "HOME": str(Path.home())},
+            # Inherited, not hand-built. A constructed environment has to name
+            # every variable the child needs, and Path.home() reads USERPROFILE
+            # on Windows rather than HOME - so a POSIX-shaped env left the child
+            # with no home at all and every model reporting as unlocatable.
+            env={**os.environ, "PYTHONPATH": str(source)},
         )
 
         assert probe.returncode == 0, probe.stderr
@@ -71,6 +76,35 @@ class TestStatusNeedsNothingOptional:
             # None is a fine answer; an exception is not, because the probe
             # runs before anything is known to be installed.
             model_manager.locate(model.id)
+
+    def test_it_survives_a_machine_with_no_nameable_home(self, monkeypatch):
+        """Path.home() raises on Windows with no USERPROFILE or HOMEDRIVE.
+
+        A release build hit exactly this: locate() reached Path.home() for the
+        RoFormer cache and the whole probe died. Linux hides it, because
+        Path.home() falls back to the passwd database there, so the guard has
+        to be tested by making home unnameable rather than by unsetting a
+        variable.
+        """
+
+        def no_home():
+            raise RuntimeError("Could not determine home directory.")
+
+        monkeypatch.setattr(Path, "home", staticmethod(no_home))
+
+        for model in model_manager.MODELS:
+            # Absent is the right answer. Raising is not.
+            assert model_manager.locate(model.id) is None
+
+        payload = model_manager.status()
+
+        assert len(payload["models"]) == len(model_manager.MODELS)
+        assert payload["anyModelMissing"] is True
+
+        # A cache whose path cannot be resolved is left out rather than
+        # offered with a size and a Clear that could not work.
+        for entry in payload["caches"]:
+            assert entry["path"]
 
     def test_status_reports_one_entry_per_model_and_cache(self):
         payload = model_manager.status()
@@ -293,7 +327,11 @@ class TestCommandLine:
             [sys.executable, "-m", "stemlab.model_manager", *args],
             capture_output=True,
             text=True,
-            env={"PYTHONPATH": str(source), "PATH": "/usr/bin:/bin", "HOME": str(Path.home())},
+            # Inherited, not hand-built. A constructed environment has to name
+            # every variable the child needs, and Path.home() reads USERPROFILE
+            # on Windows rather than HOME - so a POSIX-shaped env left the child
+            # with no home at all and every model reporting as unlocatable.
+            env={**os.environ, "PYTHONPATH": str(source)},
         )
 
     def test_status_writes_json_and_announces_its_path(self, tmp_path):
@@ -325,3 +363,219 @@ class TestCommandLine:
 
         assert result.returncode == 1
         assert "STEMLAB_ERROR" in result.stdout
+
+
+class TestTheDownloaderIsNotRunThroughPipsLauncher:
+    """A shipped Engine is built in one directory and run from another.
+
+    Pip writes an absolute interpreter path into every console script it
+    generates, so in a shipped Engine that path names a machine the user does
+    not have. Exec'ing such a launcher reports ENOENT against the *launcher*,
+    which is why the first report of this read as a missing file that was
+    plainly present:
+
+        FileNotFoundError: [Errno 2] No such file or directory:
+            '~/.local/share/StemLab/Engine/bin/bs-roformer-download'
+
+    Checking the file exists first - which this module did - cannot catch it.
+    So the property worth pinning is not "we handle the error"; it is that the
+    launcher beside the interpreter is never the thing we run.
+    """
+
+    def test_it_runs_the_module_under_the_running_interpreter(self):
+        command = model_manager.bs_roformer_download_command("some-model")
+
+        assert command[0] == sys.executable
+        assert command[1:] == ["-m", "stemlab.bs_roformer_download_cli", "some-model"]
+
+    def test_a_launcher_beside_the_interpreter_is_still_not_used(self, tmp_path, monkeypatch):
+        # The regression itself: a launcher sitting right there, existing,
+        # executable, and unrunnable. Nothing about it may change the command.
+        engine_bin = tmp_path / "bin"
+        engine_bin.mkdir()
+        interpreter = engine_bin / "python3"
+        interpreter.write_text("")
+
+        for name in ("bs-roformer-download", "bs-roformer-download.exe"):
+            launcher = engine_bin / name
+            launcher.write_text("#!/nonexistent/build/machine/python\n")
+            launcher.chmod(0o755)
+
+        monkeypatch.setattr(sys, "executable", str(interpreter))
+
+        command = model_manager.bs_roformer_download_command()
+
+        assert command == [str(interpreter), "-m", "stemlab.bs_roformer_download_cli"]
+        assert not any(part.endswith("bs-roformer-download") for part in command)
+
+    def test_the_module_it_names_is_importable(self):
+        # -m fails at the point of use, in a child, on a machine that is
+        # already having a bad day. Cheaper to find out here.
+        import importlib.util
+
+        assert importlib.util.find_spec("stemlab.bs_roformer_download_cli") is not None
+
+    def test_downloading_the_roformer_goes_through_it(self, tmp_path, monkeypatch):
+        seen = {}
+        fetched = tmp_path / "BS-Rofo-SW-Fixed.ckpt"
+        fetched.write_bytes(b"weights")
+
+        def fake_child(command, label, progress, cancellation, span):
+            seen["command"] = list(command)
+
+        monkeypatch.setattr(model_manager, "_run_child", fake_child)
+        monkeypatch.setattr(model_manager, "locate", lambda _id: fetched)
+
+        model_manager.download("roformer")
+
+        assert seen["command"] == [
+            sys.executable,
+            "-m",
+            "stemlab.bs_roformer_download_cli",
+            "--model",
+            model_manager.ROFORMER_MODEL_ID,
+        ]
+
+
+class TestAFailedDownloadSaysWhatTheChildSaid:
+    def test_the_error_carries_the_last_of_the_output(self, monkeypatch):
+        # An exit code alone has sent more than one person reading source.
+        script = "import sys; print('could not reach huggingface.co'); sys.exit(1)"
+
+        with pytest.raises(RuntimeError) as caught:
+            model_manager._run_child(
+                [sys.executable, "-c", script], "Downloading", None, None, (0.0, 1.0)
+            )
+
+        assert "could not reach huggingface.co" in str(caught.value)
+        assert "1" in str(caught.value)
+
+
+class TestTheDownloaderIsGivenArgumentsItAccepts:
+    """The first version of this shipped the model as a bare positional.
+
+    Upstream's parser takes ``--model`` (repeatable, dest="models") and
+    rejects a positional with ``error: unrecognized arguments`` and exit code
+    2, so every download failed - before and after the launcher fix, which is
+    why fixing the launcher alone did not make downloading work.
+
+    The test below is deliberately not written against
+    bs_roformer_download_command: an expectation derived from the code under
+    test agrees with it whether or not either is right, which is exactly how
+    the wrong argv survived a green suite.
+    """
+
+    def _download_arguments(self):
+        command = model_manager.bs_roformer_download_command(
+            "--model", model_manager.ROFORMER_MODEL_ID
+        )
+        # Everything the entry point itself sees: past the interpreter, -m,
+        # and the module name.
+        return command[3:]
+
+    def test_the_model_is_passed_as_an_option_not_a_positional(self):
+        assert self._download_arguments() == ["--model", model_manager.ROFORMER_MODEL_ID]
+
+    def test_upstreams_own_parser_accepts_it(self, monkeypatch):
+        # The only check that cannot be wrong about what upstream takes,
+        # because it asks upstream. Needs bs_roformer importable, which costs
+        # torch - true in an Engine and in a dev install, not in plain CI.
+        download = pytest.importorskip(
+            "bs_roformer.download", reason="bs-roformer-infer is not installed here"
+        )
+
+        monkeypatch.setattr(
+            sys, "argv", ["bs-roformer-download", *self._download_arguments()]
+        )
+
+        parsed = download.parse_args()
+        selected = download._resolve_models(parsed)
+
+        # Not just "it parsed": an unknown identifier prints a complaint,
+        # resolves to nothing, and still exits 0, which would leave the
+        # failure to the on-disk check afterwards.
+        assert [model.slug for model in selected] == [model_manager.ROFORMER_MODEL_ID]
+
+    def test_listing_models_is_the_flag_upstream_documents(self):
+        command = model_manager.bs_roformer_download_command("--list-models")
+
+        assert command[3:] == ["--list-models"]
+
+
+class TestDemucsIsFoundWhereItActuallyLands:
+    """`get_model` prefers the HuggingFace hub over the legacy .th repo.
+
+    demucs.pretrained.get_model tries adefossez/HTDemucs-6s first, and that
+    repository exists, so on a machine with a reachable hub the weights arrive
+    as safetensors in the HF cache and 5c90dfd2-34c22ccb.th is never written.
+    Looking only for the .th turned a successful download into "Demucs still
+    is not on disk after downloading it", and showed a working Demucs as
+    missing in the inventory.
+    """
+
+    def _hf_snapshot(self, root: Path) -> Path:
+        snapshot = (
+            root / "hub" / model_manager.DEMUCS_HF_DIRECTORY / "snapshots" / "abc123"
+        )
+        snapshot.mkdir(parents=True)
+        return snapshot
+
+    def test_the_huggingface_copy_counts_as_installed(self, tmp_path, monkeypatch):
+        snapshot = self._hf_snapshot(tmp_path)
+        (snapshot / "5c90dfd2.safetensors").write_bytes(b"x" * 2048)
+
+        monkeypatch.setenv("HF_HOME", str(tmp_path))
+        monkeypatch.setenv("TORCH_HOME", str(tmp_path / "empty-torch"))
+        monkeypatch.delenv("STEMLAB_DEMUCS_MODEL_REPO", raising=False)
+
+        found = model_manager.locate("demucs")
+
+        assert found is not None
+        assert found.name == "5c90dfd2.safetensors"
+
+    def test_the_legacy_checkpoint_still_wins_when_it_is_there(self, tmp_path, monkeypatch):
+        # A packaged release ships the .th and sets HF_HUB_OFFLINE; that path
+        # must not start depending on a hub cache it deliberately avoids.
+        snapshot = self._hf_snapshot(tmp_path)
+        (snapshot / "5c90dfd2.safetensors").write_bytes(b"x" * 2048)
+
+        torch_home = tmp_path / "torch"
+        checkpoints = torch_home / "hub" / "checkpoints"
+        checkpoints.mkdir(parents=True)
+        (checkpoints / model_manager.DEMUCS_CHECKPOINT).write_bytes(b"y" * 4096)
+
+        monkeypatch.setenv("HF_HOME", str(tmp_path))
+        monkeypatch.setenv("TORCH_HOME", str(torch_home))
+        monkeypatch.delenv("STEMLAB_DEMUCS_MODEL_REPO", raising=False)
+
+        assert model_manager.locate("demucs").name == model_manager.DEMUCS_CHECKPOINT
+
+    def test_neither_present_is_still_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+        monkeypatch.setenv("TORCH_HOME", str(tmp_path / "torch"))
+        monkeypatch.delenv("STEMLAB_DEMUCS_MODEL_REPO", raising=False)
+
+        assert model_manager.locate("demucs") is None
+
+    def test_hf_hub_cache_wins_over_hf_home(self, tmp_path, monkeypatch):
+        # huggingface_hub's own precedence, and the two are not the same
+        # directory: HF_HUB_CACHE names the hub folder, HF_HOME its parent.
+        cache = tmp_path / "explicit"
+        snapshot = cache / model_manager.DEMUCS_HF_DIRECTORY / "snapshots" / "abc123"
+        snapshot.mkdir(parents=True)
+        (snapshot / "5c90dfd2.safetensors").write_bytes(b"x" * 2048)
+
+        monkeypatch.setenv("HF_HUB_CACHE", str(cache))
+        monkeypatch.setenv("HF_HOME", str(tmp_path / "unused"))
+        monkeypatch.setenv("TORCH_HOME", str(tmp_path / "torch"))
+        monkeypatch.delenv("STEMLAB_DEMUCS_MODEL_REPO", raising=False)
+
+        assert model_manager.locate("demucs") is not None
+
+    def test_the_mirrored_cache_name_matches_demucs(self):
+        # The drift guard: demucs owns this naming, we only copy it.
+        hf = pytest.importorskip("demucs.hf", reason="demucs is not installed here")
+
+        expected = f"{hf.DEFAULT_NAMESPACE}/{hf.hf_repo_name(model_manager.DEMUCS_MODEL_NAME)}"
+
+        assert model_manager.DEMUCS_HF_DIRECTORY == "models--" + expected.replace("/", "--")
