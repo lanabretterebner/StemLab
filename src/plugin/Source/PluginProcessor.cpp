@@ -1764,6 +1764,27 @@ StemLabAudioProcessor::StemLabAudioProcessor()
 
     publishParentPidForEngines();
 
+    /*
+     * Seeded from the environment before any saved state is restored, so an
+     * operator who exports STEMLAB_TORCH_COMPILE - the documented way to turn
+     * this on - finds the Model Manager already showing it on rather than
+     * being silently overruled by a toggle defaulting to off. Saved state
+     * wins afterwards, because that is a choice made in this interface.
+     */
+    {
+        const auto requested = juce::SystemStats::getEnvironmentVariable(
+                                   "STEMLAB_TORCH_COMPILE", {})
+                                   .trim()
+                                   .toLowerCase();
+
+        // The same spellings compile_support accepts, so the two agree about
+        // what the variable means.
+        torchCompileEnabled.store(requested == "1" || requested == "true"
+                                  || requested == "yes" || requested == "on");
+    }
+
+    exportTorchCompilePreference();
+
     const auto discoveredEngine = discoverEngineCommand();
 
     if (discoveredEngine.isNotEmpty())
@@ -6162,6 +6183,7 @@ void StemLabAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     auto rootObject = std::make_unique<juce::DynamicObject>();
     rootObject->setProperty("engineCommand", getEngineCommand());
     rootObject->setProperty("refinement", refinementEnabled.load());
+    rootObject->setProperty("torchCompile", torchCompileEnabled.load());
     rootObject->setProperty("separatorEngine", separatorEngineIndex.load());
     rootObject->setProperty("waveformColour", waveformColourIndex.load());
     rootObject->setProperty("waveformZoom", waveformZoom.load());
@@ -6233,6 +6255,15 @@ void StemLabAudioProcessor::setStateInformation(const void* data, int sizeInByte
     {
         refinementEnabled.store(static_cast<bool>(object->getProperty("refinement")));
     }
+
+    if (object->hasProperty("torchCompile"))
+    {
+        torchCompileEnabled.store(static_cast<bool>(object->getProperty("torchCompile")));
+    }
+
+    // Restored state has to reach the environment too, or the first job after
+    // a reload would run on whatever the previous session happened to leave.
+    exportTorchCompilePreference();
 
     if (object->hasProperty("separatorEngine"))
     {
@@ -6689,7 +6720,48 @@ std::vector<StemLabAudioProcessor::ManagedCache> StemLabAudioProcessor::getManag
     return managedCaches;
 }
 
-bool StemLabAudioProcessor::refreshModelInventory()
+juce::String StemLabAudioProcessor::getCompileReason() const
+{
+    const juce::ScopedLock lock(modelInventoryLock);
+    return compileReason;
+}
+
+void StemLabAudioProcessor::exportTorchCompilePreference() const
+{
+    /*
+     * An environment variable rather than an argument, because the thing that
+     * reads it is not the child StemLab launches but the model process
+     * underneath it, and compile_support reads it at import time. JUCE's
+     * ChildProcess hands the child this process's environment, so publishing
+     * it here is what makes it arrive - the same route STEMLAB_PARENT_PID
+     * already takes.
+     */
+    const auto value = torchCompileEnabled.load() ? "1" : "0";
+
+#if JUCE_WINDOWS
+    _putenv_s("STEMLAB_TORCH_COMPILE", value);
+#else
+    setenv("STEMLAB_TORCH_COMPILE", value, 1);
+#endif
+}
+
+void StemLabAudioProcessor::setTorchCompileEnabled(bool enabled)
+{
+    if (torchCompileEnabled.exchange(enabled) == enabled)
+        return;
+
+    exportTorchCompilePreference();
+
+    // Whether anything is worth compiling is the engine's answer, and it has
+    // just changed. Probing here and nowhere else: turning the switch on is
+    // exactly the moment its answer gets shown, and the only moment worth
+    // importing torch in a child to find out.
+    refreshModelInventory(enabled);
+
+    sendChangeMessage();
+}
+
+bool StemLabAudioProcessor::refreshModelInventory(bool probeCompile)
 {
     if (modelInventoryRunning.load())
         return false;
@@ -6714,6 +6786,10 @@ bool StemLabAudioProcessor::refreshModelInventory()
                                            + ".json");
 
     command.add("--status");
+
+    if (probeCompile)
+        command.add("--probe-compile");
+
     command.add("--output");
     command.add(modelInventoryFile.getFullPathName());
 
@@ -6808,6 +6884,13 @@ void StemLabAudioProcessor::finishModelInventory(const juce::File& output, int e
     // one place.
     anyModelMissing.store(static_cast<bool>(parsed.getProperty("anyModelMissing", false)));
     anyCompilePending.store(static_cast<bool>(parsed.getProperty("anyCompilePending", false)));
+    compileRequested.store(static_cast<bool>(parsed.getProperty("compileRequested", false)));
+    compileSupported.store(static_cast<bool>(parsed.getProperty("compileSupported", false)));
+
+    {
+        const juce::ScopedLock lock(modelInventoryLock);
+        compileReason = parsed.getProperty("compileReason", {}).toString();
+    }
 
     modelInventoryBroken.store(false);
     modelInventoryValid.store(true);
@@ -6877,8 +6960,15 @@ void StemLabAudioProcessor::finishModelJob(const juce::String& label, int exitCo
     if (modelJobCancelFile.existsAsFile())
         modelJobCancelFile.deleteFile();
 
+    // 3 is the engine saying it was asked for something it cannot do and did
+    // nothing else. It has already put the reason on the status line, and
+    // "complete" over the top of that would read as though it had worked.
+    constexpr int notApplicableExitCode = 3;
+
     if (exitCode == 130 || engineCancelRequested.load())
         setStatus(label + " cancelled");
+    else if (exitCode == notApplicableExitCode)
+        ;
     else if (exitCode != 0)
         setStatus(label + " failed - see diagnostics", statusFailure);
     else

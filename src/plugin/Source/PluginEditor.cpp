@@ -1598,16 +1598,35 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
     modelManagerPanel.onClose = [this] { closeModelManager(); };
 
+    modelManagerPanel.onCompileEnabled = [this](bool enabled)
+    { processor.setTorchCompileEnabled(enabled); };
+
     modelManagerPanel.onCancel = [this] { processor.cancelModelJob(); };
 
+    /*
+     * Each of these marks the status line worth showing from here on.
+     * Watching isModelJobRunning instead would miss the short ones outright:
+     * clearing a cache, or a compile refused because compiling is off,
+     * begins and ends between two refreshes, and its outcome would land only
+     * on the footer behind the scrim where it cannot be read.
+     */
     modelManagerPanel.onDownload = [this](juce::StringArray ids)
-    { processor.startModelDownload(ids); };
+    {
+        modelJobReported = true;
+        processor.startModelDownload(ids);
+    };
 
     modelManagerPanel.onCompile = [this](juce::StringArray ids)
-    { processor.startModelCompile(ids); };
+    {
+        modelJobReported = true;
+        processor.startModelCompile(ids);
+    };
 
     modelManagerPanel.onRemove = [this](juce::StringArray modelIds, juce::StringArray cacheIds)
-    { processor.startModelRemoval(modelIds, cacheIds); };
+    {
+        modelJobReported = true;
+        processor.startModelRemoval(modelIds, cacheIds);
+    };
 
     /*
      * The first inventory read. It is a child process, so the answer lands
@@ -4733,6 +4752,7 @@ void StemLabAudioProcessorEditor::showModelManager()
 void StemLabAudioProcessorEditor::closeModelManager()
 {
     modelManagerDismissed = true;
+    modelJobReported = false;
     modelManagerPanel.setVisible(false);
 
     // Give the keyboard back, or the panel behind stays deaf to shortcuts.
@@ -4760,10 +4780,17 @@ void StemLabAudioProcessorEditor::refreshModelManager()
         modelManagerPanel.setUnavailable("Asking the engine what is installed...");
     }
 
+    modelManagerPanel.setCompileState(processor.isTorchCompileEnabled(),
+                                      processor.isCompileSupported(),
+                                      processor.getCompileReason());
+
     const auto busy = processor.isModelJobRunning();
 
-    modelManagerPanel.setActivity(busy ? processor.getStatus() : juce::String{},
-                                  processor.getEngineProgress(), busy);
+    // Once something has been asked for, the status line is the only account
+    // of how it went that the user can actually see from here.
+    modelManagerPanel.setActivity(
+        busy || modelJobReported ? processor.getStatus() : juce::String{},
+        processor.getEngineProgress(), busy);
 }
 
 void StemLabAudioProcessorEditor::considerAutoShowingModelManager()

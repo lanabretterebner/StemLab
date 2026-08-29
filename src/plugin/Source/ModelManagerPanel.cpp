@@ -16,6 +16,8 @@ namespace stemlab::widgets
 
             constexpr int titleHeight = 24;
             constexpr int summaryHeight = 16;
+            constexpr int compileHeight = 16;
+            constexpr int toggleHeight = 22;
             constexpr int footerHeight = 30;
             constexpr int activityHeight = 18;
             constexpr int gap = 12;
@@ -276,6 +278,22 @@ namespace stemlab::widgets
         summaryLabel.setColour(juce::Label::textColourId, colours::text50());
         addAndMakeVisible(summaryLabel);
 
+        compileLabel.setFont(juce::Font(theme::fonts::make(11.0f, false)));
+        compileLabel.setColour(juce::Label::textColourId, colours::text45());
+        addChildComponent(compileLabel);
+
+        compileToggle.setColour(juce::ToggleButton::textColourId, colours::text75());
+        compileToggle.setColour(juce::ToggleButton::tickColourId, colours::accent());
+        compileToggle.setColour(juce::ToggleButton::tickDisabledColourId, colours::outline());
+
+        compileToggle.onClick = [this]
+        {
+            if (onCompileEnabled)
+                onCompileEnabled(compileToggle.getToggleState());
+        };
+
+        addAndMakeVisible(compileToggle);
+
         activityLabel.setFont(juce::Font(theme::fonts::make(11.5f, false)));
         activityLabel.setColour(juce::Label::textColourId, colours::text50());
         addAndMakeVisible(activityLabel);
@@ -390,6 +408,28 @@ namespace stemlab::widgets
         downloadAllButton.setVisible(installed < static_cast<int>(models.size()));
 
         rebuildRows();
+        resized();
+    }
+
+    void ModelManagerPanel::setCompileState(bool enabled, bool supported,
+                                            const juce::String& reason)
+    {
+        // dontSendNotification: this is the processor telling the panel what
+        // is true, and firing onClick from here would send it straight back.
+        if (compileToggle.getToggleState() != enabled)
+            compileToggle.setToggleState(enabled, juce::dontSendNotification);
+
+        // The note explains a switch that is on but cannot work - no toolchain,
+        // no Triton. With it off, the unticked box already says everything, and
+        // a line repeating it would be noise.
+        const auto note = enabled && !supported ? reason : juce::String{};
+
+        compileLabel.setText(note, juce::dontSendNotification);
+
+        if (compileLabel.isVisible() == note.isNotEmpty())
+            return;
+
+        compileLabel.setVisible(note.isNotEmpty());
         resized();
     }
 
@@ -540,7 +580,9 @@ namespace stemlab::widgets
         // A divider under the header and above the footer, so the list reads
         // as its own region rather than as text floating in a box.
         const auto inner = cardBounds().reduced(card::padX, card::padY);
-        const auto listTop = inner.getY() + card::titleHeight + card::summaryHeight + card::gap;
+        const auto listTop = inner.getY() + card::titleHeight + card::summaryHeight
+                             + card::toggleHeight
+                             + (compileLabel.isVisible() ? card::compileHeight : 0) + card::gap;
         const auto listBottom =
             inner.getBottom() - card::footerHeight - card::activityHeight - card::gap;
 
@@ -571,6 +613,11 @@ namespace stemlab::widgets
 
         titleLabel.setBounds(inner.removeFromTop(card::titleHeight));
         summaryLabel.setBounds(inner.removeFromTop(card::summaryHeight));
+
+        compileToggle.setBounds(inner.removeFromTop(card::toggleHeight));
+
+        if (compileLabel.isVisible())
+            compileLabel.setBounds(inner.removeFromTop(card::compileHeight));
 
         inner.removeFromTop(card::gap);
 

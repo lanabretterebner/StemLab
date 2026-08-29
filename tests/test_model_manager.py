@@ -174,6 +174,48 @@ class TestCompileSeam:
         assert entries["demucs"]["compiled"] is False
         assert entries["demucs"]["reason"]
 
+    def test_an_unprobed_status_says_nothing_rather_than_guessing(self, monkeypatch):
+        # Answering "can this machine compile" means importing torch, which
+        # status refuses to do. Reporting that as a finding would put "not
+        # been probed" in front of everyone who turned compiling on, so the
+        # unprobed answer is silence.
+        monkeypatch.setenv("STEMLAB_TORCH_COMPILE", "1")
+        monkeypatch.delitem(sys.modules, "torch", raising=False)
+
+        payload = model_manager.status()
+
+        assert payload["compileRequested"] is True
+        assert payload["compileReason"] == ""
+
+    def test_probing_asks_compile_support_for_the_real_answer(self, monkeypatch):
+        monkeypatch.setenv("STEMLAB_TORCH_COMPILE", "1")
+
+        payload = model_manager.status(probe_compile=True)
+
+        # Whatever this machine says, it has to be compile_support's answer
+        # for the device a job would use - not a placeholder.
+        assert payload["compileRequested"] is True
+        assert isinstance(payload["compileSupported"], bool)
+
+    def test_the_probe_asks_about_the_device_a_job_would_use(self, monkeypatch):
+        # Asking about "auto" would test a string that has no inductor backend
+        # and always answer no; the probe has to resolve it first.
+        seen = {}
+        monkeypatch.setenv("STEMLAB_TORCH_COMPILE", "1")
+        monkeypatch.setattr(model_manager, "_best_device", lambda: "cuda")
+
+        import stemlab.compile_support as compile_support
+
+        monkeypatch.setattr(
+            compile_support,
+            "compile_support_status",
+            lambda device: (seen.setdefault("device", device), (True, "fine"))[1],
+        )
+
+        model_manager.status(probe_compile=True)
+
+        assert seen["device"] == "cuda"
+
     def test_status_explains_an_unset_opt_in_rather_than_just_saying_no(
         self, monkeypatch
     ):

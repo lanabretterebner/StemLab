@@ -291,14 +291,43 @@ In the plugin it is a modal panel over the interface, opening by itself while
 anything is missing and available from Settings. Dismissing it lasts the
 session only.
 
-Warming the compiled-kernel cache is not implemented. `compile_support`
-compiles during a real job and leaves warming out of scope, so the first
-separation after enabling `STEMLAB_TORCH_COMPILE` still pays the cold cost.
-`model_manager.compile_model` is the seam a warm-up plugs into: define
-`stemlab.model_compile.warm_up(model_id, device, progress, cancellation)`
-returning elapsed seconds, writing into `compile_support.inductor_cache_dir()`
-- the path the separation actually reads, which is why the manager asks for
-it rather than choosing one.
+### Warming the compiled-kernel cache
+
+`compile_support` compiles during a real job, so without warming the first
+separation after enabling `STEMLAB_TORCH_COMPILE` pays the whole cost: 114.8 s
+for the first forward pass against a cold cache, 27.4 s against a warm one,
+where eager is 9.5 s. `stemlab.model_compile` moves that cost somewhere the
+user chose to spend it.
+
+```
+STEMLAB_TORCH_COMPILE=1 python -m stemlab.model_manager --compile roformer
+```
+
+or the Compile button beside BS-RoFormer in the Model Manager, where the
+**Compile separations** switch turns compiling on and off for every job the
+plugin starts. The switch is seeded from `STEMLAB_TORCH_COMPILE` at startup,
+so exporting the variable still works and shows up already on; the plugin then
+publishes its own choice into the environment its engine children inherit, and
+remembers it in the saved state.
+
+Whether the machine can compile at all is only probed when the switch is
+turned on (`--probe-compile` on the CLI). The answer needs torch, which costs
+seconds to import, and status otherwise runs on every editor open.
+
+The warm-up separates 25 seconds of synthetic audio through
+`pretrained.build_roformer_command` - the same function a real separation
+builds its argv with. That sharing is the point rather than a convenience: an
+inductor entry is keyed on the graph, so a warm-up that reached the model any
+other way could trace shapes no job asks for and fill the cache with kernels
+nothing reads, which produces no error anywhere. Twenty-five seconds crosses a
+chunk boundary more than once, because shapes settle after two passes and the
+shorter final chunk costs one more compile.
+
+Only the RoFormer separators can be warmed, because they are the only ones
+`compile_support` patches. Asking for anything else - or asking with compiling
+switched off, or on a machine with no toolchain - raises
+`WarmUpUnavailable`, which the Model Manager reports as a state rather than a
+failed job.
 
 ## Generated Files
 
@@ -315,8 +344,8 @@ ignored. Edit sources under `src/stemlab/`, `src/plugin/Source/`,
   the download is named in the status area while it runs. The first
   separation on a fresh install is therefore slower than the ones after it.
 - Only the RoFormer separators are compiled, and only with
-  `STEMLAB_TORCH_COMPILE=1`. Nothing warms the kernel cache ahead of a job,
-  so the first compiled separation is slower than the ones after it.
+  `STEMLAB_TORCH_COMPILE=1`. Warm the cache from the Model Manager first, or
+  the first compiled separation pays roughly two minutes to build kernels.
 - Guitar/piano/other adaptive splitting is DSP-based and experimental.
 - Source-count estimates are recursion heuristics, not literal musician counts.
 - `PluginProcessor.cpp`, `PluginEditor.cpp`, and
