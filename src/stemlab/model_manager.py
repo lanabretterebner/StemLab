@@ -204,6 +204,15 @@ ROFORMER_MODEL_ID = "roformer-model-bs-roformer-sw-by-jarredou"
 DEMUCS_MODEL_NAME = "htdemucs_6s"
 DEMUCS_CHECKPOINT = "5c90dfd2-34c22ccb.th"
 
+# demucs.pretrained.get_model tries the HuggingFace hub before the legacy
+# checkpoint repo, and adefossez/HTDemucs-6s exists, so on any machine with a
+# reachable hub the weights arrive as safetensors in the HF cache and the .th
+# above is never written. Looking only for the .th made a successful download
+# report as "still is not on disk", and made a working Demucs read as missing.
+# Mirrors demucs.hf: f"{DEFAULT_NAMESPACE}/{hf_repo_name(name)}", flattened
+# the way huggingface_hub names cache directories.
+DEMUCS_HF_DIRECTORY = "models--adefossez--HTDemucs-6s"
+
 BEAT_THIS_FILENAMES = {"beat-this-fast": "small0.ckpt", "beat-this-accurate": "final0.ckpt"}
 
 RECURSIVE_FILENAMES = {
@@ -302,7 +311,8 @@ def _largest_checkpoint(directory: Path | None) -> Path | None:
     candidates = [
         path
         for path in directory.rglob("*")
-        if path.is_file() and path.suffix.lower() in {".ckpt", ".pth", ".th", ".onnx", ".bin"}
+        if path.is_file()
+        and path.suffix.lower() in {".ckpt", ".pth", ".th", ".onnx", ".bin", ".safetensors"}
     ]
 
     if not candidates:
@@ -336,18 +346,26 @@ def locate(model_id: str) -> Path | None:
     if model_id == "demucs":
         packaged = os.environ.get("STEMLAB_DEMUCS_MODEL_REPO")
 
-        directory = (
-            Path(packaged).expanduser() if packaged else _torch_hub_checkpoints()
-        )
-
-        if directory is None:
-            return None
-
         # htdemucs_6s is a bag of models, so several signature files land in
-        # the hub cache. The one the packaged path names is the marker for
-        # the set being present.
-        candidate = directory / DEMUCS_CHECKPOINT
-        return candidate if candidate.is_file() else None
+        # the torch hub cache. The one the packaged path names is the marker
+        # for the set being present.
+        for directory in (
+            Path(packaged).expanduser() if packaged else None,
+            _torch_hub_checkpoints(),
+        ):
+            if directory is None:
+                continue
+
+            candidate = directory / DEMUCS_CHECKPOINT
+
+            if candidate.is_file():
+                return candidate
+
+        # And the HuggingFace copy, which is what a fresh download actually
+        # produces - see the note beside DEMUCS_HF_DIRECTORY.
+        hub = _huggingface_hub_cache()
+
+        return _largest_checkpoint(hub / DEMUCS_HF_DIRECTORY if hub is not None else None)
 
     if model_id in RECURSIVE_FILENAMES:
         directory = _recursive_model_dir()
@@ -426,6 +444,19 @@ def _huggingface_cache() -> Path | None:
 
     home = _home()
     return home / ".cache" / "huggingface" if home is not None else None
+
+
+def _huggingface_hub_cache() -> Path | None:
+    """Where huggingface_hub stores repositories, which is HF_HOME/hub.
+
+    HF_HUB_CACHE wins if set, matching huggingface_hub's own precedence.
+    """
+    override = os.environ.get("HF_HUB_CACHE")
+    if override:
+        return Path(override).expanduser()
+
+    home = _huggingface_cache()
+    return home / "hub" if home is not None else None
 
 
 def _analysis_dir() -> Path | None:
@@ -717,7 +748,9 @@ def download(
 
     if model_id == "roformer":
         _run_child(
-            bs_roformer_download_command(ROFORMER_MODEL_ID),
+            # --model, not a bare slug: upstream's parser takes the model as a
+            # repeatable option and rejects a positional with exit code 2.
+            bs_roformer_download_command("--model", ROFORMER_MODEL_ID),
             f"Downloading {model.label}",
             progress,
             cancellation,
