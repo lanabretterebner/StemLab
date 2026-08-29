@@ -103,6 +103,8 @@ target_sources(StemLabPlugin
         Source/StemLabLookAndFeel.cpp
         Source/StemLabWidgets.h
         Source/StemLabWidgets.cpp
+        Source/ModelManagerPanel.h
+        Source/ModelManagerPanel.cpp
         Source/StemLabPaths.cpp
         Source/StemLabPaths.h
         Source/HostIntegrationPolicy.h

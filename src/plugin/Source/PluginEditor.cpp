@@ -96,6 +96,7 @@ constexpr int analysisEnableId = 430;
 constexpr int analysisForgetId = 431;
 constexpr int analysisClearCacheId = 432;
 constexpr int versionItemId = 440;
+constexpr int modelManagerId = 441;
 
 // Lane-menu ids for MIDI, above the per-menu action ids.
 constexpr int midiConvertId = 500;
@@ -1564,6 +1565,28 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
     addAndMakeVisible(panelContent);
 
+    panelContent.addChildComponent(modelManagerPanel);
+
+    modelManagerPanel.onClose = [this] { closeModelManager(); };
+
+    modelManagerPanel.onCancel = [this] { processor.cancelModelJob(); };
+
+    modelManagerPanel.onDownload = [this](juce::StringArray ids)
+    { processor.startModelDownload(ids); };
+
+    modelManagerPanel.onCompile = [this](juce::StringArray ids)
+    { processor.startModelCompile(ids); };
+
+    modelManagerPanel.onRemove = [this](juce::StringArray modelIds, juce::StringArray cacheIds)
+    { processor.startModelRemoval(modelIds, cacheIds); };
+
+    /*
+     * The first inventory read. It is a child process, so the answer lands
+     * later on the message thread and the auto-show decision is made from
+     * refreshFromProcessor once there is something to decide on.
+     */
+    processor.refreshModelInventory();
+
     setResizable(true, true);
 
     setResizeLimits(juce::roundToInt(window::width * window::minScale),
@@ -2447,6 +2470,10 @@ void StemLabAudioProcessorEditor::resized()
     processor.setEditorScalePercent(juce::roundToInt(scale * 100.0));
 
     layoutPanel();
+
+    // Covers the panel at its design size, so the editor's own transform
+    // scales it with everything else.
+    modelManagerPanel.setBounds(panelContent.getLocalBounds());
 }
 
 void StemLabAudioProcessorEditor::layoutPanel()
@@ -3369,6 +3396,11 @@ juce::String StemLabAudioProcessorEditor::displayPath(const juce::File& director
 
 void StemLabAudioProcessorEditor::refreshFromProcessor()
 {
+    // Ahead of the rest: the manager can open itself here, and it should be
+    // showing current state on the frame it appears rather than one later.
+    considerAutoShowingModelManager();
+    refreshModelManager();
+
     const auto capturing = processor.isCapturing();
     const auto recordingMode = processor.getStandaloneRecordingMode();
     const auto engineRunning = processor.isEngineRunning();
@@ -4418,6 +4450,8 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
 
     menu.addItem(3, "Auto-detect engine");
 
+    menu.addItem(modelManagerId, "Model Manager...");
+
     menu.addSeparator();
 
     menu.addItem(4, "Copy diagnostics to clipboard", processor.hasEngineLog());
@@ -4458,6 +4492,10 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
             else if (result == 3)
             {
                 safeThis->processor.resetEngineCommandToAutoDiscover();
+            }
+            else if (result == modelManagerId)
+            {
+                safeThis->showModelManager();
             }
             else if (result == 4)
             {
@@ -4614,6 +4652,75 @@ void StemLabAudioProcessorEditor::showStandaloneAudioSettings()
 #endif
 
     processor.postUiStatus("Standalone audio settings are unavailable");
+}
+
+void StemLabAudioProcessorEditor::showModelManager()
+{
+    modelManagerDismissed = false;
+
+    modelManagerPanel.setBounds(panelContent.getLocalBounds());
+    modelManagerPanel.setVisible(true);
+    modelManagerPanel.toFront(true);
+
+    refreshModelManager();
+
+    // Ask the engine again on every open. The inventory is cheap, and a user
+    // who has just downloaded a model outside StemLab should not be told it
+    // is missing because the answer is from when the editor opened.
+    processor.refreshModelInventory();
+}
+
+void StemLabAudioProcessorEditor::closeModelManager()
+{
+    modelManagerDismissed = true;
+    modelManagerPanel.setVisible(false);
+
+    // Give the keyboard back, or the panel behind stays deaf to shortcuts.
+    grabKeyboardFocus();
+}
+
+void StemLabAudioProcessorEditor::refreshModelManager()
+{
+    if (!modelManagerPanel.isVisible())
+        return;
+
+    if (processor.modelInventoryFailed())
+    {
+        modelManagerPanel.setUnavailable(
+            "The StemLab engine could not report its models.\n"
+            "Check the engine under Settings, then reopen this.");
+    }
+    else if (processor.hasModelInventory())
+    {
+        modelManagerPanel.setInventory(processor.getManagedModels(),
+                                       processor.getManagedCaches());
+    }
+    else
+    {
+        modelManagerPanel.setUnavailable("Asking the engine what is installed...");
+    }
+
+    const auto busy = processor.isModelJobRunning();
+
+    modelManagerPanel.setActivity(busy ? processor.getStatus() : juce::String{},
+                                  processor.getEngineProgress(), busy);
+}
+
+void StemLabAudioProcessorEditor::considerAutoShowingModelManager()
+{
+    // Once per editor, and never over a dismissal. Everything else about
+    // when it opens is the engine's answer rather than a rule repeated here.
+    if (modelManagerAutoShown || modelManagerDismissed)
+        return;
+
+    if (!processor.hasModelInventory() || modelManagerPanel.isVisible())
+        return;
+
+    if (!processor.isAnyModelMissing() && !processor.isAnyCompilePending())
+        return;
+
+    modelManagerAutoShown = true;
+    showModelManager();
 }
 
 void StemLabAudioProcessorEditor::chooseEngineExecutable()

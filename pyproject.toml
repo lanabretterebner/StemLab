@@ -41,6 +41,7 @@ recursive = ["audio-separator[gpu]==0.44.5"]
 stemlab-separate = "stemlab.cli:separate_main"
 stemlab-refine = "stemlab.cli:refine_main"
 stemlab-models = "stemlab.cli:models_main"
+stemlab-model-manager = "stemlab.model_manager:main"
 stemlab-plugin-job = "stemlab.plugin_job:main"
 stemlab-recursive-job = "stemlab.recursive_job:main"
 stemlab-source-analysis = "stemlab.source_analysis:main"

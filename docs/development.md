@@ -152,6 +152,7 @@ Pure helpers behind the lanes: `WaveformGrid.h` (beat-grid math),
 | `hybrid.py` | Spectral fusion of model estimates |
 | `device.py` | Device selection for PyTorch backends (CUDA/XPU/CPU) |
 | `compile_support.py` | Opt-in `torch.compile` gate for the RoFormer models |
+| `model_manager.py` | `stemlab-model-manager`: model/cache inventory, fetch, removal |
 | `plugin_job.py` | JUCE command arguments, progress files, Ableton manifest |
 | `recursive_job.py` | JUCE command bridge for adaptive stem jobs |
 | `runtime.py` | Child-process output, progress/ETA, and cancel watchdog |
@@ -261,6 +262,44 @@ No bundle carries model weights. Each model downloads the first time it is
 used, is rejected unless it matches a recorded length and digest, and is
 named in the status area while it runs.
 
+## Model Manager
+
+`stemlab-model-manager` reports what is on disk and acts on it. The plugin
+drives it; it is also usable directly:
+
+```
+python -m stemlab.model_manager --status            # JSON inventory
+python -m stemlab.model_manager --download roformer
+python -m stemlab.model_manager --download-missing
+python -m stemlab.model_manager --delete-model demucs
+python -m stemlab.model_manager --delete-cache torch-hub
+```
+
+`--status` answers using nothing but the standard library, deliberately: it
+runs whenever the editor opens, and a half-installed environment is the case
+the Model Manager exists to repair, so it must not need numpy or torch to
+say what is missing. The cost is that it keeps its own copy of a few
+filenames and search rules the engine defines elsewhere; `test_model_manager`
+asserts each copy still matches whenever the owning module imports.
+
+Fetching asks whoever owns each transfer to perform it - upstream's
+downloader for RoFormer, `torch.hub` for Demucs, `audio-separator` for the
+adaptive models - and lifts `HF_HUB_OFFLINE` for that child only, since
+downloading is the one operation meant to reach the network.
+
+In the plugin it is a modal panel over the interface, opening by itself while
+anything is missing and available from Settings. Dismissing it lasts the
+session only.
+
+Warming the compiled-kernel cache is not implemented. `compile_support`
+compiles during a real job and leaves warming out of scope, so the first
+separation after enabling `STEMLAB_TORCH_COMPILE` still pays the cold cost.
+`model_manager.compile_model` is the seam a warm-up plugs into: define
+`stemlab.model_compile.warm_up(model_id, device, progress, cancellation)`
+returning elapsed seconds, writing into `compile_support.inductor_cache_dir()`
+- the path the separation actually reads, which is why the manager asks for
+it rather than choosing one.
+
 ## Generated Files
 
 `.venv/`, `.substem-venv/`, `.portable-cache/`, `.vs/`, `dist/`,
@@ -275,6 +314,9 @@ ignored. Edit sources under `src/stemlab/`, `src/plugin/Source/`,
   them, each is rejected unless it matches a recorded length and digest, and
   the download is named in the status area while it runs. The first
   separation on a fresh install is therefore slower than the ones after it.
+- Only the RoFormer separators are compiled, and only with
+  `STEMLAB_TORCH_COMPILE=1`. Nothing warms the kernel cache ahead of a job,
+  so the first compiled separation is slower than the ones after it.
 - Guitar/piano/other adaptive splitting is DSP-based and experimental.
 - Source-count estimates are recursion heuristics, not literal musician counts.
 - `PluginProcessor.cpp`, `PluginEditor.cpp`, and

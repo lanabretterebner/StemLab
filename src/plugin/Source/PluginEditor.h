@@ -8,6 +8,7 @@
 #include "PluginProcessor.h"
 #include "SelfFileDragGuard.h"
 #include "StemLabLookAndFeel.h"
+#include "ModelManagerPanel.h"
 #include "StemLabWidgets.h"
 #include "WaveformCache.h"
 
@@ -390,6 +391,14 @@ private:
     void changeListenerCallback(juce::ChangeBroadcaster*) override;
 
     void chooseEngineExecutable();
+
+    /** Open the Model Manager, or bring what it shows up to date. */
+    void showModelManager();
+    void closeModelManager();
+    void refreshModelManager();
+
+    /** Decides whether the manager should let itself in on this refresh. */
+    void considerAutoShowingModelManager();
     void chooseStandaloneAudioFile();
     bool loadSourceFile(const juce::File& file);
     void chooseSaveFolder();
@@ -500,6 +509,22 @@ private:
     // Declared before every control below: they are its children, so it has
     // to outlive them.
     StemLabPanelContent panelContent;
+
+    /*
+     * A child of panelContent, not of the editor: it inherits the panel's
+     * scale transform that way, so it needs no sizing rules of its own and
+     * looks the same at every window size.
+     */
+    stemlab::widgets::ModelManagerPanel modelManagerPanel;
+
+    /*
+     * Dismissal lasts for the session, not forever. Nothing is persisted: a
+     * user who wants to look around first should not be asked again this
+     * run, but one who quits with nothing downloaded should be met by it
+     * next time rather than by a separation that cannot work.
+     */
+    bool modelManagerDismissed = false;
+    bool modelManagerAutoShown = false;
 
     // Header.
     juce::Label titleLabel;
