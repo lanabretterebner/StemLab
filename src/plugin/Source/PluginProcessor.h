@@ -481,6 +481,65 @@ public:
     bool forgetSourceCorrection();
     bool clearAnalysisCache();
 
+    // ------------------------------------------------------------- models
+
+    /** One weight file the engine can need, as the Model Manager sees it. */
+    struct ManagedModel
+    {
+        juce::String id;
+        juce::String label;
+        juce::String purpose;
+        juce::String path;
+        /** Empty when the model can be compiled; otherwise why it cannot. */
+        juce::String compileReason;
+        bool present = false;
+        bool compiled = false;
+        bool compilable = false;
+        juce::int64 bytes = 0;
+        /** What it will cost to fetch, for a model not on disk yet. */
+        juce::int64 approxBytes = 0;
+    };
+
+    /** One directory or file the engine caches into. */
+    struct ManagedCache
+    {
+        juce::String id;
+        juce::String label;
+        juce::String path;
+        /** Set when clearing it costs something no download can restore. */
+        juce::String warning;
+        juce::int64 bytes = 0;
+    };
+
+    /** Ask the engine what is on disk. Cheap, and safe to call on open. */
+    bool refreshModelInventory();
+
+    bool isModelInventoryRunning() const noexcept { return modelInventoryRunning.load(); }
+    bool isModelJobRunning() const noexcept { return modelJobRunning.load(); }
+
+    /** False until the first inventory has come back, so the Model Manager
+        can tell "nothing installed" apart from "nothing known yet". */
+    bool hasModelInventory() const noexcept { return modelInventoryValid.load(); }
+
+    /** True when the last inventory could not be read at all - no engine, or
+        one too old to know the command. Distinct from "models are missing". */
+    bool modelInventoryFailed() const noexcept { return modelInventoryBroken.load(); }
+
+    std::vector<ManagedModel> getManagedModels() const;
+    std::vector<ManagedCache> getManagedCaches() const;
+
+    /** The auto-show condition, decided by the engine so the rule lives in
+        one place. Both are false until an inventory has been read. */
+    bool isAnyModelMissing() const noexcept { return anyModelMissing.load(); }
+    bool isAnyCompilePending() const noexcept { return anyCompilePending.load(); }
+
+    bool startModelDownload(const juce::StringArray& modelIds);
+    bool startModelCompile(const juce::StringArray& modelIds);
+    bool startModelRemoval(const juce::StringArray& modelIds, const juce::StringArray& cacheIds);
+
+    /** Cooperative stop for whichever model job is running. */
+    void cancelModelJob();
+
     void setWaveformGridMode(int mode) noexcept;
     int getWaveformGridMode() const noexcept { return waveformGridMode.load(); }
     void setManualGrid(double bpm, int numerator, int denominator, double barOne) noexcept;
@@ -703,6 +762,12 @@ private:
                                const juce::String& label);
 
     void finishSourceAnalysis(const juce::File& source, const juce::File& result, int exitCode);
+
+    /** Shared by download, compile and removal: they differ only in argv. */
+    bool launchModelJob(const juce::StringArray& arguments, const juce::String& label);
+    void finishModelInventory(const juce::File& output, int exitCode);
+    void finishModelJob(const juce::String& label, int exitCode);
+
     bool launchAnalysisMaintenance(const juce::StringArray& arguments, const juce::String& label);
     void finishAnalysisMaintenance(const juce::File& source, const juce::String& label,
                                    int exitCode);
@@ -1109,6 +1174,30 @@ private:
     /** Short side jobs: source analysis, cache maintenance, MIDI. */
     std::unique_ptr<StemLabUtilityThread> analysisThread;
     std::unique_ptr<StemLabUtilityThread> midiThread;
+
+    /*
+     * Two threads rather than one, because the inventory is a read the UI
+     * wants promptly and a download is a transfer that can run for minutes:
+     * sharing a slot would mean either refusing to refresh while a download
+     * ran, or cancelling the download to refresh. They never contend for the
+     * same state - the inventory writes it, the job only invalidates it.
+     */
+    std::unique_ptr<StemLabUtilityThread> modelInventoryThread;
+    std::unique_ptr<StemLabUtilityThread> modelJobThread;
+
+    mutable juce::CriticalSection modelInventoryLock;
+    std::vector<ManagedModel> managedModels;
+    std::vector<ManagedCache> managedCaches;
+
+    std::atomic<bool> modelInventoryRunning{false};
+    std::atomic<bool> modelInventoryValid{false};
+    std::atomic<bool> modelInventoryBroken{false};
+    std::atomic<bool> modelJobRunning{false};
+    std::atomic<bool> anyModelMissing{false};
+    std::atomic<bool> anyCompilePending{false};
+
+    juce::File modelInventoryFile;
+    juce::File modelJobCancelFile;
 
 #if JUCE_WINDOWS || JUCE_LINUX
     std::unique_ptr<StemLabSystemLoopbackThread> systemLoopbackThread;

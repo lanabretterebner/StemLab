@@ -1076,16 +1076,44 @@ public:
     {
         sourceAnalysis,
         analysisMaintenance,
-        midiConversion
+        midiConversion,
+        modelInventory,
+        modelMaintenance
     };
+
+    /** Kinds whose stdout is parsed line by line as it arrives.
+
+        A streaming kind narrates through handleEngineOutputLine, which
+        already appends every line to the engine log, so it must not also
+        take the bulk append below or each diagnostic line lands twice.
+    */
+    static bool streamsOutput(Kind kind) noexcept
+    {
+        return kind == sourceAnalysis || kind == modelMaintenance;
+    }
+
+    static const char* threadNameFor(Kind kind) noexcept
+    {
+        switch (kind)
+        {
+        case sourceAnalysis:
+            return "StemLab source analysis";
+        case analysisMaintenance:
+            return "StemLab analysis maintenance";
+        case modelInventory:
+            return "StemLab model inventory";
+        case modelMaintenance:
+            return "StemLab model job";
+        case midiConversion:
+        default:
+            return "StemLab MIDI";
+        }
+    }
 
     StemLabUtilityThread(StemLabAudioProcessor& ownerIn, Kind kindIn, juce::StringArray commandIn,
                          juce::File sourceIn, juce::File outputIn, juce::String labelIn = {},
                          juce::String contextIn = {}, juce::File cancelFileIn = {})
-        : juce::Thread(kindIn == sourceAnalysis
-                           ? "StemLab source analysis"
-                           : (kindIn == analysisMaintenance ? "StemLab analysis maintenance"
-                                                            : "StemLab MIDI")),
+        : juce::Thread(threadNameFor(kindIn)),
           owner(ownerIn), kind(kindIn), command(std::move(commandIn)), source(std::move(sourceIn)),
           output(std::move(outputIn)), label(std::move(labelIn)), context(std::move(contextIn)),
           cancelFile(std::move(cancelFileIn))
@@ -1183,7 +1211,7 @@ public:
         {
             processBytes.insert(processBytes.end(), buffer.data(), buffer.data() + bytes);
 
-            if (kind == sourceAnalysis)
+            if (streamsOutput(kind))
                 lines.feed(buffer.data(), bytes, onLine);
         };
 
@@ -1226,7 +1254,7 @@ public:
             consumeChunk(bytes);
         }
 
-        if (kind == sourceAnalysis)
+        if (streamsOutput(kind))
             lines.flush(onLine);
 
         int exitCode = 0;
@@ -1237,7 +1265,7 @@ public:
             process.reset();
         }
 
-        if (!processBytes.empty() && kind != sourceAnalysis)
+        if (!processBytes.empty() && !streamsOutput(kind))
         {
             const auto processOutput = juce::String::fromUTF8(
                 processBytes.data(), static_cast<int>(processBytes.size()));
@@ -1287,6 +1315,10 @@ private:
             owner.finishSourceAnalysis(source, output, exitCode);
         else if (kind == analysisMaintenance)
             owner.finishAnalysisMaintenance(source, label, exitCode);
+        else if (kind == modelInventory)
+            owner.finishModelInventory(output, exitCode);
+        else if (kind == modelMaintenance)
+            owner.finishModelJob(label, exitCode);
         else
             owner.finishMidiConversion(label, output, exitCode, context);
     }
@@ -6575,6 +6607,305 @@ bool StemLabAudioProcessor::applySourceCorrection(const juce::StringArray& corre
 bool StemLabAudioProcessor::clearAnalysisCache()
 {
     return launchAnalysisMaintenance({"--clear-cache"}, "Clearing local analysis cache");
+}
+
+// ------------------------------------------------------------------ models
+
+std::vector<StemLabAudioProcessor::ManagedModel> StemLabAudioProcessor::getManagedModels() const
+{
+    const juce::ScopedLock lock(modelInventoryLock);
+    return managedModels;
+}
+
+std::vector<StemLabAudioProcessor::ManagedCache> StemLabAudioProcessor::getManagedCaches() const
+{
+    const juce::ScopedLock lock(modelInventoryLock);
+    return managedCaches;
+}
+
+bool StemLabAudioProcessor::refreshModelInventory()
+{
+    if (modelInventoryRunning.load())
+        return false;
+
+    auto command = makePythonModuleCommand("stemlab.model_manager");
+
+    if (command.isEmpty())
+    {
+        // No engine configured yet. That is not a failed read - there is
+        // nothing to read from - so the Model Manager can say "point me at an
+        // engine" rather than "your models are missing".
+        modelInventoryBroken.store(false);
+        return false;
+    }
+
+    // A file rather than stdout: the inventory is several kilobytes of JSON
+    // and the reader for this kind does not stream, so a path in a single
+    // announced line is both cheaper and easier to get right than assembling
+    // the document out of the log.
+    modelInventoryFile = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                             .getChildFile("stemlab_models_" + juce::String(juce::Uuid().toString())
+                                           + ".json");
+
+    command.add("--status");
+    command.add("--output");
+    command.add(modelInventoryFile.getFullPathName());
+
+    modelInventoryThread.reset();
+    modelInventoryRunning.store(true);
+
+    modelInventoryThread = std::make_unique<StemLabUtilityThread>(
+        *this, StemLabUtilityThread::modelInventory, command, juce::File{}, modelInventoryFile);
+
+    if (!modelInventoryThread->startThread())
+    {
+        modelInventoryThread.reset();
+        modelInventoryRunning.store(false);
+        modelInventoryBroken.store(true);
+        sendChangeMessage();
+        return false;
+    }
+
+    return true;
+}
+
+void StemLabAudioProcessor::finishModelInventory(const juce::File& output, int exitCode)
+{
+    modelInventoryRunning.store(false);
+
+    const auto text = output.existsAsFile() ? output.loadFileAsString() : juce::String{};
+
+    if (output.existsAsFile())
+        output.deleteFile();
+
+    const auto parsed = juce::JSON::parse(text);
+
+    if (exitCode != 0 || !parsed.isObject())
+    {
+        // An engine that cannot answer is worth saying out loud, because
+        // every model will otherwise read as missing and the user will be
+        // invited to re-download things they already have.
+        modelInventoryBroken.store(true);
+        sendChangeMessage();
+        return;
+    }
+
+    std::vector<ManagedModel> models;
+    std::vector<ManagedCache> caches;
+
+    if (auto* entries = parsed.getProperty("models", {}).getArray())
+    {
+        for (const auto& entry : *entries)
+        {
+            ManagedModel model;
+            model.id = entry.getProperty("id", {}).toString();
+            model.label = entry.getProperty("label", {}).toString();
+            model.purpose = entry.getProperty("purpose", {}).toString();
+            model.path = entry.getProperty("path", {}).toString();
+            model.compileReason = entry.getProperty("reason", {}).toString();
+            model.present = static_cast<bool>(entry.getProperty("present", false));
+            model.compiled = static_cast<bool>(entry.getProperty("compiled", false));
+            model.compilable =
+                entry.getProperty("compileSupport", {}).toString() == "supported";
+            model.bytes = static_cast<juce::int64>(entry.getProperty("bytes", 0));
+            model.approxBytes = static_cast<juce::int64>(entry.getProperty("approxBytes", 0));
+
+            if (model.id.isNotEmpty())
+                models.push_back(std::move(model));
+        }
+    }
+
+    if (auto* entries = parsed.getProperty("caches", {}).getArray())
+    {
+        for (const auto& entry : *entries)
+        {
+            ManagedCache cache;
+            cache.id = entry.getProperty("id", {}).toString();
+            cache.label = entry.getProperty("label", {}).toString();
+            cache.path = entry.getProperty("path", {}).toString();
+            cache.warning = entry.getProperty("warning", {}).toString();
+            cache.bytes = static_cast<juce::int64>(entry.getProperty("bytes", 0));
+
+            if (cache.id.isNotEmpty())
+                caches.push_back(std::move(cache));
+        }
+    }
+
+    {
+        const juce::ScopedLock lock(modelInventoryLock);
+        managedModels = std::move(models);
+        managedCaches = std::move(caches);
+    }
+
+    // Both flags come from the engine rather than being re-derived here, so
+    // the rule that decides whether the Model Manager opens itself lives in
+    // one place.
+    anyModelMissing.store(static_cast<bool>(parsed.getProperty("anyModelMissing", false)));
+    anyCompilePending.store(static_cast<bool>(parsed.getProperty("anyCompilePending", false)));
+
+    modelInventoryBroken.store(false);
+    modelInventoryValid.store(true);
+
+    sendChangeMessage();
+}
+
+bool StemLabAudioProcessor::launchModelJob(const juce::StringArray& arguments,
+                                           const juce::String& label)
+{
+    if (modelJobRunning.load())
+        return false;
+
+    if (arguments.isEmpty())
+        return false;
+
+    auto command = makePythonModuleCommand("stemlab.model_manager");
+
+    if (command.isEmpty())
+    {
+        setStatus("No StemLab engine is configured", statusFailure);
+        return false;
+    }
+
+    command.addArray(arguments);
+
+    modelJobCancelFile = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                             .getChildFile("stemlab_models_cancel_"
+                                           + juce::String(juce::Uuid().toString()) + ".txt");
+
+    // A sentinel left by an earlier run would cancel this one the moment its
+    // watchdog started.
+    modelJobCancelFile.deleteFile();
+
+    command.add("--cancel-file");
+    command.add(modelJobCancelFile.getFullPathName());
+
+    modelJobThread.reset();
+    modelJobRunning.store(true);
+
+    engineProgress.store(0.01);
+    engineCancelRequested.store(false);
+
+    setStatus(label + "...");
+
+    modelJobThread = std::make_unique<StemLabUtilityThread>(
+        *this, StemLabUtilityThread::modelMaintenance, command, juce::File{}, juce::File{}, label,
+        juce::String{}, modelJobCancelFile);
+
+    if (!modelJobThread->startThread())
+    {
+        modelJobThread.reset();
+        modelJobRunning.store(false);
+        setStatus(label + " could not start", statusFailure);
+        return false;
+    }
+
+    sendChangeMessage();
+    return true;
+}
+
+void StemLabAudioProcessor::finishModelJob(const juce::String& label, int exitCode)
+{
+    modelJobRunning.store(false);
+    engineProgress.store(0.0);
+
+    if (modelJobCancelFile.existsAsFile())
+        modelJobCancelFile.deleteFile();
+
+    if (exitCode == 130 || engineCancelRequested.load())
+        setStatus(label + " cancelled");
+    else if (exitCode != 0)
+        setStatus(label + " failed - see diagnostics", statusFailure);
+    else
+        setStatus(label + " complete");
+
+    engineCancelRequested.store(false);
+
+    // Whatever the job did, what is on disk has changed. Re-reading is the
+    // only thing that makes the Model Manager agree with reality, and it has
+    // to happen off this thread: refreshModelInventory resets a thread, and
+    // running it here would be a thread joining itself.
+    std::weak_ptr<int> lifetime = lifetimeToken;
+
+    juce::MessageManager::callAsync(
+        [this, lifetime]
+        {
+            if (lifetime.expired())
+                return;
+
+            refreshModelInventory();
+        });
+
+    sendChangeMessage();
+}
+
+bool StemLabAudioProcessor::startModelDownload(const juce::StringArray& modelIds)
+{
+    if (modelIds.isEmpty())
+        return false;
+
+    juce::StringArray arguments;
+
+    for (const auto& id : modelIds)
+    {
+        arguments.add("--download");
+        arguments.add(id);
+    }
+
+    return launchModelJob(arguments, modelIds.size() == 1 ? "Downloading model"
+                                                          : "Downloading models");
+}
+
+bool StemLabAudioProcessor::startModelCompile(const juce::StringArray& modelIds)
+{
+    if (modelIds.isEmpty())
+        return false;
+
+    juce::StringArray arguments;
+
+    for (const auto& id : modelIds)
+    {
+        arguments.add("--compile");
+        arguments.add(id);
+    }
+
+    return launchModelJob(arguments, modelIds.size() == 1 ? "Compiling model" : "Compiling models");
+}
+
+bool StemLabAudioProcessor::startModelRemoval(const juce::StringArray& modelIds,
+                                              const juce::StringArray& cacheIds)
+{
+    if (modelIds.isEmpty() && cacheIds.isEmpty())
+        return false;
+
+    juce::StringArray arguments;
+
+    for (const auto& id : modelIds)
+    {
+        arguments.add("--delete-model");
+        arguments.add(id);
+    }
+
+    for (const auto& id : cacheIds)
+    {
+        arguments.add("--delete-cache");
+        arguments.add(id);
+    }
+
+    return launchModelJob(arguments, "Removing");
+}
+
+void StemLabAudioProcessor::cancelModelJob()
+{
+    if (!modelJobRunning.load())
+        return;
+
+    engineCancelRequested.store(true);
+    setStatus("Cancelling...");
+
+    if (modelJobThread != nullptr)
+        modelJobThread->requestCancel();
+
+    sendChangeMessage();
 }
 
 bool StemLabAudioProcessor::launchAnalysisMaintenance(const juce::StringArray& arguments,
