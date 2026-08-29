@@ -2524,17 +2524,34 @@ void StemLabAudioProcessor::transportTogglePlay()
     if (capturing.load())
         return;
 
+    /*
+        Stopping comes before everything else and needs nothing loaded:
+        whatever is playing is, by definition, already loaded.
+
+        Both branches below reach for a file first - ensureStemMixLoaded()
+        here, getCaptureFile() in toggleStandalonePlayback - and either can
+        fail: a recursive split deletes and rewrites the tree it is splitting.
+        Gating the stop behind that load is what let a job leave the
+        transport rolling with no way to stop it.
+    */
+    if (stemMixTransport.isPlaying())
+    {
+        stemMixTransport.stop();
+        setActionStatus("Paused");
+        return;
+    }
+
+    if (previewTransport.isPlaying())
+    {
+        previewTransport.stop();
+        setActionStatus("Source paused");
+        return;
+    }
+
     if (audioMonitorIsMix.load())
     {
         if (!ensureStemMixLoaded())
             return;
-
-        if (stemMixTransport.isPlaying())
-        {
-            stemMixTransport.stop();
-            setActionStatus("Paused");
-            return;
-        }
 
         if (stemMixTransport.getCurrentPosition() >=
             stemMixTransport.getLengthInSeconds() - 0.01)
@@ -3843,6 +3860,13 @@ bool StemLabAudioProcessor::launchRecursiveStemSplit(int rootStemIndex)
         return false;
     }
 
+    // Before anything else, exactly as launchSeparationAndExport does. The
+    // editor disables the transport controls for the duration of a job, so
+    // playback left running here is playback the user cannot stop; and the
+    // recursive output directory is deleted below, which can be the very
+    // file the transport is reading.
+    stopStandalonePlayback();
+
     const auto rootStem = getStemName(rootStemIndex);
     const bool isVocals = rootStem.equalsIgnoreCase("vocals");
     const bool isDrums = rootStem.equalsIgnoreCase("drums");
@@ -3933,6 +3957,10 @@ bool StemLabAudioProcessor::launchRecursiveAction(const juce::String& itemId,
 {
     if (!hasSuccessfulJob() || isEngineRunning())
         return false;
+
+    // See launchRecursiveStemSplit: a job greys out the transport, so it has
+    // to leave playback stopped rather than unstoppable.
+    stopStandalonePlayback();
 
     StemLabRecursiveStemInfo target;
     bool found = false;

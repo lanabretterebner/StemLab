@@ -345,6 +345,9 @@ private:
     bool loadSourceFile(const juce::File& file);
     void chooseSaveFolder();
     void chooseJobRootFolder();
+
+    /** Show the job output folder in the desktop's file manager. */
+    void revealJobFolder();
     void showSettingsMenu();
     void showStandaloneAudioSettings();
     void showFirstRunWelcome();
@@ -444,6 +447,13 @@ private:
 
     // Horizontal waveform zoom, shared by every lane.
     std::unique_ptr<stemlab::widgets::IconButton> zoomResetButton;
+
+    /*  The folder beside the footer path. It was painted straight onto
+        panelContent and so could not be clicked; as a button it hit-tests,
+        takes a hover cursor and carries a tooltip. Its bounds still track
+        the right-aligned path text, which is why they are set in the
+        refresh rather than in resized(). */
+    std::unique_ptr<stemlab::widgets::IconButton> openFolderButton;
     stemlab::widgets::ZoomSlider zoomSlider;
     juce::Label zoomLabel;
 

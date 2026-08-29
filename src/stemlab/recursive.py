@@ -60,11 +60,64 @@ def default_model_dir() -> Path:
     return Path.home() / ".stemlab" / "models" / "recursive"
 
 
+# audio-separator keeps its model registry beside the weights, and fetches it
+# the same unsafe way, so it can be truncated by the same interrupted transfer.
+_DOWNLOAD_REGISTRY = "download_checks.json"
+
+
+def _model_cache_files(model_dir: Path, model_filename: str) -> list[Path]:
+    """Every cached file belonging to one model.
+
+    audio-separator stores a checkpoint under its own name and any config it
+    needs beside it under the same stem, flat in the model directory. Matching
+    on the stem rather than the exact name is what also catches the ``.yaml``
+    a roformer model is useless without.
+    """
+    if not model_dir.is_dir():
+        return []
+
+    stem = Path(model_filename).stem
+    return sorted(
+        path for path in model_dir.iterdir() if path.is_file() and path.name.startswith(stem)
+    )
+
+
+def _discard_unusable_downloads(model_dir: Path, model_filename: str) -> list[str]:
+    """Delete the cached files for a model so the next load re-fetches them.
+
+    The registry goes too, but only when it no longer parses: it is shared by
+    every model, and throwing it away on an unrelated failure would cost a
+    round trip for nothing.
+    """
+    discarded: list[str] = []
+
+    for path in _model_cache_files(model_dir, model_filename):
+        try:
+            path.unlink()
+        except OSError:
+            continue
+        discarded.append(path.name)
+
+    registry = model_dir / _DOWNLOAD_REGISTRY
+    if registry.is_file():
+        try:
+            json.loads(registry.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            try:
+                registry.unlink()
+                discarded.append(registry.name)
+            except OSError:
+                pass
+
+    return discarded
+
+
 def _load_model(
     separator: "Separator",
     model_filename: str,
     display: str,
     progress: ProgressCallback | None,
+    model_dir: Path | None = None,
 ) -> None:
     """Load a recursive model, naming its first-use download as it happens.
 
@@ -73,6 +126,14 @@ def _load_model(
     inside this call, so without this the status area would sit on "Loading
     ..." for the length of a multi-hundred-megabyte transfer with a frozen
     bar behind it.
+
+    A load that fails once is retried once, against a cleared cache.
+    audio-separator writes a download straight to its final path with no
+    temporary file, and then skips downloading whenever that path exists
+    (``download_file_if_not_exists``). A transfer interrupted by a cancel or a
+    dropped connection therefore leaves a truncated file that every later run
+    reuses and rejects - the same failure, for ever, until somebody deletes it
+    by hand. Nothing upstream clears it, so this does.
     """
 
     def on_download(percent: float) -> None:
@@ -83,8 +144,29 @@ def _load_model(
                 f"Downloading the {display} model ({bounded:.0f}%)",
             )
 
-    with report_downloads(on_download if progress else None):
-        separator.load_model(model_filename=model_filename)
+    def attempt() -> None:
+        with report_downloads(on_download if progress else None):
+            separator.load_model(model_filename=model_filename)
+
+    try:
+        attempt()
+        return
+    except Exception:
+        if model_dir is None:
+            raise
+
+        discarded = _discard_unusable_downloads(model_dir, model_filename)
+
+        if not discarded:
+            # Nothing cached to blame, so the failure is real: a missing
+            # dependency, no network, an unsupported device. Re-downloading
+            # would only fail the same way, more slowly.
+            raise
+
+        if progress:
+            progress(4.0, f"Re-downloading the {display} model")
+
+    attempt()
 
 
 def _require_separator() -> "type[Separator]":
@@ -320,7 +402,7 @@ def split_drums(
         progress(4.0, "Loading recursive drum model")
 
     separator = _separator(output_dir, model_dir)
-    _load_model(separator, DRUM_MODEL, "drum separation", progress)
+    _load_model(separator, DRUM_MODEL, "drum separation", progress, model_dir)
 
     if progress:
         progress(12.0, "Splitting drum components")
@@ -394,7 +476,7 @@ def split_vocals(
         progress(4.0, "Loading lead/backing vocal model")
 
     separator = _separator(output_dir, model_dir)
-    _load_model(separator, VOCAL_MODEL, "lead/backing vocal", progress)
+    _load_model(separator, VOCAL_MODEL, "lead/backing vocal", progress, model_dir)
 
     if progress:
         progress(12.0, "Splitting lead and backing vocals")
@@ -573,7 +655,7 @@ def deverb_vocal(
         progress(4.0, "Loading vocal de-reverb model")
 
     separator = _separator(output_dir, model_dir)
-    _load_model(separator, DEVERB_MODEL, "vocal de-reverb", progress)
+    _load_model(separator, DEVERB_MODEL, "vocal de-reverb", progress, model_dir)
 
     if progress:
         progress(12.0, "Removing vocal reverb")
