@@ -58,6 +58,32 @@ The tests use synthetic audio; they download no models and need no DAW.
 `tests/` contains unit tests for behavior that should remain stable. Keep
 them green before and after code changes.
 
+The C++ side has its own suites, which CI runs and a local build should too:
+
+```bash
+ctest --test-dir src/plugin/build --output-on-failure
+```
+
+| Target | What it holds the line on |
+| --- | --- |
+| `StemLabWaveformGridTests` | Bar and beat placement, and host-integration policy |
+| `StemLabWaveformAnalysisTests` | The JUCE-free spectral analysis, FFT included |
+| `StemLabLoopRegionsTests` | Which loop ranges merge, and where playback jumps |
+| `StemLabSourceLabelTests` | Joining a track and take name without saying it twice |
+| `StemLabLaneWheelDispatchTests` | Which wheel events a lane forwards to the viewport |
+| `StemLabHostCaptureTests` | The self-drag guard and a real processor capturing audio |
+
+The first four cover header-only components deliberately kept free of the
+plugin, so a test can reach them without standing one up.
+`StemLabLaneWheelDispatchTests` is the odd one: it pins JUCE's own dispatch
+behaviour rather than code of ours, because a JUCE upgrade that changed it
+would silently undo the fix that depends on it. `StemLabHostCaptureTests`
+links the plugin itself.
+
+Two of them link JUCE, but none needs a display - the wheel suite asserts
+against `MouseEvent` identity rather than a window - so the whole suite runs
+on a bare CI runner with `DISPLAY` unset.
+
 ## Command Line
 
 ```powershell
@@ -152,6 +178,7 @@ Pure helpers behind the lanes: `WaveformGrid.h` (beat-grid math),
 | `hybrid.py` | Spectral fusion of model estimates |
 | `device.py` | Device selection for PyTorch backends (CUDA/XPU/CPU) |
 | `compile_support.py` | Opt-in `torch.compile` gate for the RoFormer models |
+| `model_compile.py` | Fills the compiled-kernel cache before a job needs it |
 | `model_manager.py` | `stemlab-model-manager`: model/cache inventory, fetch, removal |
 | `plugin_job.py` | JUCE command arguments, progress files, Ableton manifest |
 | `recursive_job.py` | JUCE command bridge for adaptive stem jobs |
@@ -168,6 +195,10 @@ Pure helpers behind the lanes: `WaveformGrid.h` (beat-grid math),
 | `refinement/adaptive_cancel.py` | Constrained spectral subtraction |
 | `refinement/kick.py` | Per-event kick-bleed correction |
 | `refinement/pipeline.py` | Applies refinement across a stem folder |
+| `regression/metrics.py` | SI-SDR, correlation, and spectral distance |
+| `regression/compare.py` | Compares two sets of stems and gates on the difference |
+| `regression/corpus.py` | Deterministic synthetic corpus, so CI needs no licensed music |
+| `regression/__main__.py` | `python -m stemlab.regression` entry |
 
 ### Compiled inference (opt-in)
 
@@ -198,6 +229,9 @@ from `torch.compile`, so the fallback wraps the call, not the wrap. And
 because every separation is a fresh subprocess, the cache directory has to be
 stable or compiling is a guaranteed loss - the first run pays about two
 minutes, later runs load kernels instead of building them.
+
+Who pays that first run is a separate question, answered under
+[Warming the compiled-kernel cache](#warming-the-compiled-kernel-cache).
 
 ## Stable Contracts
 
@@ -293,8 +327,10 @@ session only.
 
 ### Warming the compiled-kernel cache
 
-`compile_support` compiles during a real job, so without warming the first
-separation after enabling `STEMLAB_TORCH_COMPILE` pays the whole cost: 114.8 s
+`compile_support` (see [Compiled inference](#compiled-inference-opt-in) for
+which machines can compile at all) compiles during a real job, so without
+warming the first separation after enabling `STEMLAB_TORCH_COMPILE` pays the
+whole cost: 114.8 s
 for the first forward pass against a cold cache, 27.4 s against a warm one,
 where eager is 9.5 s. `stemlab.model_compile` moves that cost somewhere the
 user chose to spend it.

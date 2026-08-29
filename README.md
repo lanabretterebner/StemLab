@@ -42,6 +42,8 @@ Building, running, testing, and releasing are covered in `docs/`:
   platforms, architecture, module map, contracts, releases
 - [docs/linux.md](docs/linux.md) - Linux build, install, GPU flavors, REAPER
 - [docs/ableton.md](docs/ableton.md) - Ableton Live setup and workflow
+- [docs/engine-measurements.md](docs/engine-measurements.md) - separation
+  quality measurements: the method, and what has since been settled without them
 - [docs/third-party.md](docs/third-party.md) - third-party licenses
 
 ## Repository Map

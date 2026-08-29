@@ -12,6 +12,21 @@ exists on purpose, so the threshold cannot be chosen after seeing the answer.
 
 **Status: no measurement of the three was produced.** The blocker is not what the work order assumed, and the correction matters — two of the three are much closer to runnable than the brief states. Everything below was verified on this machine; every command was checked against the real code, and the parts I could execute, I executed.
 
+> **Since this was written, two of its premises have been settled elsewhere.**
+> Read the plans below as the method for measurements nobody has run, not as
+> open work waiting on someone.
+>
+> - **Measurement 1 (the 48 kHz mismatch) has been overtaken.** `pretrained.py`
+>   now resamples to `ROFORMER_SAMPLE_RATE` before the separator, so the arm
+>   this section calls "the working tree" is what ships. Its arm A/arm B recipe
+>   still stands if the cost is ever worth quantifying, but the decision it was
+>   meant to inform has been taken.
+> - **Section 9's `--shifts` finding was closed as won't-fix.** The reasoning is
+>   that reproducibility is not quality: the unseeded offset varies the output
+>   without degrading it. The consequence to remember is that the regression
+>   harness cannot produce a stable Demucs A/B while this holds, so any run of
+>   the measurements below must pass `--shifts 0` explicitly.
+
 ---
 
 ## 0. Decision rule for `DEMUCS_OVERLAP`, fixed before any data exists
