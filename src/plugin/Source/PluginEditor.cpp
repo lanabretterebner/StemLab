@@ -4803,7 +4803,10 @@ void StemLabAudioProcessorEditor::considerAutoShowingModelManager()
     if (!processor.hasModelInventory() || modelManagerPanel.isVisible())
         return;
 
-    if (!processor.isAnyModelMissing() && !processor.isAnyCompilePending())
+    // Only a missing essential model. Compiling being available but not yet
+    // done is not a reason to interrupt anyone - it is a thing to go and do,
+    // not a thing that is wrong.
+    if (!processor.isEssentialModelMissing())
         return;
 
     modelManagerAutoShown = true;
