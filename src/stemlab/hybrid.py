@@ -156,8 +156,16 @@ def fuse_stem_pair(
     stem: str,
     chunk_seconds: float = 16.0,
     overlap_seconds: float = 0.35,
+    normalize: bool = False,
 ) -> tuple[np.ndarray, int]:
-    """Fuse one matching pair of model outputs and write a normalized WAV.
+    """Fuse one matching pair of model outputs and write the result.
+
+    ``normalize`` scales this stem so its own peak sits at 0.999. It is off
+    by default because the scale factor is derived from this stem alone: a
+    loud stem is attenuated and a quiet one is not, so the six stems stop
+    summing back to the mix they came from and their balance against each
+    other shifts. Stems are written as 32-bit float, where a sample above
+    1.0 is exactly representable, so nothing clips in the file either way.
 
     Returns the exact ``[channels, samples]`` float32 audio and sample rate
     just written, so a same-process caller can keep working on the array
@@ -291,7 +299,8 @@ def fuse_stem_pair(
         1e-6,
     )
 
-    result = peak_normalize(result, peak=0.999)
+    if normalize:
+        result = peak_normalize(result, peak=0.999)
 
     save_audio(
         output_path,
@@ -310,6 +319,7 @@ def fuse_stem_folders(
     progress_callback: Callable[[int, int, str], None] | None = None,
     ready_callback: Callable[[str, Path], None] | None = None,
     fused_callback: Callable[[str, np.ndarray, int], None] | None = None,
+    normalize: bool = False,
 ) -> list[Path]:
     """Fuse all six named stems from two model-output directories.
 
@@ -392,6 +402,7 @@ def fuse_stem_folders(
             demucs_path=demucs_path,
             output_path=output_path,
             stem=stem,
+            normalize=normalize,
         )
 
         if fused_callback is not None:

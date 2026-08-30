@@ -646,6 +646,21 @@ public:
 
     bool isRefinementEnabled() const noexcept { return refinementEnabled.load(); }
 
+    /*  Whether hybrid fusion scales each stem so its own peak sits at 0.999.
+
+        Off by default. The factor is derived from one stem alone, so a loud
+        stem is attenuated and a quiet one is not: the six stop summing back
+        to the source they came from, and their balance against each other
+        shifts. Stems are written as 32-bit float, where a sample above 1.0
+        is exactly representable, so nothing clips in the file either way.
+    */
+    void setFusedStemNormalisation(bool enabled) noexcept
+    {
+        fusedStemNormalisation.store(enabled);
+    }
+
+    bool isFusedStemNormalisation() const noexcept { return fusedStemNormalisation.load(); }
+
     enum SeparatorEngine
     {
         separatorRoFormer = 0,
@@ -1068,6 +1083,7 @@ private:
 
     std::array<std::atomic<bool>, stemCount> stemEnabled;
     std::atomic<bool> refinementEnabled{true};
+    std::atomic<bool> fusedStemNormalisation{false};
     std::atomic<int> separatorEngineIndex{separatorRoFormer};
     std::atomic<double> waveformZoom{1.0};
     std::atomic<int> waveformColourIndex{defaultWaveformColourIndex};

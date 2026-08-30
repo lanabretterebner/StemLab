@@ -157,6 +157,7 @@ def separate(
     model: str = DEFAULT_MODEL,
     device: str = "cuda",
     refine: bool = True,
+    normalize_fused: bool = False,
     engine: str = DEFAULT_ENGINE,
     demucs_model: str = DEFAULT_DEMUCS_MODEL,
     refinement_config: KickRefinementConfig | None = None,
@@ -490,6 +491,7 @@ def separate(
             # Nothing downstream reads a fused stem when refinement is off,
             # so declining the handover frees each one as it is written.
             fused_callback=on_fused if refine else None,
+            normalize=normalize_fused,
         )
 
     if refine:

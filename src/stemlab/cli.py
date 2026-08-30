@@ -25,6 +25,15 @@ def separate_main() -> None:
         action="store_true",
         help="Render only pretrained baseline stems",
     )
+    parser.add_argument(
+        "--normalize-fused-stems",
+        action="store_true",
+        help=(
+            "Scale each hybrid-fused stem so its own peak sits at 0.999. Off "
+            "by default: the factor comes from one stem alone, so the six "
+            "stop summing back to the source and their balance shifts."
+        ),
+    )
     args = parser.parse_args()
 
     result = separate(
@@ -34,6 +43,7 @@ def separate_main() -> None:
         device=args.device,
         engine=args.engine,
         refine=not args.no_refine,
+        normalize_fused=args.normalize_fused_stems,
     )
     print(f"baseline: {result.baseline_dir}")
     print(f"final:    {result.final_dir}")
