@@ -38,7 +38,7 @@ namespace stemlab::widgets
         /** Shown in place of the list when the engine could not be asked. */
         void setUnavailable(const juce::String& reason);
 
-        /** The compile switch and a note about it when it is not usable. */
+        /** The compile switch, and why it cannot help when it cannot. */
         void setCompileState(bool enabled, bool supported, const juce::String& reason);
 
         std::function<void(juce::StringArray)> onDownload;
@@ -49,6 +49,10 @@ namespace stemlab::widgets
         std::function<void()> onClose;
 
         void paint(juce::Graphics&) override;
+
+        /** Fades the list where it scrolls past its edges. */
+        void paintOverChildren(juce::Graphics&) override;
+
         void resized() override;
 
         /** Escape closes, matching every other dismissable surface. */
@@ -60,6 +64,9 @@ namespace stemlab::widgets
     private:
         /** One model or one cache, drawn as a row inside the list. */
         class Row;
+
+        /** The house checkbox plus its caption, clickable as one. */
+        class CompileSwitch;
 
         void rebuildRows();
         void layoutRows();
@@ -78,9 +85,9 @@ namespace stemlab::widgets
 
         juce::Label titleLabel;
         juce::Label summaryLabel;
-        juce::Label compileLabel;
-        juce::ToggleButton compileToggle{"Compile separations"};
+        std::unique_ptr<CompileSwitch> compileSwitch;
         juce::Label activityLabel;
+        juce::Label activityPercent;
         juce::Label unavailableLabel;
 
         juce::Viewport listViewport;
@@ -92,8 +99,26 @@ namespace stemlab::widgets
         juce::TextButton closeButton{"Close"};
 
         juce::String unavailableReason;
+
+        /*
+         * Declared before the bar that binds to it: juce::ProgressBar holds a
+         * reference, and a member initialised from one declared later would
+         * bind to storage that has not been constructed.
+         */
         double activityProgress = 0.0;
+        juce::ProgressBar activityBar{activityProgress};
+
         bool jobRunning = false;
+
+        /*
+         * Laid out once in resized() and read by paint(). The two used to
+         * derive the same geometry independently from the same constants,
+         * which is how the progress track ended up a few pixels off the
+         * divider it was supposed to sit clear of.
+         */
+        juce::Rectangle<int> listArea;
+        int headerRuleY = 0;
+        int footerRuleY = 0;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ModelManagerPanel)
     };

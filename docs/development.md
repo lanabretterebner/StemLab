@@ -322,13 +322,23 @@ filenames and search rules the engine defines elsewhere; `test_model_manager`
 asserts each copy still matches whenever the owning module imports.
 
 Fetching asks whoever owns each transfer to perform it - upstream's
-downloader for RoFormer, `torch.hub` for Demucs, `audio-separator` for the
-adaptive models - and lifts `HF_HUB_OFFLINE` for that child only, since
-downloading is the one operation meant to reach the network.
+downloader for RoFormer, the HuggingFace hub for Demucs, `audio-separator`
+for the adaptive models - and lifts `HF_HUB_OFFLINE` for that child only,
+since downloading is the one operation meant to reach the network.
 
-In the plugin it is a modal panel over the interface, opening by itself while
-anything is missing and available from Settings. Dismissing it lasts the
-session only.
+In the plugin it is a modal panel over the interface, always available from
+Settings and opening by itself only when a model the app cannot separate
+without is absent - `ESSENTIAL_MODEL_IDS`, which is RoFormer and Demucs.
+Dismissing it lasts the session only.
+
+The rule is that narrow because the first one was not. It opened when any of
+the seven models was missing, including the optional ones that fetch
+themselves on first use, and it also opened whenever compiling was switched
+on and a present model had no warm-up marker. Nothing writes that marker
+except this module's own `--compile`, so with `STEMLAB_TORCH_COMPILE=1` the
+second condition was permanently true and the panel appeared on every launch
+of a fully installed app. `status()` now reports one flag,
+`essentialModelMissing`, and the plugin has no second reason to open it.
 
 ### Warming the compiled-kernel cache
 

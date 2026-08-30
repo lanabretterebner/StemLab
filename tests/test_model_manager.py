@@ -99,7 +99,7 @@ class TestStatusNeedsNothingOptional:
         payload = model_manager.status()
 
         assert len(payload["models"]) == len(model_manager.MODELS)
-        assert payload["anyModelMissing"] is True
+        assert payload["essentialModelMissing"] is True
 
         # A cache whose path cannot be resolved is left out rather than
         # offered with a size and a Clear that could not work.
@@ -118,9 +118,13 @@ class TestStatusNeedsNothingOptional:
 
     def test_missing_flag_agrees_with_the_per_model_entries(self):
         payload = model_manager.status()
-        expected = any(not entry["present"] for entry in payload["models"])
+        expected = any(
+            not entry["present"]
+            for entry in payload["models"]
+            if entry["id"] in model_manager.ESSENTIAL_MODEL_IDS
+        )
 
-        assert payload["anyModelMissing"] is expected
+        assert payload["essentialModelMissing"] is expected
 
 
 class TestMirroredConstantsHaveNotDrifted:
@@ -259,12 +263,16 @@ class TestCompileSeam:
         assert payload["compileRequested"] is False
         assert "STEMLAB_TORCH_COMPILE" in payload["compileReason"]
 
-    def test_nothing_is_pending_while_compiling_is_switched_off(self, monkeypatch):
-        # Otherwise the Model Manager would invite itself open to offer a
-        # warm-up that the separation would not use anyway.
+    def test_compiling_switched_off_is_reported_as_off(self, monkeypatch):
+        # The Model Manager no longer invites itself open over compiling at
+        # all, but it still has to say whether compiling is on: an unset
+        # opt-in and a missing compiler need opposite advice.
         monkeypatch.delenv("STEMLAB_TORCH_COMPILE", raising=False)
 
-        assert model_manager.status()["anyCompilePending"] is False
+        payload = model_manager.status()
+
+        assert payload["compileRequested"] is False
+        assert "STEMLAB_TORCH_COMPILE" in payload["compileReason"]
 
     def test_a_downloaded_model_with_no_backend_reports_unavailable(self, tmp_path, monkeypatch):
         # The seam, not the warm-up: with the weights in place and no
@@ -579,3 +587,79 @@ class TestDemucsIsFoundWhereItActuallyLands:
         expected = f"{hf.DEFAULT_NAMESPACE}/{hf.hf_repo_name(model_manager.DEMUCS_MODEL_NAME)}"
 
         assert model_manager.DEMUCS_HF_DIRECTORY == "models--" + expected.replace("/", "--")
+
+
+class TestWhatOpensTheModelManagerUnasked:
+    """The panel used to appear on every single launch.
+
+    Two separate reasons, both fixed by the flag below. It opened when *any*
+    of the seven models was absent - including the optional ones that fetch
+    themselves on first use - and it opened whenever compiling was switched
+    on and a present model had no warm-up marker. Nothing writes that marker
+    except the Model Manager's own Compile action, so with compiling on the
+    second condition was true forever, no matter what was installed.
+    """
+
+    def _payload(self, monkeypatch, present):
+        monkeypatch.setattr(model_manager, "locate", lambda model_id: (
+            Path("/tmp/pretend.ckpt") if model_id in present else None
+        ))
+        monkeypatch.setattr(Path, "stat", lambda self: os.stat_result((0,) * 10))
+        return model_manager.status()
+
+    def test_every_essential_model_present_does_not_open_it(self, monkeypatch):
+        payload = self._payload(monkeypatch, set(model_manager.ESSENTIAL_MODEL_IDS))
+
+        assert payload["essentialModelMissing"] is False
+
+    def test_an_optional_model_missing_does_not_open_it(self, monkeypatch):
+        # The regression: beat tracking and the adaptive-split models are
+        # fetched on first use, and their absence is not a problem to solve.
+        present = set(model_manager.ESSENTIAL_MODEL_IDS)
+        optional = [m.id for m in model_manager.MODELS if m.id not in present]
+
+        assert optional, "this test is pointless if everything is essential"
+
+        payload = self._payload(monkeypatch, present)
+
+        assert payload["essentialModelMissing"] is False
+
+    def test_a_missing_essential_model_does_open_it(self, monkeypatch):
+        for essential in model_manager.ESSENTIAL_MODEL_IDS:
+            present = {m.id for m in model_manager.MODELS} - {essential}
+
+            assert self._payload(monkeypatch, present)["essentialModelMissing"] is True
+
+    def test_compiling_being_available_is_not_a_reason_to_open_it(self, monkeypatch):
+        monkeypatch.setenv("STEMLAB_TORCH_COMPILE", "1")
+
+        payload = self._payload(monkeypatch, {m.id for m in model_manager.MODELS})
+
+        # The condition that fired on every launch is gone entirely, not
+        # merely false today.
+        assert "anyCompilePending" not in payload
+        assert payload["essentialModelMissing"] is False
+
+
+class TestClearingTheKernelCacheClearsItsMarkers:
+    def test_a_warmed_model_stops_claiming_to_be_compiled(self, tmp_path, monkeypatch):
+        # The markers live beside the cache directory, so an rmtree of the
+        # cache leaves them behind and every warmed model goes on reporting
+        # "Compiled" against kernels that are gone.
+        cache = tmp_path / "inductor"
+        cache.mkdir()
+        (cache / "kernel.so").write_bytes(b"x" * 4096)
+
+        marker = tmp_path / "stemlab_warm_roformer.json"
+        marker.write_text('{"torch": "2.0.0"}', encoding="utf-8")
+
+        monkeypatch.setattr(model_manager, "_locatable_inductor_cache_dir", lambda: cache)
+        monkeypatch.setattr(model_manager, "_torch_version", lambda: "2.0.0")
+
+        assert model_manager._compile_state("roformer")["compiled"] is True
+
+        freed = model_manager.delete_cache(model_manager.COMPILE_CACHE_ID)
+
+        assert not marker.exists()
+        assert freed >= 4096
+        assert model_manager._compile_state("roformer")["compiled"] is False

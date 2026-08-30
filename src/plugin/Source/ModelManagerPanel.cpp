@@ -1,6 +1,7 @@
 #include "ModelManagerPanel.h"
 
 #include "StemLabTheme.h"
+#include "StemLabWidgets.h"
 
 namespace stemlab::widgets
 {
@@ -9,29 +10,54 @@ namespace stemlab::widgets
         namespace card
         {
             constexpr int width = 700;
-            constexpr int height = 470;
+            constexpr int height = 496;
             constexpr float radius = 12.0f;
             constexpr int padX = 22;
             constexpr int padY = 18;
 
             constexpr int titleHeight = 24;
-            constexpr int summaryHeight = 16;
-            constexpr int compileHeight = 16;
-            constexpr int toggleHeight = 22;
+            constexpr int summaryHeight = 18;
+            constexpr int compileHeight = 22;
             constexpr int footerHeight = 30;
-            constexpr int activityHeight = 18;
+            constexpr int activityHeight = 16;
+            constexpr int barHeight = 6;
             constexpr int gap = 12;
+
+            /*
+             * The bottom strip, measured rather than guessed. Laid out with
+             * equal gaps, the rule and the progress track read as one double
+             * line 7px apart; the track has to sit closer to the caption it
+             * belongs with than to the rule it is separated by.
+             */
+            constexpr int ruleGap = 8;    // list edge -> rule
+            constexpr int barGap = 14;    // rule -> track
+            constexpr int barTextGap = 4; // track -> caption
+            constexpr int footerGap = 8;  // caption -> buttons
+
+            /** How far the list fades out at an edge it can scroll past. */
+            constexpr int fade = 14;
         }
 
         namespace row
         {
             constexpr int modelHeight = 42;
-            constexpr int cacheHeight = 30;
+            constexpr int cacheHeight = 32;
             constexpr int headerHeight = 24;
             constexpr int actionWidth = 74;
             constexpr int actionHeight = 22;
             constexpr int gap = 8;
             constexpr float radius = 8.0f;
+        }
+
+        /**
+         * The separator this app uses between facts on one line.
+         *
+         * Through fromUTF8 deliberately: JUCE's char* String constructor
+         * mangles a non-ASCII literal into mojibake.
+         */
+        juce::String dot()
+        {
+            return juce::String::fromUTF8(" \xc2\xb7 ");
         }
 
         /** Sizes for people, not for machines: no 0.0 B, no 1024 MB. */
@@ -54,6 +80,87 @@ namespace stemlab::widgets
             return juce::String(value, unit == 0 ? 0 : 1) + " " + units[unit];
         }
     }
+
+    // -------------------------------------------------------- compile switch
+
+    /**
+     * The compile opt-in: the house checkbox with its caption beside it.
+     *
+     * A component rather than a juce::ToggleButton because the stock one
+     * draws its own pale tick box, which is the one control in this card that
+     * looked like it came from a different program. Clicking the caption
+     * toggles too - a 15px target for a switch nobody uses often is mean.
+     *
+     * Why it cannot help, when it cannot, lives in the tooltip. It used to be
+     * a line of grey text underneath, which pushed the entire list down by a
+     * row whenever it appeared.
+     */
+    class ModelManagerPanel::CompileSwitch final : public juce::Component,
+                                                  public juce::SettableTooltipClient
+    {
+    public:
+        CompileSwitch()
+        {
+            box.setClickingTogglesState(true);
+            box.onClick = [this]
+            {
+                if (onToggle)
+                    onToggle(box.getToggleState());
+            };
+
+            addAndMakeVisible(box);
+        }
+
+        void setState(bool enabled, bool supported)
+        {
+            // dontSendNotification: this is the processor telling the switch
+            // what is true, and firing onClick would send it straight back.
+            if (box.getToggleState() != enabled)
+                box.setToggleState(enabled, juce::dontSendNotification);
+
+            if (usable != supported)
+            {
+                usable = supported;
+                repaint();
+            }
+        }
+
+        bool isOn() const { return box.getToggleState(); }
+
+        void paint(juce::Graphics& g) override
+        {
+            auto text = getLocalBounds();
+            text.removeFromLeft(boxWidth + 8);
+
+            // Dimmed rather than disabled: a machine that cannot compile
+            // today may be able to after installing a compiler, and a
+            // control you cannot touch gives nowhere to hang the reason.
+            g.setColour(usable ? theme::colours::text75() : theme::colours::text45());
+            g.setFont(juce::Font(theme::fonts::make(12.0f, false)));
+            g.drawText("Compile separations", text, juce::Justification::centredLeft, true);
+        }
+
+        void resized() override
+        {
+            box.setBounds(getLocalBounds().removeFromLeft(boxWidth));
+        }
+
+        void mouseUp(const juce::MouseEvent& event) override
+        {
+            if (getLocalBounds().contains(event.getPosition()))
+                box.triggerClick();
+        }
+
+        std::function<void(bool)> onToggle;
+
+    private:
+        static constexpr int boxWidth = 18;
+
+        IncludeCheckbox box;
+        bool usable = true;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(CompileSwitch)
+    };
 
     // ------------------------------------------------------------------ row
 
@@ -121,12 +228,11 @@ namespace stemlab::widgets
             secondary.setVisible(canCompile);
             secondary.setEnabled(canCompile && !model.compiled);
 
-            // Shown after the purpose rather than instead of it: why a model
-            // cannot be compiled matters less than what the model is for, and
-            // the absent Compile button has already said the first part.
-            note = model.compilable || !model.present ? juce::String{} : model.compileReason;
-
-            setTooltip(model.present ? model.path : juce::String{});
+            // Why a model is not compilable is engine trivia - "Beat This! is
+            // not among the patched models" told a user nothing they wanted,
+            // in the same breath as what the model is for. The absent Compile
+            // button already says everything the row needs to.
+            setTooltip(model.present ? model.path : model.compileReason);
         }
 
         void configureCache(const StemLabAudioProcessor::ManagedCache& cache)
@@ -181,12 +287,7 @@ namespace stemlab::widgets
             g.setColour(present ? colours::text75() : colours::text45());
             g.setFont(juce::Font(theme::fonts::make(12.5f, true)));
 
-            auto second = detail;
-
-            if (note.isNotEmpty())
-                second = second.isEmpty() ? note : second + "  -  " + note;
-
-            if (second.isEmpty())
+            if (detail.isEmpty())
             {
                 g.drawText(title, text, juce::Justification::centredLeft, true);
             }
@@ -205,7 +306,7 @@ namespace stemlab::widgets
 
                 g.setColour(colours::text45());
                 g.setFont(juce::Font(theme::fonts::make(10.5f, false)));
-                g.drawText(second, block, juce::Justification::centredLeft, true);
+                g.drawText(detail, block, juce::Justification::centredLeft, true);
             }
 
             if (size.isNotEmpty())
@@ -249,7 +350,6 @@ namespace stemlab::widgets
 
         juce::String title;
         juce::String detail;
-        juce::String note;
         juce::String size;
         bool present = false;
 
@@ -278,25 +378,32 @@ namespace stemlab::widgets
         summaryLabel.setColour(juce::Label::textColourId, colours::text50());
         addAndMakeVisible(summaryLabel);
 
-        compileLabel.setFont(juce::Font(theme::fonts::make(11.0f, false)));
-        compileLabel.setColour(juce::Label::textColourId, colours::text45());
-        addChildComponent(compileLabel);
-
-        compileToggle.setColour(juce::ToggleButton::textColourId, colours::text75());
-        compileToggle.setColour(juce::ToggleButton::tickColourId, colours::accent());
-        compileToggle.setColour(juce::ToggleButton::tickDisabledColourId, colours::outline());
-
-        compileToggle.onClick = [this]
+        compileSwitch = std::make_unique<CompileSwitch>();
+        compileSwitch->onToggle = [this](bool on)
         {
             if (onCompileEnabled)
-                onCompileEnabled(compileToggle.getToggleState());
+                onCompileEnabled(on);
         };
-
-        addAndMakeVisible(compileToggle);
+        addAndMakeVisible(*compileSwitch);
 
         activityLabel.setFont(juce::Font(theme::fonts::make(11.5f, false)));
         activityLabel.setColour(juce::Label::textColourId, colours::text50());
         addAndMakeVisible(activityLabel);
+
+        // The percentage the bar cannot say. Right-aligned against the same
+        // edge as the track so the two read as one readout.
+        activityPercent.setFont(juce::Font(theme::fonts::make(11.5f, false)));
+        activityPercent.setColour(juce::Label::textColourId, colours::text50());
+        activityPercent.setJustificationType(juce::Justification::centredRight);
+        addChildComponent(activityPercent);
+
+        // The house progress bar, through the LookAndFeel every other bar in
+        // the app goes through. This card used to draw its own track, which
+        // is how it ended up a few pixels off the divider above it.
+        activityBar.setPercentageDisplay(false);
+        activityBar.setColour(juce::ProgressBar::backgroundColourId,
+                              juce::Colours::transparentBlack);
+        addChildComponent(activityBar);
 
         unavailableLabel.setFont(juce::Font(theme::fonts::make(12.0f, false)));
         unavailableLabel.setColour(juce::Label::textColourId, colours::text50());
@@ -355,7 +462,7 @@ namespace stemlab::widgets
 
         for (const auto& model : modelsIn)
             digest << model.id << (model.present ? '1' : '0') << (model.compiled ? '1' : '0')
-                   << (model.compilable ? '1' : '0') << model.bytes << model.compileReason << ';';
+                   << (model.compilable ? '1' : '0') << model.bytes << ';';
 
         for (const auto& cache : cachesIn)
             digest << cache.id << cache.bytes << ';';
@@ -398,10 +505,10 @@ namespace stemlab::widgets
         summary << installed << " of " << static_cast<int>(models.size()) << " models installed";
 
         if (onDisk > 0)
-            summary << "  -  " << describeBytes(onDisk) << " on disk";
+            summary << dot() << describeBytes(onDisk) << " on disk";
 
         if (toFetch > 0)
-            summary << "  -  " << describeBytes(toFetch) << " to fetch";
+            summary << dot() << describeBytes(toFetch) << " to fetch";
 
         summaryLabel.setText(summary, juce::dontSendNotification);
 
@@ -414,23 +521,17 @@ namespace stemlab::widgets
     void ModelManagerPanel::setCompileState(bool enabled, bool supported,
                                             const juce::String& reason)
     {
-        // dontSendNotification: this is the processor telling the panel what
-        // is true, and firing onClick from here would send it straight back.
-        if (compileToggle.getToggleState() != enabled)
-            compileToggle.setToggleState(enabled, juce::dontSendNotification);
+        compileSwitch->setState(enabled, supported);
 
-        // The note explains a switch that is on but cannot work - no toolchain,
-        // no Triton. With it off, the unticked box already says everything, and
-        // a line repeating it would be noise.
-        const auto note = enabled && !supported ? reason : juce::String{};
-
-        compileLabel.setText(note, juce::dontSendNotification);
-
-        if (compileLabel.isVisible() == note.isNotEmpty())
-            return;
-
-        compileLabel.setVisible(note.isNotEmpty());
-        resized();
+        // The reason lives here rather than on a line of its own. It is worth
+        // having - an unset opt-in and a missing compiler need opposite
+        // advice - but not worth a paragraph under a checkbox that moved the
+        // whole list down whenever the answer changed.
+        compileSwitch->setTooltip(supported
+                                      ? juce::String("Compile the separation models on this "
+                                                     "machine. The first run is slower; every "
+                                                     "run after it is faster.")
+                                      : reason);
     }
 
     void ModelManagerPanel::setUnavailable(const juce::String& reason)
@@ -454,6 +555,9 @@ namespace stemlab::widgets
         activityLabel.setText(message, juce::dontSendNotification);
         activityProgress = juce::jlimit(0.0, 1.0, progress);
 
+        activityPercent.setText(juce::String(juce::roundToInt(activityProgress * 100.0)) + "%",
+                                juce::dontSendNotification);
+
         if (busy != jobRunning)
         {
             jobRunning = busy;
@@ -463,6 +567,8 @@ namespace stemlab::widgets
             // down where the user cannot see why.
             downloadAllButton.setEnabled(!busy);
             cancelButton.setVisible(busy);
+            activityBar.setVisible(busy);
+            activityPercent.setVisible(busy);
 
             for (auto& entry : rows)
                 entry->setBusy(busy);
@@ -470,7 +576,7 @@ namespace stemlab::widgets
             resized();
         }
 
-        repaint();
+        activityBar.repaint();
     }
 
     void ModelManagerPanel::rebuildRows()
@@ -556,7 +662,10 @@ namespace stemlab::widgets
             y += height;
         }
 
-        listContent.setSize(listViewport.getWidth() - 10, juce::jmax(y, listViewport.getHeight()));
+        // A little air past the last row, so scrolled to the bottom the list
+        // ends on a gap rather than on a row cut off against the divider.
+        listContent.setSize(listViewport.getWidth() - 10,
+                            juce::jmax(y + 6, listViewport.getHeight()));
     }
 
     void ModelManagerPanel::paint(juce::Graphics& g)
@@ -577,34 +686,46 @@ namespace stemlab::widgets
         g.setColour(colours::outline());
         g.drawRoundedRectangle(bounds.reduced(0.5f), card::radius, 1.0f);
 
-        // A divider under the header and above the footer, so the list reads
-        // as its own region rather than as text floating in a box.
-        const auto inner = cardBounds().reduced(card::padX, card::padY);
-        const auto listTop = inner.getY() + card::titleHeight + card::summaryHeight
-                             + card::toggleHeight
-                             + (compileLabel.isVisible() ? card::compileHeight : 0) + card::gap;
-        const auto listBottom =
-            inner.getBottom() - card::footerHeight - card::activityHeight - card::gap;
-
+        // Both rules come from what resized() actually laid out, rather than
+        // from a second reading of the same constants.
         g.setColour(colours::divider());
-        g.fillRect(inner.getX(), listTop - card::gap / 2, inner.getWidth(), 1);
-        g.fillRect(inner.getX(), listBottom + card::gap / 2, inner.getWidth(), 1);
+        g.fillRect(listArea.getX(), headerRuleY, listArea.getWidth(), 1);
+        g.fillRect(listArea.getX(), footerRuleY, listArea.getWidth(), 1);
+    }
 
-        if (!jobRunning || activityProgress <= 0.0)
+    void ModelManagerPanel::paintOverChildren(juce::Graphics& g)
+    {
+        if (listArea.isEmpty() || !listViewport.isVisible())
             return;
 
-        // The progress track sits under the activity line, only while a job
-        // runs: a permanent empty track would suggest something is pending.
-        auto track = juce::Rectangle<int>(inner.getX(), listBottom + card::gap + 2,
-                                          inner.getWidth(), 3)
-                         .toFloat();
+        // A row cut in half against a rule looks like a bug. Fading the last
+        // few pixels into the card says "there is more below" in the one
+        // place the list can be scrolled past, and costs nothing when it
+        // cannot: both edges are drawn only where there is content beyond.
+        const auto surface = theme::colours::surface();
 
-        g.setColour(colours::outline());
-        g.fillRoundedRectangle(track, 1.5f);
+        auto wash = [&g, &surface](juce::Rectangle<int> area, bool downwards)
+        {
+            juce::ColourGradient gradient(surface, 0.0f,
+                                          static_cast<float>(downwards ? area.getBottom()
+                                                                       : area.getY()),
+                                          surface.withAlpha(0.0f), 0.0f,
+                                          static_cast<float>(downwards ? area.getY()
+                                                                       : area.getBottom()),
+                                          false);
 
-        g.setColour(colours::accent());
-        g.fillRoundedRectangle(
-            track.withWidth(static_cast<float>(track.getWidth() * activityProgress)), 1.5f);
+            g.setGradientFill(gradient);
+            g.fillRect(area);
+        };
+
+        const auto scroll = listViewport.getViewPositionY();
+        const auto hidden = listContent.getHeight() - listViewport.getHeight();
+
+        if (scroll > 0)
+            wash(listArea.withHeight(card::fade), false);
+
+        if (scroll < hidden)
+            wash(listArea.withTop(listArea.getBottom() - card::fade), true);
     }
 
     void ModelManagerPanel::resized()
@@ -614,19 +735,33 @@ namespace stemlab::widgets
         titleLabel.setBounds(inner.removeFromTop(card::titleHeight));
         summaryLabel.setBounds(inner.removeFromTop(card::summaryHeight));
 
-        compileToggle.setBounds(inner.removeFromTop(card::toggleHeight));
-
-        if (compileLabel.isVisible())
-            compileLabel.setBounds(inner.removeFromTop(card::compileHeight));
+        inner.removeFromTop(card::gap / 2);
+        compileSwitch->setBounds(inner.removeFromTop(card::compileHeight));
 
         inner.removeFromTop(card::gap);
+        headerRuleY = inner.getY() - card::gap / 2;
 
         auto footer = inner.removeFromBottom(card::footerHeight);
+
+        // Reserved whether or not a job is running: a strip that appeared
+        // only while working would shift the list under the pointer at the
+        // moment the user clicked something in it.
+        inner.removeFromBottom(card::footerGap);
         auto activity = inner.removeFromBottom(card::activityHeight);
+        inner.removeFromBottom(card::barTextGap);
+        auto bar = inner.removeFromBottom(card::barHeight);
 
+        activityBar.setBounds(bar);
+
+        // The percentage takes the right end of the same line as the message.
+        auto percentArea = activity.removeFromRight(48);
+        activityPercent.setBounds(percentArea);
         activityLabel.setBounds(activity);
-        inner.removeFromBottom(card::gap);
 
+        inner.removeFromBottom(card::barGap + card::ruleGap);
+        footerRuleY = inner.getBottom() + card::ruleGap;
+
+        listArea = inner;
         listViewport.setBounds(inner);
         unavailableLabel.setBounds(inner);
         unavailableLabel.setVisible(unavailableReason.isNotEmpty());

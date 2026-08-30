@@ -98,6 +98,12 @@ def _locatable_inductor_cache_dir() -> Path | None:
         return None
 
 
+# The cache id the compiled kernels are listed under. Named because clearing
+# it has to clear the warm-up markers too, and a literal in two places is one
+# rename away from leaving them behind.
+COMPILE_CACHE_ID = "compile"
+
+
 def _compile_marker(model_id: str) -> Path | None:
     """Records that a warm-up ran, beside the cache it warmed."""
     cache = _locatable_inductor_cache_dir()
@@ -199,6 +205,11 @@ _BEAT_THIS_MODES = {"beat-this-fast": "fast", "beat-this-accurate": "accurate"}
 # each of these still equals the engine's own definition whenever that module
 # imports cleanly, so a rename there fails a test here rather than quietly
 # making every model read as missing.
+
+# The two the app cannot separate without. Everything else - beat tracking,
+# the adaptive-split models - is optional and downloads itself on first use,
+# so a missing one is not a reason to put a modal window in someone's way.
+ESSENTIAL_MODEL_IDS = ("roformer", "demucs")
 
 ROFORMER_MODEL_ID = "roformer-model-bs-roformer-sw-by-jarredou"
 DEMUCS_MODEL_NAME = "htdemucs_6s"
@@ -479,7 +490,7 @@ def caches() -> tuple[ManagedCache, ...]:
     # Anything whose path cannot be resolved is omitted: the interface offers
     # a size and a Clear for every row, and it can honestly offer neither.
     candidates = (
-        ("compile", "Compiled kernels", _locatable_inductor_cache_dir(), ""),
+        (COMPILE_CACHE_ID, "Compiled kernels", _locatable_inductor_cache_dir(), ""),
         ("huggingface", "HuggingFace hub", _huggingface_cache(), ""),
         ("torch-hub", "Torch hub", _torch_hub_checkpoints(), ""),
         (
@@ -608,11 +619,6 @@ def status(*, probe_compile: bool = False) -> dict[str, object]:
         for cache in caches()
     ]
 
-    missing = [entry for entry in models if not entry["present"]]
-    compilable = [
-        entry for entry in models if entry["compileSupport"] == COMPILE_SUPPORTED
-    ]
-
     requested, supported, support_reason = _compile_environment(probe_compile)
 
     return {
@@ -625,10 +631,14 @@ def status(*, probe_compile: bool = False) -> dict[str, object]:
         "compileSupported": supported,
         "compileReason": support_reason,
         # The plugin's auto-show condition, decided here so the rule lives in
-        # one place rather than being re-derived in C++.
-        "anyModelMissing": bool(missing),
-        "anyCompilePending": bool(requested and supported)
-        and any(entry["present"] and not entry["compiled"] for entry in compilable),
+        # one place rather than being re-derived in C++. Only the essential
+        # models count: opening a modal window because an optional model that
+        # fetches itself on first use is absent made it open on every launch.
+        "essentialModelMissing": any(
+            not entry["present"]
+            for entry in models
+            if entry["id"] in ESSENTIAL_MODEL_IDS
+        ),
         "offlineForced": os.environ.get("HF_HUB_OFFLINE") == "1",
         "torch": _torch_version(),
     }
@@ -960,6 +970,17 @@ def delete_cache(cache_id: str) -> int:
         entry.path.unlink()
     elif entry.path.is_dir():
         shutil.rmtree(entry.path, ignore_errors=True)
+
+    if cache_id == COMPILE_CACHE_ID:
+        # The markers live beside the cache rather than inside it, so they
+        # survive the rmtree above. Left behind, every warmed model would go
+        # on reporting "Compiled" against kernels that are gone.
+        for model in MODELS:
+            marker = _compile_marker(model.id)
+
+            if marker is not None and marker.is_file():
+                freed += marker.stat().st_size
+                marker.unlink()
 
     return freed
 

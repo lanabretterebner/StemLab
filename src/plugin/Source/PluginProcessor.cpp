@@ -6891,11 +6891,12 @@ void StemLabAudioProcessor::finishModelInventory(const juce::File& output, int e
         managedCaches = std::move(caches);
     }
 
-    // Both flags come from the engine rather than being re-derived here, so
-    // the rule that decides whether the Model Manager opens itself lives in
-    // one place.
-    anyModelMissing.store(static_cast<bool>(parsed.getProperty("anyModelMissing", false)));
-    anyCompilePending.store(static_cast<bool>(parsed.getProperty("anyCompilePending", false)));
+    // The rule for opening the Model Manager unasked lives in the engine
+    // rather than being re-derived here: only a missing essential model
+    // counts, so an optional model that fetches itself on first use no
+    // longer puts a modal window in the way at launch.
+    essentialModelMissing.store(
+        static_cast<bool>(parsed.getProperty("essentialModelMissing", false)));
     compileRequested.store(static_cast<bool>(parsed.getProperty("compileRequested", false)));
     compileSupported.store(static_cast<bool>(parsed.getProperty("compileSupported", false)));
 
