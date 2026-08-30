@@ -12,6 +12,25 @@ int main()
     assert(std::abs(pixel - 250.0) < 1.0e-9);
     assert(std::abs(pixelToTime(pixel, 10.0, 20.0, 1000) - 12.5) < 1.0e-9);
 
+    // A tempo of zero means "no grid", and is how an unanalysed source and a
+    // grid switched off both reach the painter. Drawing anything for it was
+    // the bug: a source nothing had measured still showed a confident grid.
+    GridRequest none;
+    none.visibleEnd = 120.0;
+    none.pixelWidth = 600;
+    none.bpm = 0.0;
+    assert(makeGridLines(none).empty());
+
+    none.bpm = -1.0;
+    assert(makeGridLines(none).empty());
+
+    // Detected beats do not resurrect it: a caller that has switched the grid
+    // off keeps it off whatever else it is carrying.
+    none.bpm = 0.0;
+    none.useDetectedBeats = true;
+    none.beats = {0.5, 1.0, 1.5, 2.0};
+    assert(makeGridLines(none).empty());
+
     GridRequest far;
     far.visibleEnd = 120.0;
     far.pixelWidth = 600;

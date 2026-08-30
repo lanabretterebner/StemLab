@@ -288,7 +288,8 @@ public:
     {
         gridHost = 0,
         gridSource = 1,
-        gridManual = 2
+        gridManual = 2,
+        gridOff = 3
     };
 
     /**
@@ -564,6 +565,9 @@ public:
     void setWaveformGridMode(int mode) noexcept;
     int getWaveformGridMode() const noexcept { return waveformGridMode.load(); }
     void setManualGrid(double bpm, int numerator, int denominator, double barOne) noexcept;
+
+    /** The tempo the manual grid is set to, for the editor to seed its prompt. */
+    double getManualGridBpm() const noexcept { return manualGridBpm.load(); }
     StemLabGridInfo getWaveformGridInfo() const;
 
     /** getWaveformGridInfo without the beat vectors: every field it fills

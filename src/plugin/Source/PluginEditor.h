@@ -410,6 +410,9 @@ private:
     void showSettingsMenu();
     void showStandaloneAudioSettings();
     void showFirstRunWelcome();
+
+    /** Ask for the beat grid's tempo, and switch to the manual grid on OK. */
+    void promptForManualTempo();
     void launchAbletonSetup();
     void refreshFromProcessor();
 

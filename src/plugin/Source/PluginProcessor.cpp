@@ -6212,6 +6212,11 @@ void StemLabAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     rootObject->setProperty("separatorEngine", separatorEngineIndex.load());
     rootObject->setProperty("waveformColour", waveformColourIndex.load());
     rootObject->setProperty("waveformZoom", waveformZoom.load());
+    rootObject->setProperty("gridMode", waveformGridMode.load());
+    rootObject->setProperty("manualGridBpm", manualGridBpm.load());
+    rootObject->setProperty("manualGridNumerator", manualGridNumerator.load());
+    rootObject->setProperty("manualGridDenominator", manualGridDenominator.load());
+    rootObject->setProperty("manualGridBarOne", manualGridBarOne.load());
     rootObject->setProperty("editorScale", editorScalePercent.load());
 
     rootObject->setProperty("jobRootDirectory", getJobRootDirectory().getFullPathName());
@@ -6309,6 +6314,25 @@ void StemLabAudioProcessor::setStateInformation(const void* data, int sizeInByte
     if (object->hasProperty("separatorEngine"))
     {
         setSeparatorEngineIndex(static_cast<int>(object->getProperty("separatorEngine")));
+    }
+
+    if (object->hasProperty("gridMode"))
+        setWaveformGridMode(static_cast<int>(object->getProperty("gridMode")));
+
+    if (object->hasProperty("manualGridBpm"))
+    {
+        // Restored through the setter so a hand-edited or older state cannot
+        // put a tempo outside the range the prompt enforces.
+        setManualGrid(static_cast<double>(object->getProperty("manualGridBpm")),
+                      object->hasProperty("manualGridNumerator")
+                          ? static_cast<int>(object->getProperty("manualGridNumerator"))
+                          : manualGridNumerator.load(),
+                      object->hasProperty("manualGridDenominator")
+                          ? static_cast<int>(object->getProperty("manualGridDenominator"))
+                          : manualGridDenominator.load(),
+                      object->hasProperty("manualGridBarOne")
+                          ? static_cast<double>(object->getProperty("manualGridBarOne"))
+                          : manualGridBarOne.load());
     }
 
     if (object->hasProperty("waveformColour"))
@@ -7198,7 +7222,7 @@ void StemLabAudioProcessor::finishAnalysisMaintenance(const juce::File& source,
 void StemLabAudioProcessor::setWaveformGridMode(int mode) noexcept
 {
     waveformGridMode.store(
-        juce::jlimit(static_cast<int>(gridHost), static_cast<int>(gridManual), mode));
+        juce::jlimit(static_cast<int>(gridHost), static_cast<int>(gridOff), mode));
     sendChangeMessage();
 }
 
@@ -7238,9 +7262,23 @@ StemLabGridInfo StemLabAudioProcessor::getWaveformGridScalars() const
         info.denominator = manualGridDenominator.load();
         info.barOne = manualGridBarOne.load();
     }
+    else if (info.mode == gridOff)
+    {
+        // Nothing to draw, and nothing to describe: a zero tempo is how the
+        // painter and every other reader are told there is no grid.
+        info.bpm = 0.0;
+    }
     else
     {
-        info.bpm = sourceBpm.load() > 0.0 ? sourceBpm.load() : 120.0;
+        // Not 120 when the source has not been analysed. Substituting a
+        // plausible tempo drew a confident grid over audio nothing had
+        // measured, which is indistinguishable from a real one and wrong
+        // everywhere it was not coincidentally right.
+        // Normalised rather than passed through: sourceBpm is -1 until an
+        // analysis lands, and "no grid" wants to be one value everywhere
+        // rather than a sentinel each reader has to know about.
+        const auto analysed = sourceBpm.load();
+        info.bpm = analysed > 0.0 ? analysed : 0.0;
         info.numerator = sourceMeterNumerator.load();
         info.denominator = sourceMeterDenominator.load();
         info.barOne = sourceBarOne.load();
@@ -7685,7 +7723,13 @@ bool StemLabAudioProcessor::sendMidiToAbleton(const juce::String& id)
         return false;
 
     const auto grid = getWaveformGridInfo();
-    const auto bpm = juce::jlimit(20.0, 400.0, grid.bpm);
+
+    // A clip has to carry some tempo, so this is the one place that still
+    // needs a number when the grid has none - the grid off, or a source
+    // nobody analysed. Naming the fallback keeps a zero from being clamped
+    // to 20 BPM and shipped as if it were measured.
+    constexpr double fallbackBpm = 120.0;
+    const auto bpm = juce::jlimit(20.0, 400.0, grid.bpm > 0.0 ? grid.bpm : fallbackBpm);
     const auto beatsPerSecond = bpm / 60.0;
 
     auto payload = std::make_unique<juce::DynamicObject>();

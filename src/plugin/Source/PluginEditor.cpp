@@ -88,8 +88,25 @@ juce::String formatSeconds(double seconds)
     return juce::String::formatted("%02d:%02d", minutes, secs);
 }
 
+/** A tempo for display: "128", "128.5", never "128.00".
+
+    Not String(bpm, 2).trimCharactersAtEnd("0.") - that walks back over every
+    trailing character in the set, so "100.00" loses its zeros AND its point
+    AND the zeros before it, leaving "1". Whole tempos take the integer path
+    instead, which leaves the fractional trim only cases that end in a
+    non-zero digit.
+*/
+juce::String formatBpmForDisplay(double bpm)
+{
+    if (std::abs(bpm - std::round(bpm)) < 0.005)
+        return juce::String(static_cast<int>(std::llround(bpm)));
+
+    return juce::String(bpm, 2).trimCharactersAtEnd("0");
+}
+
 // Settings-menu ids: 1..5 are the fixed entries.
 constexpr int gridModeMenuBase = 400;
+constexpr int manualTempoId = 405;
 constexpr int analysisModeMenuBase = 410;
 constexpr int tempoMenuBase = 420;
 constexpr int analysisEnableId = 430;
@@ -4469,6 +4486,17 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
     gridMenu.addItem(gridModeMenuBase + StemLabAudioProcessor::gridManual, "Manual Tempo", true,
                      processor.getWaveformGridMode() == StemLabAudioProcessor::gridManual);
 
+    gridMenu.addItem(gridModeMenuBase + StemLabAudioProcessor::gridOff, "Off", true,
+                     processor.getWaveformGridMode() == StemLabAudioProcessor::gridOff);
+
+    gridMenu.addSeparator();
+
+    // Selecting Manual Tempo on its own left the grid on whatever tempo it
+    // already held, with nothing anywhere to change it.
+    gridMenu.addItem(manualTempoId,
+                     "Set Manual Tempo (" + formatBpmForDisplay(processor.getManualGridBpm()) +
+                         " BPM)...");
+
     menu.addSubMenu("Beat Grid", gridMenu);
 
     menu.addSeparator();
@@ -4604,15 +4632,34 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
             {
                 safeThis->launchAbletonSetup();
             }
-            else if (result >= gridModeMenuBase && result <= gridModeMenuBase + 2)
+            else if (result == manualTempoId)
+            {
+                safeThis->promptForManualTempo();
+            }
+            else if (result >= gridModeMenuBase && result <= gridModeMenuBase + 3)
             {
                 const int mode = result - gridModeMenuBase;
 
                 safeThis->processor.setWaveformGridMode(mode);
 
-                const juce::StringArray names{"host tempo", "analysed source", "manual tempo"};
+                if (mode == StemLabAudioProcessor::gridOff)
+                {
+                    safeThis->processor.postUiStatus("Beat grid off");
+                }
+                else if (mode == StemLabAudioProcessor::gridSource &&
+                         safeThis->processor.getSourceBpm() <= 0.0)
+                {
+                    // The grid draws nothing until an analysis exists, so say
+                    // that rather than leave an empty lane looking broken.
+                    safeThis->processor.postUiStatus(
+                        "Beat grid follows the analysed source - none yet, so no grid is drawn");
+                }
+                else
+                {
+                    const juce::StringArray names{"host tempo", "analysed source", "manual tempo"};
 
-                safeThis->processor.postUiStatus("Beat grid follows " + names[mode]);
+                    safeThis->processor.postUiStatus("Beat grid follows " + names[mode]);
+                }
             }
             else if (result >= analysisModeMenuBase && result <= analysisModeMenuBase + 1)
             {
@@ -4683,6 +4730,54 @@ void StemLabAudioProcessorEditor::showFirstRunWelcome()
                                      if (safeThis != nullptr && result == 1)
                                          safeThis->launchAbletonSetup();
                                  });
+}
+
+void StemLabAudioProcessorEditor::promptForManualTempo()
+{
+    // A plain AlertWindow rather than the MessageBoxOptions form used
+    // elsewhere in this file: that one cannot carry a text field.
+    auto* window = new juce::AlertWindow("Manual Tempo",
+                                         "Tempo for the beat grid, in BPM (20 to 400).",
+                                         juce::MessageBoxIconType::NoIcon, this);
+
+    window->addTextEditor("bpm", juce::String(processor.getManualGridBpm(), 2), "BPM");
+    window->addButton("Set", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    window->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+
+    auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
+    juce::Component::SafePointer<juce::AlertWindow> safeWindow(window);
+
+    // deleteWhenDismissed, and the field is read inside the callback: JUCE
+    // runs every modal callback before deleting the component
+    // (ModalComponentManager::handleAsyncUpdate), so the editor is still
+    // there to be read.
+    window->enterModalState(
+        true,
+        juce::ModalCallbackFunction::create(
+            [safeThis, safeWindow](int result)
+            {
+                if (safeThis == nullptr || safeWindow == nullptr || result != 1)
+                    return;
+
+                const auto typed = safeWindow->getTextEditorContents("bpm").trim();
+                const auto bpm = typed.getDoubleValue();
+
+                // getDoubleValue answers 0 for anything unparseable, which is
+                // also below the range, so one test covers both.
+                if (bpm < 20.0 || bpm > 400.0)
+                {
+                    safeThis->processor.postUiStatus(
+                        "Tempo must be between 20 and 400 BPM - grid unchanged");
+                    return;
+                }
+
+                safeThis->processor.setManualGrid(bpm, 4, 4, 0.0);
+                safeThis->processor.setWaveformGridMode(StemLabAudioProcessor::gridManual);
+
+                safeThis->processor.postUiStatus(
+                    "Beat grid follows manual tempo, " + formatBpmForDisplay(bpm) + " BPM");
+            }),
+        true);
 }
 
 void StemLabAudioProcessorEditor::launchAbletonSetup()

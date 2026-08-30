@@ -95,6 +95,35 @@ int main()
             check(processor.isStemAudible(i));
         processor.setStemSolo(0, false);
 
+        // The beat grid's tempo, which the painter reads as "no grid" at zero.
+        {
+            // Nothing has been analysed here, so the default source mode must
+            // report no tempo. It used to answer 120, which drew a full grid
+            // over audio nobody had measured.
+            check(processor.getWaveformGridMode() == StemLabAudioProcessor::gridSource);
+            check(processor.getSourceBpm() <= 0.0);
+            check(processor.getWaveformGridScalars().bpm == 0.0);
+
+            // Off is a real mode, not a value the clamp folds into Manual.
+            processor.setWaveformGridMode(StemLabAudioProcessor::gridOff);
+            check(processor.getWaveformGridMode() == StemLabAudioProcessor::gridOff);
+            check(processor.getWaveformGridScalars().bpm == 0.0);
+
+            // Manual carries whatever tempo was set, and survives a round trip
+            // through the setter's range check.
+            processor.setManualGrid(174.0, 4, 4, 0.0);
+            processor.setWaveformGridMode(StemLabAudioProcessor::gridManual);
+            check(processor.getWaveformGridScalars().bpm == 174.0);
+            check(processor.getManualGridBpm() == 174.0);
+
+            // Out-of-range tempos are clamped rather than stored, so no state
+            // can put the grid somewhere the prompt would refuse.
+            processor.setManualGrid(5000.0, 4, 4, 0.0);
+            check(processor.getManualGridBpm() == 400.0);
+
+            processor.setWaveformGridMode(StemLabAudioProcessor::gridSource);
+        }
+
         processor.setStemSelectionRange("vocals", 0.2, 0.5);
         check(processor.getStemSelectionRange("vocals").active);
 
