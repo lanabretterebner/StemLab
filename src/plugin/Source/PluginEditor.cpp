@@ -97,6 +97,7 @@ constexpr int analysisForgetId = 431;
 constexpr int analysisClearCacheId = 432;
 constexpr int versionItemId = 440;
 constexpr int modelManagerId = 441;
+constexpr int fusedNormaliseId = 442;
 
 // Lane-menu ids for MIDI, above the per-menu action ids.
 constexpr int midiConvertId = 500;
@@ -4531,6 +4532,13 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
 
     menu.addItem(modelManagerId, "Model Manager...");
 
+    // Ticked = on. Only the hybrid engine fuses, so it is greyed out for the
+    // single-model engines rather than hidden: the state still persists, and
+    // hiding it would make the setting look like it had been lost.
+    menu.addItem(fusedNormaliseId, "Normalise Fused Stems",
+                 processor.getSeparatorEngineIndex() == StemLabAudioProcessor::separatorHybrid,
+                 processor.isFusedStemNormalisation());
+
     menu.addSeparator();
 
     menu.addItem(4, "Copy diagnostics to clipboard", processor.hasEngineLog());
@@ -4575,6 +4583,16 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
             else if (result == modelManagerId)
             {
                 safeThis->showModelManager();
+            }
+            else if (result == fusedNormaliseId)
+            {
+                const bool on = !safeThis->processor.isFusedStemNormalisation();
+
+                safeThis->processor.setFusedStemNormalisation(on);
+
+                safeThis->processor.postUiStatus(
+                    on ? "Fused stems will be normalised to 0.999 each"
+                       : "Fused stems keep their level and sum back to the source");
             }
             else if (result == 4)
             {

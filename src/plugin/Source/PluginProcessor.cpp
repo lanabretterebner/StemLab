@@ -3835,6 +3835,12 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
     if (!refinementEnabled.load())
         command.add("--no-refine");
 
+    // Only ever added when the user turned it on. The default costs no
+    // flag at all, so it still runs against an Engine built before this
+    // option existed - the same compatibility rule --engine follows above.
+    if (fusedStemNormalisation.load())
+        command.add("--normalize-fused-stems");
+
     // Separation always produces every stem first. Ableton selection is
     // intentionally deferred until after the user can audition the results.
     command.add("--no-notify");
@@ -6202,6 +6208,7 @@ void StemLabAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     auto rootObject = std::make_unique<juce::DynamicObject>();
     rootObject->setProperty("engineCommand", getEngineCommand());
     rootObject->setProperty("refinement", refinementEnabled.load());
+    rootObject->setProperty("fusedStemNormalisation", fusedStemNormalisation.load());
     rootObject->setProperty("separatorEngine", separatorEngineIndex.load());
     rootObject->setProperty("waveformColour", waveformColourIndex.load());
     rootObject->setProperty("waveformZoom", waveformZoom.load());
@@ -6272,6 +6279,14 @@ void StemLabAudioProcessor::setStateInformation(const void* data, int sizeInByte
     if (object->hasProperty("refinement"))
     {
         refinementEnabled.store(static_cast<bool>(object->getProperty("refinement")));
+
+        // A state written before this option existed carries no such
+        // property; getProperty returns void, which converts to false. That
+        // is deliberate rather than merely convenient: those sessions were
+        // getting the per-stem normalisation, and turning it off for them is
+        // the point of the change. Anyone who wants it back has the setting.
+        fusedStemNormalisation.store(
+            static_cast<bool>(object->getProperty("fusedStemNormalisation")));
     }
 
     /*
