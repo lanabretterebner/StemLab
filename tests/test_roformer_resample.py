@@ -288,7 +288,10 @@ def test_a_failed_return_trip_fails_the_separation(tmp_path, monkeypatch):
             raise OSError("no space left on device")
         return real(*args, **kwargs)
 
-    monkeypatch.setattr("stemlab.pretrained._resample_file", fail_on_the_way_back)
+    # The restore lives in stemlab.resample now and is shared with the Demucs
+    # backend, so it resolves resample_file from that module rather than from
+    # pretrained's alias. Patching the alias would sail past it.
+    monkeypatch.setattr("stemlab.resample.resample_file", fail_on_the_way_back)
 
     with pytest.raises(RuntimeError, match="48000 Hz"):
         run_separation(monkeypatch, source, output)

@@ -13,6 +13,7 @@ from typing import Callable
 from .audio import STEM_NAMES
 from .device import resolve_torch_device
 from .pretrained import _clear_audio_files, _normalise_input_for_backend
+from .resample import rate_and_frames, restore_folder_sample_rate
 from .runtime import CancellationToken, run_progress_process
 
 DEFAULT_DEMUCS_MODEL = "htdemucs_6s"
@@ -26,6 +27,13 @@ PACKAGED_DEMUCS_FILENAME = "5c90dfd2-34c22ccb.th"
 # measurement says otherwise: a quality setting nobody checked is not a
 # setting we should be shipping below its default.
 DEMUCS_OVERLAP = 0.25
+
+# Demucs is never told a rate. It resamples whatever it is given to its own
+# model rate (demucs/separate.py loads with model.samplerate and saves with
+# it), which every htdemucs and hdemucs variant sets to 44100. So a 48 kHz
+# session used to get 44.1 kHz stems back, and unlike the RoFormer stems
+# nothing put them onto the session's rate afterwards.
+DEMUCS_MODEL_SAMPLE_RATE = 44100
 
 
 def _work_directory(output_dir: Path) -> tempfile.TemporaryDirectory:
@@ -42,6 +50,32 @@ def _work_directory(output_dir: Path) -> tempfile.TemporaryDirectory:
         return tempfile.TemporaryDirectory(prefix="stemlab_demucs_input_", dir=output_dir.parent)
     except OSError:
         return tempfile.TemporaryDirectory(prefix="stemlab_demucs_input_")
+
+
+def _warn_if_not_float(stems: list[Path], log: Callable[[str], None]) -> None:
+    """Say so if --float32 did not take, rather than leaving it to be heard.
+
+    Reported, never raised. A 16 bit stem is lower fidelity, not wrong - it
+    plays at the right pitch, length and level - so failing a finished
+    separation over it would cost the user more than the defect does. What
+    it would mean is that this torchaudio cannot write PCM_F, which is worth
+    knowing before the stems are gain-staged rather than after.
+    """
+    import soundfile as sf
+
+    for path in stems:
+        try:
+            subtype = sf.info(str(path)).subtype
+        except Exception:
+            continue
+
+        if subtype != "FLOAT":
+            log(
+                f"Demucs wrote {path.name} as {subtype}, not 32-bit float, "
+                "despite --float32. The stems are usable but carry a "
+                "quantisation floor the other engines do not."
+            )
+            return
 
 
 def _demucs_available() -> bool:
@@ -119,6 +153,15 @@ class DemucsBackend:
                 log=self._log,
                 cancellation=self.cancellation,
             )
+            try:
+                source_rate, source_frames = rate_and_frames(staged)
+            except Exception as exc:
+                # Not fatal: the separation itself is fine, only the rate
+                # restore below needs this. Demucs writes its model rate, so
+                # skipping the restore leaves what shipped before this.
+                self._log(f"Could not read the input's sample rate: {exc}")
+                source_rate, source_frames = DEMUCS_MODEL_SAMPLE_RATE, None
+
             raw_output = Path(td) / "demucs_output"
             model_name = self.model
             packaged_repo = os.environ.get("STEMLAB_DEMUCS_MODEL_REPO")
@@ -148,6 +191,16 @@ class DemucsBackend:
                 device,
                 "--overlap",
                 str(DEMUCS_OVERLAP),
+                # Without this demucs writes 16 bit (separate.py defaults
+                # bits_per_sample to 16), while every other StemLab backend
+                # publishes 32 bit float. A stem is not a master - it gets
+                # gain-staged, often pushed well up - and a -101 dBFS
+                # quantisation floor rides up with it. Costs 2x the bytes.
+                #
+                # Note this does NOT disable demucs' prevent_clip: that runs
+                # before the format branch whatever the bit depth, and the
+                # CLI exposes only rescale and clamp, never none.
+                "--float32",
                 "--out",
                 str(raw_output),
                 str(staged),
@@ -196,6 +249,12 @@ class DemucsBackend:
                     # beside the output.
                     shutil.copy2(candidates[0], destination)
                 placed.append(destination)
+
+            if source_rate != DEMUCS_MODEL_SAMPLE_RATE:
+                self._log(f"Returning stems to {source_rate} Hz...")
+                restore_folder_sample_rate(output_dir, source_rate, source_frames, self._log)
+
+            _warn_if_not_float(placed, self._log)
 
             self._progress(100.0)
             self._log("Demucs separation complete: " + ", ".join(path.name for path in placed))
