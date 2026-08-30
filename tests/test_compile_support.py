@@ -8,6 +8,7 @@ model" turns an absent toolchain into a failed job.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import types
@@ -254,3 +255,107 @@ def test_mel_band_roformer_is_also_armed(monkeypatch, tmp_path):
 def test_one_line_flattens_and_defuses_exception_text():
     flattened = compile_support._one_line(RuntimeError("a\nb   c 40% done"))
     assert flattened == "a b c 40 pct done"
+
+
+class TestASeparationsCompileIsRecorded:
+    """Compiling during a real job warms the same cache a warm-up does.
+
+    Only the Model Manager's own Compile action used to write the marker, so
+    a model could be compiled on every separation and still report itself as
+    never compiled - the button stayed on "Compile" forever, and there was
+    nothing anywhere to explain it.
+    """
+
+    def _armed(self, monkeypatch, tmp_path, class_name="BSRoformer"):
+        monkeypatch.setenv("STEMLAB_TORCH_COMPILE", "1")
+        monkeypatch.setenv("STEMLAB_TORCH_COMPILE_CACHE", str(tmp_path / "inductor"))
+        monkeypatch.setattr(compile_support, "_cxx_compiler_available", lambda: True)
+        monkeypatch.setattr(torch, "compile", lambda fn: fn)
+
+        module = _stub_module(class_name)
+        compile_support.arm_torch_compile(modules={"m": module})
+
+        return getattr(module, class_name)()
+
+    def _marker(self, tmp_path):
+        return tmp_path / "stemlab_warm_roformer.json"
+
+    def test_a_compiled_pass_records_the_model(self, monkeypatch, tmp_path):
+        model = self._armed(monkeypatch, tmp_path)
+
+        assert not self._marker(tmp_path).exists()
+
+        model(torch.ones(4))
+
+        recorded = json.loads(self._marker(tmp_path).read_text(encoding="utf-8"))
+
+        assert recorded["torch"] == compile_support.torch_build_id()
+        assert recorded["device"] == "cpu"
+        assert recorded["source"] == "separation"
+
+    def test_the_model_manager_then_reports_it_compiled(self, monkeypatch, tmp_path):
+        # The whole point, end to end: what a separation records is what the
+        # status probe reads back, in a process that never imports torch.
+        from stemlab import model_manager
+
+        model = self._armed(monkeypatch, tmp_path)
+        model(torch.ones(4))
+
+        assert model_manager._compile_state("roformer")["compiled"] is True
+
+    def test_it_is_written_once_however_many_passes_run(self, monkeypatch, tmp_path):
+        model = self._armed(monkeypatch, tmp_path)
+        model(torch.ones(4))
+
+        stamped = self._marker(tmp_path).stat().st_mtime_ns
+
+        for _ in range(5):
+            model(torch.ones(4))
+
+        # A separation runs the forward once per chunk. Rewriting the same
+        # fact each time would be a write per chunk for no new information.
+        assert self._marker(tmp_path).stat().st_mtime_ns == stamped
+
+    def test_a_forward_that_failed_records_nothing(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("STEMLAB_TORCH_COMPILE", "1")
+        monkeypatch.setenv("STEMLAB_TORCH_COMPILE_CACHE", str(tmp_path / "inductor"))
+        monkeypatch.setattr(compile_support, "_cxx_compiler_available", lambda: True)
+
+        def exploding(_fn):
+            def run(*_args, **_kwargs):
+                raise RuntimeError("no C++ compiler found")
+
+            return run
+
+        monkeypatch.setattr(torch, "compile", exploding)
+
+        module = _stub_module()
+        compile_support.arm_torch_compile(modules={"m": module})
+        model = module.BSRoformer()
+
+        assert torch.equal(model(torch.ones(4)), torch.ones(4) * 2)
+
+        # It fell back to eager, so nothing was compiled and nothing may
+        # claim it was.
+        assert not self._marker(tmp_path).exists()
+
+    def test_recording_cannot_break_a_separation(self, monkeypatch, tmp_path):
+        # Failing to note a fact about a cache is never worth a failed job.
+        def unwritable(*_args, **_kwargs):
+            raise OSError("read-only file system")
+
+        monkeypatch.setattr(compile_support, "compile_marker_path", unwritable)
+
+        model = self._armed(monkeypatch, tmp_path)
+
+        assert torch.equal(model(torch.ones(4)), torch.ones(4) * 2)
+
+    def test_an_uncompiled_model_class_is_not_credited(self, monkeypatch, tmp_path):
+        # The mapping is by class, so a class this does not know about warms
+        # the cache without claiming to be a model in the registry.
+        monkeypatch.setitem(compile_support._MODEL_IDS_BY_CLASS, "BSRoformer", None)
+
+        model = self._armed(monkeypatch, tmp_path)
+        model(torch.ones(4))
+
+        assert not self._marker(tmp_path).exists()

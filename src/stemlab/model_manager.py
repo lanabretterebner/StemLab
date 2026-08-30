@@ -105,10 +105,19 @@ COMPILE_CACHE_ID = "compile"
 
 
 def _compile_marker(model_id: str) -> Path | None:
-    """Records that a warm-up ran, beside the cache it warmed."""
-    cache = _locatable_inductor_cache_dir()
+    """Records that a model's kernels are cached, beside the cache itself.
 
-    return cache.parent / f"stemlab_warm_{model_id}.json" if cache is not None else None
+    The path is compile_support's to define - it is also written by a real
+    separation that compiled, not only by a deliberate warm-up - so it is
+    asked rather than recomputed. None where the cache cannot be placed at
+    all: status has to survive a machine with no nameable home.
+    """
+    if _locatable_inductor_cache_dir() is None:
+        return None
+
+    from .compile_support import compile_marker_path
+
+    return compile_marker_path(model_id)
 
 
 # ----------------------------------------------------------- the registry
@@ -421,28 +430,16 @@ def _compile_state(model_id: str) -> dict[str, object]:
 
 
 def _torch_version() -> str:
-    """torch's version without importing it when it is not already loaded.
+    """torch's version, spelled the way every other process spells it.
 
-    Metadata first, deliberately, even when torch is already imported. This
-    value is written into the warm-up marker by one process and compared
-    against by another, and the two never have torch loaded alike: compiling
-    imports it, the status probe refuses to. Reading ``torch.__version__``
-    where it happens to be available and the metadata otherwise lets the two
-    disagree over a build's local version suffix, and a marker that fails
-    that comparison is retired silently - a model that was compiled reports
-    itself as not compiled, with nothing anywhere saying why.
+    One definition, in compile_support, because the marker this is compared
+    against is written there too. Importing it costs nothing a status probe
+    cannot afford: compile_support pulls in no optional dependency at module
+    scope, and reaches for torch only inside the functions that need it.
     """
-    try:
-        from importlib.metadata import version
+    from .compile_support import torch_build_id
 
-        return version("torch")
-    except Exception:
-        # No metadata to read - an unpacked tree, a vendored build. The
-        # imported module is then the only answer available, and both
-        # processes will fall back to it identically.
-        module = sys.modules.get("torch")
-
-        return str(getattr(module, "__version__", "")) if module is not None else ""
+    return torch_build_id()
 
 
 # ----------------------------------------------------------------- caches
@@ -926,6 +923,9 @@ def compile_model(
                 "device": device,
                 "seconds": round(float(elapsed), 2),
                 "model": str(locate(model_id) or ""),
+                # Which of the two things that warm this cache did it. A real
+                # separation records the same fact with less detail.
+                "source": "warm-up",
             },
             indent=1,
         ),

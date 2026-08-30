@@ -371,6 +371,14 @@ project, and with only the other two, every fresh instance - a plugin
 reloaded in the host, or the Standalone restarted - came back up off however
 many times it had been switched on.
 
+A model reports as **Compiled** once a marker beside the kernel cache says its
+kernels are built for the installed torch. Two things write it: a deliberate
+warm-up, and a real separation that compiled - the first pass that returns
+from a compiled forward records it, since that is the moment the cache is
+known to hold usable kernels. Without the second, a model compiled on every
+job still reported itself as never compiled, because only the warm-up wrote
+anything down. Clearing the **Compiled kernels** cache clears the markers too.
+
 Whether the machine can compile at all is only probed when the switch is
 turned on (`--probe-compile` on the CLI). The answer needs torch, which costs
 seconds to import, and status otherwise runs on every editor open.

@@ -68,6 +68,83 @@ def inductor_cache_dir() -> Path:
     return managed_analysis_dir() / "torchinductor"
 
 
+# Which managed model a compiled class belongs to. Both transformer classes
+# live behind the "roformer" entry in the model manager's registry, and both
+# are only ever armed from bs_roformer_cli - the adaptive-split models run
+# through audio-separator in a process that never calls arm_torch_compile, so
+# nothing here can claim credit for a model it did not compile.
+_MODEL_IDS_BY_CLASS = {"BSRoformer": "roformer", "MelBandRoformer": "roformer"}
+
+
+def torch_build_id() -> str:
+    """torch's version, spelled the same way in every process.
+
+    Package metadata rather than ``torch.__version__``, deliberately, and
+    metadata first even where torch is already imported. This string is
+    written into the compile marker by a process that has torch loaded and
+    compared against by the model manager's status probe, which refuses to
+    import torch because it runs on every editor open. Reading a different
+    source in each lets the two disagree over a build's local suffix, and a
+    marker that fails that comparison is retired silently - a model that was
+    compiled reports itself as not compiled, with nothing saying why.
+    """
+    try:
+        from importlib.metadata import version
+
+        return version("torch")
+    except Exception:
+        # No metadata to read - an unpacked tree, a vendored build. The
+        # imported module is then the only answer available, and every
+        # process falls back to it identically.
+        module = sys.modules.get("torch")
+
+        return str(getattr(module, "__version__", "")) if module is not None else ""
+
+
+def compile_marker_path(model_id: str) -> Path:
+    """Where the record that a model's kernels are cached lives.
+
+    Beside the cache rather than inside it, so clearing the kernels and
+    clearing the record stay separate decisions - the model manager clears
+    both together when it empties the cache.
+    """
+    return inductor_cache_dir().parent / f"stemlab_warm_{model_id}.json"
+
+
+def record_compiled(model_id: str, device: str, source: str) -> None:
+    """Record that this model's kernels are cached, if they are not already.
+
+    Compiling inside a real separation warms the same cache a deliberate
+    warm-up would, so it is worth the same record: without this, a model
+    could be compiled on every job and still report itself as never compiled,
+    because only the warm-up wrote the marker.
+
+    Best effort throughout. Failing to record a fact about a cache must never
+    be the reason a separation fails, so every error here is swallowed.
+    """
+    import json
+
+    try:
+        marker = compile_marker_path(model_id)
+        payload = {"torch": torch_build_id(), "device": device, "source": source}
+
+        if marker.is_file():
+            try:
+                recorded = json.loads(marker.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                recorded = {}
+
+            # Already true and already said so. Rewriting it on every job
+            # would be a pointless write per separation.
+            if recorded.get("torch") == payload["torch"]:
+                return
+
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps(payload, indent=1), encoding="utf-8")
+    except Exception:
+        return
+
+
 def _cxx_compiler_available() -> bool:
     """Whether inductor's CPU backend can find a host C++ compiler."""
     try:
@@ -155,7 +232,7 @@ def _wrap_forward(cls: type, log: Callable[[str], None]) -> None:
         state = getattr(self, "_stemlab_compile_state", None)
 
         if state is None:
-            state = {"fn": None, "active": False}
+            state = {"fn": None, "active": False, "recorded": False, "device": "cpu"}
             self._stemlab_compile_state = state
 
             device = "cpu"
@@ -163,6 +240,8 @@ def _wrap_forward(cls: type, log: Callable[[str], None]) -> None:
                 if isinstance(value, torch.Tensor):
                     device = value.device.type
                     break
+
+            state["device"] = device
 
             supported, reason = compile_support_status(device)
             if not supported:
@@ -182,7 +261,7 @@ def _wrap_forward(cls: type, log: Callable[[str], None]) -> None:
 
         if state["active"]:
             try:
-                return state["fn"](*args, **kwargs)
+                result = state["fn"](*args, **kwargs)
             except Exception as exc:
                 # Inductor reports a missing toolchain by raising here, during
                 # the first traced call, not from torch.compile itself. Retry
@@ -190,6 +269,20 @@ def _wrap_forward(cls: type, log: Callable[[str], None]) -> None:
                 # is genuinely bad, the eager call raises the honest error.
                 state["active"] = False
                 log(f"Compiled {cls.__name__} failed ({_one_line(exc)}); continuing eagerly.")
+            else:
+                # A pass that returned is the first moment the cache is known
+                # to hold usable kernels, so it is the moment worth recording.
+                # Outside the try above: recording is not part of the forward,
+                # and a failure in it must not be read as a compile failure.
+                if not state["recorded"]:
+                    state["recorded"] = True
+
+                    model_id = _MODEL_IDS_BY_CLASS.get(cls.__name__)
+
+                    if model_id is not None:
+                        record_compiled(model_id, state["device"], "separation")
+
+                return result
 
         return original(self, *args, **kwargs)
 

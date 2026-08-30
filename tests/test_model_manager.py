@@ -654,7 +654,11 @@ class TestClearingTheKernelCacheClearsItsMarkers:
         marker = tmp_path / "stemlab_warm_roformer.json"
         marker.write_text('{"torch": "2.0.0"}', encoding="utf-8")
 
-        monkeypatch.setattr(model_manager, "_locatable_inductor_cache_dir", lambda: cache)
+        # Through the documented override rather than by patching an
+        # internal: the marker path is compile_support's to decide, and a
+        # test that patches one of the two functions resolving it stops
+        # testing the path the app actually uses.
+        monkeypatch.setenv("STEMLAB_TORCH_COMPILE_CACHE", str(cache))
         monkeypatch.setattr(model_manager, "_torch_version", lambda: "2.0.0")
 
         assert model_manager._compile_state("roformer")["compiled"] is True
