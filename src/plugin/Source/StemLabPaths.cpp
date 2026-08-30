@@ -60,21 +60,36 @@ juce::File userDataDirectory()
    #endif
 }
 
-juce::File jobsDirectory()
+juce::File userMediaDirectory()
 {
    #if JUCE_WINDOWS
-    return documentsStemLab()
-        .getChildFile ("Jobs");
+    // Documents\StemLab, unchanged: the 0.9.9 layout is a compatibility
+    // promise, and moving it would strand every existing install's captures.
+    return documentsStemLab();
    #elif JUCE_MAC
+    return userDataDirectory();
+   #else
+    // ~/Music/StemLab, through JUCE's XDG user-dirs resolver so a localised
+    // or relocated music folder is honoured. Audio the user made is theirs,
+    // and belongs with the rest of their audio rather than inside the
+    // directory the application unpacks itself into - which on Linux is the
+    // same ~/.local/share/StemLab the bundle installs to.
+    return juce::File::getSpecialLocation (juce::File::userMusicDirectory)
+        .getChildFile ("StemLab");
+   #endif
+}
+
+juce::File jobsDirectory()
+{
+   #if JUCE_MAC
     return homeDirectory()
         .getChildFile ("Library")
         .getChildFile ("Caches")
         .getChildFile ("StemLab")
         .getChildFile ("jobs");
    #else
-    return xdgDirectory ("XDG_CACHE_HOME", ".cache")
-        .getChildFile ("StemLab")
-        .getChildFile ("jobs");
+    return userMediaDirectory()
+        .getChildFile ("Jobs");
    #endif
 }
 
@@ -104,13 +119,13 @@ juce::File configDirectory()
 
 juce::File capturesDirectory()
 {
-    return userDataDirectory()
+    return userMediaDirectory()
         .getChildFile ("Captures");
 }
 
 juce::File recordingsDirectory()
 {
-    return userDataDirectory()
+    return userMediaDirectory()
         .getChildFile ("Recordings");
 }
 

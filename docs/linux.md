@@ -131,18 +131,51 @@ build matching your torch flavor.
 ## Where StemLab writes files
 
 Linux follows the XDG Base Directory spec rather than the Windows
-`Documents\StemLab` layout:
+`Documents\StemLab` layout, and keeps your audio out of the application's
+own directory:
 
 | What | Location |
 | --- | --- |
-| Captures | `$XDG_DATA_HOME/StemLab/Captures` (`~/.local/share/…`) |
-| Recordings | `$XDG_DATA_HOME/StemLab/Recordings` |
-| Separation jobs | `$XDG_CACHE_HOME/StemLab/jobs` (`~/.cache/…`) |
+| Captures | `~/Music/StemLab/Captures` |
+| Recordings | `~/Music/StemLab/Recordings` |
+| Separated stems | `~/Music/StemLab/Jobs` |
+| The app and its Engine | `$XDG_DATA_HOME/StemLab` (`~/.local/share/…`) |
+| The VST3 | `~/.vst3/StemLab.vst3` |
 | Settings | `$XDG_CONFIG_HOME/StemLab` (`~/.config/…`) |
+| Model weights | `~/.cache/bs-roformer-infer`, `~/.cache/huggingface`, `~/.stemlab/models` |
+| Analysis, MIDI staging, compiled kernels | `~/.stemlab/analysis` |
 
-Jobs live in the cache directory because they are large and can always be
-regenerated from the source audio. Override the job location at runtime with
-**Choose File Location** in the plugin.
+Everything a person made or asked for lives under `~/Music/StemLab`; the
+application lives under `~/.local/share/StemLab` and holds nothing of theirs.
+That split is why removing the app cannot take your recordings with it - on
+Linux the bundle unpacks into the same folder captures used to be written to.
+`XDG_MUSIC_DIR` is honoured when your music folder has been moved or is
+localised. Override the job location at runtime with **Choose File Location**
+in the plugin.
+
+Only the finished stems are kept. A hybrid run separates with both models and
+then fuses them, and a refined run improves that result again; those working
+folders are removed once the final one is written. Set
+`STEMLAB_KEEP_INTERMEDIATES=1` to keep them for comparison.
+
+## Removing and updating
+
+The bundle carries both scripts next to the app:
+
+```bash
+~/.local/share/StemLab/update.sh              # update to the latest release
+~/.local/share/StemLab/update.sh --check      # just say whether one is out
+
+~/.local/share/StemLab/uninstall.sh           # the app, the VST3, the settings
+~/.local/share/StemLab/uninstall.sh --models  # ... and the downloaded weights
+~/.local/share/StemLab/uninstall.sh --everything   # ... and your audio
+~/.local/share/StemLab/uninstall.sh --dry-run # print what would go
+```
+
+`update.sh` keeps the GPU flavor the install already has, so a `cuda` install
+does not quietly become a `cpu` one. `uninstall.sh` keeps your model weights
+unless asked, because they are gigabytes over a slow download, and keeps your
+audio unless you pass `--everything`.
 
 ## REAPER
 

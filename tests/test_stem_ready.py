@@ -114,8 +114,14 @@ def _assert_wire_is_well_formed(wire: _Wire) -> None:
 
 @pytest.mark.parametrize("engine", ENGINE_CHOICES)
 def test_refinement_announces_each_stem_once_from_the_refined_folder(
-    tmp_path, fake_backends, engine
+    tmp_path, fake_backends, engine, monkeypatch
 ):
+    # The working folders are kept for this one so the check below is not
+    # vacuous: it has to be possible to announce a baseline path in order for
+    # "no baseline path was announced" to mean anything. A finished job
+    # normally removes them, which the next test covers.
+    monkeypatch.setenv("STEMLAB_KEEP_INTERMEDIATES", "1")
+
     wire = _run(tmp_path, engine, refine=True)
 
     _assert_wire_is_well_formed(wire)
@@ -125,9 +131,6 @@ def test_refinement_announces_each_stem_once_from_the_refined_folder(
     refined = (tmp_path / "out" / "refined").resolve()
     baseline = (tmp_path / "out" / "baseline").resolve()
 
-    # Not vacuous: the baseline stems exist and are deliberately not the
-    # ones announced, because the plugin stops resolving to them the moment
-    # refined/ appears.
     assert sorted(path.name for path in baseline.glob("*.wav")) == sorted(
         f"{stem}.wav" for stem in STEM_NAMES
     )
@@ -135,6 +138,21 @@ def test_refinement_announces_each_stem_once_from_the_refined_folder(
     for stem, path, _existed in wire.ready:
         assert path.parent == refined, f"{stem} announced outside the final folder: {path}"
         assert baseline not in path.parents, f"{stem} announced from baseline: {path}"
+
+
+@pytest.mark.parametrize("engine", ENGINE_CHOICES)
+def test_a_finished_job_leaves_only_the_final_stems(tmp_path, fake_backends, engine):
+    # Every announced path has to still be there when the job ends: the
+    # working folders are removed on the way out, and an announcement naming
+    # one of them would leave the plugin pointing at a file that no longer
+    # exists.
+    wire = _run(tmp_path, engine, refine=True)
+
+    for stem, path, _existed in wire.ready:
+        assert path.is_file(), f"{stem} was announced at a path that is now gone: {path}"
+
+    assert not (tmp_path / "out" / "baseline").exists()
+    assert not (tmp_path / "out" / "engines").exists()
 
 
 def test_refinement_announces_the_untouched_copies_first(tmp_path, fake_backends):

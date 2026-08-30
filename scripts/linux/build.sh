@@ -154,6 +154,16 @@ EOF
 INSTALLER
 chmod +x "$DIST_DIR/install.sh"
 
+# The version, for anything that needs to know what this bundle is without
+# parsing prose. update.sh reads it to decide whether a release is newer.
+printf '%s\n' "$VERSION" > "$DIST_DIR/.stemlab-version"
+
+# Removing and updating ship with the app: a user who wants either should not
+# have to find the repository to get it.
+cp "$REPO_ROOT/scripts/linux/uninstall.sh" "$DIST_DIR/uninstall.sh"
+cp "$REPO_ROOT/scripts/linux/update.sh" "$DIST_DIR/update.sh"
+chmod +x "$DIST_DIR/uninstall.sh" "$DIST_DIR/update.sh"
+
 cat > "$DIST_DIR/README.txt" <<EOF
 StemLab $VERSION for Linux (self-contained, torch flavor: $RESOLVED_FLAVOR)
 

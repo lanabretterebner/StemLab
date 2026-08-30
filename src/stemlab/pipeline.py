@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -149,6 +151,57 @@ class PipelineResult:
     baseline_dir: Path
     final_dir: Path
     engine: str
+
+
+def _discard_intermediates(
+    output_dir: Path, baseline_dir: Path, final_dir: Path, log
+) -> None:
+    """Delete the stem sets that were only steps on the way to the final one.
+
+    A hybrid run with refinement writes four full sets of stems: one per
+    model under engines/, the fused baseline/, and the refined/ output. Only
+    the last is the answer; the rest are working files that quietly multiplied
+    the size of every job by four.
+
+    The safety rule is the whole of this function: nothing is removed until
+    the final folder is known to hold stems. Refinement writing nothing - a
+    bug, a backend that failed politely - must not end with this deleting the
+    only copy that survived.
+
+    Set STEMLAB_KEEP_INTERMEDIATES=1 to keep them, which is how you compare
+    what fusion did against what each model gave it.
+    """
+    if os.environ.get("STEMLAB_KEEP_INTERMEDIATES", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return
+
+    try:
+        survivors = [
+            stem for stem in STEM_NAMES if find_stem_file(final_dir, stem) is not None
+        ]
+
+        if not survivors:
+            log("Keeping the working folders: the final folder has no stems in it.")
+            return
+
+        # engines/ is hybrid's per-model output and is never the answer;
+        # baseline/ is the answer only when refinement did not run, in which
+        # case it is final_dir and is not in this list at all.
+        removable = [output_dir / "engines"]
+
+        if baseline_dir != final_dir:
+            removable.append(baseline_dir)
+
+        for path in removable:
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+    except Exception as exc:
+        # Tidying up is never worth failing a finished separation over.
+        log(f"Could not remove the working folders ({exc}); they are still there.")
 
 
 def separate(
@@ -558,6 +611,8 @@ def separate(
     # about every stem sitting in the final folder before the job ends.
     # Already-announced stems are dropped by the dedupe in stem_ready.
     announce_folder(final_dir)
+
+    _discard_intermediates(output_dir, baseline_dir, final_dir, log)
 
     return PipelineResult(
         baseline_dir=baseline_dir,
