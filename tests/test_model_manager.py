@@ -19,6 +19,7 @@ import json
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -663,3 +664,79 @@ class TestClearingTheKernelCacheClearsItsMarkers:
         assert not marker.exists()
         assert freed >= 4096
         assert model_manager._compile_state("roformer")["compiled"] is False
+
+
+class TestTheWarmUpMarkerSurvivesBeingReadElsewhere:
+    """The marker is written by one process and read by another.
+
+    Compiling imports torch; the status probe refuses to, because it runs on
+    every editor open. If the recorded version came from `torch.__version__`
+    in one and from package metadata in the other, the two could disagree
+    over a build's local suffix - and `_compile_state` retires a marker whose
+    version does not match, so a model that really was compiled reports
+    itself as not compiled and the Compile button never changes.
+    """
+
+    @staticmethod
+    def _installed_torch(monkeypatch, metadata, imported):
+        """An installed torch whose metadata and module disagree."""
+        import importlib.metadata
+
+        monkeypatch.setattr(
+            importlib.metadata, "version", lambda name: metadata if name == "torch" else ""
+        )
+
+        if imported is None:
+            monkeypatch.delitem(sys.modules, "torch", raising=False)
+        else:
+            module = types.ModuleType("torch")
+            module.__version__ = imported
+            monkeypatch.setitem(sys.modules, "torch", module)
+
+    def test_the_version_does_not_depend_on_torch_being_imported(self, monkeypatch):
+        # The two spellings a build can have. Which one gets recorded must not
+        # depend on whether the process that asked happened to import torch.
+        self._installed_torch(monkeypatch, "2.11.0+cpu", "2.11.0a0+gitdeadbee")
+        while_compiling = model_manager._torch_version()
+
+        self._installed_torch(monkeypatch, "2.11.0+cpu", None)
+        while_probing = model_manager._torch_version()
+
+        assert while_compiling == while_probing == "2.11.0+cpu"
+
+    def test_a_marker_written_while_compiling_is_accepted_by_a_status_probe(
+        self, tmp_path, monkeypatch
+    ):
+        cache = tmp_path / "inductor"
+        cache.mkdir()
+        monkeypatch.setattr(model_manager, "_locatable_inductor_cache_dir", lambda: cache)
+
+        # Written by the compiling process, which has torch loaded.
+        self._installed_torch(monkeypatch, "2.11.0+cpu", "2.11.0a0+gitdeadbee")
+
+        marker = model_manager._compile_marker("roformer")
+        marker.write_text(
+            json.dumps({"torch": model_manager._torch_version()}), encoding="utf-8"
+        )
+
+        # Read back by the status probe, which refuses to import it.
+        self._installed_torch(monkeypatch, "2.11.0+cpu", None)
+
+        assert model_manager._compile_state("roformer")["compiled"] is True
+
+    def test_a_marker_from_a_different_torch_is_still_retired(self, tmp_path, monkeypatch):
+        # The guard has to keep working: inductor artifacts do not survive a
+        # torch upgrade, so a marker from an older one is not evidence.
+        cache = tmp_path / "inductor"
+        cache.mkdir()
+        monkeypatch.setattr(model_manager, "_locatable_inductor_cache_dir", lambda: cache)
+
+        marker = model_manager._compile_marker("roformer")
+        marker.write_text(json.dumps({"torch": "2.10.0+cpu"}), encoding="utf-8")
+
+        self._installed_torch(monkeypatch, "2.11.0+cpu", None)
+
+        state = model_manager._compile_state("roformer")
+
+        assert state["compiled"] is False
+        assert "different torch" in state["reason"]
