@@ -28,7 +28,12 @@ if TYPE_CHECKING:
 # must never pay for, or require, torch.
 
 BEAT_THIS_VERSION = "1.1.0"
-BEAT_ALGORITHM_VERSION = "beat-this-1.1.0-stemlab-1"
+# Part of the analysis cache's primary key (kind, source_hash,
+# algorithm_version, settings_hash), so it has to move whenever the numbers
+# this module derives change. -2 is the tempo coming from the mean of the
+# inlier intervals rather than their median; without the bump every track
+# already analysed would keep serving the frame-quantised BPM it cached.
+BEAT_ALGORITHM_VERSION = "beat-this-1.1.0-stemlab-2"
 
 
 @dataclass(frozen=True)
@@ -425,7 +430,24 @@ def derive_musical_time(
     beats = np.unique(np.asarray(beats, dtype=np.float64))
     downbeats = np.unique(np.asarray(downbeats, dtype=np.float64))
     _intervals, robust_cv, inlier_ratio = _robust_intervals(beats)
-    detected_bpm = 60.0 / float(np.median(_intervals))
+    # The mean, not the median. Beat This! reports every beat as an integer
+    # frame index divided by 50 fps (postprocessor.py: beat_time =
+    # beat_frame / self.fps), so the intervals arrive quantised to 20 ms and
+    # a median snaps to a whole number of frames. At 174 BPM the true beat is
+    # 17.24 frames, the detector emits a mix of 17s and 18s, and the median
+    # takes the 17 that most of them are - reporting 176.47 BPM. Only tempos
+    # whose period is an exact multiple of 20 ms survived that: 120 and 100
+    # came back right while 128 read 130.43, 140 read 142.86 and 96 read
+    # 96.77. Averaging the same intervals recovers the sub-frame remainder.
+    #
+    # A least-squares fit over beat index would too, and more precisely on a
+    # clean track, but it reads tempo from the whole span: one dropped beat
+    # shifts every index after it. Measured on a 180 s track at 174 BPM with
+    # 5% of beats dropped it returned 166.20, and with 5% spurious beats
+    # 183.57, where this mean stayed within 0.62 BPM of true in both. The
+    # median still does the outlier rejection in _robust_intervals, which is
+    # where robustness belongs; this only has to average what survived it.
+    detected_bpm = 60.0 / float(np.mean(_intervals))
     meter, meter_confidence = _estimate_meter(beats, downbeats)
     stability = float(np.exp(-8.0 * robust_cv))
     confidence = float(
