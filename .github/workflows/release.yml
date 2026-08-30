@@ -645,8 +645,10 @@ jobs:
           `.exe` and run it - and are named for their own installer, so
           slices from different flavors never mix.
 
-          Model weights download on first use on Linux; the Windows installer
-          carries them.
+          Model weights are not included, on either platform. Each downloads
+          the first time you use the model that needs it, is checked against a
+          recorded size and digest before anything loads it, and is named in
+          the status area while it runs.
           NOTES
 
           # GitHub's own generated notes - the commit and contributor list -
