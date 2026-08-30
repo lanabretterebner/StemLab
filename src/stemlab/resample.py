@@ -9,6 +9,7 @@ resampler so they share its length guarantee.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 # Resampling happens in blocks, not whole files: decoding a six-minute
@@ -93,3 +94,84 @@ def resample_file(
             written = out_frames
 
     return written
+
+
+def rate_and_frames(path: Path) -> tuple[int, int]:
+    """Report a file's sample rate and length without decoding its audio."""
+    import soundfile as sf
+
+    info = sf.info(str(path))
+    return int(info.samplerate), int(info.frames)
+
+
+def restore_folder_sample_rate(
+    output_dir: Path,
+    sample_rate: int,
+    frames: int | None,
+    log: Callable[[str], None],
+) -> None:
+    """Return stems written at a model's own rate to the source's rate.
+
+    Both pretrained backends need this, for different reasons. BS-RoFormer
+    is deliberately fed 44.1 kHz because its band edges are fixed in bins,
+    and fusion then reads its sample rate from the RoFormer stem itself
+    (``hybrid.fuse_stem_pair`` loads it with no ``target_sr``), so a stem
+    left behind at 44.1 kHz would make every fused output of a 48 kHz
+    session 44.1 kHz too. Demucs is not asked at all - it resamples to its
+    model rate on its own and writes there - so without this a demucs-only
+    job published 44.1 kHz stems whatever the session ran at.
+
+    ``frames`` of None means the source length could not be read, which is
+    not the same as a length of zero: the resampler's own output length is
+    kept rather than truncating every stem to silence.
+    """
+    import soundfile as sf
+
+    failed: list[str] = []
+
+    for path in sorted(output_dir.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in {".wav", ".flac"}:
+            continue
+
+        try:
+            rate = sf.info(str(path)).samplerate
+        except Exception as exc:
+            # Guarded, and deliberately not fatal. output_dir holds whatever
+            # the model left behind, and rglob is sorted, so one file
+            # soundfile cannot open - a partial write, something
+            # _clear_audio_files could not unlink - used to cost every stem
+            # sorting after it. A file that cannot be read is also not a file
+            # this can mis-rate, so it is reported and stepped over.
+            log(f"Could not read the sample rate of {path.name}: {exc}")
+            continue
+
+        if rate == sample_rate:
+            continue
+
+        restored = path.with_name(f"{path.stem}_stemlab_rate{path.suffix}")
+        try:
+            resample_file(path, restored, sample_rate, out_frames=frames)
+            # A file cannot be rewritten underneath its own reader, so the
+            # resample lands beside the stem and then takes its place.
+            restored.replace(path)
+        except Exception as exc:
+            restored.unlink(missing_ok=True)
+            # Readable, at the wrong rate, and not fixable: this one really
+            # would go out mis-rated, so it is collected rather than logged
+            # and forgotten.
+            failed.append(path.name)
+            log(f"Could not return {path.name} to {sample_rate} Hz: {exc}")
+
+    if failed:
+        # Not a warning to be scrolled past. Fusion reads its rate off the
+        # RoFormer stem, so a stem left at 44.1 kHz in a 48 kHz session makes
+        # every fused output 44.1 kHz - which is the exact state this function
+        # exists to prevent, and it is invisible in the audio. Better to fail
+        # the separation than to hand back a session that is quietly wrong.
+        raise RuntimeError(
+            "Could not return "
+            + ", ".join(failed)
+            + f" to the source rate of {sample_rate} Hz. They would "
+            "otherwise be left at the model's own rate and silently "
+            "mis-rate the session."
+        )

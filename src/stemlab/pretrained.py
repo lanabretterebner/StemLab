@@ -10,7 +10,11 @@ from pathlib import Path
 from typing import Callable
 
 from .device import resolve_torch_device
-from .resample import resample_file as _resample_file
+from .resample import (
+    rate_and_frames as _rate_and_frames,
+    resample_file as _resample_file,
+    restore_folder_sample_rate as _restore_stem_sample_rate,
+)
 from .runtime import CancellationToken, run_progress_process
 
 DEFAULT_MODEL = "roformer-model-bs-roformer-sw-by-jarredou"
@@ -122,80 +126,6 @@ def _convert_with_soundfile(input_path: Path, staged: Path) -> bool:
         return False
 
     return staged.exists()
-
-
-def _rate_and_frames(path: Path) -> tuple[int, int]:
-    """Report a file's sample rate and length without decoding its audio."""
-    import soundfile as sf
-
-    info = sf.info(str(path))
-    return int(info.samplerate), int(info.frames)
-
-
-def _restore_stem_sample_rate(
-    output_dir: Path,
-    sample_rate: int,
-    frames: int,
-    log: Callable[[str], None],
-) -> None:
-    """Return stems written at the model's rate to the source's rate.
-
-    Fusion reads its sample rate from the RoFormer stem itself
-    (``hybrid.fuse_stem_pair`` loads it with no ``target_sr``), so stems
-    left at 44.1 kHz would make every fused output of a 48 kHz session
-    44.1 kHz too, and only the Demucs leg would be resampled to match.
-    Restoring the source rate here keeps that whole path unchanged.
-    """
-    import soundfile as sf
-
-    failed: list[str] = []
-
-    for path in sorted(output_dir.rglob("*")):
-        if not path.is_file() or path.suffix.lower() not in {".wav", ".flac"}:
-            continue
-
-        try:
-            rate = sf.info(str(path)).samplerate
-        except Exception as exc:
-            # Guarded, and deliberately not fatal. output_dir holds whatever
-            # the model left behind, and rglob is sorted, so one file
-            # soundfile cannot open - a partial write, something
-            # _clear_audio_files could not unlink - used to cost every stem
-            # sorting after it. A file that cannot be read is also not a file
-            # this can mis-rate, so it is reported and stepped over.
-            log(f"Could not read the sample rate of {path.name}: {exc}")
-            continue
-
-        if rate == sample_rate:
-            continue
-
-        restored = path.with_name(f"{path.stem}_stemlab_rate{path.suffix}")
-        try:
-            _resample_file(path, restored, sample_rate, out_frames=frames)
-            # A file cannot be rewritten underneath its own reader, so the
-            # resample lands beside the stem and then takes its place.
-            restored.replace(path)
-        except Exception as exc:
-            restored.unlink(missing_ok=True)
-            # Readable, at the wrong rate, and not fixable: this one really
-            # would go out mis-rated, so it is collected rather than logged
-            # and forgotten.
-            failed.append(path.name)
-            log(f"Could not return {path.name} to {sample_rate} Hz: {exc}")
-
-    if failed:
-        # Not a warning to be scrolled past. Fusion reads its rate off the
-        # RoFormer stem, so a stem left at 44.1 kHz in a 48 kHz session makes
-        # every fused output 44.1 kHz - which is the exact state this function
-        # exists to prevent, and it is invisible in the audio. Better to fail
-        # the separation than to hand back a session that is quietly wrong.
-        raise RuntimeError(
-            "Could not return "
-            + ", ".join(failed)
-            + f" to the source rate of {sample_rate} Hz. The stems would "
-            "otherwise be left at "
-            f"{ROFORMER_SAMPLE_RATE} Hz and silently mis-rate the session."
-        )
 
 
 def _normalise_input_for_backend(
