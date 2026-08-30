@@ -58,6 +58,32 @@ The tests use synthetic audio; they download no models and need no DAW.
 `tests/` contains unit tests for behavior that should remain stable. Keep
 them green before and after code changes.
 
+The C++ side has its own suites, which CI runs and a local build should too:
+
+```bash
+ctest --test-dir src/plugin/build --output-on-failure
+```
+
+| Target | What it holds the line on |
+| --- | --- |
+| `StemLabWaveformGridTests` | Bar and beat placement, and host-integration policy |
+| `StemLabWaveformAnalysisTests` | The JUCE-free spectral analysis, FFT included |
+| `StemLabLoopRegionsTests` | Which loop ranges merge, and where playback jumps |
+| `StemLabSourceLabelTests` | Joining a track and take name without saying it twice |
+| `StemLabLaneWheelDispatchTests` | Which wheel events a lane forwards to the viewport |
+| `StemLabHostCaptureTests` | The self-drag guard and a real processor capturing audio |
+
+The first four cover header-only components deliberately kept free of the
+plugin, so a test can reach them without standing one up.
+`StemLabLaneWheelDispatchTests` is the odd one: it pins JUCE's own dispatch
+behaviour rather than code of ours, because a JUCE upgrade that changed it
+would silently undo the fix that depends on it. `StemLabHostCaptureTests`
+links the plugin itself.
+
+Two of them link JUCE, but none needs a display - the wheel suite asserts
+against `MouseEvent` identity rather than a window - so the whole suite runs
+on a bare CI runner with `DISPLAY` unset.
+
 ## Command Line
 
 ```powershell
@@ -144,16 +170,20 @@ Pure helpers behind the lanes: `WaveformGrid.h` (beat-grid math),
 | Module | Responsibility |
 | --- | --- |
 | `audio.py` | Shared WAV/FLAC loading, saving, resampling, and stem lookup |
+| `resample.py` | Sample-rate conversion shared by every separation backend |
 | `cli.py` | `stemlab-separate` / `stemlab-refine` / `stemlab-models` entries |
 | `pipeline.py` | Public router for RoFormer, Demucs, hybrid, and refinement |
 | `pretrained.py` | BS-RoFormer process adapter |
 | `bs_roformer_cli.py` | Relocatable launcher for `bs-roformer-infer` |
+| `bs_roformer_download_cli.py` | The same launcher for `bs-roformer-download` |
+| `console_entry.py` | Runs an installed console script without pip's baked-in path |
 | `bs_roformer_download_cli.py` | Relocatable launcher for `bs-roformer-download` |
 | `console_entry.py` | Calls an installed console script without pip's launcher |
 | `demucs_backend.py` | Demucs process adapter and output normalization |
 | `hybrid.py` | Spectral fusion of model estimates |
 | `device.py` | Device selection for PyTorch backends (CUDA/XPU/CPU) |
 | `compile_support.py` | Opt-in `torch.compile` gate for the RoFormer models |
+| `model_compile.py` | Fills the compiled-kernel cache before a job needs it |
 | `model_manager.py` | `stemlab-model-manager`: model/cache inventory, fetch, removal |
 | `plugin_job.py` | JUCE command arguments, progress files, Ableton manifest |
 | `recursive_job.py` | JUCE command bridge for adaptive stem jobs |
@@ -170,6 +200,10 @@ Pure helpers behind the lanes: `WaveformGrid.h` (beat-grid math),
 | `refinement/adaptive_cancel.py` | Constrained spectral subtraction |
 | `refinement/kick.py` | Per-event kick-bleed correction |
 | `refinement/pipeline.py` | Applies refinement across a stem folder |
+| `regression/metrics.py` | SI-SDR, correlation, and spectral distance |
+| `regression/compare.py` | Compares two sets of stems and gates on the difference |
+| `regression/corpus.py` | Deterministic synthetic corpus, so CI needs no licensed music |
+| `regression/__main__.py` | `python -m stemlab.regression` entry |
 
 ### Compiled inference (opt-in)
 
@@ -200,6 +234,9 @@ from `torch.compile`, so the fallback wraps the call, not the wrap. And
 because every separation is a fresh subprocess, the cache directory has to be
 stable or compiling is a guaranteed loss - the first run pays about two
 minutes, later runs load kernels instead of building them.
+
+Who pays that first run is a separate question, answered under
+[Warming the compiled-kernel cache](#warming-the-compiled-kernel-cache).
 
 ## Stable Contracts
 
@@ -285,18 +322,30 @@ filenames and search rules the engine defines elsewhere; `test_model_manager`
 asserts each copy still matches whenever the owning module imports.
 
 Fetching asks whoever owns each transfer to perform it - upstream's
-downloader for RoFormer, `torch.hub` for Demucs, `audio-separator` for the
-adaptive models - and lifts `HF_HUB_OFFLINE` for that child only, since
-downloading is the one operation meant to reach the network.
+downloader for RoFormer, the HuggingFace hub for Demucs, `audio-separator`
+for the adaptive models - and lifts `HF_HUB_OFFLINE` for that child only,
+since downloading is the one operation meant to reach the network.
 
-In the plugin it is a modal panel over the interface, opening by itself while
-anything is missing and available from Settings. Dismissing it lasts the
-session only.
+In the plugin it is a modal panel over the interface, always available from
+Settings and opening by itself only when a model the app cannot separate
+without is absent - `ESSENTIAL_MODEL_IDS`, which is RoFormer and Demucs.
+Dismissing it lasts the session only.
+
+The rule is that narrow because the first one was not. It opened when any of
+the seven models was missing, including the optional ones that fetch
+themselves on first use, and it also opened whenever compiling was switched
+on and a present model had no warm-up marker. Nothing writes that marker
+except this module's own `--compile`, so with `STEMLAB_TORCH_COMPILE=1` the
+second condition was permanently true and the panel appeared on every launch
+of a fully installed app. `status()` now reports one flag,
+`essentialModelMissing`, and the plugin has no second reason to open it.
 
 ### Warming the compiled-kernel cache
 
-`compile_support` compiles during a real job, so without warming the first
-separation after enabling `STEMLAB_TORCH_COMPILE` pays the whole cost: 114.8 s
+`compile_support` (see [Compiled inference](#compiled-inference-opt-in) for
+which machines can compile at all) compiles during a real job, so without
+warming the first separation after enabling `STEMLAB_TORCH_COMPILE` pays the
+whole cost: 114.8 s
 for the first forward pass against a cold cache, 27.4 s against a warm one,
 where eager is 9.5 s. `stemlab.model_compile` moves that cost somewhere the
 user chose to spend it.
@@ -307,10 +356,20 @@ STEMLAB_TORCH_COMPILE=1 python -m stemlab.model_manager --compile roformer
 
 or the Compile button beside BS-RoFormer in the Model Manager, where the
 **Compile separations** switch turns compiling on and off for every job the
-plugin starts. The switch is seeded from `STEMLAB_TORCH_COMPILE` at startup,
-so exporting the variable still works and shows up already on; the plugin then
-publishes its own choice into the environment its engine children inherit, and
-remembers it in the saved state.
+plugin starts. The plugin publishes its choice into the environment its engine
+children inherit, and reads it back from three places, most specific last:
+
+| source | scope |
+| --- | --- |
+| `torch_compile.txt` in the config directory | this machine |
+| `STEMLAB_TORCH_COMPILE` | this launch, for an operator who exports it |
+| `torchCompile` in the saved plugin state | this project |
+
+The machine file is what makes the switch survive a reload. Whether compiling
+is worth it is a fact about a computer's toolchain rather than about a
+project, and with only the other two, every fresh instance - a plugin
+reloaded in the host, or the Standalone restarted - came back up off however
+many times it had been switched on.
 
 Whether the machine can compile at all is only probed when the switch is
 turned on (`--probe-compile` on the CLI). The answer needs torch, which costs

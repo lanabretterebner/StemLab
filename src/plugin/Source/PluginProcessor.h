@@ -535,8 +535,8 @@ public:
 
     /** The auto-show condition, decided by the engine so the rule lives in
         one place. Both are false until an inventory has been read. */
-    bool isAnyModelMissing() const noexcept { return anyModelMissing.load(); }
-    bool isAnyCompilePending() const noexcept { return anyCompilePending.load(); }
+    /** Whether a model the app cannot separate without is absent. */
+    bool isEssentialModelMissing() const noexcept { return essentialModelMissing.load(); }
 
     /** Whether compiling was asked for, whether this machine can, and why
         not. Straight from the engine: an unset opt-in and a missing C++
@@ -545,6 +545,11 @@ public:
 
     /** Turn compiled inference on or off for every job this plugin starts. */
     void setTorchCompileEnabled(bool enabled);
+
+    /** Where this machine's compile preference is remembered. */
+    static juce::File torchCompilePreferenceFile();
+    static bool readRememberedTorchCompile();
+    static void rememberTorchCompile(bool enabled);
     bool isTorchCompileEnabled() const noexcept { return torchCompileEnabled.load(); }
     bool isCompileSupported() const noexcept { return compileSupported.load(); }
     juce::String getCompileReason() const;
@@ -1228,8 +1233,7 @@ private:
     std::atomic<bool> modelInventoryValid{false};
     std::atomic<bool> modelInventoryBroken{false};
     std::atomic<bool> modelJobRunning{false};
-    std::atomic<bool> anyModelMissing{false};
-    std::atomic<bool> anyCompilePending{false};
+    std::atomic<bool> essentialModelMissing{false};
     std::atomic<bool> compileRequested{false};
     std::atomic<bool> torchCompileEnabled{false};
     std::atomic<bool> compileSupported{false};
