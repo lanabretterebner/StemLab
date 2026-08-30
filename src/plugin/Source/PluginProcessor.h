@@ -545,6 +545,11 @@ public:
 
     /** Turn compiled inference on or off for every job this plugin starts. */
     void setTorchCompileEnabled(bool enabled);
+
+    /** Where this machine's compile preference is remembered. */
+    static juce::File torchCompilePreferenceFile();
+    static bool readRememberedTorchCompile();
+    static void rememberTorchCompile(bool enabled);
     bool isTorchCompileEnabled() const noexcept { return torchCompileEnabled.load(); }
     bool isCompileSupported() const noexcept { return compileSupported.load(); }
     juce::String getCompileReason() const;

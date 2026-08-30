@@ -421,19 +421,28 @@ def _compile_state(model_id: str) -> dict[str, object]:
 
 
 def _torch_version() -> str:
-    """torch's version without importing it when it is not already loaded."""
-    # Status runs on every editor open, and a cold torch import costs
-    # seconds; device.py avoids it the same way for the same reason.
-    module = sys.modules.get("torch")
-    if module is not None:
-        return str(getattr(module, "__version__", ""))
+    """torch's version without importing it when it is not already loaded.
 
+    Metadata first, deliberately, even when torch is already imported. This
+    value is written into the warm-up marker by one process and compared
+    against by another, and the two never have torch loaded alike: compiling
+    imports it, the status probe refuses to. Reading ``torch.__version__``
+    where it happens to be available and the metadata otherwise lets the two
+    disagree over a build's local version suffix, and a marker that fails
+    that comparison is retired silently - a model that was compiled reports
+    itself as not compiled, with nothing anywhere saying why.
+    """
     try:
         from importlib.metadata import version
 
         return version("torch")
     except Exception:
-        return ""
+        # No metadata to read - an unpacked tree, a vendored build. The
+        # imported module is then the only answer available, and both
+        # processes will fall back to it identically.
+        module = sys.modules.get("torch")
+
+        return str(getattr(module, "__version__", "")) if module is not None else ""
 
 
 # ----------------------------------------------------------------- caches

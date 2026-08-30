@@ -1765,11 +1765,15 @@ StemLabAudioProcessor::StemLabAudioProcessor()
     publishParentPidForEngines();
 
     /*
-     * Seeded from the environment before any saved state is restored, so an
-     * operator who exports STEMLAB_TORCH_COMPILE - the documented way to turn
-     * this on - finds the Model Manager already showing it on rather than
-     * being silently overruled by a toggle defaulting to off. Saved state
-     * wins afterwards, because that is a choice made in this interface.
+     * Three sources, most specific last: this machine's remembered choice,
+     * then STEMLAB_TORCH_COMPILE for an operator who exports it deliberately,
+     * then any state saved with a project, restored later.
+     *
+     * The machine file is what makes the switch survive a reload. Whether
+     * compiling is worth it is a fact about this computer's toolchain, not
+     * about a project, and without it every fresh instance - a plugin
+     * reloaded in the host, or the Standalone restarted - came up off
+     * however many times it had been turned on.
      */
     {
         const auto requested = juce::SystemStats::getEnvironmentVariable(
@@ -1779,8 +1783,11 @@ StemLabAudioProcessor::StemLabAudioProcessor()
 
         // The same spellings compile_support accepts, so the two agree about
         // what the variable means.
-        torchCompileEnabled.store(requested == "1" || requested == "true"
-                                  || requested == "yes" || requested == "on");
+        const auto exported = requested.isNotEmpty();
+
+        torchCompileEnabled.store(exported ? (requested == "1" || requested == "true"
+                                              || requested == "yes" || requested == "on")
+                                           : readRememberedTorchCompile());
     }
 
     exportTorchCompilePreference();
@@ -6195,7 +6202,6 @@ void StemLabAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     auto rootObject = std::make_unique<juce::DynamicObject>();
     rootObject->setProperty("engineCommand", getEngineCommand());
     rootObject->setProperty("refinement", refinementEnabled.load());
-    rootObject->setProperty("torchCompile", torchCompileEnabled.load());
     rootObject->setProperty("separatorEngine", separatorEngineIndex.load());
     rootObject->setProperty("waveformColour", waveformColourIndex.load());
     rootObject->setProperty("waveformZoom", waveformZoom.load());
@@ -6268,13 +6274,21 @@ void StemLabAudioProcessor::setStateInformation(const void* data, int sizeInByte
         refinementEnabled.store(static_cast<bool>(object->getProperty("refinement")));
     }
 
-    if (object->hasProperty("torchCompile"))
-    {
-        torchCompileEnabled.store(static_cast<bool>(object->getProperty("torchCompile")));
-    }
+    /*
+     * torchCompile is deliberately NOT restored from saved state, and older
+     * projects that carry the property are ignored rather than honoured.
+     *
+     * Whether to compile is a property of the machine - it needs a toolchain,
+     * it costs a slow first run, and it pays back over every run after that.
+     * A project carrying its own answer means opening a session made on
+     * another computer silently overrides what this one was told, in both
+     * directions. The switch reads from torch_compile.txt and the environment
+     * only, both of which describe where the plugin is running.
+     */
 
-    // Restored state has to reach the environment too, or the first job after
-    // a reload would run on whatever the previous session happened to leave.
+    // The environment still has to be reasserted here: this runs after the
+    // constructor, and the first job of a reloaded session must not inherit
+    // whatever the previous one left behind.
     exportTorchCompilePreference();
 
     if (object->hasProperty("separatorEngine"))
@@ -6757,12 +6771,43 @@ void StemLabAudioProcessor::exportTorchCompilePreference() const
 #endif
 }
 
+juce::File StemLabAudioProcessor::torchCompilePreferenceFile()
+{
+    // Beside portable_engine_path.txt, which is the other thing here that
+    // describes the machine rather than the project.
+    return stemlab::paths::configDirectory().getChildFile("torch_compile.txt");
+}
+
+bool StemLabAudioProcessor::readRememberedTorchCompile()
+{
+    const auto file = torchCompilePreferenceFile();
+
+    if (!file.existsAsFile())
+        return false;
+
+    return file.loadFileAsString().trim() == "1";
+}
+
+void StemLabAudioProcessor::rememberTorchCompile(bool enabled)
+{
+    auto directory = stemlab::paths::configDirectory();
+
+    // Best effort. Failing to remember a preference must never be the reason
+    // a separation does not start, so nothing here reports upwards.
+    if (directory.exists() || directory.createDirectory())
+        torchCompilePreferenceFile().replaceWithText(enabled ? "1" : "0");
+}
+
 void StemLabAudioProcessor::setTorchCompileEnabled(bool enabled)
 {
     if (torchCompileEnabled.exchange(enabled) == enabled)
         return;
 
     exportTorchCompilePreference();
+
+    // Written on the way through, so the next instance on this machine opens
+    // with the switch where it was left.
+    rememberTorchCompile(enabled);
 
     // Whether anything is worth compiling is the engine's answer, and it has
     // just changed. Probing here and nowhere else: turning the switch on is

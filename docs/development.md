@@ -356,10 +356,20 @@ STEMLAB_TORCH_COMPILE=1 python -m stemlab.model_manager --compile roformer
 
 or the Compile button beside BS-RoFormer in the Model Manager, where the
 **Compile separations** switch turns compiling on and off for every job the
-plugin starts. The switch is seeded from `STEMLAB_TORCH_COMPILE` at startup,
-so exporting the variable still works and shows up already on; the plugin then
-publishes its own choice into the environment its engine children inherit, and
-remembers it in the saved state.
+plugin starts. The plugin publishes its choice into the environment its engine
+children inherit, and reads it back from three places, most specific last:
+
+| source | scope |
+| --- | --- |
+| `torch_compile.txt` in the config directory | this machine |
+| `STEMLAB_TORCH_COMPILE` | this launch, for an operator who exports it |
+| `torchCompile` in the saved plugin state | this project |
+
+The machine file is what makes the switch survive a reload. Whether compiling
+is worth it is a fact about a computer's toolchain rather than about a
+project, and with only the other two, every fresh instance - a plugin
+reloaded in the host, or the Standalone restarted - came back up off however
+many times it had been switched on.
 
 Whether the machine can compile at all is only probed when the switch is
 turned on (`--probe-compile` on the CLI). The answer needs torch, which costs
