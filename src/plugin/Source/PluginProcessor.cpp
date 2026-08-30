@@ -7547,10 +7547,26 @@ StemLabMidiInfo StemLabAudioProcessor::getMidiInfo(const juce::String& id) const
     return found != midiInfos.end() ? found->second : StemLabMidiInfo{};
 }
 
+size_t StemLabAudioProcessor::getMidiNoteCount(const juce::String& id) const
+{
+    /*
+     * The cheap probe. getMidiInfo returns by value, so it copies every
+     * note out from under the lock - fine for a menu opening, not for
+     * something the UI timer asks once per lane per tick, which is what
+     * both the lane's MIDI handle and the well's overlay need.
+     */
+    const juce::ScopedLock lock(midiInfoLock);
+    const auto found = midiInfos.find(id.toStdString());
+    return found != midiInfos.end() ? found->second.notes.size() : 0;
+}
+
 bool StemLabAudioProcessor::hasMidiInfo(const juce::String& id) const
 {
-    const auto info = getMidiInfo(id);
-    return !info.notes.empty() && info.midiFile.existsAsFile();
+    if (getMidiNoteCount(id) == 0)
+        return false;
+
+    // Only worth the copy once the cheap half has already said yes.
+    return getMidiInfo(id).midiFile.existsAsFile();
 }
 
 bool StemLabAudioProcessor::auditionMidi(const juce::String& id)
@@ -7759,12 +7775,25 @@ bool StemLabAudioProcessor::sendMidiToAbleton(const juce::String& id)
     }
     payload->setProperty("notes", juce::var(notes));
 
-    const auto manifest = job.getChildFile(
+    /*
+     * Temp, not the job directory. These two are read once by StemLab
+     * Remote and are meaningless a second later - the clip Ableton builds
+     * from them carries the notes itself, so nothing refers back. The job
+     * directory is somewhere the user opens now that it lives under their
+     * music folder, and a handful of stemlab_ableton_midi_*.json beside the
+     * stems is clutter in a folder they are meant to browse.
+     */
+    const auto bridge = stemlab::paths::bridgeTempDirectory();
+
+    if (!bridge.createDirectory())
+        return false;
+
+    const auto manifest = bridge.getChildFile(
         "stemlab_ableton_midi_" + juce::File::createLegalFileName(id.replace("/", "_")) + ".json");
     if (!manifest.replaceWithText(juce::JSON::toString(juce::var(payload.release()), true)))
         return false;
 
-    const auto ack = job.getChildFile("stemlab_ableton_midi_ack.json");
+    const auto ack = bridge.getChildFile("stemlab_ableton_midi_ack.json");
     if (ack.existsAsFile())
         ack.deleteFile();
 

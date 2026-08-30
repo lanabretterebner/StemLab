@@ -279,12 +279,10 @@ def _recursive_model_dir() -> Path | None:
     if packaged:
         return Path(packaged).expanduser()
 
-    local = os.environ.get("LOCALAPPDATA")
-    if local:
-        return Path(local) / "StemLab" / "Models" / "Recursive"
+    from .paths import recursive_models_dir
 
-    home = _home()
-    return home / ".stemlab" / "models" / "recursive" if home is not None else None
+    # _home() answering None means there is nowhere to put them at all.
+    return recursive_models_dir() if _home() is not None else None
 
 
 # --------------------------------------------------------------- locating

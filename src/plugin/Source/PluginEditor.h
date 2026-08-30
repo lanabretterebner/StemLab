@@ -165,6 +165,11 @@ private:
         bool selectionActive = false;
         double selectionStart = 0.0;
         double selectionEnd = 0.0;
+
+        /** Cheap stand-in for "has the conversion changed": a count, never
+            the notes. A conversion landing, being redone, or the lane being
+            reused for a stem with none all move it. */
+        size_t midiNoteCount = 0;
     };
 
     /** One live read of everything the well draws. */
@@ -180,6 +185,18 @@ private:
     */
     DisplayState lastDisplay;
     bool lastDisplayValid = false;
+
+    /*
+        The notes this well draws over its audio, copied once per conversion
+        rather than per paint: getMidiInfo returns the whole vector by value,
+        and a busy stem carries thousands of them.
+    */
+    std::vector<StemLabMidiNoteInfo> midiNotes;
+    juce::String midiNotesId;
+    size_t midiNotesCount = 0;
+
+    /** Re-copies midiNotes when lastDisplay says the conversion moved. */
+    void refreshMidiNotes();
 
     juce::File currentFile;
 
@@ -307,6 +324,17 @@ private:
     juce::TextButton soloButton{"S"};
     juce::TextButton muteButton{"M"};
     std::unique_ptr<stemlab::widgets::IconButton> dragButton;
+
+    /** Only present once this lane has been converted, and it carries the
+        .mid rather than the audio. A second handle rather than a modifier
+        on the first: a modifier that changes what a drag delivers is
+        invisible until after the drop. */
+    std::unique_ptr<stemlab::widgets::IconButton> midiDragButton;
+
+    /** What refresh() last showed the MIDI handle for, so a conversion
+        landing (or a lane being reused for another stem) re-lays the row
+        out instead of leaving a handle that drags the wrong file. */
+    bool midiHandleShown = false;
     std::unique_ptr<stemlab::widgets::IconButton> menuButton;
     bool hasChildren = false;
     bool externalDragStarted = false;

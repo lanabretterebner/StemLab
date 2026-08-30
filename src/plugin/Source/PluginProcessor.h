@@ -597,6 +597,11 @@ public:
     bool isMidiConversionRunning() const noexcept;
     StemLabMidiInfo getMidiInfo(const juce::String& id) const;
     bool hasMidiInfo(const juce::String& id) const;
+
+    /** How many notes this id's conversion holds, without copying any of
+        them. What the UI timer asks; getMidiInfo is for the paths that
+        actually read the notes. */
+    size_t getMidiNoteCount(const juce::String& id) const;
     bool auditionMidi(const juce::String& id);
     bool isMidiAuditioning(const juce::String& id) const;
     void stopMidiAudition();

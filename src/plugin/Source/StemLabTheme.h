@@ -107,6 +107,13 @@ namespace stemlab::theme
         inline juce::Colour laneWell() { return ground(); }
         inline juce::Colour wavePlayed() { return accent(); }
         inline juce::Colour waveMuted() { return neutral800(); }
+        /*  Transcribed notes over a lane's audio. Text rather than accent:
+            accent is the playhead and the played waveform, and notes lying
+            under both must not be mistaken for either. Translucent so the
+            waveform stays readable through them - the notes describe the
+            audio, they do not replace it. */
+        inline juce::Colour midiOverlay() { return text().withAlpha(0.55f); }
+
         inline juce::Colour playhead() { return accent(); }
         inline juce::Colour playheadGlow() { return accent().withAlpha(0.35f); }
 

@@ -883,6 +883,76 @@ namespace stemlab::icons
         return p;
     }
 
+    juce::Path midiDragOut(juce::Rectangle<float> b)
+    {
+        /*
+         * The MIDI twin of dragOut. Same box, same diagonal arrow, same
+         * numbers for it - the arrow is the half that says "drag", so the
+         * two handles read as a pair and only their subject differs.
+         *
+         * An eighth note replaces the square. It is the shape people
+         * already read as "notes" at any size, which a 5-pin DIN is not: at
+         * 14px five dots in a ring close into a smudge, and a DIN says
+         * "hardware port" rather than "the notes in this stem" even when it
+         * does resolve. Piano keys were the other candidate and lose to the
+         * same size limit - a black-and-white key pattern needs more pixels
+         * than this box has to stop reading as a plain striped rectangle.
+         *
+         * Outlined, not filled: IconButton strokes or fills a whole path,
+         * never both, and dragOut is stroked. A filled head would have to
+         * make the arrow solid too.
+         */
+        const auto size = juce::jmin(b.getWidth(), b.getHeight());
+
+        juce::Path p;
+
+        // The head sits low-left, where the square's bottom-left corner was,
+        // so the note's mass balances the arrow across the diagonal exactly
+        // as the square's did.
+        const auto headW = size * 0.30f;
+        const auto headH = size * 0.22f;
+        const auto headX = b.getX() + size * 0.04f;
+        const auto headY = b.getY() + size * 0.40f;
+
+        p.addEllipse(headX, headY, headW, headH);
+
+        // Stem up the head's right edge. It stops at 0.06 rather than the
+        // box top: a stem running to the very edge put half its 1.4px pen
+        // outside the icon area, the same way dragOut's first square did.
+        const auto stemX = headX + headW;
+        const auto stemTop = b.getY() + size * 0.06f;
+
+        p.startNewSubPath(stemX, headY + headH * 0.5f);
+        p.lineTo(stemX, stemTop);
+
+        /*
+         * One flag, curving down and right off the stem's top. Without it
+         * the glyph is a lollipop; with two it is a comb at this size. The
+         * control point sits outside the end point so the curve bellies out
+         * rather than cutting the corner, which is what makes it read as a
+         * flag rather than a serif.
+         */
+        p.quadraticTo(stemX + size * 0.20f, stemTop + size * 0.06f,
+                      stemX + size * 0.13f, stemTop + size * 0.20f);
+
+        // The arrow, identical to dragOut's. Deliberately duplicated rather
+        // than shared: they are the same today because the pair should look
+        // alike, not because one is defined in terms of the other.
+        const auto from = juce::Point<float>(b.getX() + size * 0.56f, b.getY() + size * 0.56f);
+        const auto to = juce::Point<float>(b.getX() + size * 0.93f, b.getY() + size * 0.93f);
+
+        p.startNewSubPath(from);
+        p.lineTo(to);
+
+        const auto head = size * 0.24f;
+
+        p.startNewSubPath(to.x - head, to.y);
+        p.lineTo(to.x, to.y);
+        p.lineTo(to.x, to.y - head);
+
+        return p;
+    }
+
     juce::Path kebab(juce::Rectangle<float> b)
     {
         // Three dots up the centre: the usual "more actions" affordance.

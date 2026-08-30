@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -12,21 +11,20 @@ from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
+from .paths import analysis_dir
 from .runtime import CancellationToken
 
 _SCHEMA_VERSION = 1
 
 
 def managed_analysis_dir() -> Path:
-    """Return StemLab's private per-user analysis directory."""
-    override = os.environ.get("STEMLAB_ANALYSIS_HOME")
-    if override:
-        return Path(override).expanduser().resolve()
+    """Return StemLab's private per-user analysis directory.
 
-    local = os.environ.get("LOCALAPPDATA")
-    if local:
-        return Path(local) / "StemLab" / "Analysis"
-    return Path.home() / ".stemlab" / "analysis"
+    The location lives in stemlab.paths now, with the recursive weights it
+    used to share ``~/.stemlab`` with. Kept as a name here because it is what
+    the rest of this module and its tests call.
+    """
+    return analysis_dir()
 
 
 def source_identity(
