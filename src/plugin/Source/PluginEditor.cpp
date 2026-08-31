@@ -332,12 +332,14 @@ void StemLaneWaveform::refreshColumns(juce::Rectangle<float> inner, double viewS
 
     const auto channels = juce::jlimit(1, 2, profile->peaks.channels);
     const auto palette = processor.getWaveformColorIndex();
+    const auto accent = theme::accents::index();
 
     // Everything that shapes or colors the pixels; a change in any of it
     // means neither the columns nor their rendering can be reused.
     const bool sameSetup = columnsFile == currentFile && columnsWidth == width &&
                            columnsHeight == height && columnsChannels == channels &&
-                           columnsPalette == palette && columnsMuted == mutedAppearance &&
+                           columnsPalette == palette && columnsAccent == accent &&
+                           columnsMuted == mutedAppearance &&
                            columnsIdentity == stemIdentity &&
                            std::abs(columnsLength - viewLength) < 1.0e-9;
 
@@ -425,6 +427,7 @@ void StemLaneWaveform::refreshColumns(juce::Rectangle<float> inner, double viewS
     columnsHeight = height;
     columnsChannels = channels;
     columnsPalette = palette;
+    columnsAccent = accent;
     columnsMuted = mutedAppearance;
     columnsIdentity = stemIdentity;
     columnsStart = viewStart;
@@ -4586,6 +4589,12 @@ void StemLabAudioProcessorEditor::wireSettingsPage()
             return;
 
         StemLabAudioProcessor::setAccentIndex(index);
+
+        // Rendered with accentGlow() baked in and keyed only by size, so a
+        // repaint alone would draw the old accent's glow around the new
+        // accent's button. The lane waveforms have the same problem and solve
+        // it by keying their cached image on the accent as well.
+        glowCache.clear();
 
         // The accent is in every token that derives from it, so nothing short
         // of the whole editor is stale - including the window this was

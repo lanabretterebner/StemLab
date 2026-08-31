@@ -145,6 +145,17 @@ private:
     int columnsHeight = 0;
     int columnsChannels = 0;
     int columnsPalette = -1;
+
+    /*  The accent the cached image was drawn with.
+     *
+     *  Tracked separately from the palette because the Accent palette draws
+     *  with whatever accent is set: changing the accent leaves the palette
+     *  index, the file, the size and the view identical, so without this the
+     *  cached pixels are reused and the waveform keeps the old colour until
+     *  something else happens to invalidate it.
+     */
+    int columnsAccent = -1;
+
     bool columnsMuted = false;
     juce::String columnsIdentity;
 

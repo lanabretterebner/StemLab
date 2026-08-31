@@ -192,7 +192,7 @@ if (BUILD_TESTING)
     # turn keeps lightness, and that the theme's contrast pairs survive on
     # every preset. Links JUCE for juce::Colour; needs no display.
     add_executable(StemLabAccentPaletteTests
-        Tests/AccentPaletteTests.cpp Source/StemLabAccent.h)
+        Tests/AccentPaletteTests.cpp Source/StemLabAccent.h Source/StemLabTheme.h)
     target_include_directories(StemLabAccentPaletteTests PRIVATE Source)
     target_compile_features(StemLabAccentPaletteTests PRIVATE cxx_std_20)
     target_link_libraries(StemLabAccentPaletteTests PRIVATE juce::juce_graphics)
