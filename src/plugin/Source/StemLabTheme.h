@@ -140,6 +140,10 @@ namespace stemlab::theme
         inline juce::Colour scrubTrack() { return neutral800(); }
         inline juce::Colour scrubFill() { return accent(); }
 
+        // Lighter than the fill it sits on, so the handle reads as a thing on
+        // the bar rather than a bulge in it. Same pair as the zoom slider.
+        inline juce::Colour scrubKnob() { return accent300(); }
+
         // Footer.
         inline juce::Colour progressTrack() { return neutral800(); }
         inline juce::Colour progressFill() { return accent(); }
@@ -599,6 +603,14 @@ namespace stemlab::theme
             constexpr int timeWidth = 92;
             constexpr int scrubHeight = 3;
             constexpr float scrubRadius = 2.0f;
+
+            /*  The handle. Wider than the 3px track on purpose: the track is
+                a readout and the handle is a target, and 11px is the smallest
+                dot that still reads as one and can be grabbed without aiming.
+                Two more on hover, so it answers the pointer before the drag.
+            */
+            constexpr int scrubKnob = 11;
+            constexpr int scrubKnobHover = 13;
             constexpr int abWidth = 150;
             constexpr int abHeight = 28;
             constexpr float abRadius = 8.0f;
