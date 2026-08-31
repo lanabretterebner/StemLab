@@ -1,6 +1,8 @@
 #include "PluginEditor.h"
 #include "BinaryData.h"
 #include "WaveformGrid.h"
+#include "StemLabLookAndFeel.h"
+#include "StemLabTheme.h"
 
 #include <algorithm>
 #include <cmath>
@@ -11,13 +13,21 @@
 
 namespace
 {
-juce::Colour background() { return juce::Colour::fromRGB(14, 17, 22); }
+/*
+    The interface holds no colour literals of its own: these forward to the
+    roles in StemLabTheme.h, which is where a restyle happens. The two
+    exceptions below are deliberate and marked - the per-stem identity
+    colours and the spectrum ramp coloured by level, both of which describe
+    the audio rather than the product, and neither of which may follow the
+    accent.
+*/
+juce::Colour background() { return stemlab::theme::colours::ground(); }
 
-juce::Colour panel() { return juce::Colour::fromRGB(22, 27, 34); }
+juce::Colour panel() { return stemlab::theme::colours::surface(); }
 
-juce::Colour accent() { return juce::Colour::fromRGB(113, 93, 255); }
+juce::Colour accent() { return stemlab::theme::colours::accent(); }
 
-juce::Colour textMuted() { return juce::Colour::fromRGB(145, 154, 168); }
+juce::Colour textMuted() { return stemlab::theme::colours::textMuted(); }
 
 constexpr const char* supportedAudioFileWildcard = "*.wav;*.flac;*.mp3;*.aiff;*.aif;*.ogg";
 
@@ -278,7 +288,7 @@ void StemWaveformComponent::paint(juce::Graphics& g)
 {
     const auto full = getLocalBounds().toFloat();
 
-    g.setColour(juce::Colour::fromRGB(12, 15, 20));
+    g.setColour(stemlab::theme::colours::laneWell());
     g.fillRoundedRectangle(full, 6.0f);
 
     const auto bounds = getLocalBounds().reduced(4);
@@ -314,7 +324,7 @@ void StemWaveformComponent::paint(juce::Graphics& g)
             const auto x = static_cast<float>(bounds.getX()) +
                            static_cast<float>(stemlab::waveform::timeToPixel(
                                line.seconds, visibleStart, visibleEnd, bounds.getWidth()));
-            g.setColour(juce::Colour::fromRGB(78, 91, 112)
+            g.setColour(stemlab::theme::colours::neutral600()
                             .withAlpha(bar ? 0.65f : (subdivision ? 0.16f : 0.34f)));
             g.drawLine(x, static_cast<float>(bounds.getY()), x,
                        static_cast<float>(bounds.getBottom()), bar ? 1.25f : 1.0f);
@@ -332,7 +342,7 @@ void StemWaveformComponent::paint(juce::Graphics& g)
         }
     }
 
-    g.setColour(juce::Colour::fromRGB(56, 63, 74));
+    g.setColour(stemlab::theme::colours::neutral800());
     g.drawHorizontalLine(bounds.getCentreY(), static_cast<float>(bounds.getX()),
                          static_cast<float>(bounds.getRight()));
 
@@ -445,7 +455,7 @@ void StemWaveformComponent::paint(juce::Graphics& g)
                 const auto duration = (selection.end - selection.start) * length;
                 if (selectedArea.getWidth() > 62.0f)
                 {
-                    g.setColour(juce::Colours::white.withAlpha(0.90f));
+                    g.setColour(stemlab::theme::colours::text().withAlpha(0.90f));
                     g.setFont(juce::FontOptions(10.0f));
                     g.drawText(formatSeconds(duration), selectedArea.reduced(4, 2).toNearestInt(),
                                juce::Justification::topLeft);
@@ -495,7 +505,7 @@ void StemWaveformComponent::paint(juce::Graphics& g)
                 x1, y - noteHeight * 0.5f, juce::jmax(1.5f, x2 - x1), noteHeight);
             g.setColour(accent().withAlpha(0.34f));
             g.fillRoundedRectangle(noteBounds, 1.5f);
-            g.setColour(juce::Colours::white.withAlpha(0.42f));
+            g.setColour(stemlab::theme::colours::text().withAlpha(0.42f));
             g.drawRoundedRectangle(noteBounds, 1.5f, 0.7f);
         }
     }
@@ -523,7 +533,7 @@ void StemWaveformComponent::paint(juce::Graphics& g)
                     static_cast<float>(bounds.getX()) +
                     static_cast<float>(normalised) * static_cast<float>(bounds.getWidth());
 
-                g.setColour(juce::Colours::white.withAlpha(0.95f));
+                g.setColour(stemlab::theme::colours::text().withAlpha(0.95f));
                 g.drawLine(x, static_cast<float>(bounds.getY()), x,
                            static_cast<float>(bounds.getBottom()), 1.5f);
             }
@@ -536,18 +546,18 @@ void StemWaveformComponent::paint(juce::Graphics& g)
 
             auto badge = badgeRow.removeFromRight(82);
 
-            g.setColour(juce::Colour::fromRGB(9, 11, 16).withAlpha(0.78f));
+            g.setColour(stemlab::theme::colours::ground().withAlpha(0.78f));
 
             g.fillRoundedRectangle(badge.toFloat(), 4.0f);
 
-            g.setColour(juce::Colours::white.withAlpha(0.9f));
+            g.setColour(stemlab::theme::colours::text().withAlpha(0.9f));
             g.setFont(juce::FontOptions(10.5f));
 
             g.drawText(timeText, badge.reduced(4, 0), juce::Justification::centredRight);
         }
     }
 
-    g.setColour(juce::Colour::fromRGB(54, 61, 73));
+    g.setColour(stemlab::theme::colours::neutral800());
 
     g.drawRoundedRectangle(full.reduced(0.5f), 6.0f, 1.0f);
 
@@ -906,6 +916,8 @@ void RecursiveStemRowComponent::showActionMenu()
 StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& processorIn)
     : AudioProcessorEditor(&processorIn), processor(processorIn)
 {
+    setLookAndFeel(&*lookAndFeel);
+
     setSize(680, 680);
     setResizable(true, true);
 
@@ -979,7 +991,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
         recordSystemButton.setButtonText("Record System");
         recordSystemButton.setColour(juce::TextButton::buttonColourId,
-                                     juce::Colour::fromRGB(194, 66, 94));
+                                     stemlab::theme::colours::dangerFill());
 
         recordSystemButton.onClick = [this]
         {
@@ -998,7 +1010,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
         recordInputButton.setButtonText("Record Input");
         recordInputButton.setColour(juce::TextButton::buttonColourId,
-                                    juce::Colour::fromRGB(87, 102, 126));
+                                    stemlab::theme::colours::neutral700());
 
         recordInputButton.onClick = [this]
         {
@@ -1037,7 +1049,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
         recordSystemButton.setButtonText("Record PC");
         recordSystemButton.setColour(juce::TextButton::buttonColourId,
-                                     juce::Colour::fromRGB(194, 66, 94));
+                                     stemlab::theme::colours::dangerFill());
 
         recordSystemButton.onClick = [this]
         {
@@ -1081,7 +1093,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
         recordSystemButton.setButtonText("Record PC");
         recordSystemButton.setColour(juce::TextButton::buttonColourId,
-                                     juce::Colour::fromRGB(194, 66, 94));
+                                     stemlab::theme::colours::dangerFill());
         recordSystemButton.onClick = [this]
         {
             if (processor.getStandaloneRecordingMode() == StemLabAudioProcessor::recordingSystem)
@@ -1149,7 +1161,8 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
     addAndMakeVisible(separateButton);
 
-    cancelButton.setColour(juce::TextButton::buttonColourId, juce::Colour::fromRGB(168, 54, 74));
+    cancelButton.setColour(juce::TextButton::buttonColourId,
+                           stemlab::theme::colours::dangerFill());
     cancelButton.onClick = [this]
     {
         processor.cancelRunningJob();
@@ -1160,7 +1173,8 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
     progressBar.setColour(juce::ProgressBar::foregroundColourId, accent());
 
-    progressBar.setColour(juce::ProgressBar::backgroundColourId, juce::Colour::fromRGB(35, 42, 52));
+    progressBar.setColour(juce::ProgressBar::backgroundColourId,
+                          stemlab::theme::colours::progressTrack());
 
     progressBar.setPercentageDisplay(true);
     addAndMakeVisible(progressBar);
@@ -1339,6 +1353,10 @@ StemLabAudioProcessorEditor::~StemLabAudioProcessorEditor()
 {
     processor.removeChangeListener(this);
     stopTimer();
+
+    // Before any child is torn down: a component that still points at a
+    // look-and-feel when it is destroyed dereferences it on the way out.
+    setLookAndFeel(nullptr);
 }
 
 bool StemLabAudioProcessorEditor::keyPressed(const juce::KeyPress& key)
@@ -1457,7 +1475,7 @@ void StemLabAudioProcessorEditor::paint(juce::Graphics& g)
     g.setColour(panel());
     g.fillRoundedRectangle(panelArea, 12.0f);
 
-    g.setColour(dragActive ? accent() : juce::Colour::fromRGB(43, 50, 61));
+    g.setColour(dragActive ? accent() : stemlab::theme::colours::outline());
 
     g.drawRoundedRectangle(panelArea, 12.0f, dragActive ? 2.5f : 1.0f);
 
@@ -1467,7 +1485,7 @@ void StemLabAudioProcessorEditor::paint(juce::Graphics& g)
 
         g.fillRoundedRectangle(panelArea, 12.0f);
 
-        g.setColour(juce::Colours::white);
+        g.setColour(stemlab::theme::colours::text());
 
         g.setFont(juce::FontOptions(18.0f, juce::Font::bold));
 
