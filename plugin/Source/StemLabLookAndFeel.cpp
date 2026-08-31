@@ -1,4 +1,7 @@
 #include "StemLabLookAndFeel.h"
+
+#include <cmath>
+#include <optional>
 #include "BinaryData.h"
 
 namespace theme = stemlab::theme;
@@ -11,6 +14,64 @@ juce::String variantOf(const juce::Button& button)
 {
     const auto id = button.getComponentID();
     return id.isEmpty() ? "neutral" : id;
+}
+
+/*
+    A fill the caller asked for by name rather than by variant.
+
+    The variants above are this look-and-feel's own vocabulary, selected by
+    component ID. Code that predates them says what it wants the ordinary
+    JUCE way - setColour(buttonColourId, ...) - and silently got a neutral
+    button here, because the variant lookup never consulted the colour. That
+    turned every accented button in the interface grey.
+
+    So an explicitly set button colour is honoured when no variant was asked
+    for. isColourSpecified is what separates "the caller chose this" from
+    "this is the default nobody set".
+*/
+std::optional<juce::Colour> explicitFill(const juce::Button& button)
+{
+    if (button.getComponentID().isNotEmpty())
+        return std::nullopt;
+
+    if (!button.isColourSpecified(juce::TextButton::buttonColourId))
+        return std::nullopt;
+
+    return button.findColour(juce::TextButton::buttonColourId);
+}
+
+/** A label that stays readable on whatever fill it lands on.
+
+    The interface accent is a bright amber, and light-on-light is the way a
+    caller-chosen fill fails: white on it measures 1.7:1. Rather than trust
+    each call site to have thought about that, the label is chosen by
+    measuring both candidates against the fill and keeping the better one. */
+juce::Colour labelOn(juce::Colour fill)
+{
+    const auto luminance = [](juce::Colour c)
+    {
+        const auto channel = [](double v)
+        {
+            v /= 255.0;
+            return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
+        };
+
+        return 0.2126 * channel(c.getRed()) + 0.7152 * channel(c.getGreen()) +
+               0.0722 * channel(c.getBlue());
+    };
+
+    const auto ratio = [&luminance](juce::Colour a, juce::Colour b)
+    {
+        const auto la = luminance(a);
+        const auto lb = luminance(b);
+
+        return (std::max(la, lb) + 0.05) / (std::min(la, lb) + 0.05);
+    };
+
+    const auto ink = theme::colours::ground();
+    const auto light = theme::colours::text();
+
+    return ratio(ink, fill) >= ratio(light, fill) ? ink : light;
 }
 
 /*
@@ -231,6 +292,16 @@ void StemLabLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& b
     const auto dimmed = [enabled = button.isEnabled()](juce::Colour c)
     { return theme::colours::dimIfDisabled(c, enabled); };
 
+    if (const auto fill = explicitFill(button))
+    {
+        g.setColour(dimmed(hover ? fill->brighter(0.12f) : *fill));
+        g.fillRoundedRectangle(bounds, radius);
+
+        g.setColour(dimmed(fill->brighter(0.30f)));
+        g.drawRoundedRectangle(bounds, radius, 1.0f);
+        return;
+    }
+
     if (variant == "primary")
     {
         // The accent glow behind primary actions is painted by the editor
@@ -300,7 +371,9 @@ void StemLabLookAndFeel::drawButtonText(juce::Graphics& g, juce::TextButton& but
 
     juce::Colour colour = theme::colours::text();
 
-    if (variant == "primary")
+    if (const auto fill = explicitFill(button))
+        colour = labelOn(*fill);
+    else if (variant == "primary")
         colour = theme::colours::primaryText();
     else if (variant == "accent-outline" || variant == "ghost")
         colour = theme::colours::accent();

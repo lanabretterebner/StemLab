@@ -2566,6 +2566,16 @@ void StemLabAudioProcessorEditor::showManualGridDialog()
     auto window = std::make_shared<juce::AlertWindow>(
         "Manual Waveform Grid", "Set the grid used for waveform alignment and MIDI placement.",
         juce::MessageBoxIconType::NoIcon, this);
+
+    /*
+        An AlertWindow is its own top-level window, so it takes the default
+        look-and-feel rather than the editor's - which left this dialog in
+        JUCE's stock grey while the interface around it was not. It has to be
+        told explicitly. Set on the window rather than as the process default:
+        this runs inside a host, and the process default is not ours to take.
+    */
+    window->setLookAndFeel(&*lookAndFeel);
+
     window->addTextEditor("bpm", juce::String(grid.bpm, 3), "BPM");
     window->addTextEditor("numerator", juce::String(grid.numerator), "Meter numerator");
     window->addTextEditor("denominator", juce::String(grid.denominator), "Meter denominator");
@@ -2574,10 +2584,20 @@ void StemLabAudioProcessorEditor::showManualGridDialog()
     window->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
 
     auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
+
+    /*
+        The dialog is modal and holds itself alive through this callback, so
+        it can outlive the editor that opened it - and it now points at that
+        editor's look-and-feel. The closure takes its own reference, captured
+        before the window: closure members are destroyed in reverse, so the
+        window goes first and never sees a dead look-and-feel.
+    */
+    juce::SharedResourcePointer<StemLabLookAndFeel> dialogLookAndFeel;
+
     window->enterModalState(
         true,
         juce::ModalCallbackFunction::create(
-            [safeThis, window](int result)
+            [dialogLookAndFeel, safeThis, window](int result)
             {
                 if (result != 1 || safeThis == nullptr)
                     return;
@@ -2602,6 +2622,11 @@ void StemLabAudioProcessorEditor::showAnalysisCorrectionDialog()
     auto window = std::make_shared<juce::AlertWindow>(
         "Correct Source Analysis", "Corrections are stored locally for this exact source file.",
         juce::MessageBoxIconType::NoIcon, this);
+
+    // As in showManualGridDialog: a top-level window does not inherit the
+    // editor's look-and-feel, so it is told.
+    window->setLookAndFeel(&*lookAndFeel);
+
     window->addTextEditor("bpm", juce::String(processor.getSourceBpm(), 3), "BPM");
     window->addTextEditor("key", processor.getSourceKey(), "Key");
     window->addTextEditor("numerator", juce::String(processor.getSourceMeterNumerator()),
@@ -2614,10 +2639,20 @@ void StemLabAudioProcessorEditor::showAnalysisCorrectionDialog()
     window->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
 
     auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
+
+    /*
+        The dialog is modal and holds itself alive through this callback, so
+        it can outlive the editor that opened it - and it now points at that
+        editor's look-and-feel. The closure takes its own reference, captured
+        before the window: closure members are destroyed in reverse, so the
+        window goes first and never sees a dead look-and-feel.
+    */
+    juce::SharedResourcePointer<StemLabLookAndFeel> dialogLookAndFeel;
+
     window->enterModalState(
         true,
         juce::ModalCallbackFunction::create(
-            [safeThis, window](int result)
+            [dialogLookAndFeel, safeThis, window](int result)
             {
                 if (result != 1 || safeThis == nullptr)
                     return;
