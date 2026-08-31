@@ -922,6 +922,53 @@ namespace stemlab::icons
         return p;
     }
 
+    juce::Path sparkle(juce::Rectangle<float> b)
+    {
+        // A four-point star with concave sides: the arms meet the centre
+        // through control points rather than a straight diamond edge.
+        juce::Path p;
+
+        const auto cx = b.getCentreX();
+        const auto cy = b.getCentreY();
+
+        const auto armX = b.getWidth() * 0.5f;
+        const auto armY = b.getHeight() * 0.5f;
+        const auto waist = juce::jmin(armX, armY) * 0.16f;
+
+        p.startNewSubPath(cx, cy - armY);
+        p.quadraticTo(cx + waist, cy - waist, cx + armX, cy);
+        p.quadraticTo(cx + waist, cy + waist, cx, cy + armY);
+        p.quadraticTo(cx - waist, cy + waist, cx - armX, cy);
+        p.quadraticTo(cx - waist, cy - waist, cx, cy - armY);
+        p.closeSubPath();
+
+        return p;
+    }
+
+    juce::Path folder(juce::Rectangle<float> b)
+    {
+        /*
+         * A tab on the top left rising out of one straight left edge, the
+         * way every folder glyph is drawn. The previous outline chamfered
+         * its top-left corner and set the tab a third of the way down the
+         * body, which read as a lopsided pentagon rather than a folder.
+         */
+        juce::Path p;
+
+        const float tabTop = b.getY() + b.getHeight() * 0.08f;
+        const float bodyTop = b.getY() + b.getHeight() * 0.28f;
+
+        p.startNewSubPath(b.getX(), tabTop);
+        p.lineTo(b.getX() + b.getWidth() * 0.36f, tabTop);
+        p.lineTo(b.getX() + b.getWidth() * 0.50f, bodyTop);
+        p.lineTo(b.getRight(), bodyTop);
+        p.lineTo(b.getRight(), b.getBottom());
+        p.lineTo(b.getX(), b.getBottom());
+        p.closeSubPath();
+
+        return p.createPathWithRoundedCorners(1.5f);
+    }
+
     juce::Path check(juce::Rectangle<float> b)
     {
         juce::Path p;

@@ -116,6 +116,11 @@ namespace stemlab::icons
     /** Drag this stem out: a square, a diagonal arrow, a target corner. */
     juce::Path dragOut(juce::Rectangle<float> bounds);
 
+    /** Separation model: a four-point spark. */
+    juce::Path sparkle(juce::Rectangle<float> bounds);
+
+    juce::Path folder(juce::Rectangle<float> bounds);
+
     /** The tick on a checked menu item, and on include checkboxes. */
     juce::Path check(juce::Rectangle<float> bounds);
 

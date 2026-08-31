@@ -246,6 +246,7 @@ private:
     juce::Label zoomReadoutLabel;
     juce::TextButton enginePrevButton{"<"};
     juce::TextButton engineNextButton{">"};
+    IconComponent engineGlyph;
     juce::Label engineLabel;
     IconComponent settingsGlyph;
 
@@ -254,6 +255,8 @@ private:
     // Where paint() draws the source card behind its controls.
     juce::Rectangle<int> sourceCardBounds;
     juce::Rectangle<int> transportBarBounds;
+    juce::Rectangle<int> engineChipBounds;
+    juce::Rectangle<int> actionGroupBounds;
 
     juce::Label sourceNameLabel;
     juce::Label sourceLengthLabel;
@@ -267,6 +270,7 @@ private:
 
     // Footer.
     IconComponent statusGlyph;
+    IconComponent folderGlyph;
     juce::Label outputPathLabel;
 
     juce::TextButton captureButton{"Capture"};
@@ -278,7 +282,7 @@ private:
     juce::Label captureTimeLabel;
     juce::TextButton analysisDetailsButton{"Analysis Details"};
 
-    juce::ToggleButton refinementButton{"FI-STEM refinement"};
+    juce::ToggleButton refinementButton{"Refine"};
     juce::ToggleButton beatThisButton{"Beat This! analysis"};
 
     juce::TextButton separateButton{"Separate"};
@@ -318,7 +322,7 @@ private:
     juce::TextButton sendSelectedButton{"Send Selected"};
     juce::TextButton dragSelectedButton{"Drag Selected"};
     juce::TextButton retryImportButton{"Retry"};
-    juce::TextButton openJobButton{"Change"};
+    juce::TextButton openJobButton{"Output Folder..."};
 
     juce::Label bridgeLabel;
 
