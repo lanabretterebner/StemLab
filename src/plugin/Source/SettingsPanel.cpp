@@ -604,7 +604,6 @@ namespace stemlab::widgets
             add(analysisQuality);
             add(tempoMode);
             add(tempoReading);
-            add(forgetCorrection);
             add(clearCache);
 
             add(engineHeading);
@@ -670,7 +669,6 @@ namespace stemlab::widgets
 
             wire(audioSettings, onAudioSettings);
             wire(manualTempo, onSetManualTempo);
-            wire(forgetCorrection, onForgetCorrection);
             wire(clearCache, onClearAnalysisCache);
             wire(checkUpdates, onCheckUpdates);
             wire(copyDiagnostics, onCopyDiagnostics);
@@ -727,8 +725,6 @@ namespace stemlab::widgets
                            ? "Tempo reading (varies across the track)"
                            : "Tempo reading"));
 
-            forgetCorrection.setEnabled(settings.canForgetCorrection);
-            forgetCorrection.action().setEnabled(settings.canForgetCorrection);
 
             // Greyed rather than hidden for the reason the menu gave: only the
             // hybrid engine fuses, but the setting still persists, and hiding
@@ -795,7 +791,6 @@ namespace stemlab::widgets
         std::function<void(int)> onAnalysisQuality;
         std::function<void(int)> onTempoMode;
         std::function<void(int)> onTempoInterpretation;
-        std::function<void()> onForgetCorrection;
         std::function<void()> onClearAnalysisCache;
         std::function<void(bool)> onFusedNormalise;
         std::function<void()> onCheckUpdates;
@@ -830,7 +825,6 @@ namespace stemlab::widgets
         ChoiceRow analysisQuality{"Analysis quality", {"Fast", "Accurate"}};
         ChoiceRow tempoMode{"Tempo analysis", {"Static", "Dynamic"}};
         ChoiceRow tempoReading{"Tempo reading", {"Half", "As detected", "Double"}};
-        ActionRow forgetCorrection{"Saved correction for this source", "Forget"};
         ActionRow clearCache{"Analysis cache", "Clear"};
 
         HeadingRow engineHeading{"Separation"};
@@ -892,7 +886,6 @@ namespace stemlab::widgets
         { from = [&to] { if (to) to(); }; };
 
         forward(settingsPage->onSetManualTempo, onSetManualTempo);
-        forward(settingsPage->onForgetCorrection, onForgetCorrection);
         forward(settingsPage->onClearAnalysisCache, onClearAnalysisCache);
         settingsPage->onTempoMode = [this](int index)
         { if (onTempoMode) onTempoMode(index); };

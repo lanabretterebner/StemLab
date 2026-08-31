@@ -515,9 +515,6 @@ public:
     void refreshAbletonTempoReplyFromDisk();
     void setTempoInterpretation(int interpretation);
     int getTempoInterpretation() const noexcept { return tempoInterpretation.load(); }
-    bool saveSourceCorrection(double bpm, const juce::String& key, int numerator, int denominator,
-                              double barOne);
-    bool forgetSourceCorrection();
     bool clearAnalysisCache();
 
     // ------------------------------------------------------------- models
@@ -853,24 +850,9 @@ private:
     bool finishRecursiveJob(const juce::File& manifestFile);
     void clearRecursiveResults();
 
-    /**
-     * Launch the source-analysis worker, optionally carrying a correction
-     * for it to apply first.
-     *
-     * The Python CLI applies --set-correction/--forget-correction before it
-     * reads the cancel token and then continues into the analysis, so one
-     * process covers both halves: the correction is persisted even when the
-     * analysis half is later cancelled. Returns false when no command could
-     * be built or the thread refused to start.
-     */
-    bool startSourceAnalysis(const juce::File& source,
-                             const juce::StringArray& correctionArguments = {},
-                             const juce::String& correctionLabel = {});
-
-    /** Persist or drop a stored correction for the loaded source, then
-        re-analyse it in the same process. */
-    bool applySourceCorrection(const juce::StringArray& correctionArguments,
-                               const juce::String& label);
+    /** Launch the source-analysis worker. Returns false when no command
+        could be built or the thread refused to start. */
+    bool startSourceAnalysis(const juce::File& source);
 
     void finishSourceAnalysis(const juce::File& source, const juce::File& result, int exitCode);
 
@@ -1028,7 +1010,6 @@ private:
     std::atomic<int> sourceMeterNumerator{4};
     std::atomic<int> sourceMeterDenominator{4};
     std::atomic<bool> sourceTempoSteady{true};
-    std::atomic<bool> sourceAnalysisCorrected{false};
     std::atomic<bool> sourceAnalysisRunning{false};
     std::atomic<bool> beatThisEnabled{false};
     std::atomic<int> sourceAnalysisMode{analysisFast};

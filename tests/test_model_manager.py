@@ -318,14 +318,16 @@ class TestRemoval:
         with pytest.raises(KeyError):
             model_manager.delete_cache("not-a-cache")
 
-    def test_the_analysis_cache_warns_that_it_holds_corrections(self):
+    def test_the_analysis_cache_no_longer_warns(self):
         analysis = next(
             cache for cache in model_manager.caches() if cache.id == "analysis"
         )
 
-        # Deleting it loses user-entered BPM, key and meter corrections, which
-        # nothing can re-download. The UI needs to be able to say so.
-        assert "correction" in analysis.warning.lower()
+        # It used to warn that clearing it lost manual BPM/key corrections,
+        # which nothing could recover. Corrections are gone, and everything
+        # left in the file is a cached result the next analysis recomputes -
+        # so a warning here would now be telling the user to fear a re-run.
+        assert analysis.warning == ""
 
 
 class TestCommandLine:
