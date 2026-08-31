@@ -15,13 +15,53 @@
 # Engine into ~/.local/share/StemLab (override with STEMLAB_INSTALL_DIR),
 # registers the VST3 for the current user, and removes every downloaded file
 # - the archive, its parts, the checksum, and this script itself.
+#
+# NOTHING IS WRITTEN NEXT TO THIS SCRIPT. The download, the joined archive and
+# the extracted tree - a bundle runs to gigabytes, and briefly to twice that
+# while the parts are being joined - are staged in
+#
+#   ${XDG_CACHE_HOME:-~/.cache}/StemLab/setup
+#
+# and that directory goes at the end. Override it with STEMLAB_SETUP_STAGE if
+# your cache is on a small partition.
+#
+# Not $TMPDIR or /tmp: /tmp is a RAM-backed tmpfs on a good number of
+# distributions, sized against memory rather than disk, and the FHS lets it be
+# cleared between reboots. Either one turns a resumable multi-gigabyte
+# download into one that has to start over. The cache is also on the same
+# filesystem as the default install directory, so the final step is a rename
+# rather than a second full-size copy.
+#
+# A run that fails leaves the staging directory behind on purpose: that is
+# what makes "run this again" resume rather than restart. uninstall.sh removes
+# it if it is ever orphaned.
 
 set -euo pipefail
 shopt -s nullglob
 
-cd "$(dirname "${BASH_SOURCE[0]}")"
-
 die() { echo "$*" >&2; exit 1; }
+
+# Absolute, and no cd: this folder is only ever read from now. It is where a
+# hand-downloaded bundle is looked for, and where this script deletes itself.
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/${BASH_SOURCE[0]##*/}"
+SOURCE_DIR="$(dirname "$SELF")"
+
+# Relative XDG values are invalid per the spec and are ignored by the plugin,
+# so they are ignored here the same way or the install lands where nothing
+# looks for it.
+DATA_HOME="${XDG_DATA_HOME:-}"
+[[ "$DATA_HOME" == /* ]] || DATA_HOME="$HOME/.local/share"
+
+CACHE_HOME="${XDG_CACHE_HOME:-}"
+[[ "$CACHE_HOME" == /* ]] || CACHE_HOME="$HOME/.cache"
+
+STAGE="${STEMLAB_SETUP_STAGE:-$CACHE_HOME/StemLab/setup}"
+[[ "$STAGE" == /* ]] || die "STEMLAB_SETUP_STAGE must be an absolute path (got: $STAGE)"
+
+INSTALL_DIR="${STEMLAB_INSTALL_DIR:-$DATA_HOME/StemLab}"
+
+mkdir -p "$STAGE" || die "Cannot create the staging directory $STAGE.
+Set STEMLAB_SETUP_STAGE to somewhere writable with room for the bundle."
 
 # Filled in when the release is built. In a source checkout they stay as
 # placeholders and only the already-downloaded-files path works.
@@ -31,6 +71,12 @@ VERSION="@VERSION@"
 remote_available() { [[ "$RELEASE_URL" != @* && "$VERSION" != @* ]]; }
 
 RETRY_DELAY="${STEMLAB_SETUP_RETRY_DELAY:-5}"
+
+# A partial download is this run's own debris once it is interrupted, and
+# leaving it would make the next run refuse to start (see the stray check).
+clear_partials() { rm -f "$STAGE"/*.download 2>/dev/null || true; }
+trap 'clear_partials; exit 130' INT
+trap 'clear_partials; exit 143' TERM
 
 remote_exists() {
     # remote_exists <filename>: 0 = there, 44 = definitively not there
@@ -61,10 +107,10 @@ remote_exists() {
 }
 
 fetch() {
-    # fetch <filename>: download $RELEASE_URL/<filename> into the current
-    # folder, leaving nothing behind on failure. Only called for files
+    # fetch <filename>: download $RELEASE_URL/<filename> into the staging
+    # directory, leaving nothing behind on failure. Only called for files
     # remote_exists confirmed, so any failure here is a real one.
-    local tmp="$1.download"
+    local tmp="$STAGE/$1.download"
     if command -v curl >/dev/null 2>&1; then
         curl -fL --retry 3 --progress-bar -o "$tmp" "$RELEASE_URL/$1" \
             || { rm -f "$tmp"; return 1; }
@@ -74,32 +120,65 @@ fetch() {
     else
         die "Neither curl nor wget is installed - download the bundle files by hand and re-run this."
     fi
-    mv "$tmp" "$1"
+    mv "$tmp" "$STAGE/$1"
+}
+
+# Where a named file actually is: what this run has staged first, then beside
+# the script, which is where a hand-downloaded one lands.
+locate() {
+    local name="$1"
+
+    if [[ -f "$STAGE/$name" ]]; then
+        printf '%s' "$STAGE/$name"
+        return 0
+    fi
+
+    if [[ -f "$SOURCE_DIR/$name" ]]; then
+        printf '%s' "$SOURCE_DIR/$name"
+        return 0
+    fi
+
+    return 1
 }
 
 # A .download file is another invocation mid-transfer - or the debris of one
-# that died. Joining whatever parts have landed so far while a sibling run is
-# still fetching produces an archive that fails its checksum for no visible
-# reason, so refuse to run over either.
-stray=(*.download)
+# that died in a way the trap above could not catch. Joining whatever parts
+# have landed so far while a sibling run is still fetching produces an archive
+# that fails its checksum for no visible reason, so refuse to run over either.
+stray=("$STAGE"/*.download)
 if [[ ${#stray[@]} -gt 0 ]]; then
-    die "Found ${stray[*]} here.
-Another run of this script may still be downloading in this folder - wait
-for it to finish. If a run was interrupted, delete the .download files and
-run this again."
+    die "Found an unfinished download in $STAGE:
+  ${stray[*]}
+Another run of this script may still be fetching it - wait for that to
+finish. If a run was killed, delete those files and run this again."
 fi
 
 # ------------------------------------------------------------ pick a bundle
 
-[[ $# -le 1 ]] || die "Usage: bash ${BASH_SOURCE[0]##*/} [cpu|cuda|rocm|xpu | StemLab-...-Linux-<flavor>.tar.gz]"
+[[ $# -le 1 ]] || die "Usage: bash ${SELF##*/} [cpu|cuda|rocm|xpu | StemLab-...-Linux-<flavor>.tar.gz]"
 
+# Bundle names, not paths: the same bundle can be half-staged and half beside
+# the script, and locate() decides which copy of a given file is used.
 candidates=()
-for f in StemLab-*-Linux-*.tar.gz; do
-    candidates+=("$f")
-done
-for f in StemLab-*-Linux-*.tar.gz.part00; do
-    stem="${f%.part00}"
-    [[ -f "$stem" ]] || candidates+=("$stem")
+
+remember() {
+    local name="$1" existing
+
+    for existing in ${candidates[@]+"${candidates[@]}"}; do
+        [[ "$existing" == "$name" ]] && return 0
+    done
+
+    candidates+=("$name")
+}
+
+for dir in "$STAGE" "$SOURCE_DIR"; do
+    for f in "$dir"/StemLab-*-Linux-*.tar.gz; do
+        remember "${f##*/}"
+    done
+    for f in "$dir"/StemLab-*-Linux-*.tar.gz.part00; do
+        name="${f##*/}"
+        remember "${name%.part00}"
+    done
 done
 
 download=0
@@ -110,14 +189,15 @@ if [[ $# -eq 1 ]]; then
             bundle="StemLab-$VERSION-Linux-$1.tar.gz"
             # Anything already here for this bundle is used as-is; only a
             # complete absence triggers the download.
-            existing=("$bundle".part[0-9][0-9])
-            if [[ ! -f "$bundle" && ${#existing[@]} -eq 0 ]]; then
+            existing=("$STAGE/$bundle".part[0-9][0-9] "$SOURCE_DIR/$bundle".part[0-9][0-9])
+            if ! locate "$bundle" >/dev/null && [[ ${#existing[@]} -eq 0 ]]; then
                 download=1
             fi
             ;;
         *)
             # A part name is accepted and means its bundle.
-            bundle="${1%.part[0-9][0-9]}"
+            name="${1##*/}"
+            bundle="${name%.part[0-9][0-9]}"
             ;;
     esac
 elif [[ ${#candidates[@]} -eq 1 ]]; then
@@ -126,16 +206,16 @@ elif [[ ${#candidates[@]} -gt 1 ]]; then
     {
         echo "More than one bundle is here - say which one:"
         for candidate in "${candidates[@]}"; do
-            echo "  bash ${BASH_SOURCE[0]##*/} $candidate"
+            echo "  bash ${SELF##*/} $candidate"
         done
     } >&2
     exit 2
 elif remote_available; then
-    die "Nothing is downloaded here yet. Pick the flavor for your hardware and run:
-  bash ${BASH_SOURCE[0]##*/} cuda    # NVIDIA
-  bash ${BASH_SOURCE[0]##*/} rocm    # AMD (RDNA2+)
-  bash ${BASH_SOURCE[0]##*/} xpu     # Intel Arc / Xe
-  bash ${BASH_SOURCE[0]##*/} cpu     # no GPU offload (smallest)
+    die "Nothing is downloaded yet. Pick the flavor for your hardware and run:
+  bash ${SELF##*/} cuda    # NVIDIA
+  bash ${SELF##*/} rocm    # AMD (RDNA2+)
+  bash ${SELF##*/} xpu     # Intel Arc / Xe
+  bash ${SELF##*/} cpu     # no GPU offload (smallest)
 It will download everything it needs."
 else
     die "No StemLab-*-Linux-*.tar.gz (or its .part00) found next to this script.
@@ -148,6 +228,7 @@ downloaded_here=0
 if [[ $download -eq 1 ]]; then
     echo "Downloading $bundle from"
     echo "  $RELEASE_URL"
+    echo "into $STAGE"
 
     # The checksum must exist for this to be a real flavor of this release -
     # but assets of a release published moments ago can 404 for a minute
@@ -199,84 +280,134 @@ fi
 
 # -------------------------------------------------------- join split parts
 
-parts=("$bundle".part[0-9][0-9])
+# Parts come from one folder: the staged ones this run fetched, or the ones
+# somebody downloaded by hand. Mixing halves of two different downloads is
+# exactly the state the checksum exists to catch, so it is not attempted.
+parts_dir=""
+for dir in "$STAGE" "$SOURCE_DIR"; do
+    if [[ -f "$dir/$bundle.part00" ]]; then
+        parts_dir="$dir"
+        break
+    fi
+done
+
+parts=()
+[[ -n "$parts_dir" ]] && parts=("$parts_dir/$bundle".part[0-9][0-9])
+
 joined_here=0
 
-if [[ ! -f "$bundle" ]]; then
+if ! bundle_path="$(locate "$bundle")"; then
     [[ ${#parts[@]} -gt 0 ]] || die "Neither $bundle nor its .partNN files are here."
     # cat would silently paper over a gap in the numbering and hand tar a
     # broken archive, so the sequence is checked first.
     for i in "${!parts[@]}"; do
-        expected="$bundle.part$(printf '%02d' "$i")"
-        [[ -f "$expected" ]] || die "Missing $expected - download every part into this folder first."
+        expected="$parts_dir/$bundle.part$(printf '%02d' "$i")"
+        [[ -f "$expected" ]] || die "Missing ${expected##*/} in $parts_dir - download every part into one folder first."
     done
-    echo "Joining ${#parts[@]} parts into $bundle..."
-    cat "${parts[@]}" > "$bundle"
+    echo "Joining ${#parts[@]} parts into $STAGE/$bundle..."
+    cat "${parts[@]}" > "$STAGE/$bundle"
+    bundle_path="$STAGE/$bundle"
     joined_here=1
 fi
 
 # ------------------------------------------------------------------ verify
 
-if [[ -f "$bundle.sha256" ]]; then
-    echo "Verifying $bundle..."
-    if ! sha256sum -c "$bundle.sha256"; then
-        # A bad join is this script's own product; a bad download is not.
-        [[ $joined_here -eq 1 ]] && rm -f "$bundle"
-        if [[ $downloaded_here -eq 1 ]]; then
-            # These files came from this very run and are proven bad as a
-            # set. Keeping them would make the next run reuse them as-is
-            # and fail the same way forever, so clear them for a fresh
-            # fetch instead.
-            rm -f "$bundle" "$bundle.sha256" ${parts[@]+"${parts[@]}"}
-            die "Checksum mismatch - the downloaded files were damaged, so they were removed.
+sha_path="$(locate "$bundle.sha256" || true)"
+
+verify_archive() {
+    # 0 = verified, 1 = the archive is not what the release published,
+    # 2 = there is nothing to check it against.
+    local expected actual
+
+    [[ -n "$sha_path" ]] || return 2
+    command -v sha256sum >/dev/null 2>&1 || return 2
+
+    # Only the digest is read. The name in a .sha256 line is relative to the
+    # folder it was generated in, and by now the archive can be in the
+    # staging directory while the checksum sits beside the script - which is
+    # what made "sha256sum -c" the wrong tool here.
+    expected="$(awk 'NR == 1 { print tolower($1) }' "$sha_path")"
+    [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || return 2
+
+    actual="$(sha256sum "$bundle_path" | awk '{ print tolower($1) }')"
+
+    [[ "$expected" == "$actual" ]]
+}
+
+echo "Verifying $bundle..."
+verify_archive && verdict=0 || verdict=$?
+
+if [[ $verdict -eq 2 ]]; then
+    if [[ -z "$sha_path" ]]; then
+        echo "NOTE: no $bundle.sha256 here, so the archive is not being verified." >&2
+    else
+        echo "NOTE: $bundle.sha256 could not be read (is sha256sum installed?), so" >&2
+        echo "      the archive is not being verified." >&2
+    fi
+elif [[ $verdict -ne 0 ]]; then
+    # A bad join is this script's own product; a bad download is not.
+    [[ $joined_here -eq 1 ]] && rm -f "$STAGE/$bundle"
+
+    if [[ $downloaded_here -eq 1 ]]; then
+        # These files came from this very run and are proven bad as a set.
+        # Keeping them would make the next run reuse them as-is and fail the
+        # same way forever, so clear them for a fresh fetch instead.
+        rm -f "$STAGE/$bundle" "$STAGE/$bundle.sha256" "$STAGE/$bundle".part[0-9][0-9]
+        die "Checksum mismatch - the downloaded files were damaged, so they were removed.
 Run this again to fetch them fresh."
-        fi
+    fi
+
+    if [[ -n "$parts_dir" ]]; then
         die "Checksum mismatch - a part or the archive is damaged.
-Delete $bundle.sha256 and every $bundle.part* here, download them again, then re-run this."
+Delete $bundle.sha256 and every $bundle.part* in $parts_dir, download them
+again, then re-run this."
     fi
-    # The parts are proven redundant now; dropping them before extraction
-    # roughly halves the peak disk this needs.
-    if [[ ${#parts[@]} -gt 0 ]]; then
-        rm -f "${parts[@]}"
-        parts=()
-    fi
+
+    die "Checksum mismatch - $bundle_path is not what the release published.
+Delete it and its .sha256, download them again, then re-run this."
 else
-    echo "NOTE: no $bundle.sha256 here, so the archive is not being verified." >&2
+    echo "  $bundle: OK"
+fi
+
+# The parts are proven redundant now; dropping them before extraction roughly
+# halves the peak disk this needs, which at these sizes is the difference
+# between finishing and running out.
+if [[ $verdict -eq 0 && ${#parts[@]} -gt 0 ]]; then
+    rm -f "${parts[@]}"
+    parts=()
 fi
 
 # ----------------------------------------------------- extract and install
 
-# Default to the XDG data directory rather than /opt. StemLab is a per-user
-# audio plugin: its VST3 goes to ~/.vst3 and its engine pointer to
-# ~/.config, so a system-wide payload was the odd one out and bought only a
-# sudo prompt. This also converges with install_backend.sh, which already
-# builds its Engine at $XDG_DATA_HOME/StemLab/Engine - the same path this
-# now unpacks to, instead of a second one beside it.
-#
-# Relative XDG values are invalid per the spec and are ignored by the
-# plugin, so ignore them the same way or the install lands where nothing
-# looks for it.
-DATA_HOME="${XDG_DATA_HOME:-}"
-[[ "$DATA_HOME" == /* ]] || DATA_HOME="$HOME/.local/share"
-
-INSTALL_DIR="${STEMLAB_INSTALL_DIR:-$DATA_HOME/StemLab}"
 parent_dir="$(dirname "$INSTALL_DIR")"
 
 # The tarball holds exactly one folder, named like itself.
 folder="${bundle%.tar.gz}"
 
-echo "Extracting $bundle (this is large)..."
-tar -xzf "$bundle"
+echo "Extracting $bundle into $STAGE (this is large)..."
+rm -rf "${STAGE:?}/$folder"
+tar -xzf "$bundle_path" -C "$STAGE"
 
-[[ -f "$folder/install.sh" ]] || die "The archive did not contain $folder/install.sh - it is not a StemLab Linux bundle."
+[[ -f "$STAGE/$folder/install.sh" ]] || die "The archive did not contain $folder/install.sh - it is not a StemLab Linux bundle."
 
-# The default location needs no privileges at all. This stays for anyone
-# who points STEMLAB_INSTALL_DIR at a system directory: only the file moves
-# go through sudo, and install.sh runs as the invoking user afterwards,
-# because everything it does is per-user - the VST3 copy, the engine
-# pointer - and must not be owned by root.
+# The default location needs no privileges at all. This stays for anyone who
+# points STEMLAB_INSTALL_DIR at a system directory: only the file moves go
+# through sudo, and install.sh runs as the invoking user afterwards, because
+# everything it does is per-user - the VST3 copy above all - and must not end
+# up owned by root.
+# Which directory's permissions actually decide this: mkdir -p creates every
+# missing level, so a parent that does not exist yet is not a reason to reach
+# for sudo - the nearest ancestor that does exist is. Asking -w about a
+# directory that is not there always answers "no", which is how a first
+# install into a home that had no ~/.local/share ended up prompting for a
+# password and then owned by root.
+probe="$parent_dir"
+while [[ ! -e "$probe" && "$probe" != "/" && "$probe" != "." ]]; do
+    probe="$(dirname "$probe")"
+done
+
 priv=()
-if [[ ! -d "$parent_dir" || ! -w "$parent_dir" || ( -e "$INSTALL_DIR" && ! -w "$INSTALL_DIR" ) ]]; then
+if [[ ! -w "$probe" || ( -e "$INSTALL_DIR" && ! -w "$INSTALL_DIR" ) ]]; then
     command -v sudo >/dev/null 2>&1 || die "Installing to $INSTALL_DIR needs root.
 Re-run as root, or unset STEMLAB_INSTALL_DIR to install under
 $DATA_HOME/StemLab, which needs no privileges."
@@ -290,28 +421,36 @@ if [[ -e "$INSTALL_DIR" ]]; then
     "${priv[@]}" rm -rf "$INSTALL_DIR"
 fi
 "${priv[@]}" mkdir -p "$parent_dir"
-"${priv[@]}" mv "$folder" "$INSTALL_DIR"
+"${priv[@]}" mv "$STAGE/$folder" "$INSTALL_DIR"
 
+# install.sh is now running from inside $INSTALL_DIR, which is where it is
+# meant to end up, so it copies nothing and only registers the VST3.
 echo "Installing..."
 bash "$INSTALL_DIR/install.sh"
 
 # ----------------------------------------------------------------- tidy up
 
-# Everything the setup needed is spent now: the archive, its parts, the
-# checksum, the reassembly note - and this script, which shipped with the
-# release it just installed. A clean folder is the point of a one-download
-# install. The source-checkout copy (unbaked placeholders) is the one copy
+# Everything the setup needed is spent now. The staging directory holds
+# whatever this run downloaded and the remains of the extraction; a bundle
+# somebody put beside this script by hand is removed too, because a
+# one-download install that leaves gigabytes behind is not one. The
+# source-checkout copy of this script (unbaked placeholders) is the one copy
 # that is not a download, so it stays.
-rm -f "$bundle" "$bundle.sha256" "$bundle.README.txt"
-if [[ ${#parts[@]} -gt 0 ]]; then
-    rm -f "${parts[@]}"
-fi
+rm -rf "${STAGE:?}"
+
+for leftover in "$bundle" "$bundle.sha256" "$bundle.README.txt"; do
+    rm -f "$SOURCE_DIR/$leftover"
+done
+rm -f "$SOURCE_DIR/$bundle".part[0-9][0-9]
+
 if remote_available; then
-    rm -f "${BASH_SOURCE[0]##*/}"
+    rm -f "$SELF"
 fi
 
 echo
 echo "StemLab is installed in $INSTALL_DIR."
 echo "  Standalone app: $INSTALL_DIR/StemLab"
 echo "  VST3:           already registered for your user - rescan in your DAW"
+echo "  Update:         $INSTALL_DIR/update.sh"
+echo "  Uninstall:      $INSTALL_DIR/uninstall.sh"
 echo "Removed the downloaded files, this script included."

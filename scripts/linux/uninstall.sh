@@ -41,10 +41,10 @@ ASSUME_YES=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --keep-models) KEEP_MODELS=1;     shift ;;
+        --keep-models) KEEP_MODELS=1;      shift ;;
         --everything)  SCOPE_EVERYTHING=1; shift ;;
-        --dry-run)     DRY_RUN=1;         shift ;;
-        --yes|-y)      ASSUME_YES=1;      shift ;;
+        --dry-run)    DRY_RUN=1;          shift ;;
+        --yes|-y)     ASSUME_YES=1;       shift ;;
         -h|--help)
             sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             exit 0 ;;
@@ -73,14 +73,14 @@ CACHE_HOME="$(xdg XDG_CACHE_HOME .cache)"
 # lives in user-dirs.dirs rather than the environment, and can be localised
 # ("Musik"), so it is read the same way the app reads it.
 music_dir() {
-    local configured="${XDG_MUSIC_DIR:-}"
+    local configured=""
 
-    if [[ "$configured" != /* && -f "$CONFIG_HOME/user-dirs.dirs" ]]; then
+    if [[ -f "$CONFIG_HOME/user-dirs.dirs" ]]; then
         configured="$(sed -n 's/^[[:space:]]*XDG_MUSIC_DIR=//p' "$CONFIG_HOME/user-dirs.dirs" \
             | tail -1 | tr -d '"' | sed "s|^\$HOME|$HOME|")"
     fi
 
-    [[ "$configured" == /* ]] || configured="$HOME/Music"
+    [[ -n "$configured" && "$configured" == /* ]] || configured="$HOME/Music"
 
     printf '%s' "$configured"
 }
@@ -113,9 +113,12 @@ APP_ENTRIES=("${BUNDLE_ENTRIES[@]}" "${RUNTIME_ENTRIES[@]}")
 
 # ------------------------------------------------------- finding the install
 
-# One location, so nothing to look up. STEMLAB_INSTALL_DIR is still honoured
-# for an install built somewhere else with --dest.
-installed_dir="${STEMLAB_INSTALL_DIR:-}"
+# One location, so there is nothing to look up. STEMLAB_INSTALL_DIR is still
+# honoured for an install built somewhere else with --dest.
+installed_dir=""
+if [[ -n "${STEMLAB_INSTALL_DIR:-}" ]]; then
+    installed_dir="$STEMLAB_INSTALL_DIR"
+fi
 
 [[ -n "$installed_dir" ]] || installed_dir="$DATA_HOME/StemLab"
 
@@ -160,39 +163,36 @@ if looks_like_stemlab "$installed_dir"; then
         for entry in "${APP_ENTRIES[@]}"; do
             consider "$installed_dir/$entry" "part of the app"
         done
-
-        # Whatever else lives there is the user's - Captures and Recordings
-        # from an install predating the move to the music folder - but the
-        # rule is "not on the list" rather than a second list of theirs.
-        for path in "$installed_dir"/* "$installed_dir"/.[!.]*; do
-            name="${path##*/}"
-            mine=0
-
-            for entry in "${APP_ENTRIES[@]}"; do
-                [[ "$name" == "$entry" ]] && mine=1 && break
-            done
-
-            [[ $mine -eq 1 ]] || kept_in_install+=("$path")
-        done
     fi
 elif [[ -d "$installed_dir" ]]; then
     install_refused="$installed_dir"
 fi
 
 consider "$HOME/.vst3/StemLab.vst3" "the VST3 plug-in"
-consider "$CONFIG_HOME/StemLab" "settings: engine pointer, compile preference"
+consider "$CONFIG_HOME/StemLab" "settings: the torch-compile preference"
 
-# Analysis results, compiled kernels and their warm-up markers, and the jobs
-# folder older installs kept here. All of it derived, none of it audio.
-consider "$CACHE_HOME/StemLab" "analysis cache and compiled kernels"
+# Everything of ours under the cache directory, in one target: the analysis
+# database, the compiled kernels and their warm-up markers, the jobs folder
+# older installs kept here, and setup/ - where the setup script stages a
+# download of several gigabytes and leaves it on purpose when a run fails, so
+# that re-running resumes. All of it derived or installer debris; none of it
+# audio, which lives under the music folder.
+consider "$CACHE_HOME/StemLab" "analysis cache, compiled kernels, installer staging"
 
-# Predates src/stemlab/paths.py. Nothing writes it any more, so it is only
-# ever here on a machine that ran an older version.
-consider "$HOME/.stemlab" "the old ~/.stemlab directory"
+# Only when it has been pointed somewhere else, since the line above covers
+# the default.
+if [[ -n "${STEMLAB_ANALYSIS_HOME:-}" ]]; then
+    consider "$STEMLAB_ANALYSIS_HOME" "analysis, MIDI staging, compiled kernels"
+fi
 
-# JUCE resolves its temp directory through TMPDIR before falling back to
-# /tmp, so this has to as well or it misses the folder on any machine that
-# sets one.
+# Nothing writes ~/.stemlab any more - the analysis cache and the model
+# weights moved to directories that say what they are and that a disk-cleaning
+# tool can reason about. Anyone who ran an older StemLab still has the old one,
+# holding gigabytes nothing will ever read again.
+consider "$HOME/.stemlab" "the directory older versions kept both in"
+
+# JUCE resolves its temp directory through TMPDIR before falling back to /tmp,
+# so this has to as well or it misses the folder on any machine that sets one.
 temp_root="${TMPDIR:-}"
 [[ "$temp_root" == /* ]] || temp_root="/tmp"
 
@@ -201,7 +201,7 @@ consider "$temp_root/StemLab" "temporary files"
 if [[ $KEEP_MODELS -eq 0 ]]; then
     consider "$CACHE_HOME/bs-roformer-infer" "BS-RoFormer weights"
 
-    # Named files inside shared caches, never the caches themselves. See the
+    # Named entries inside shared caches, never the caches themselves. See the
     # note at the top: other torch applications keep their downloads here.
     hf_cache="${HF_HUB_CACHE:-}"
 
@@ -221,6 +221,35 @@ fi
 
 if [[ $SCOPE_EVERYTHING -eq 1 ]]; then
     consider "$MEDIA_HOME" "your captures, recordings and separated stems"
+fi
+
+# Whatever else lives in the install directory is the user's - Captures and
+# Recordings from an install predating the move to the music folder - but the
+# rule is "not the app's, and not already going" rather than a second list.
+#
+# The model weights are the app's whether or not this run takes them, so they
+# are excluded here even under --keep-models: listing them as "not the app's"
+# would say the opposite of what is true.
+#
+# Computed after every consider above rather than beside the first one,
+# because those weights live inside the install directory, and without this
+# ordering one run printed them as removed and as kept.
+if ! [[ $SCOPE_EVERYTHING -eq 1 && $KEEP_MODELS -eq 0 ]] \
+    && looks_like_stemlab "$installed_dir"; then
+    for path in "$installed_dir"/* "$installed_dir"/.[!.]*; do
+        name="${path##*/}"
+        mine=0
+
+        for entry in "${APP_ENTRIES[@]}" "${MODEL_ENTRIES[@]}"; do
+            [[ "$name" == "$entry" ]] && mine=1 && break
+        done
+
+        for target in ${targets[@]+"${targets[@]}"}; do
+            [[ "$path" == "$target" ]] && mine=1 && break
+        done
+
+        [[ $mine -eq 1 ]] || kept_in_install+=("$path")
+    done
 fi
 
 if [[ ${#targets[@]} -eq 0 ]]; then

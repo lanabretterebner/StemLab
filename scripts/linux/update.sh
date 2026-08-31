@@ -13,15 +13,15 @@
 # the copy that shipped with the release being installed, so this never has to
 # track how a future bundle is laid out.
 #
-# Your audio under ~/Music/StemLab and your settings under ~/.config are not
-# inside the install, so replacing it leaves both where they are.
+# Your audio in <your music folder>/StemLab and your settings under ~/.config
+# are not inside the install, so replacing it leaves both where they are.
 #
-# The model weights are split: the RoFormer and Demucs downloads live under
-# ~/.cache and survive, but the adaptive-split weights are written to
-# <install>/models/recursive (see src/stemlab/paths.py, where the data
-# directory and the install directory are the same folder on Linux) and the
-# setup script replaces the install wholesale. They re-download on first use
-# after an update.
+# The model weights are split. The RoFormer and Demucs downloads live under
+# ~/.cache and survive; the adaptive-split weights are written to
+# <install>/models/recursive - the data directory and the install directory
+# are the same folder on Linux, see src/stemlab/paths.py - and the setup
+# script replaces the install wholesale. Those re-download on first use after
+# an update.
 #
 # STEMLAB_LATEST_TAG short-circuits the release lookup. It exists so the tests
 # can drive this without a network, and is documented here rather than hidden
@@ -46,7 +46,7 @@ while [[ $# -gt 0 ]]; do
             esac
             shift 2 ;;
         -h|--help)
-            sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         *)
             echo "Unknown option: $1" >&2
@@ -64,8 +64,6 @@ xdg() {
 
 DATA_HOME="$(xdg XDG_DATA_HOME .local/share)"
 CONFIG_HOME="$(xdg XDG_CONFIG_HOME .config)"
-
-POINTER="$CONFIG_HOME/StemLab/portable_engine_path.txt"
 
 # ---------------------------------------------------------- a source checkout
 
@@ -92,14 +90,10 @@ fi
 
 installed_dir=""
 
+# One place, so there is nothing to look up. STEMLAB_INSTALL_DIR is still
+# honoured for an install built somewhere else with --dest.
 if [[ -n "${STEMLAB_INSTALL_DIR:-}" ]]; then
     installed_dir="$STEMLAB_INSTALL_DIR"
-elif [[ -f "$POINTER" ]]; then
-    engine_python="$(head -1 "$POINTER" 2>/dev/null || true)"
-
-    if [[ -n "$engine_python" && "$engine_python" == /* ]]; then
-        installed_dir="$(dirname "$(dirname "$(dirname "$engine_python")")")"
-    fi
 fi
 
 [[ -n "$installed_dir" ]] || installed_dir="$DATA_HOME/StemLab"
@@ -198,9 +192,9 @@ update cannot pick one for you. Re-run with --flavor cpu|cuda|rocm|xpu."
 command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 \
     || die "Neither curl nor wget is installed."
 
-# The setup script downloads a bundle of a gigabyte or more beside itself and
-# removes it afterwards, so it runs in a temp directory rather than wherever
-# this was invoked from.
+# Only the setup script itself lands here - a few kilobytes. The bundle it
+# then downloads is staged under the cache by that script, not beside it, so
+# this directory stays small no matter how large the release is.
 workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
 
@@ -227,6 +221,12 @@ echo
 
 # Exported rather than passed: the setup script reads the install location the
 # same way this does, and an update must land where the install already is.
+#
+# That script replaces $installed_dir wholesale - including this file, which is
+# running from inside it. That is safe rather than lucky: bash holds the script
+# open while it runs it, and unlinking a file on Linux leaves the open
+# descriptor reading the same inode, so the rest of this script executes from
+# the copy that was deleted. Nothing below may assume the file is still there.
 STEMLAB_INSTALL_DIR="$installed_dir" bash "$workdir/StemLab-Linux-setup.sh" "$flavor"
 
 echo

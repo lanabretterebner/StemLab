@@ -17,9 +17,8 @@
 #   ./scripts/install_backend.sh --xpu        # force Intel GPU (XPU) torch
 #   ./scripts/install_backend.sh --dest DIR   # custom Engine location
 #   ./scripts/install_backend.sh --reinstall  # rebuild the Engine from scratch
-#   ./scripts/install_backend.sh --no-pointer # build-only: skip the discovery
-#                                             pointer (used by the portable
-#                                             bundle builder)
+#   ./scripts/install_backend.sh --build-only # assembling a bundle: skip the
+#                                             "installed" report
 #
 # --prune-only DIR runs the final prune step against an Engine that already
 # exists and then exits. It sits below the block --help prints (lines 2-19)
@@ -35,7 +34,7 @@ PBS_PYTHON="3.11.13"
 
 TORCH_FLAVOR="auto"
 REINSTALL=0
-WRITE_POINTER=1
+BUILD_ONLY=0
 DEST=""
 PRUNE_ONLY=""
 PRUNE_ONLY_SET=0
@@ -50,7 +49,7 @@ while [[ $# -gt 0 ]]; do
         --xpu)       TORCH_FLAVOR="xpu";  shift ;;
         --dest)      DEST="$2";           shift 2 ;;
         --reinstall) REINSTALL=1;         shift ;;
-        --no-pointer) WRITE_POINTER=0;    shift ;;
+        --build-only) BUILD_ONLY=1;       shift ;;
         --prune-only) PRUNE_ONLY="$2"; PRUNE_ONLY_SET=1; shift 2 ;;
         -h|--help)
             sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -114,9 +113,9 @@ prune_tcltk() {
 
     # Every removal below is tolerant of failure. Under `set -e` a single
     # read-only file or a racing antivirus would otherwise abort an install
-    # that has already done all of its real work, moments before the engine
-    # pointer is written. A prune that half-finishes costs disk; a prune that
-    # kills the install costs the install.
+    # that has already done all of its real work, moments before it reports
+    # success. A prune that half-finishes costs disk; a prune that kills the
+    # install costs the install.
     rm -rf "$root"/lib/python3.*/tkinter || true
     rm -f  "$root"/lib/python3.*/lib-dynload/_tkinter*.so || true
     rm -rf "$root"/lib/tcl* "$root"/lib/tk* "$root"/lib/libtcl* "$root"/lib/libtk* || true
@@ -169,8 +168,8 @@ prune_bundled_tests() {
         [[ -d "$sp" ]] || continue
 
         while IFS= read -r -d '' d; do
-            # Tolerant for the same reason as prune_tcltk: this runs after
-            # every expensive step and before the pointer write.
+            # Tolerant for the same reason as prune_tcltk: it runs after
+            # every expensive step, with nothing left to redo it.
             rm -rf "$sp/$d" || true
             echo "  removed $d"
         done < <(cd "$sp" && find . -mindepth 2 -type d -name tests \
@@ -217,7 +216,7 @@ prune_strip_shared_objects() {
 # +1687 ms, 2.24x, on every single run, for four packages, before torch and
 # demucs are in the picture - and the plugin starts a fresh Engine process per
 # job. A writable Engine pays it once and self-heals (3358 ms, then ~1400 ms),
-# but the portable bundle can land somewhere read-only, where it never does.
+# but the bundle can land somewhere read-only, where it never does.
 # 13% of the size for double the startup is not a trade worth making.
 #
 # The .py sources stay either way - dropping those breaks tracebacks and every
@@ -229,7 +228,7 @@ if [[ "$PRUNE_ONLY_SET" == 1 ]]; then
     # Gated on the flag having been PASSED, not on its value being non-empty.
     # "--prune-only ''" is a malformed request to prune; treating it as
     # "prune-only was not asked for" turned it into a full ~1.4 GB network
-    # install that rewrites the engine pointer. It has already happened once.
+    # install that replaced the Engine. It has already happened once.
     if [[ -z "$PRUNE_ONLY" ]]; then
         echo "--prune-only needs a directory." >&2
         exit 2
@@ -241,18 +240,15 @@ if [[ "$PRUNE_ONLY_SET" == 1 ]]; then
 fi
 
 # Relative XDG values are invalid per the spec and are ignored by the plugin,
-# so the installer must ignore them the same way or the pointer file lands
-# where the plugin never looks.
+# so the installer must ignore them the same way or the Engine lands where the
+# plugin never looks. The plugin has one location for it and does not search.
 DATA_HOME="${XDG_DATA_HOME:-}"
 [[ "$DATA_HOME" == /* ]] || DATA_HOME="$HOME/.local/share"
 
-CONFIG_HOME="${XDG_CONFIG_HOME:-}"
-[[ "$CONFIG_HOME" == /* ]] || CONFIG_HOME="$HOME/.config"
-
 [[ -n "$DEST" ]] || DEST="$DATA_HOME/StemLab/Engine"
 
-# The pointer file must hold an absolute path - the plugin resolves it with
-# no working directory of its own.
+# Absolute from here on: the paths baked into the Engine's own scripts have no
+# working directory to resolve against.
 [[ "$DEST" == /* ]] || DEST="$PWD/$DEST"
 
 PYTHON="$DEST/bin/python3"
@@ -597,7 +593,7 @@ PYCHECK
 
 # -------------------------------------------------------------------- report
 
-if [[ $WRITE_POINTER -eq 1 ]]; then
+if [[ $BUILD_ONLY -eq 0 ]]; then
     cat <<EOF
 
 StemLab backend installed.
@@ -624,7 +620,7 @@ EOF
 else
     cat <<EOF
 
-StemLab backend assembled (no discovery pointer written).
+StemLab backend assembled.
 
   Engine:  $DEST
 EOF

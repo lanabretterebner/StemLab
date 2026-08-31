@@ -63,7 +63,6 @@ def _install(home: Path, *, version: str = "0.1.7", flavor: str = "cuda") -> Pat
 
     config = home / ".config/StemLab"
     config.mkdir(parents=True)
-    (config / "portable_engine_path.txt").write_text(f"{app}/Engine/bin/python3\n")
     (config / "torch_compile.txt").write_text("1\n")
 
     (home / ".vst3").mkdir(parents=True)
@@ -151,20 +150,102 @@ class TestUninstallKeepsWhatIsNotTheApps:
         assert not (home / ".config/StemLab").exists()
 
 
+class TestUninstallFindsWhereThingsActuallyLive:
+    """The directories moved out of ~/.stemlab; the uninstaller had not."""
+
+    def test_the_analysis_cache_and_the_weights_go(self, tmp_path):
+        home = tmp_path / "home"
+        app = _install(home)
+
+        analysis = _write(home / ".cache/StemLab/analysis/beats.sqlite")
+        weights = _write(app / "models/recursive/model.onnx")
+
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+        assert not analysis.exists()
+        assert not weights.exists()
+
+    def test_the_weights_are_not_removed_and_kept_at_once(self, tmp_path):
+        # They live inside the install directory, which is also where anything
+        # not the app's is listed as kept. One run must not claim both.
+        home = tmp_path / "home"
+        _install(home)
+
+        result = _run(UNINSTALL, home, "--yes")
+
+        assert result.returncode == 0, result.stderr
+        assert "models" not in result.stdout.partition("Kept in")[2]
+
+    def test_kept_weights_are_not_called_the_users(self, tmp_path):
+        # --keep-models keeps them deliberately. Listing them under "not the
+        # app's" would say the opposite of what is true.
+        home = tmp_path / "home"
+        _install(home)
+
+        result = _run(UNINSTALL, home, "--keep-models", "--yes")
+
+        assert result.returncode == 0, result.stderr
+        assert "models" not in result.stdout.partition("Kept in")[2]
+
+    def test_a_stale_dot_directory_goes(self, tmp_path):
+        # Nothing writes ~/.stemlab any more, so anyone who has one is holding
+        # gigabytes that will never be read again.
+        home = tmp_path / "home"
+        _install(home)
+        _write(home / ".stemlab/models/old.onnx")
+
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+        assert not (home / ".stemlab").exists()
+
+    def test_an_unfinished_setup_download_goes(self, tmp_path):
+        # Installer debris, never anything the user made.
+        home = tmp_path / "home"
+        _install(home)
+
+        stage = _write(home / ".cache/StemLab/setup/StemLab-0.1.9-cuda.tar.gz.part03")
+
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+        assert not stage.parent.exists()
+
+    def test_the_engines_own_directories_go_too(self, tmp_path):
+        # models/ and Ableton/ are written into the install folder by the app
+        # rather than laid down by the bundle, so an uninstaller working from
+        # the bundle's file list alone reads them as the user's and keeps half
+        # a gigabyte of weights forever.
+        home = tmp_path / "home"
+        app = _install(home)
+
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+        assert not (app / "models").exists()
+        assert not (app / "Ableton").exists()
+
+    def test_temporary_files_go(self, tmp_path):
+        home = tmp_path / "home"
+        _install(home)
+        _write(home / "tmp/StemLab/Ableton/status.json")
+
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+        assert not (home / "tmp/StemLab").exists()
+
+    def test_captures_in_the_install_directory_still_survive(self, tmp_path):
+        home = tmp_path / "home"
+        app = _install(home)
+
+        (app / "Captures").mkdir()
+        (app / "Captures/take.wav").write_text("audio")
+
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+        assert (app / "Captures/take.wav").read_text() == "audio"
+
+
 class TestUninstallTakesAllOfIt:
     """The default is meant to leave nothing of StemLab except your audio.
 
-    Each path here has been reachable only through a flag, or through no flag
-    at all, at some point in this script's life - which is the failure this
-    class exists to catch. A location the app writes to and the uninstaller
-    does not know about is invisible: it shows up as disk that never comes
-    back.
+    Each path in the fixture has been reachable only through a flag, or
+    through no flag at all, at some point in this script's life - which is the
+    failure this test exists to catch. A location the app writes to and the
+    uninstaller does not know about is invisible: it shows up as disk that
+    never comes back.
     """
-
-    def _remaining(self, home: Path) -> list[str]:
-        assert _run(UNINSTALL, home, "--yes").returncode == 0
-
-        return sorted(str(path.relative_to(home)) for path in home.rglob("*") if path.is_file())
 
     def test_nothing_of_the_app_survives_the_default(self, tmp_path):
         home = tmp_path / "home"
@@ -174,49 +255,15 @@ class TestUninstallTakesAllOfIt:
         foreign = _write(home / ".cache/huggingface/hub/models--someone--LLM/blob")
         other_torch = _write(home / ".cache/torch/hub/checkpoints/resnet50.pth")
 
-        remaining = self._remaining(home)
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+
+        remaining = sorted(
+            str(path.relative_to(home)) for path in home.rglob("*") if path.is_file()
+        )
 
         assert remaining == sorted(
             str(path.relative_to(home)) for path in (media, foreign, other_torch)
         ), remaining
-
-    def test_the_engines_own_directories_go_too(self, tmp_path):
-        # models/ and Ableton/ are written into the install folder by the app
-        # rather than laid down by the bundle, so an uninstaller working from
-        # the bundle's file list alone reads them as the user's and keeps
-        # half a gigabyte of weights forever.
-        home = tmp_path / "home"
-        app = _install(home)
-
-        assert _run(UNINSTALL, home, "--yes").returncode == 0
-        assert not (app / "models").exists()
-        assert not (app / "Ableton").exists()
-
-    def test_the_analysis_cache_and_compiled_kernels_go(self, tmp_path):
-        home = tmp_path / "home"
-        _install(home)
-
-        assert _run(UNINSTALL, home, "--yes").returncode == 0
-        assert not (home / ".cache/StemLab").exists()
-
-    def test_the_old_dotfile_directory_goes(self, tmp_path):
-        # Nothing writes ~/.stemlab any more, so it is only ever on a machine
-        # that ran a version which did - which is exactly the machine whose
-        # owner is uninstalling.
-        home = tmp_path / "home"
-        _install(home)
-        _write(home / ".stemlab/analysis.sqlite3")
-
-        assert _run(UNINSTALL, home, "--yes").returncode == 0
-        assert not (home / ".stemlab").exists()
-
-    def test_temporary_files_go(self, tmp_path):
-        home = tmp_path / "home"
-        _install(home)
-        _write(home / "tmp/StemLab/Ableton/status.json")
-
-        assert _run(UNINSTALL, home, "--yes").returncode == 0
-        assert not (home / "tmp/StemLab").exists()
 
 
 class TestUninstallLeavesOtherApplicationsAlone:
@@ -323,8 +370,8 @@ class TestBothScriptsShipWithTheApp:
 
     build.sh assembles the bundle that becomes the release tarball, so these
     two copy lines are the whole of "shipped". Losing one is silent: the
-    bundle still builds, installs and runs, and the absence shows up only
-    when somebody goes looking for how to remove it.
+    bundle still builds, installs and runs, and the absence shows up only when
+    somebody goes looking for how to remove it.
     """
 
     @pytest.mark.parametrize("name", ["uninstall.sh", "update.sh"])
@@ -333,17 +380,15 @@ class TestBothScriptsShipWithTheApp:
 
     @pytest.mark.parametrize("name", ["uninstall.sh", "update.sh"])
     def test_it_is_made_executable(self, build_script, name):
-        line = next(
-            row for row in build_script.splitlines() if row.startswith("chmod +x") and name in row
-        )
+        # A shipped script that is not +x is a support ticket, not a crash.
+        chmods = [row for row in build_script.splitlines() if row.startswith("chmod +x")]
 
-        assert f'"$DIST_DIR/{name}"' in line
+        assert any(f'"$DIST_DIR/{name}"' in row for row in chmods), chmods
 
     def test_the_uninstaller_knows_the_bundle_it_will_be_removing(self):
-        # Its BUNDLE_ENTRIES is a hand-written copy of what the bundle holds,
-        # so a file added to the bundle and not to that list is left behind.
-        uninstall = UNINSTALL.read_text()
-        listed = uninstall.split("BUNDLE_ENTRIES=(")[1].split(")")[0].split()
+        # BUNDLE_ENTRIES is a hand-written copy of what the bundle holds, so a
+        # file added to the bundle and not to that list is left behind.
+        listed = UNINSTALL.read_text().split("BUNDLE_ENTRIES=(")[1].split(")")[0].split()
 
         for name in (
             "Engine",

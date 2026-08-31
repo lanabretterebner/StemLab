@@ -339,6 +339,14 @@ that opened another menu is what it replaced. Multi-choice settings are rows
 of pills (`ChoiceRow`), and every one of them ends at the same right edge as
 the action buttons.
 
+**Updates** is hidden rather than greyed when there is nothing to run. It
+shells out to the `update.sh` the Linux bundle's `install.sh` leaves beside
+the app, so a build run from a checkout has no updater and never will - there
+is nothing a user could do to make a greyed row work. It runs `--check` only,
+on a background thread: `readAllProcessOutput` blocks until the child exits,
+and the check asks github.com which release is newest, so on a dead network
+that would freeze the host's message thread for as long as curl waits.
+
 Indices are translated at the editor, never passed through. The page numbers
 what it draws, from zero, in reading order; the processor numbers what it
 means. Those agree for the beat grid and the tempo reading and disagree for
