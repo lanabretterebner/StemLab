@@ -45,6 +45,7 @@ def _warn_if_not_float(stems: list[Path], log: Callable[[str], None]) -> None:
                 "quantisation floor the other engines do not."
             )
 
+
 DEFAULT_DEMUCS_MODEL = "htdemucs_6s"
 PACKAGED_DEMUCS_SIGNATURE = "5c90dfd2"
 PACKAGED_DEMUCS_FILENAME = "5c90dfd2-34c22ccb.th"

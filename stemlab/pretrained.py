@@ -31,18 +31,69 @@ def _find_ffmpeg() -> str | None:
     return shutil.which("ffmpeg")
 
 
+def _convert_with_soundfile(input_path: Path, staged: Path) -> bool:
+    """Rewrite a losslessly-decodable input as WAV without needing ffmpeg."""
+    try:
+        import soundfile as sf
+
+        # Read at the width being written. Without a dtype soundfile decodes
+        # to float64 - eight bytes a sample, twice the peak this holds - for
+        # data that goes straight back out as PCM_24, which is what libsndfile
+        # produces from int32 by dropping the low eight bits. The whole track
+        # is in memory at once here, immediately before the separator loads
+        # its model, and the hybrid engine pays for it twice.
+        data, sample_rate = sf.read(str(input_path), always_2d=True, dtype="int32")
+        sf.write(str(staged), data, sample_rate, subtype="PCM_24")
+    except Exception:
+        # A write that died partway leaves a stub behind, and the ffmpeg
+        # fallback stages under a different name: two WAVs in the folder and
+        # the CLI separates the wrong one, or both. Nothing downstream can
+        # tell the stub from real audio, so it goes now.
+        staged.unlink(missing_ok=True)
+        return False
+
+    return staged.exists()
+
+
 def _normalise_input_for_backend(
     input_path: Path,
     staging_dir: Path,
     log: Callable[[str], None],
     cancellation: CancellationToken | None = None,
+    passthrough_extensions: set[str] | None = None,
 ) -> Path:
-    """Return a WAV/FLAC the separator can decode, converting via ffmpeg if needed."""
+    """Return audio the separator can decode, converting when it cannot.
+
+    ``passthrough_extensions`` is what the calling backend reads natively,
+    and the backends disagree. Demucs opens FLAC happily. The BS-RoFormer
+    CLI discovers its input with a case-sensitive ``glob("*.wav")``, so a
+    staged FLAC is invisible to it however well libsndfile could read it -
+    which is why that backend asks for WAV only.
+    """
+    if passthrough_extensions is None:
+        passthrough_extensions = {".wav", ".flac"}
+
     extension = input_path.suffix.lower()
-    if extension in {".wav", ".flac"}:
+    if extension in passthrough_extensions:
         staged = staging_dir / input_path.name
         shutil.copy2(input_path, staged)
         return staged
+
+    if extension == ".flac":
+        # Lossless, and soundfile is already a dependency, so converting for
+        # a WAV-only backend need not put ffmpeg between a user and a format
+        # this project otherwise supports.
+        # Named for the source rather than with the ffmpeg branch's
+        # "_stemlab_input" marker: staging is a fresh temp dir holding this
+        # one file, and the separator's stem names are built from it, so a
+        # marker here would show up in every stem a FLAC session produces.
+        staged = staging_dir / f"{input_path.stem}.wav"
+        log("Converting FLAC to WAV for the separator...")
+
+        if _convert_with_soundfile(input_path, staged):
+            return staged
+
+        log("soundfile could not decode the FLAC; falling back to ffmpeg.")
 
     ffmpeg = _find_ffmpeg()
     if ffmpeg is None:
@@ -125,6 +176,8 @@ class RoFormerBackend:
                 staging_dir=staging,
                 log=self._log,
                 cancellation=self.cancellation,
+                # The upstream CLI only ever discovers "*.wav".
+                passthrough_extensions={".wav"},
             )
 
             # Read the rate off the staged file rather than the original: an
@@ -144,13 +197,35 @@ class RoFormerBackend:
                     "for BS-RoFormer..."
                 )
                 # The conformed file has to land on a .wav path, and be the
-                # only one in the folder. FLAC is staged through unchanged
-                # above, and the CLI discovers its input with glob("*.wav"):
-                # renaming a WAV onto song.flac left nothing for it to find,
-                # and leaving both would have separated the folder twice.
+                # only one in the folder: the CLI discovers its input with
+                # glob("*.wav"), so renaming a WAV onto song.flac leaves it
+                # nothing to find, and leaving both separates the folder
+                # twice. Staging already hands this backend a .wav for every
+                # input format, which makes target == staged today; the
+                # rename stays honest about the suffix rather than depending
+                # on that.
                 target = staged.with_suffix(".wav")
                 aligned = staging / f"{staged.stem}_stemlab_{ROFORMER_SAMPLE_RATE}.wav"
-                resample_file(staged, aligned, ROFORMER_SAMPLE_RATE)
+                frames = resample_file(
+                    staged,
+                    aligned,
+                    ROFORMER_SAMPLE_RATE,
+                    # Throwaway input, written once and read once: widening
+                    # keeps the extra trip through 44.1 kHz from re-quantising
+                    # a 16-bit source. Stems keep the width they were written
+                    # at; only what the model eats is widened.
+                    widen_narrow_pcm=True,
+                )
+                if frames == 0:
+                    # A source shorter than one 44.1 kHz frame resamples away
+                    # to nothing, and the CLI has no answer for an empty WAV.
+                    resample_file(
+                        staged,
+                        aligned,
+                        ROFORMER_SAMPLE_RATE,
+                        out_frames=1,
+                        widen_narrow_pcm=True,
+                    )
 
                 if target != staged:
                     staged.unlink()

@@ -67,9 +67,7 @@ def run(monkeypatch, source, output, *, model_rate=DEMUCS_MODEL_SAMPLE_RATE):
     monkeypatch.setattr("stemlab.demucs_backend.run_progress_process", fake_run)
 
     logs: list[str] = []
-    placed = DemucsBackend(log_callback=logs.append).separate(
-        input_path=source, output_dir=output
-    )
+    placed = DemucsBackend(log_callback=logs.append).separate(input_path=source, output_dir=output)
     return placed, seen["command"], logs
 
 

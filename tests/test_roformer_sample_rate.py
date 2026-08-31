@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
+from stemlab import pretrained
 from stemlab.audio import STEM_NAMES
 from stemlab.pretrained import ROFORMER_SAMPLE_RATE, RoFormerBackend
 
@@ -110,16 +111,13 @@ def test_the_round_trip_keeps_the_pitch(monkeypatch, tmp_path):
     assert peak_hz == pytest.approx(440.0, abs=3.0), peak_hz
 
 
-def test_conforming_a_flac_leaves_the_cli_something_to_open(monkeypatch, tmp_path):
-    """FLAC is staged through unchanged, and the CLI globs for "*.wav".
+@pytest.mark.parametrize("session_rate", [44100, 48000, 96000])
+def test_a_flac_source_reaches_the_separator(monkeypatch, tmp_path, session_rate):
+    """The CLI globs "*.wav", so a staged .flac was invisible to it.
 
-    Writing the conformed audio to a WAV and renaming it onto song.flac left
-    the folder with nothing the CLI could find. Note this does not claim FLAC
-    works in general: a 44.1 kHz FLAC needs no conforming, so it is still
-    staged as .flac and still invisible to the CLI - a separate, pre-existing
-    limitation this change does not address.
+    44100 is the case that never worked: it needs no rate conforming, so
+    nothing incidentally produced a WAV for the CLI to find.
     """
-    session_rate = 48000
     source = tmp_path / "song.flac"
     t = np.arange(int(session_rate * 0.4), dtype=np.float64) / session_rate
     wave = (0.25 * np.sin(2 * math.pi * 440.0 * t)).astype(np.float32)
@@ -134,6 +132,11 @@ def test_conforming_a_flac_leaves_the_cli_something_to_open(monkeypatch, tmp_pat
     assert written, "the separator saw no input it could open"
     for path in written:
         assert sf.info(str(path)).samplerate == session_rate, path.name
+        # The separator names its stems after the file it was handed, so
+        # staging under a marker name would put that marker in every stem
+        # of every FLAC session. 48 kHz already produced "song_*" before
+        # FLAC was staged at all, and it still has to.
+        assert path.name.startswith("song_"), path.name
 
 
 def test_conforming_leaves_exactly_one_input_for_the_cli(monkeypatch, tmp_path):
@@ -160,3 +163,105 @@ def test_conforming_leaves_exactly_one_input_for_the_cli(monkeypatch, tmp_path):
     RoFormerBackend(device="cpu", log_callback=lambda _m: None).separate(source, tmp_path / "out")
 
     assert seen == {"wavs": 1, "files": 1}
+
+
+def _staged_input_info(monkeypatch, source: Path, output: Path):
+    """Run a separation and report the header of the file the CLI was given."""
+    seen: dict[str, object] = {}
+
+    class _Probing(_FakeSeparator):
+        def __call__(self, command, _log, _progress, **kwargs):
+            command = list(command)
+            folder = Path(command[command.index("--input_folder") + 1])
+            info = sf.info(str(sorted(folder.glob("*.wav"))[0]))
+            seen["subtype"] = info.subtype
+            seen["frames"] = int(info.frames)
+            return super().__call__(command, _log, _progress, **kwargs)
+
+    monkeypatch.setattr("stemlab.pretrained.run_progress_process", _Probing())
+    monkeypatch.setattr("stemlab.pretrained.resolve_torch_device", lambda *_a, **_k: "cpu")
+    RoFormerBackend(device="cpu", log_callback=lambda _m: None).separate(source, output)
+    return seen
+
+
+def test_conforming_does_not_requantise_a_16_bit_source(monkeypatch, tmp_path):
+    """The rate trip is an extra quantisation the source never asked for.
+
+    The conformed file is the model's throwaway input, written once and read
+    once, so widening it costs nothing and keeps 16-bit material from being
+    rounded a second time on its way in. Stems keep the width they were
+    written at - those are the deliverable.
+    """
+    source = tmp_path / "song.wav"
+    t = np.arange(int(48000 * 0.2), dtype=np.float64) / 48000
+    wave = (0.25 * np.sin(2 * math.pi * 440.0 * t)).astype(np.float32)
+    sf.write(str(source), np.column_stack([wave, wave]), 48000, subtype="PCM_16")
+
+    seen = _staged_input_info(monkeypatch, source, tmp_path / "stems")
+
+    assert seen["subtype"] == "PCM_24"
+
+
+@pytest.mark.parametrize("session_rate,frames", [(96000, 1), (192000, 2)])
+def test_a_source_shorter_than_one_target_frame_still_reaches_the_cli(
+    monkeypatch, tmp_path, session_rate, frames
+):
+    """Downsampling a handful of frames can round the length away to zero.
+
+    96 kHz for one frame and 192 kHz for one or two all resample to no
+    frames at all, and the CLI has no answer for an empty WAV: it is the
+    degenerate input that would crash a separation rather than fail it.
+    """
+    source = tmp_path / "song.wav"
+    sf.write(str(source), np.zeros((frames, 2), dtype=np.float32), session_rate, subtype="FLOAT")
+
+    seen = _staged_input_info(monkeypatch, source, tmp_path / "stems")
+
+    assert seen["frames"] >= 1
+
+
+def test_a_failed_flac_conversion_leaves_nothing_behind_for_ffmpeg(monkeypatch, tmp_path):
+    """The soundfile and ffmpeg paths stage under different names.
+
+    A conversion that dies partway leaves a stub WAV, and ffmpeg then writes
+    beside it rather than over it - two inputs in a folder the CLI globs, so
+    it separates the wrong one or both.
+    """
+    source = tmp_path / "song.flac"
+    t = np.arange(int(48000 * 0.2), dtype=np.float64) / 48000
+    wave = (0.25 * np.sin(2 * math.pi * 440.0 * t)).astype(np.float32)
+    sf.write(str(source), np.column_stack([wave, wave]), 48000)
+
+    real_write = sf.write
+
+    def _die_after_creating_the_file(path, data, samplerate, *args, **kwargs):
+        Path(path).write_bytes(b"RIFF-truncated")
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(sf, "write", _die_after_creating_the_file)
+    staging_seen: dict[str, list[str]] = {}
+
+    def _no_ffmpeg() -> None:
+        # Stop at the fallback rather than depending on ffmpeg being
+        # installed: what matters is the state of the folder by then.
+        staging_seen["files"] = sorted(p.name for p in staged_dir[0].iterdir())
+        raise RuntimeError("stop here")
+
+    staged_dir: list[Path] = []
+    real_normalise = pretrained._normalise_input_for_backend
+
+    def _watching(*, staging_dir, **kwargs):
+        staged_dir.append(staging_dir)
+        return real_normalise(staging_dir=staging_dir, **kwargs)
+
+    monkeypatch.setattr(pretrained, "_normalise_input_for_backend", _watching)
+    monkeypatch.setattr(pretrained, "_find_ffmpeg", lambda: _no_ffmpeg())
+    monkeypatch.setattr("stemlab.pretrained.resolve_torch_device", lambda *_a, **_k: "cpu")
+
+    with pytest.raises(RuntimeError):
+        RoFormerBackend(device="cpu", log_callback=lambda _m: None).separate(
+            source, tmp_path / "stems"
+        )
+
+    sf.write = real_write
+    assert staging_seen["files"] == []
