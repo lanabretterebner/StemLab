@@ -3,7 +3,7 @@
 # Remove StemLab from this machine, in three widening steps.
 #
 #   ./uninstall.sh                 the app: its files, the VST3, the settings
-#   ./uninstall.sh --models        ... and the downloaded model weights
+#   ./uninstall.sh --models        ... and the model weights and analysis cache
 #   ./uninstall.sh --everything    ... and your captures, recordings and jobs
 #
 #   ./uninstall.sh --dry-run       print what would go; remove nothing
@@ -92,14 +92,9 @@ BUNDLE_ENTRIES=(
 
 # ------------------------------------------------------- finding the install
 
-# The pointer is the authoritative record of where the Engine ended up: the
-# location is overridable and the bundle can be moved, so guessing the default
-# path would miss both. It holds the interpreter, so the install is two levels
-# above it (Engine/bin/python3 -> Engine -> the folder).
+# One location, so there is nothing to look up. STEMLAB_INSTALL_DIR is still
+# honoured for an install built somewhere else with --dest.
 installed_dir=""
-
-# One location, so nothing to look up. STEMLAB_INSTALL_DIR is still honoured
-# for an install built somewhere else with --dest.
 if [[ -n "${STEMLAB_INSTALL_DIR:-}" ]]; then
     installed_dir="$STEMLAB_INSTALL_DIR"
 fi
@@ -147,37 +142,65 @@ if looks_like_stemlab "$installed_dir"; then
         for entry in "${BUNDLE_ENTRIES[@]}"; do
             consider "$installed_dir/$entry" "part of the app"
         done
-
-        # Whatever else lives there is the user's - Captures and Recordings
-        # by default, but the rule is "not ours" rather than a second list.
-        for path in "$installed_dir"/* "$installed_dir"/.[!.]*; do
-            name="${path##*/}"
-            mine=0
-
-            for entry in "${BUNDLE_ENTRIES[@]}"; do
-                [[ "$name" == "$entry" ]] && mine=1 && break
-            done
-
-            [[ $mine -eq 1 ]] || kept_in_install+=("$path")
-        done
     fi
 elif [[ -d "$installed_dir" ]]; then
     install_refused="$installed_dir"
 fi
 
 consider "$HOME/.vst3/StemLab.vst3" "the VST3 plug-in"
-consider "$CONFIG_HOME/StemLab" "settings: engine pointer, compile preference"
+consider "$CONFIG_HOME/StemLab" "settings: the torch-compile preference"
+
+# The setup script stages a download of several gigabytes here and removes it
+# when the install succeeds. A run that failed leaves it on purpose, so that
+# re-running resumes - which means an uninstall is the last chance anyone has
+# to notice it. It is installer debris, never anything the user made, so it
+# goes in the default scope.
+consider "$CACHE_HOME/StemLab/setup" "an unfinished download the setup script left"
 
 if [[ $SCOPE_MODELS -eq 1 ]]; then
     consider "$CACHE_HOME/bs-roformer-infer" "BS-RoFormer weights"
     consider "$CACHE_HOME/torch/hub/checkpoints" "Demucs weights (torch hub)"
     consider "$CACHE_HOME/huggingface" "the HuggingFace cache"
-    consider "${STEMLAB_ANALYSIS_HOME:-$HOME/.stemlab}" "analysis, MIDI staging, compiled kernels"
+    consider "${STEMLAB_ANALYSIS_HOME:-$CACHE_HOME/StemLab/analysis}" \
+        "analysis, MIDI staging, compiled kernels"
+    consider "$DATA_HOME/StemLab/models" "weights for the adaptive splits"
+
+    # Nothing writes ~/.stemlab any more - the analysis cache and the model
+    # weights moved to the two directories above, which say what they are and
+    # which a disk-cleaning tool can reason about. Anyone who ran an older
+    # StemLab still has the old one, holding gigabytes that nothing will ever
+    # read again, so an uninstall is the one moment worth naming it.
+    consider "$HOME/.stemlab" "the directory older versions kept both in"
 fi
 
 if [[ $SCOPE_EVERYTHING -eq 1 ]]; then
     consider "$MEDIA_HOME" "your captures, recordings and separated stems"
     consider "$CACHE_HOME/StemLab" "separation jobs (older installs kept them here)"
+fi
+
+# Whatever else lives in the install directory is the user's - Captures and
+# Recordings by default, but the rule is "not the app's, and not already
+# going" rather than a second list.
+#
+# Computed after every consider above rather than beside the first one,
+# because the model weights live at $DATA_HOME/StemLab/models, which is inside
+# the install directory. --models takes them; without this ordering they would
+# be printed as removed and as kept in the same run.
+if [[ $SCOPE_EVERYTHING -eq 0 ]] && looks_like_stemlab "$installed_dir"; then
+    for path in "$installed_dir"/* "$installed_dir"/.[!.]*; do
+        name="${path##*/}"
+        mine=0
+
+        for entry in "${BUNDLE_ENTRIES[@]}"; do
+            [[ "$name" == "$entry" ]] && mine=1 && break
+        done
+
+        for target in ${targets[@]+"${targets[@]}"}; do
+            [[ "$path" == "$target" ]] && mine=1 && break
+        done
+
+        [[ $mine -eq 1 ]] || kept_in_install+=("$path")
+    done
 fi
 
 if [[ ${#targets[@]} -eq 0 ]]; then

@@ -301,6 +301,9 @@ namespace stemlab::widgets
             add(engineHeading);
             add(fusedNormalise);
 
+            add(updatesHeading);
+            add(checkUpdates);
+
             add(diagnosticsHeading);
             add(copyDiagnostics);
             add(abletonIntegration);
@@ -343,6 +346,7 @@ namespace stemlab::widgets
             wire(analysisToggle, onAnalysisToggle);
             wire(forgetCorrection, onForgetCorrection);
             wire(clearCache, onClearAnalysisCache);
+            wire(checkUpdates, onCheckUpdates);
             wire(copyDiagnostics, onCopyDiagnostics);
             wire(abletonIntegration, onAbletonIntegration);
 
@@ -389,6 +393,19 @@ namespace stemlab::widgets
             // it would make it look lost.
             fusedNormalise.setSelectedIndex(settings.fusedNormalise ? 1 : 0);
             fusedNormalise.setEnabled(settings.fusedNormaliseAvailable);
+
+            // Hidden rather than greyed, because there is nothing the user
+            // could do to make it work: the updater is a file the bundle's
+            // install.sh puts beside the app, so a build run from a checkout
+            // has no updater and never will.
+            updatesHeading.setVisible(settings.updaterAvailable);
+            checkUpdates.setVisible(settings.updaterAvailable);
+
+            checkUpdates.action().setButtonText(settings.updateCheckRunning
+                                                    ? "Checking..."
+                                                    : "Check...");
+            checkUpdates.setEnabled(!settings.updateCheckRunning);
+            checkUpdates.action().setEnabled(!settings.updateCheckRunning);
 
             copyDiagnostics.setEnabled(settings.hasDiagnostics);
             copyDiagnostics.action().setEnabled(settings.hasDiagnostics);
@@ -437,6 +454,7 @@ namespace stemlab::widgets
         std::function<void()> onForgetCorrection;
         std::function<void()> onClearAnalysisCache;
         std::function<void(bool)> onFusedNormalise;
+        std::function<void()> onCheckUpdates;
         std::function<void()> onCopyDiagnostics;
         std::function<void()> onAudioSettings;
         std::function<void()> onAbletonIntegration;
@@ -462,6 +480,9 @@ namespace stemlab::widgets
 
         HeadingRow engineHeading{"Separation"};
         ChoiceRow fusedNormalise{"Normalise fused stems", {"Off", "On"}};
+
+        HeadingRow updatesHeading{"Updates"};
+        ActionRow checkUpdates{"Check for a newer release", "Check..."};
 
         HeadingRow diagnosticsHeading{"Diagnostics"};
         ActionRow copyDiagnostics{"Engine log", "Copy"};
@@ -513,6 +534,7 @@ namespace stemlab::widgets
         forward(settingsPage->onAnalysisToggle, onAnalysisToggle);
         forward(settingsPage->onForgetCorrection, onForgetCorrection);
         forward(settingsPage->onClearAnalysisCache, onClearAnalysisCache);
+        forward(settingsPage->onCheckUpdates, onCheckUpdates);
         forward(settingsPage->onCopyDiagnostics, onCopyDiagnostics);
         forward(settingsPage->onAudioSettings, onAudioSettings);
         forward(settingsPage->onAbletonIntegration, onAbletonIntegration);

@@ -16,11 +16,6 @@ namespace widgets = stemlab::widgets;
 
 namespace
 {
-juce::File stemLabSettingsDirectory()
-{
-    return stemlab::paths::configDirectory();
-}
-
 /** The directory the running binary sits in. */
 juce::File applicationDirectory()
 {
@@ -4722,6 +4717,8 @@ void StemLabAudioProcessorEditor::wireSettingsPage()
         refreshFromProcessor();
     };
 
+    settingsPanel.onCheckUpdates = [this] { checkForUpdates(); };
+
     settingsPanel.onCopyDiagnostics = [this]
     {
         juce::SystemClipboard::copyTextToClipboard(processor.getEngineLog());
@@ -4787,6 +4784,17 @@ void StemLabAudioProcessorEditor::refreshSettingsPage()
     settings.fusedNormaliseAvailable =
         processor.getSeparatorEngineIndex() == StemLabAudioProcessor::separatorHybrid;
 
+    // Linux only: update.sh is the Linux bundle's updater. The row is hidden
+    // everywhere else, and in a build run from a checkout, where there is no
+    // install for it to sit beside.
+   #if JUCE_LINUX
+    settings.updaterAvailable = updaterScript().existsAsFile();
+   #else
+    settings.updaterAvailable = false;
+   #endif
+
+    settings.updateCheckRunning = updateCheckRunning;
+
     settings.hasDiagnostics = processor.hasEngineLog();
 
 #if JUCE_WINDOWS
@@ -4798,6 +4806,71 @@ void StemLabAudioProcessorEditor::refreshSettingsPage()
     settings.version = JucePlugin_VersionString;
 
     settingsPanel.setSettings(settings);
+}
+
+juce::File StemLabAudioProcessorEditor::updaterScript()
+{
+    return stemlab::paths::userDataDirectory().getChildFile("update.sh");
+}
+
+void StemLabAudioProcessorEditor::checkForUpdates()
+{
+    const auto script = updaterScript();
+
+    if (updateCheckRunning || !script.existsAsFile())
+        return;
+
+    updateCheckRunning = true;
+    refreshSettingsPage();
+
+    auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
+    const auto path = script.getFullPathName();
+
+    /*
+     * Off the message thread, without exception. --check asks github.com which
+     * release is newest, and readAllProcessOutput is documented to block until
+     * the process finishes: on a network that is down, that is however long
+     * curl waits before giving up, with the host's UI frozen behind it.
+     */
+    juce::Thread::launch(
+        [safeThis, path]
+        {
+            juce::ChildProcess process;
+            juce::String output;
+
+            if (process.start(juce::StringArray{path, "--check"}))
+                output = process.readAllProcessOutput().trim();
+            else
+                output = "Could not run " + path;
+
+            juce::MessageManager::callAsync(
+                [safeThis, path, output]
+                {
+                    if (safeThis == nullptr)
+                        return;
+
+                    safeThis->updateCheckRunning = false;
+                    safeThis->refreshSettingsPage();
+                    safeThis->showUpdateCheckResult(path, output);
+                });
+        });
+}
+
+void StemLabAudioProcessorEditor::showUpdateCheckResult(const juce::String& scriptPath,
+                                                        const juce::String& output)
+{
+    /*
+     * Reporting only. Installing an update replaces StemLab.vst3, and replacing
+     * a plug-in binary underneath a host that has it loaded is how the next
+     * scan finds a half-written bundle - so the command is handed over instead
+     * of run.
+     */
+    const auto body =
+        (output.isNotEmpty() ? output : juce::String("The updater said nothing.")) +
+        "\n\nTo install an update, close your DAW and run:\n" + scriptPath;
+
+    juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,
+                                           "StemLab updates", body, "OK", this);
 }
 
 void StemLabAudioProcessorEditor::promptForManualTempo()

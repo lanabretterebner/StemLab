@@ -46,7 +46,7 @@ def _install(home: Path, *, version: str = "0.1.7", flavor: str = "cuda") -> Pat
 
     config = home / ".config/StemLab"
     config.mkdir(parents=True)
-    (config / "portable_engine_path.txt").write_text(f"{app}/Engine/bin/python3\n")
+    (config / "torch_compile.txt").write_text("1\n")
 
     (home / ".vst3").mkdir(parents=True)
     (home / ".vst3/StemLab.vst3").mkdir()
@@ -130,6 +130,84 @@ class TestUninstallKeepsWhatIsNotTheApps:
         assert _run(UNINSTALL, home, "--yes").returncode == 0
         assert not (home / ".vst3/StemLab.vst3").exists()
         assert not (home / ".config/StemLab").exists()
+
+
+class TestUninstallFindsWhereThingsActuallyLive:
+    """The directories moved out of ~/.stemlab; the uninstaller had not."""
+
+    def test_models_takes_the_analysis_cache_and_the_weights(self, tmp_path):
+        home = tmp_path / "home"
+        app = _install(home)
+
+        analysis = home / ".cache/StemLab/analysis"
+        analysis.mkdir(parents=True)
+        (analysis / "beats.sqlite").write_text("cached")
+
+        weights = app / "models/recursive"
+        weights.mkdir(parents=True)
+        (weights / "model.onnx").write_text("x" * 64)
+
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+        assert (analysis / "beats.sqlite").exists()
+        assert (weights / "model.onnx").exists()
+
+        assert _run(UNINSTALL, home, "--models", "--yes").returncode == 0
+        assert not analysis.exists()
+        assert not weights.exists()
+
+    def test_the_weights_are_not_removed_and_kept_at_once(self, tmp_path):
+        # They live inside the install directory, which is also where anything
+        # not the app's is listed as kept. One run must not claim both.
+        home = tmp_path / "home"
+        app = _install(home)
+
+        (app / "models/recursive").mkdir(parents=True)
+        (app / "models/recursive/model.onnx").write_text("x" * 64)
+
+        result = _run(UNINSTALL, home, "--models", "--yes")
+
+        assert result.returncode == 0, result.stderr
+        kept = result.stdout.partition("Kept in")[2]
+        assert "models" not in kept
+
+    def test_a_stale_dot_directory_is_offered(self, tmp_path):
+        # Nothing writes ~/.stemlab any more, so anyone who has one is holding
+        # gigabytes that will never be read again.
+        home = tmp_path / "home"
+        _install(home)
+
+        stale = home / ".stemlab/models"
+        stale.mkdir(parents=True)
+        (stale / "old.onnx").write_text("x" * 64)
+
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+        assert stale.exists()
+
+        assert _run(UNINSTALL, home, "--models", "--yes").returncode == 0
+        assert not (home / ".stemlab").exists()
+
+    def test_an_unfinished_setup_download_goes_by_default(self, tmp_path):
+        # Installer debris, never anything the user made.
+        home = tmp_path / "home"
+        _install(home)
+
+        stage = home / ".cache/StemLab/setup"
+        stage.mkdir(parents=True)
+        (stage / "StemLab-0.1.9-Linux-cuda.tar.gz.part03").write_text("half")
+
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+        assert not stage.exists()
+
+    def test_captures_in_the_install_directory_still_survive_models(self, tmp_path):
+        home = tmp_path / "home"
+        app = _install(home)
+
+        (app / "Captures").mkdir()
+        (app / "Captures/take.wav").write_text("audio")
+        (app / "models/recursive").mkdir(parents=True)
+
+        assert _run(UNINSTALL, home, "--models", "--yes").returncode == 0
+        assert (app / "Captures/take.wav").read_text() == "audio"
 
 
 class TestUninstallRefusesWhatIsNotAnInstall:
