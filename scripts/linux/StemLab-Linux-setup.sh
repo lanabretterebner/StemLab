@@ -415,13 +415,53 @@ $DATA_HOME/StemLab, which needs no privileges."
     priv=(sudo)
 fi
 
+"${priv[@]}" mkdir -p "$parent_dir"
+
 if [[ -e "$INSTALL_DIR" ]]; then
     # Only reached with the verified replacement already extracted.
     echo "Replacing the previous install at $INSTALL_DIR..."
-    "${priv[@]}" rm -rf "$INSTALL_DIR"
+
+    # Not an rm -rf of the whole folder. On Linux the install directory and
+    # the app's data directory are the same place: the engine writes the
+    # adaptive-split weights to $INSTALL_DIR/models/recursive (see
+    # src/stemlab/paths.py), the plugin writes $INSTALL_DIR/Ableton, and
+    # installs older than the move to the music folder still have Captures
+    # and Recordings in there. Deleting the folder wholesale re-downloaded
+    # half a gigabyte of weights after every update, silently.
+    #
+    # What the new bundle contains is what gets replaced; anything else is
+    # carried across. That list is read off the extracted bundle rather than
+    # written down here, so a file added to the bundle tomorrow is replaced
+    # tomorrow with nothing here to keep in step.
+    #
+    # The old install is renamed rather than copied out of, so this costs one
+    # rename however many gigabytes of weights are in it.
+    old_install="$INSTALL_DIR.replaced"
+
+    "${priv[@]}" rm -rf "$old_install"
+    "${priv[@]}" mv "$INSTALL_DIR" "$old_install"
+    "${priv[@]}" mv "$STAGE/$folder" "$INSTALL_DIR"
+
+    # dotglob so .stemlab-version and anything else hidden is considered;
+    # nullglob so an empty old install is not a literal "*".
+    shopt -s nullglob dotglob
+
+    for kept in "$old_install"/*; do
+        name="${kept##*/}"
+
+        # Present in the new bundle: the new copy wins, the old one goes.
+        [[ -e "$INSTALL_DIR/$name" ]] && continue
+
+        echo "  keeping $name"
+        "${priv[@]}" mv "$kept" "$INSTALL_DIR/$name"
+    done
+
+    shopt -u nullglob dotglob
+
+    "${priv[@]}" rm -rf "$old_install"
+else
+    "${priv[@]}" mv "$STAGE/$folder" "$INSTALL_DIR"
 fi
-"${priv[@]}" mkdir -p "$parent_dir"
-"${priv[@]}" mv "$STAGE/$folder" "$INSTALL_DIR"
 
 # install.sh is now running from inside $INSTALL_DIR, which is where it is
 # meant to end up, so it copies nothing and only registers the VST3.

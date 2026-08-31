@@ -194,6 +194,74 @@ class TestTheInstallItself:
         assert _installed(tmp_path).is_dir()
 
 
+class TestReplacingAnInstallKeepsWhatTheBundleDoesNotCarry:
+    """The update path, where the install directory is also a data directory.
+
+    On Linux the bundle unpacks into ~/.local/share/StemLab and the engine
+    writes its downloaded weights to models/recursive inside it. Replacing
+    the install with one rm -rf therefore re-downloaded half a gigabyte after
+    every update, silently, and took anything else in there with it.
+    """
+
+    def _reinstall_over(self, tmp_path: Path, existing: dict[str, str]):
+        archive = _bundle(tmp_path)
+        _checksum_beside(archive)
+
+        installed = _installed(tmp_path)
+
+        for name, text in existing.items():
+            path = installed / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+
+        result = _run(tmp_path, str(archive))
+        assert result.returncode == 0, result.stderr
+
+        return installed, result
+
+    def test_downloaded_weights_survive_an_update(self, tmp_path):
+        installed, _ = self._reinstall_over(
+            tmp_path, {"models/recursive/UVR-BVE.pth": "weights"}
+        )
+
+        assert (installed / "models/recursive/UVR-BVE.pth").read_text() == "weights"
+
+    def test_audio_left_by_an_older_install_survives(self, tmp_path):
+        # Before the move to the music folder, captures were written here.
+        installed, _ = self._reinstall_over(
+            tmp_path, {"Captures/take.wav": "audio", "Ableton/status.json": "{}"}
+        )
+
+        assert (installed / "Captures/take.wav").read_text() == "audio"
+        assert (installed / "Ableton/status.json").read_text() == "{}"
+
+    def test_the_bundles_own_files_are_replaced_not_kept(self, tmp_path):
+        # The whole point of an update: a stale Engine must not survive it.
+        installed, _ = self._reinstall_over(
+            tmp_path,
+            {
+                "Engine/.stemlab-engine": "old",
+                "Engine/stale-file-from-the-old-build": "x",
+                ".stemlab-version": "0.0.1\n",
+            },
+        )
+
+        assert not (installed / "Engine/stale-file-from-the-old-build").exists()
+        assert (installed / ".stemlab-version").read_text().strip() == "9.9.9"
+
+    def test_nothing_of_the_old_install_is_left_beside_it(self, tmp_path):
+        installed, _ = self._reinstall_over(tmp_path, {"models/recursive/w.pth": "x"})
+
+        assert not installed.with_name(installed.name + ".replaced").exists()
+
+    def test_what_was_kept_is_named(self, tmp_path):
+        # Silently keeping files is how an update leaves a folder nobody
+        # understands. It says what it carried across.
+        _, result = self._reinstall_over(tmp_path, {"models/recursive/w.pth": "x"})
+
+        assert "keeping models" in result.stdout
+
+
 class TestADamagedArchiveInstallsNothing:
     def test_a_bad_checksum_stops_before_extracting(self, tmp_path):
         archive = _bundle(tmp_path)

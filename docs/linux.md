@@ -188,6 +188,13 @@ the script to install.
 `update.sh` keeps the GPU flavor the install already has, so a `cuda` install
 does not quietly become a `cpu` one.
 
+An update keeps what the new bundle does not carry. That matters because the
+install directory is also the app's data directory on Linux: the adaptive-split
+weights are written to `models/recursive` inside it, and replacing the folder
+wholesale re-downloaded half a gigabyte after every update. The setup script
+now replaces the entries the new bundle contains and moves everything else
+across, naming what it kept.
+
 `uninstall.sh` with no arguments removes everything StemLab put on the
 machine: the standalone app, the VST3, the Engine, the settings, the model
 weights, the analysis cache and the compiled kernels. The single exception is
