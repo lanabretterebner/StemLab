@@ -143,6 +143,17 @@ Nocturne widgets (checkbox, split control, scrubber, segmented control, ...)
 in `src/plugin/Source/StemLabWidgets.*`. Keep file processing and
 model-selection logic in the processor/Python layer.
 
+#### Credits
+
+**Settings > Credits** carries the same attributions as `docs/third-party.md`,
+shortened. Both exist on purpose: the doc is the legal record and says more
+than a panel should - build-configuration caveats, redistribution obligations
+- while the page is where the obligation actually lands, since the OFL asks
+that its licence travel with the font and nobody who installed a bundle will
+open a file in a source repository. The page is written out rather than
+generated from the markdown; keep the two in step by hand when a dependency
+changes.
+
 #### The accent
 
 `src/plugin/Source/StemLabAccent.h` holds the ten values the accent ramp is

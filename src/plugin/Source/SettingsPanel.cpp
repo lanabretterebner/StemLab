@@ -2,6 +2,8 @@
 
 #include "StemLabTheme.h"
 
+#include <array>
+
 namespace stemlab::widgets
 {
     namespace
@@ -29,6 +31,7 @@ namespace stemlab::widgets
          */
         constexpr int settingsTab = 0;
         constexpr int modelsTab = 1;
+        constexpr int creditsTab = 2;
 
         namespace rows
         {
@@ -415,6 +418,160 @@ namespace stemlab::widgets
         };
     }
 
+    // -------------------------------------------------------- credits page
+
+    /**
+     * Who else's work is in here.
+     *
+     * The same list docs/third-party.md carries, in the app, because that is
+     * where the obligations actually land: the OFL asks that its licence
+     * travel with the font, and a file in a source repository is not
+     * something a person who installed a bundle will ever open. It is one
+     * scrolling column of headings and prose rather than rows of controls,
+     * because there is nothing here to operate.
+     *
+     * Deliberately not generated from the markdown. The doc is the legal
+     * record and says more than a panel should - build configuration
+     * caveats, redistribution obligations - and rendering markdown to fit a
+     * 700px card would be a parser nobody asked for. These are the same
+     * facts, said shorter, and the doc is named at the end for the rest.
+     */
+    class SettingsPanel::Credits final : public juce::Component
+    {
+    public:
+        Credits()
+        {
+            listViewport.setViewedComponent(&content, false);
+            listViewport.setScrollBarsShown(true, false);
+            addAndMakeVisible(listViewport);
+        }
+
+        void setVersion(const juce::String& text) { version = text; repaint(); }
+
+        void resized() override
+        {
+            listViewport.setBounds(getLocalBounds());
+            content.setSize(juce::jmax(0, listViewport.getWidth() - 12), contentHeight());
+        }
+
+        void paint(juce::Graphics&) override {}
+
+    private:
+        struct Entry
+        {
+            const char* heading;
+            const char* body;
+        };
+
+        /*  Kept in step with docs/third-party.md by hand. There are seven of
+            them and they change when a dependency does, which is not often
+            and never quietly.
+        */
+        static constexpr std::array<Entry, 7> entries{{
+            {"JUCE",
+             "The Standalone app and the VST3 are built with JUCE 9, under its "
+             "own dual licence (AGPLv3 or commercial). The VST3 SDK it includes "
+             "carries separate terms."},
+            {"BS-RoFormer",
+             "Separation can run bs-roformer-infer - OpenMIRLab, lucidrains' "
+             "BS-RoFormer, ZFTurbo's Music-Source-Separation-Training. "
+             "Checkpoints are downloaded, not shipped, and carry their own "
+             "terms."},
+            {"Demucs",
+             "Separation can run the upstream demucs package and the "
+             "htdemucs_6s model, which keep their upstream licensing."},
+            {"Beat This!",
+             "Beat and downbeat analysis uses Beat This! 1.1.0, MIT licensed. "
+             "Its small0 and final0 checkpoints are downloaded on first use "
+             "and checked against a recorded SHA-256."},
+            {"Inter",
+             "The interface is set in Inter, copyright The Inter Project "
+             "Authors, under the SIL Open Font License 1.1. The full licence "
+             "ships beside the font files as OFL.txt."},
+            {"Python and the ML runtime",
+             "CPython, PyTorch, NumPy, SciPy, SoundFile, librosa, Mido, "
+             "PyYAML, tqdm, audio-separator and their dependencies, each under "
+             "its own upstream licence."},
+            {"FFmpeg",
+             "Used for MP3, OGG and AIFF input. Its licensing depends on how "
+             "the binary on your machine was built."},
+        }};
+
+        static constexpr int headingHeight = 22;
+        static constexpr int paragraphGap = 14;
+
+        int bodyWidth() const { return juce::jmax(120, content.getWidth() - 4); }
+
+        /** The wrapped height of one entry's prose, measured not guessed. */
+        int bodyHeight(const char* text) const
+        {
+            juce::AttributedString wrapped;
+            wrapped.append(text, juce::Font(theme::fonts::make(12.0f, false)));
+
+            juce::TextLayout layout;
+            layout.createLayout(wrapped, static_cast<float>(bodyWidth()));
+
+            return juce::roundToInt(layout.getHeight());
+        }
+
+        int contentHeight() const
+        {
+            auto total = 0;
+
+            for (const auto& entry : entries)
+                total += headingHeight + bodyHeight(entry.body) + paragraphGap;
+
+            return total + 40;
+        }
+
+        /** The scrolled column. A child so the viewport has something to
+            move; everything is drawn here rather than as sub-components,
+            since none of it is interactive. */
+        class Column final : public juce::Component
+        {
+        public:
+            explicit Column(Credits& ownerIn) : owner(ownerIn) {}
+
+            void paint(juce::Graphics& g) override { owner.paintColumn(g, *this); }
+
+        private:
+            Credits& owner;
+        };
+
+        void paintColumn(juce::Graphics& g, juce::Component& column)
+        {
+            auto area = column.getLocalBounds();
+
+            for (const auto& entry : entries)
+            {
+                g.setColour(theme::colors::sectionHeader());
+                g.setFont(juce::Font(theme::fonts::make(11.0f, true)));
+                g.drawText(entry.heading, area.removeFromTop(headingHeight),
+                           juce::Justification::centredLeft, false);
+
+                juce::AttributedString wrapped;
+                wrapped.append(entry.body, juce::Font(theme::fonts::make(12.0f, false)),
+                               theme::colors::text75());
+
+                const auto height = bodyHeight(entry.body);
+
+                wrapped.draw(g, area.removeFromTop(height).toFloat());
+                area.removeFromTop(paragraphGap);
+            }
+
+            g.setColour(theme::colors::text45());
+            g.setFont(juce::Font(theme::fonts::make(11.0f, false)));
+            g.drawText("StemLab " + version + " - full terms in docs/third-party.md",
+                       area.removeFromTop(20), juce::Justification::centredLeft, false);
+        }
+
+        juce::Viewport listViewport;
+        Column content{*this};
+        juce::String version;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(Credits)
+    };
+
     // ------------------------------------------------------- settings page
 
     class SettingsPanel::Preferences final : public juce::Component
@@ -708,7 +865,11 @@ namespace stemlab::widgets
         addAndMakeVisible(titleLabel);
 
         tabs.onSelected = [this](int index)
-        { showPage(index == modelsTab ? Page::models : Page::settings); };
+        {
+            showPage(index == modelsTab    ? Page::models
+                     : index == creditsTab ? Page::credits
+                                           : Page::settings);
+        };
 
         addAndMakeVisible(tabs);
 
@@ -721,9 +882,11 @@ namespace stemlab::widgets
         addAndMakeVisible(closeButton);
 
         settingsPage = std::make_unique<Preferences>();
+        creditsPage = std::make_unique<Credits>();
 
         addChildComponent(modelsPage);
         addChildComponent(*settingsPage);
+        addChildComponent(*creditsPage);
 
         auto forward = [](std::function<void()>& from, std::function<void()>& to)
         { from = [&to] { if (to) to(); }; };
@@ -772,16 +935,20 @@ namespace stemlab::widgets
     void SettingsPanel::setSettings(const Settings& settings)
     {
         settingsPage->apply(settings);
+        creditsPage->setVersion(settings.version);
     }
 
     void SettingsPanel::showPage(Page requested)
     {
         page = requested;
 
-        tabs.setSelectedIndex(page == Page::models ? modelsTab : settingsTab);
+        tabs.setSelectedIndex(page == Page::models    ? modelsTab
+                              : page == Page::credits ? creditsTab
+                                                      : settingsTab);
 
         modelsPage.setVisible(page == Page::models);
         settingsPage->setVisible(page == Page::settings);
+        creditsPage->setVisible(page == Page::credits);
 
         resized();
     }
@@ -827,6 +994,9 @@ namespace stemlab::widgets
 
         if (settingsPage != nullptr)
             settingsPage->setBounds(inner);
+
+        if (creditsPage != nullptr)
+            creditsPage->setBounds(inner);
     }
 
     bool SettingsPanel::keyPressed(const juce::KeyPress& key)

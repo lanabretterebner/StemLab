@@ -784,15 +784,42 @@ namespace stemlab::widgets
     // ----------------------------------------------------------- segmented
 
     SegmentedControl::SegmentedControl(const juce::String& first, const juce::String& second)
+        : SegmentedControl(juce::StringArray{first, second})
     {
-        labels[0] = first;
-        labels[1] = second;
+    }
+
+    SegmentedControl::SegmentedControl(juce::StringArray segmentLabels)
+        : labels(std::move(segmentLabels))
+    {
+        jassert(labels.size() >= 2);
         setRepaintsOnMouseActivity(true);
+    }
+
+    /*  Integer division shared by paint and hit-testing, so the segment the
+        pointer lands in is the one drawn under it even when the width does
+        not divide evenly and the last segment absorbs the remainder.
+    */
+    juce::Rectangle<int> SegmentedControl::segmentBounds(int index) const
+    {
+        const auto count = juce::jmax(1, labels.size());
+        const auto left = getWidth() * index / count;
+        const auto right = getWidth() * (index + 1) / count;
+
+        return getLocalBounds().withX(left).withWidth(right - left);
+    }
+
+    int SegmentedControl::segmentAt(float x) const
+    {
+        for (int index = 0; index < labels.size(); ++index)
+            if (segmentBounds(index).getHorizontalRange().contains(juce::roundToInt(x)))
+                return index;
+
+        return -1;
     }
 
     void SegmentedControl::setSelectedIndex(int index)
     {
-        const auto clamped = juce::jlimit(0, 1, index);
+        const auto clamped = juce::jlimit(0, juce::jmax(0, labels.size() - 1), index);
 
         if (selected != clamped)
         {
@@ -813,12 +840,9 @@ namespace stemlab::widgets
         g.setColour(dimmed(theme::colors::outline()));
         g.drawRoundedRectangle(bounds, transport::abRadius, 1.0f);
 
-        const int half = getWidth() / 2;
-
-        for (int i = 0; i < 2; ++i)
+        for (int i = 0; i < labels.size(); ++i)
         {
-            auto segment = getLocalBounds();
-            segment = i == 0 ? segment.removeFromLeft(half) : segment.withTrimmedLeft(half);
+            const auto segment = segmentBounds(i);
 
             /*
              * Each state is its own closed pill inset inside the shell.
@@ -856,7 +880,7 @@ namespace stemlab::widgets
 
     void SegmentedControl::mouseMove(const juce::MouseEvent& event)
     {
-        const int next = event.position.x < static_cast<float>(getWidth()) * 0.5f ? 0 : 1;
+        const int next = segmentAt(event.position.x);
 
         if (hovered != next)
         {
@@ -876,7 +900,10 @@ namespace stemlab::widgets
         if (!isEnabled() || !getLocalBounds().contains(event.getPosition()))
             return;
 
-        const int index = event.position.x < static_cast<float>(getWidth()) * 0.5f ? 0 : 1;
+        const int index = segmentAt(event.position.x);
+
+        if (index < 0)
+            return;
 
         setSelectedIndex(index);
 

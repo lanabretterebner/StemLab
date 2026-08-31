@@ -265,6 +265,9 @@ namespace stemlab::widgets
     public:
         SegmentedControl(const juce::String& first, const juce::String& second);
 
+        /** Three or more segments, for the settings window's page switcher. */
+        explicit SegmentedControl(juce::StringArray segmentLabels);
+
         std::function<void(int)> onSelected;
 
         void setSelectedIndex(int index);
@@ -279,7 +282,11 @@ namespace stemlab::widgets
         void enablementChanged() override { repaint(); }
 
     private:
-        juce::String labels[2];
+        /** The segment under a local x, or -1 outside. */
+        int segmentAt(float x) const;
+        juce::Rectangle<int> segmentBounds(int index) const;
+
+        juce::StringArray labels;
         int selected = 1;
         int hovered = -1;
 
