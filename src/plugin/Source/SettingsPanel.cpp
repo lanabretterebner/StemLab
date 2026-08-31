@@ -444,7 +444,6 @@ namespace stemlab::widgets
             add(manualTempo);
 
             add(analysisHeading);
-            add(analysisToggle);
             add(analysisQuality);
             add(tempoMode);
             add(tempoReading);
@@ -514,7 +513,6 @@ namespace stemlab::widgets
 
             wire(audioSettings, onAudioSettings);
             wire(manualTempo, onSetManualTempo);
-            wire(analysisToggle, onAnalysisToggle);
             wire(forgetCorrection, onForgetCorrection);
             wire(clearCache, onClearAnalysisCache);
             wire(checkUpdates, onCheckUpdates);
@@ -540,10 +538,6 @@ namespace stemlab::widgets
 
             gridMode.setSelectedIndex(settings.gridMode);
             manualTempo.setCaption("Manual tempo (" + bpm(settings.manualBpm) + " BPM)");
-
-            analysisToggle.action().setButtonText(settings.analysisRunning ? "Stop" : "Analyse");
-            analysisToggle.setEnabled(settings.analysisToggleEnabled);
-            analysisToggle.action().setEnabled(settings.analysisToggleEnabled);
 
             analysisQuality.setSelectedIndex(settings.analysisQuality);
 
@@ -641,7 +635,6 @@ namespace stemlab::widgets
         std::function<void(int)> onWaveformPalette;
         std::function<void(int)> onGridMode;
         std::function<void()> onSetManualTempo;
-        std::function<void()> onAnalysisToggle;
         std::function<void(int)> onAnalysisQuality;
         std::function<void(int)> onTempoMode;
         std::function<void(int)> onTempoInterpretation;
@@ -677,7 +670,6 @@ namespace stemlab::widgets
         ActionRow manualTempo{"Manual tempo", "Set..."};
 
         HeadingRow analysisHeading{"Source analysis"};
-        ActionRow analysisToggle{"Key and BPM analysis", "Analyse"};
         ChoiceRow analysisQuality{"Analysis quality", {"Fast", "Accurate"}};
         ChoiceRow tempoMode{"Tempo analysis", {"Static", "Dynamic"}};
         ChoiceRow tempoReading{"Tempo reading", {"Half", "As detected", "Double"}};
@@ -737,7 +729,6 @@ namespace stemlab::widgets
         { from = [&to] { if (to) to(); }; };
 
         forward(settingsPage->onSetManualTempo, onSetManualTempo);
-        forward(settingsPage->onAnalysisToggle, onAnalysisToggle);
         forward(settingsPage->onForgetCorrection, onForgetCorrection);
         forward(settingsPage->onClearAnalysisCache, onClearAnalysisCache);
         settingsPage->onTempoMode = [this](int index)

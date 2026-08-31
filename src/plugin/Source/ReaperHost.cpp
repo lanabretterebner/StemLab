@@ -108,6 +108,12 @@ std::unique_ptr<Api> Api::tryCreate (Steinberg::FUnknown* hostContext)
     resolve (api->SetMediaItemLength,          "SetMediaItemLength",          true);
     resolve (api->SetMediaItemTakeInfo_Value,  "SetMediaItemTakeInfo_Value",  true);
     resolve (api->SetMediaItemInfo_Value,      "SetMediaItemInfo_Value",      true);
+    // Optional: without them Set Host Tempo is unavailable, which is a
+    // better outcome than refusing to bridge to REAPER at all.
+    resolve (api->SetCurrentBPM,               "SetCurrentBPM",               false);
+    resolve (api->SetTempoTimeSigMarker,       "SetTempoTimeSigMarker",       false);
+    resolve (api->CountTempoTimeSigMarkers,    "CountTempoTimeSigMarkers",    false);
+    resolve (api->DeleteTempoTimeSigMarker,    "DeleteTempoTimeSigMarker",    false);
     resolve (api->Undo_BeginBlock2,            "Undo_BeginBlock2",            true);
     resolve (api->Undo_EndBlock2,              "Undo_EndBlock2",              true);
     resolve (api->UpdateArrange,               "UpdateArrange",               true);

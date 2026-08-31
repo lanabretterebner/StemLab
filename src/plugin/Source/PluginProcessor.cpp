@@ -6587,6 +6587,109 @@ void StemLabAudioProcessor::setBeatThisEnabled(bool enabled)
     sendChangeMessage();
 }
 
+bool StemLabAudioProcessor::canSetHostTempo() const
+{
+    if (getHostIntegration() != hostIntegrationReaper)
+        return false;
+
+    if (sourceDetectedBpm.load() <= 0.0)
+        return false;
+
+    if (reaperApi == nullptr || !reaperApi->isValid())
+        return false;
+
+    const auto& api = *reaperApi;
+
+    if (api.SetCurrentBPM == nullptr)
+        return false;
+
+    // Dynamic needs the marker calls as well, and more than one section to
+    // write. With one section it is the same job as static.
+    if (tempoAnalysisMode.load() == tempoDynamic && sourceTempoSegments.size() > 1)
+    {
+        if (api.SetTempoTimeSigMarker == nullptr || api.CountTempoTimeSigMarkers == nullptr
+            || api.DeleteTempoTimeSigMarker == nullptr)
+            return false;
+    }
+
+    return true;
+}
+
+juce::String StemLabAudioProcessor::setHostTempo()
+{
+    if (!canSetHostTempo())
+        return "Set host tempo needs REAPER, an analysed source, and a tempo";
+
+    const auto& api = *reaperApi;
+    // nullptr is the current project, as everywhere else in the bridge.
+    stemlab::reaper::ReaProject* const project = nullptr;
+
+    const auto dynamic =
+        tempoAnalysisMode.load() == tempoDynamic && sourceTempoSegments.size() > 1;
+    const auto bpm = sourceDetectedBpm.load();
+
+    api.Undo_BeginBlock2(project);
+
+    /*  The timebase first, and always. An item on a beats timebase moves and
+        stretches when the tempo changes, so setting the tempo underneath it
+        would drag the very audio the tempo was measured from out of place -
+        and the further into the project it sits, the further it goes. On
+        time it stays where it was recorded, which is the only thing that
+        makes the new tempo line up with it.
+    */
+    {
+        const juce::ScopedLock lock(stateLock);
+
+        if (reaperSourceInfo.valid && reaperSourceInfo.item != nullptr
+            && (api.ValidatePtr2 == nullptr
+                || api.ValidatePtr2(project, reaperSourceInfo.item, "MediaItem*")))
+        {
+            // C_BEATATTACHMODE 0 is time; -1 would hand it back to the
+            // track's own default, which may itself be beats.
+            api.SetMediaItemInfo_Value(reaperSourceInfo.item, "C_BEATATTACHMODE", 0.0);
+        }
+    }
+
+    juce::String result;
+
+    if (dynamic)
+    {
+        // Clearing first: leftover markers from a previous run would fight
+        // the ones about to be written, and REAPER indexes them by position
+        // so removing from the end keeps the indices of the rest valid.
+        for (int index = api.CountTempoTimeSigMarkers(project) - 1; index >= 0; --index)
+            api.DeleteTempoTimeSigMarker(project, index);
+
+        int written = 0;
+
+        for (const auto& segment : sourceTempoSegments)
+        {
+            if (segment.bpm <= 0.0)
+                continue;
+
+            // -1 inserts. measurepos -1 with a real timepos places it in
+            // time, which is where the analysis measured it.
+            if (api.SetTempoTimeSigMarker(project, -1, segment.start, -1, -1.0, segment.bpm,
+                                          0, 0, false))
+                ++written;
+        }
+
+        result = "Set " + juce::String(written) + " tempo markers in REAPER";
+    }
+    else
+    {
+        api.SetCurrentBPM(project, bpm, true);
+        result = "Set REAPER tempo to " + juce::String(bpm, 2) + " BPM";
+    }
+
+    api.Undo_EndBlock2(project, "StemLab: set host tempo", -1);
+
+    if (api.UpdateArrange != nullptr)
+        api.UpdateArrange();
+
+    return result;
+}
+
 void StemLabAudioProcessor::setTempoAnalysisMode(int mode)
 {
     tempoAnalysisMode.store(juce::jlimit(static_cast<int>(tempoStatic),

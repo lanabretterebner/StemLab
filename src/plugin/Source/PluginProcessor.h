@@ -499,6 +499,14 @@ public:
     int getTempoAnalysisMode() const noexcept { return tempoAnalysisMode.load(); }
     /** Each stretch of the source one constant tempo explains, in order. */
     std::vector<StemLabTempoSegment> getSourceTempoSegments() const;
+
+    /** Whether Set Host Tempo has everything it needs: a REAPER project, a
+        source item it can still reach, an analysis to read a tempo from, and
+        a REAPER new enough to expose the tempo calls. */
+    bool canSetHostTempo() const;
+    /** Puts the analysed tempo into the project, and the source item onto a
+        timebase that will not follow it. Returns what to tell the user. */
+    juce::String setHostTempo();
     void setTempoInterpretation(int interpretation);
     int getTempoInterpretation() const noexcept { return tempoInterpretation.load(); }
     bool saveSourceCorrection(double bpm, const juce::String& key, int numerator, int denominator,
