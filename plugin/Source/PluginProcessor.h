@@ -135,7 +135,12 @@ public:
     double getTransportLengthSeconds() const noexcept { return getPreviewLengthSeconds(); }
 
     double getManualGridBpm() const noexcept { return manualGridBpm.load(); }
-    StemLabGridInfo getWaveformGridScalars() const { return getWaveformGridInfo(); }
+    /*  The grid numbers a lane needs to draw, and nothing else: no beat or
+        downbeat vectors, so no state lock, because this runs once per lane
+        per frame. gridOff reports bpm 0, which is how a lane is told there
+        is no grid to draw - getWaveformGridInfo cannot say that, since the
+        MIDI and export paths that call it need a tempo either way. */
+    StemLabGridInfo getWaveformGridScalars() const;
     juce::Range<double> getWaveformViewRange(double totalLengthSeconds) const;
 
     bool hasCompletedStemFile(int index) const
@@ -161,8 +166,11 @@ public:
     void cancelSeparation() { cancelRunningJob(); }
     bool usesLocalFileWorkflow() const noexcept { return !isAbletonHost(); }
 
-    /** No MIDI transcription in this backend, so no notes to report. */
-    size_t getMidiNoteCount(const juce::String&) const { return 0; }
+    /*  How many transcribed notes a lane has, without copying them. The
+        waveform overlay reads this per lane per tick to decide whether its
+        cached notes are still current; getMidiInfo returns the whole struct
+        by value, note vector included, which is far too much for that. */
+    size_t getMidiNoteCount(const juce::String& id) const;
 
     StemLabWaveformCache& getWaveformCache() noexcept { return waveformProfiles; }
 
@@ -377,6 +385,12 @@ public:
     /** Right-click export selection: solo this stem; right-click the same solo again to restore the previous export selection. */
     void soloStemForExport(int index);
     void soloRecursiveStemForExport(const juce::String& itemId);
+
+    /*  Which lane, if any, export solo is currently narrowed to. The two
+        calls above toggle, so a menu that offers them has to be able to say
+        which way the next click will go. */
+    bool isStemSoloedForExport(int index) const;
+    bool isRecursiveStemSoloedForExport(const juce::String& itemId) const;
 
     bool launchStemMidiConversion(int stemIndex);
     bool launchRecursiveMidiConversion(const juce::String& itemId);

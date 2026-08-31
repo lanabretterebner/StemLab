@@ -92,19 +92,19 @@ juce::String formatBpmForDisplay(double bpm)
     return juce::String(bpm, 2).trimCharactersAtEnd("0");
 }
 
-// Settings-menu ids: 1..5 are the fixed entries.
+// Settings-menu ids: 1..6 are the fixed entries, then the grouped ranges
+// each branch of the result handler tests for.
 constexpr int gridModeMenuBase = 400;
-constexpr int manualTempoId = 405;
-constexpr int analysisModeMenuBase = 410;
-constexpr int tempoMenuBase = 420;
-constexpr int analysisEnableId = 430;
-constexpr int analysisForgetId = 431;
-constexpr int analysisClearCacheId = 432;
-constexpr int versionItemId = 440;
-constexpr int modelManagerId = 441;
-constexpr int fusedNormaliseId = 442;
 
 // Lane-menu ids for MIDI, above the per-menu action ids.
+/*
+    Narrows the export selection to one lane, and back. Upstream reached this
+    by right-clicking a stem's checkbox - a gesture with nothing on screen to
+    announce it - so here it sits in the lane menu beside the other per-lane
+    actions.
+*/
+constexpr int soloExportId = 490;
+
 constexpr int midiConvertId = 500;
 constexpr int midiAuditionId = 501;
 constexpr int midiSaveId = 502;
@@ -1451,8 +1451,11 @@ void StemLaneComponent::mouseDrag(const juce::MouseEvent& event)
 
     if (!dragFile.existsAsFile())
     {
-        if (fromMidi)
-            processor.postUiStatus("That MIDI file is no longer on disk");
+        // Say which way it failed. A missing .mid means the conversion's
+        // output has gone; a missing audio file at this point means the
+        // range export did not write, since laneFile was checked above.
+        processor.postUiStatus(fromMidi ? "That MIDI file is no longer on disk"
+                                        : "Could not export the selected range");
 
         return;
     }
@@ -2446,6 +2449,26 @@ bool StemLabAudioProcessorEditor::keyPressed(const juce::KeyPress& key)
         return true;
     }
 
+    // V drives the host's own transport, so a plugin window that has taken
+    // keyboard focus can still start the arrangement rolling. Standalone has
+    // no host to drive, and a modifier or a focused text field means the key
+    // belongs to something else.
+    if (!processor.isStandaloneApp())
+    {
+        const auto modifiers = key.getModifiers();
+
+        if (modifiers.isCtrlDown() || modifiers.isAltDown() || modifiers.isCommandDown())
+            return false;
+
+        if (dynamic_cast<juce::TextEditor*>(juce::Component::getCurrentlyFocusedComponent()) != nullptr)
+            return false;
+
+        const auto character = key.getTextCharacter();
+
+        if (character == 'v' || character == 'V')
+            return processor.toggleHostTransport();
+    }
+
     return false;
 }
 
@@ -3186,6 +3209,10 @@ void StemLabAudioProcessorEditor::showRootLayersMenu(int stemIndex)
     if (laneReady)
     {
         menu.addSeparator();
+        menu.addItem(soloExportId, processor.isStemSoloedForExport(stemIndex)
+                                       ? "Restore Export Selection"
+                                       : "Solo for Export");
+        menu.addSeparator();
         addMidiMenuItems(menu, stemName);
     }
 
@@ -3224,6 +3251,8 @@ void StemLabAudioProcessorEditor::showRootLayersMenu(int stemIndex)
                 safeThis->processor.launchRecursiveStemSplit(stemIndex);
             else if (result == 2)
                 safeThis->toggleRootExpanded(stemIndex);
+            else if (result == soloExportId)
+                safeThis->processor.soloStemForExport(stemIndex);
             else
                 safeThis->handleMidiMenuResult(result, stemName, stemIndex, {});
             safeThis->refreshFromProcessor();
@@ -3270,6 +3299,10 @@ void StemLabAudioProcessorEditor::showChildLayersMenu(const juce::String& itemId
     if (info.file.existsAsFile())
     {
         menu.addSeparator();
+        menu.addItem(soloExportId, processor.isRecursiveStemSoloedForExport(itemId)
+                                       ? "Restore Export Selection"
+                                       : "Solo for Export");
+        menu.addSeparator();
         addMidiMenuItems(menu, itemId);
     }
 
@@ -3314,6 +3347,8 @@ void StemLabAudioProcessorEditor::showChildLayersMenu(const juce::String& itemId
             {
                 safeThis->toggleChildExpanded(itemId);
             }
+            else if (result == soloExportId)
+                safeThis->processor.soloRecursiveStemForExport(itemId);
             else
             {
                 safeThis->handleMidiMenuResult(result, itemId, -1, itemId);
@@ -4301,8 +4336,11 @@ void StemLabAudioProcessorEditor::addMidiMenuItems(juce::PopupMenu& menu, const 
     menu.addItem(midiSaveId, "Save MIDI...");
 
 #if JUCE_WINDOWS
+    // Enabled only while Live's Remote Script is answering: without it the
+    // notification goes nowhere, and upstream greyed the item out for the
+    // same reason. The settings menu carries the status text that explains it.
     if (processor.getHostIntegration() == StemLabAudioProcessor::hostIntegrationAbletonLive)
-        menu.addItem(midiSendId, "Send MIDI to Ableton");
+        menu.addItem(midiSendId, "Send MIDI to Ableton", processor.isAbletonBridgeActive());
 #endif
 }
 
@@ -4575,6 +4613,28 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
     menu.addItem(324, "Run Beat This! analysis", !processor.isEngineRunning(),
                  processor.isBeatThisEnabled());
 
+    /*
+        Upstream carried a Host / Source / Manual segmented control for this.
+        It is a setting, not something the eye needs while working, so it
+        goes in the menu with the rest of them - plus Off, which nothing
+        upstream offered: Source mode falls back to an invented 120 BPM when
+        nothing has been analysed, and drawing that as a confident bar grid
+        is worse than drawing none.
+    */
+    juce::PopupMenu gridMenu;
+    const auto gridMode = processor.getWaveformGridMode();
+    gridMenu.addItem(gridModeMenuBase + StemLabAudioProcessor::gridHost, "Follow Host Tempo",
+                     !processor.isStandaloneApp(),
+                     gridMode == StemLabAudioProcessor::gridHost);
+    gridMenu.addItem(gridModeMenuBase + StemLabAudioProcessor::gridSource, "Follow Analysed Tempo",
+                     true, gridMode == StemLabAudioProcessor::gridSource);
+    gridMenu.addItem(gridModeMenuBase + StemLabAudioProcessor::gridManual, "Set Tempo Manually...",
+                     true, gridMode == StemLabAudioProcessor::gridManual);
+    gridMenu.addSeparator();
+    gridMenu.addItem(gridModeMenuBase + StemLabAudioProcessor::gridOff, "No Grid", true,
+                     gridMode == StemLabAudioProcessor::gridOff);
+    menu.addSubMenu("Beat Grid", gridMenu);
+
     juce::PopupMenu analysisModeMenu;
     analysisModeMenu.addItem(300, "Accurate (final0)", !processor.isEngineRunning(),
                              processor.getSourceAnalysisMode() ==
@@ -4606,9 +4666,6 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
 
     menu.addSeparator();
 
-
-    menu.addSeparator();
-
     menu.addSectionHeader("FI-STEM engine");
 
     menu.addItem(2, "Choose engine executable...");
@@ -4624,6 +4681,18 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
         menu.addSeparator();
         menu.addSectionHeader("Ableton Live");
         menu.addItem(5, "Install / Repair Ableton Integration...");
+    }
+    else if (processor.getHostIntegration() == StemLabAudioProcessor::hostIntegrationAbletonLive)
+    {
+        /*
+            Whether Live's Remote Script is actually running. It decides
+            whether "Send MIDI to Ableton" can do anything, so a user who
+            finds that item greyed out needs somewhere to read why. Disabled
+            because it is a readout, not a command.
+        */
+        menu.addSeparator();
+        menu.addSectionHeader("Ableton Live");
+        menu.addItem(6, processor.getAbletonBridgeStatus(), false, false);
     }
 
     auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
@@ -4657,16 +4726,27 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
             {
                 safeThis->launchAbletonSetup();
             }
-            else if (result >= 100 && result < 100 + StemLabAudioProcessor ::waveformColourCount)
+            else if (result >= gridModeMenuBase &&
+                     result <= gridModeMenuBase + StemLabAudioProcessor::gridOff)
             {
-                safeThis->processor.setWaveformColourIndex(result - 100);
-            }
-            else if (result >= 200 && result < 200 + StemLabAudioProcessor ::separatorEngineCount)
-            {
-                safeThis->processor.setSeparatorEngineIndex(result - 200);
+                const auto mode = result - gridModeMenuBase;
 
-                safeThis->processor.postUiStatus(
-                    "Separator: " + safeThis->processor.getSeparatorEngineDisplayName());
+                if (mode == StemLabAudioProcessor::gridManual)
+                {
+                    // The dialog sets the mode itself, once a usable tempo
+                    // has been typed. Setting it here too would leave a
+                    // cancelled dialog on a manual grid with no manual tempo.
+                    safeThis->promptForManualTempo();
+                }
+                else
+                {
+                    safeThis->processor.setWaveformGridMode(mode);
+
+                    safeThis->processor.postUiStatus(
+                        mode == StemLabAudioProcessor::gridOff  ? "Beat grid off"
+                        : mode == StemLabAudioProcessor::gridHost ? "Beat grid follows the host"
+                                                                  : "Beat grid follows the analysis");
+                }
             }
             else if (result == 300 || result == 301)
             {
@@ -4716,71 +4796,6 @@ namespace
 
         return 0;
     }
-}
-
-juce::File StemLabAudioProcessorEditor::updaterScript()
-{
-    return stemlab::paths::userDataDirectory().getChildFile("update.sh");
-}
-
-void StemLabAudioProcessorEditor::checkForUpdates()
-{
-    const auto script = updaterScript();
-
-    if (updateCheckRunning || !script.existsAsFile())
-        return;
-
-    updateCheckRunning = true;
-    refreshSettingsPage();
-
-    auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
-    const auto path = script.getFullPathName();
-
-    /*
-     * Off the message thread, without exception. --check asks github.com which
-     * release is newest, and readAllProcessOutput is documented to block until
-     * the process finishes: on a network that is down, that is however long
-     * curl waits before giving up, with the host's UI frozen behind it.
-     */
-    juce::Thread::launch(
-        [safeThis, path]
-        {
-            juce::ChildProcess process;
-            juce::String output;
-
-            if (process.start(juce::StringArray{path, "--check"}))
-                output = process.readAllProcessOutput().trim();
-            else
-                output = "Could not run " + path;
-
-            juce::MessageManager::callAsync(
-                [safeThis, path, output]
-                {
-                    if (safeThis == nullptr)
-                        return;
-
-                    safeThis->updateCheckRunning = false;
-                    safeThis->refreshSettingsPage();
-                    safeThis->showUpdateCheckResult(path, output);
-                });
-        });
-}
-
-void StemLabAudioProcessorEditor::showUpdateCheckResult(const juce::String& scriptPath,
-                                                        const juce::String& output)
-{
-    /*
-     * Reporting only. Installing an update replaces StemLab.vst3, and replacing
-     * a plug-in binary underneath a host that has it loaded is how the next
-     * scan finds a half-written bundle - so the command is handed over instead
-     * of run.
-     */
-    const auto body =
-        (output.isNotEmpty() ? output : juce::String("The updater said nothing.")) +
-        "\n\nTo install an update, close your DAW and run:\n" + scriptPath;
-
-    juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,
-                                           "StemLab updates", body, "OK", this);
 }
 
 void StemLabAudioProcessorEditor::promptForManualTempo()

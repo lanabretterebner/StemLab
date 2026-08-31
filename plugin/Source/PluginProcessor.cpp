@@ -2041,20 +2041,25 @@ void StemLabAudioProcessor::transportTogglePlay()
 {
     /*
         There is one preview player here, and it holds either the source
-        (previewStemIndex -1) or one stem. The transport drives that player,
-        so it toggles whatever is loaded rather than always reaching for the
-        source - forcing the source would throw away the stem you had just
-        auditioned every time you pressed play.
+        (previewStemIndex -1), a root stem (0..stemCount-1), or an adaptive
+        child (-3, named by getPreviewRecursiveId). The transport drives that
+        player, so it toggles whatever is loaded rather than always reaching
+        for the source - forcing the source would throw away the lane you had
+        just auditioned every time you pressed play, and toggleStandalonePlayback
+        below does exactly that for any index other than -1.
     */
+    const bool holdingALane =
+        previewStemIndex.load() >= 0 || getPreviewRecursiveId().isNotEmpty();
+
     if (previewTransport.isPlaying())
     {
         previewTransport.stop();
-        setStatus(previewStemIndex.load() < 0 ? "Source paused" : "Stem paused");
+        setStatus(holdingALane ? "Stem paused" : "Source paused");
         sendChangeMessage();
         return;
     }
 
-    if (previewStemIndex.load() >= 0 && previewTransport.getLengthInSeconds() > 0.0)
+    if (holdingALane && previewTransport.getLengthInSeconds() > 0.0)
     {
         if (previewTransport.getCurrentPosition() >= previewTransport.getLengthInSeconds() - 0.01)
             previewTransport.setPosition(0.0);
@@ -2070,8 +2075,35 @@ void StemLabAudioProcessor::transportTogglePlay()
 
 void StemLabAudioProcessor::transportSeekNormalised(double normalisedPosition)
 {
-    seekCompletedStem(juce::jmax(0, getPreviewStemIndex()),
-                      juce::jlimit(0.0, 1.0, normalisedPosition));
+    /*
+        Seek whatever the shared player is holding. An adaptive child is
+        previewed by id, with previewStemIndex set to -3 rather than to any
+        lane's index, so clamping that index up to zero sent every click on a
+        child lane's waveform to the first root stem instead.
+    */
+    const auto position = juce::jlimit(0.0, 1.0, normalisedPosition);
+    const auto recursiveId = getPreviewRecursiveId();
+
+    if (recursiveId.isNotEmpty())
+    {
+        seekRecursiveStem(recursiveId, position);
+        return;
+    }
+
+    const auto index = getPreviewStemIndex();
+
+    if (index >= 0)
+    {
+        seekCompletedStem(index, position);
+        return;
+    }
+
+    // The source, which no stem index describes.
+    if (previewTransport.getLengthInSeconds() > 0.0)
+    {
+        previewTransport.setPosition(position * previewTransport.getLengthInSeconds());
+        sendChangeMessage();
+    }
 }
 
 juce::Range<double> StemLabAudioProcessor::getWaveformViewRange(double totalLengthSeconds) const
@@ -2122,6 +2154,45 @@ void StemLabAudioProcessor::setWaveformZoom(double zoom)
 
     waveformZoom.store(clamped);
     sendChangeMessage();
+}
+
+StemLabGridInfo StemLabAudioProcessor::getWaveformGridScalars() const
+{
+    StemLabGridInfo info;
+    info.mode = waveformGridMode.load();
+    info.captureStartPpq = juce::jmax(0.0, captureStartPpq.load());
+
+    if (info.mode == gridOff)
+    {
+        info.bpm = 0.0;
+        return info;
+    }
+
+    if (info.mode == gridHost)
+    {
+        info.bpm = lastHostBpm.load();
+        info.numerator = lastHostNumerator.load();
+        info.denominator = lastHostDenominator.load();
+        const auto barLength = info.numerator * 4.0 / juce::jmax(1, info.denominator);
+        const auto nextBarPpq = std::ceil(info.captureStartPpq / barLength) * barLength;
+        info.barOne = (nextBarPpq - info.captureStartPpq) * 60.0 / info.bpm;
+    }
+    else if (info.mode == gridManual)
+    {
+        info.bpm = manualGridBpm.load();
+        info.numerator = manualGridNumerator.load();
+        info.denominator = manualGridDenominator.load();
+        info.barOne = manualGridBarOne.load();
+    }
+    else
+    {
+        info.bpm = sourceBpm.load() > 0.0 ? sourceBpm.load() : 120.0;
+        info.numerator = sourceMeterNumerator.load();
+        info.denominator = sourceMeterDenominator.load();
+        info.barOne = sourceBarOne.load();
+    }
+
+    return info;
 }
 
 StemLabGridInfo StemLabAudioProcessor::getWaveformGridInfo() const
@@ -2296,6 +2367,18 @@ void StemLabAudioProcessor::soloStemForExport(int index)
 
     setStatus("Solo export: " + getStemName(index) +
               " (right-click again to restore previous selection)");
+}
+
+bool StemLabAudioProcessor::isStemSoloedForExport(int index) const
+{
+    const juce::ScopedLock soloLock(exportSoloLock);
+    return exportSoloActive && !exportSoloRecursive && exportSoloStemIndex == index;
+}
+
+bool StemLabAudioProcessor::isRecursiveStemSoloedForExport(const juce::String& itemId) const
+{
+    const juce::ScopedLock soloLock(exportSoloLock);
+    return exportSoloActive && exportSoloRecursive && exportSoloRecursiveId == itemId;
 }
 
 void StemLabAudioProcessor::soloRecursiveStemForExport(const juce::String& itemId)
@@ -2593,6 +2676,13 @@ StemLabMidiInfo StemLabAudioProcessor::getMidiInfo(const juce::String& id) const
     const juce::ScopedLock lock(midiInfoLock);
     const auto found = midiInfos.find(id.toStdString());
     return found != midiInfos.end() ? found->second : StemLabMidiInfo{};
+}
+
+size_t StemLabAudioProcessor::getMidiNoteCount(const juce::String& id) const
+{
+    const juce::ScopedLock lock(midiInfoLock);
+    const auto found = midiInfos.find(id.toStdString());
+    return found != midiInfos.end() ? found->second.notes.size() : 0;
 }
 
 bool StemLabAudioProcessor::hasMidiInfo(const juce::String& id) const

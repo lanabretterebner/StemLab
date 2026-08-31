@@ -425,10 +425,6 @@ private:
     void changeListenerCallback(juce::ChangeBroadcaster*) override;
 
 
-    /** Open the Model Manager, or bring what it shows up to date. */
-    void refreshSettingsPage();
-
-    /** Decides whether the manager should let itself in on this refresh. */
     void chooseStandaloneAudioFile();
     bool loadSourceFile(const juce::File& file);
     void chooseSaveFolder();
@@ -444,15 +440,6 @@ private:
     /** Ask for the beat grid's tempo, and switch to the manual grid on OK. */
     void promptForManualTempo();
 
-    /** update.sh, as the bundle's install.sh leaves it beside the app. */
-    static juce::File updaterScript();
-    /** Runs it with --check, off the message thread. */
-    void checkForUpdates();
-    /** Shows what --check said, plus the command that would install it. */
-    void showUpdateCheckResult(const juce::String& scriptPath,
-                               const juce::String& output);
-    /** One check at a time; the row stays pressable while one is in flight. */
-    bool updateCheckRunning = false;
     void launchAbletonSetup();
     void refreshFromProcessor();
 

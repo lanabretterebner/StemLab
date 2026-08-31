@@ -99,6 +99,16 @@ nothing for them to act on:
   and torch-compile** were a settings overlay; the gear opens a dropdown.
 - **REAPER** actions — this build targets Windows hosts and Ableton Live.
 
+Two upstream controls are arranged differently rather than dropped:
+
+- **Per-lane waveform heights** were resizable and persisted per lane.
+  Lanes here are one fixed height, and the magnifier zooms every lane
+  together instead, so the rows stay on one rhythm.
+- **Export solo** was a right-click on a stem's checkbox, with nothing on
+  screen to announce it. It is now **Solo for Export** in each lane's
+  kebab menu, and the same entry reads **Restore Export Selection** while
+  a lane is soloed.
+
 ### `plugin/Source/PluginProcessor.h/.cpp`
 
 Owns application state and external work:
