@@ -143,9 +143,20 @@ class RoFormerBackend:
                     f"Resampling {source_rate} Hz input to {ROFORMER_SAMPLE_RATE} Hz "
                     "for BS-RoFormer..."
                 )
+                # The conformed file has to land on a .wav path, and be the
+                # only one in the folder. FLAC is staged through unchanged
+                # above, and the CLI discovers its input with glob("*.wav"):
+                # renaming a WAV onto song.flac left nothing for it to find,
+                # and leaving both would have separated the folder twice.
+                target = staged.with_suffix(".wav")
                 aligned = staging / f"{staged.stem}_stemlab_{ROFORMER_SAMPLE_RATE}.wav"
                 resample_file(staged, aligned, ROFORMER_SAMPLE_RATE)
-                aligned.replace(staged)
+
+                if target != staged:
+                    staged.unlink()
+
+                aligned.replace(target)
+                staged = target
             command = [
                 sys.executable,
                 "-m",
