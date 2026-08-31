@@ -324,7 +324,7 @@ void StemWaveformComponent::paint(juce::Graphics& g)
             const auto x = static_cast<float>(bounds.getX()) +
                            static_cast<float>(stemlab::waveform::timeToPixel(
                                line.seconds, visibleStart, visibleEnd, bounds.getWidth()));
-            g.setColour(stemlab::theme::colours::neutral600()
+            g.setColour(stemlab::theme::colours::gridLine()
                             .withAlpha(bar ? 0.65f : (subdivision ? 0.16f : 0.34f)));
             g.drawLine(x, static_cast<float>(bounds.getY()), x,
                        static_cast<float>(bounds.getBottom()), bar ? 1.25f : 1.0f);
@@ -342,7 +342,7 @@ void StemWaveformComponent::paint(juce::Graphics& g)
         }
     }
 
-    g.setColour(stemlab::theme::colours::neutral800());
+    g.setColour(stemlab::theme::colours::laneCentreLine());
     g.drawHorizontalLine(bounds.getCentreY(), static_cast<float>(bounds.getX()),
                          static_cast<float>(bounds.getRight()));
 
@@ -503,9 +503,9 @@ void StemWaveformComponent::paint(juce::Graphics& g)
                            pitchPosition * static_cast<float>(bounds.getHeight());
             const juce::Rectangle<float> noteBounds(
                 x1, y - noteHeight * 0.5f, juce::jmax(1.5f, x2 - x1), noteHeight);
-            g.setColour(accent().withAlpha(0.34f));
+            g.setColour(stemlab::theme::colours::midiOverlay());
             g.fillRoundedRectangle(noteBounds, 1.5f);
-            g.setColour(stemlab::theme::colours::text().withAlpha(0.42f));
+            g.setColour(stemlab::theme::colours::midiOverlayEdge());
             g.drawRoundedRectangle(noteBounds, 1.5f, 0.7f);
         }
     }

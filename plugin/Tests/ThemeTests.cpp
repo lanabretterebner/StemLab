@@ -114,6 +114,50 @@ int main()
     expectContrast("progressFill on progressTrack", progressFill(), progressTrack(),
                    largeTextOrUi);
 
+    std::printf("\n-- the lane keeps upstream's waveform readable --\n");
+    /*
+        The waveform palette is not the theme's to choose - it is mapped from
+        the audio's own level, and it was tuned against a specific backdrop.
+        What the theme owes it is the surround: a well that stays a recess,
+        and rules and overlays that stay behind the audio rather than
+        competing with it.
+    */
+    if (relativeLuminance(laneWell()) < relativeLuminance(ground()))
+    {
+        std::printf("ok   laneWell is a recess, darker than ground\n");
+    }
+    else
+    {
+        std::printf("FAIL laneWell is not darker than ground; the lane stops "
+                    "reading as a recess\n");
+        ++failures;
+    }
+
+    // Held near the well on purpose: a step lighter reaches 4.5:1 and starts
+    // competing with the waveform the rules sit behind.
+    expectContrast("gridLine on laneWell stays quiet", gridLine(), laneWell(), 2.0);
+    if (contrastRatio(laneWell().overlaidWith(gridLine()), laneWell()) > 3.6)
+    {
+        std::printf("FAIL gridLine is too loud over the lane\n");
+        ++failures;
+    }
+    else
+    {
+        std::printf("ok   gridLine stays behind the audio\n");
+    }
+
+    // Notes lie under the playhead. If they share its colour they read as it.
+    if (midiOverlay().withAlpha(1.0f) == playhead().withAlpha(1.0f))
+    {
+        std::printf("FAIL midiOverlay is the playhead's colour; notes under "
+                    "the playhead become indistinguishable from it\n");
+        ++failures;
+    }
+    else
+    {
+        std::printf("ok   midiOverlay is distinct from the playhead\n");
+    }
+
     std::printf("\n-- the brand colour is the icon's, exactly --\n");
     // Resources/FIStemIcon.png is two colours: black, and this amber across
     // 63% of its opaque pixels. If the ramp is ever regenerated, accent400
