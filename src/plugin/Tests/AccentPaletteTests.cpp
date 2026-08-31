@@ -9,6 +9,7 @@
 */
 
 #include "StemLabAccent.h"
+#include "StemLabTheme.h"
 
 #include <cassert>
 #include <cmath>
@@ -146,6 +147,39 @@ int main()
     for (int a = 0; a < accents::count(); ++a)
         for (int b = a + 1; b < accents::count(); ++b)
             assert(accents::swatch(a) != accents::swatch(b));
+
+    /*  The waveform palette named "Accent" draws with the accent that is
+        set, not with the one that shipped.
+
+        It is called Accent because that is what it is. A palette that had
+        been renamed and left drawing the old blurple would look identical on
+        the default and wrong on every other choice - and would only be
+        noticed by someone who set an accent and then looked at a waveform,
+        which needs a separation first. So it is asserted here rather than
+        left to be found.
+    */
+    {
+        namespace wave = stemlab::theme::waveform;
+
+        assert(wave::paletteName(0) == juce::String("Accent"));
+
+        for (int preset = 0; preset < accents::count(); ++preset)
+        {
+            accents::setIndex(preset);
+
+            // Any stem name and any brightness: palette 0 ignores both, which
+            // is the difference between it and Stem Color and Spectrum.
+            assert(wave::playedColor(0, "vocals", 0.2f) == accents::step(accents::Step::base));
+            assert(wave::playedColor(0, "drums", 0.9f) == accents::step(accents::Step::base));
+        }
+
+        // And it actually moves: the blurple is not hiding behind the name.
+        accents::setIndex(3);
+        assert(wave::playedColor(0, "vocals", 0.5f).getARGB() != accents::defaultRamp[0]);
+
+        accents::setIndex(0);
+        assert(wave::playedColor(0, "vocals", 0.5f).getARGB() == accents::defaultRamp[0]);
+    }
 
     return 0;
 }
