@@ -192,9 +192,12 @@ namespace stemlab::theme
 
             The redesign shipped with a single accent waveform, which lost
             the one thing color was carrying: which lane you are looking at
-            in a tall adaptive tree. Index 0 is that accent look; every
-            palette colors the whole lane at full strength - playback
-            position is the playhead's job, not a brightness split.
+            in a tall adaptive tree. Index 0 is that accent look - named
+            "Accent" rather than after the design system, because it now
+            follows whichever accent is set and calling it Nocturne would
+            name it after a colour it may not be. Every palette colors the
+            whole lane at full strength - playback position is the
+            playhead's job, not a brightness split.
 
             Beyond the accent and the per-stem identity colors, every
             palette is driven by the audio itself: Spectrum sweeps a hue
@@ -202,8 +205,10 @@ namespace stemlab::theme
             deck-style low/mid/high balance. The solid single-color fills
             that used to sit here said nothing a lane name did not.
 
-            The index persists in plugin state, so the order of these must
-            stay stable.
+            The chosen index is remembered by name (see the processor's
+            waveform-palette preference), so these may be reordered - but
+            paletteRgb and paletteThreeBand below are positions the painter
+            branches on, and must follow the list if they move.
         */
         constexpr int paletteCount = 5;
 
@@ -216,7 +221,7 @@ namespace stemlab::theme
         inline juce::String paletteName(int index)
         {
             static const char* const names[paletteCount] = {
-                "Nocturne", "Stem Color", "Spectrum", "RGB", "3-Band"};
+                "Accent", "Stem Color", "Spectrum", "RGB", "3-Band"};
 
             return names[juce::jlimit(0, paletteCount - 1, index)];
         }
