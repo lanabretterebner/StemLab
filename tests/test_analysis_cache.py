@@ -65,7 +65,7 @@ def test_tempo_candidates_meter_downbeats_and_bar_one():
     assert result.confidence > 0.7
 
 
-def test_analysis_cache_invalidation_and_local_correction(tmp_path):
+def test_analysis_cache_invalidation(tmp_path):
     cache = AnalysisCache(tmp_path / "analysis.sqlite3")
     source_hash = "abc123"
     cache.put_result("beats", source_hash, "v1", {"mode": "fast"}, {"bpm": 120})
@@ -74,17 +74,54 @@ def test_analysis_cache_invalidation_and_local_correction(tmp_path):
     assert cache.get_result("beats", source_hash, "v2", {"mode": "fast"}) is None
     assert cache.get_result("beats", source_hash, "v1", {"mode": "accurate"}) is None
 
-    correction = {
-        "bpm": 128.0,
-        "key": "G minor",
-        "meter_numerator": 3,
-        "meter_denominator": 4,
-        "bar_one": 0.25,
-    }
-    cache.set_correction(source_hash, correction)
-    assert cache.get_correction(source_hash) == correction
-    assert cache.forget_correction(source_hash)
-    assert cache.get_correction(source_hash) is None
+
+def test_schema_1_corrections_table_is_dropped_on_open(tmp_path):
+    """An old cache must not keep overriding an analysis nothing can edit.
+
+    Schema 1 stored manual BPM/key corrections and applied them to every
+    later analysis of that file. Nothing writes them any more, so a row left
+    behind by an older install would silently override results forever with
+    no way to see it or clear it. Opening the cache has to shed the table.
+    """
+    path = tmp_path / "analysis.sqlite3"
+
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE corrections (
+                source_hash TEXT PRIMARY KEY,
+                bpm REAL,
+                key TEXT,
+                meter_numerator INTEGER,
+                meter_denominator INTEGER,
+                bar_one REAL,
+                updated_at REAL NOT NULL
+            );
+            CREATE TABLE cache_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            """
+        )
+        connection.execute(
+            "INSERT INTO corrections VALUES ('abc123', 128.0, 'G minor', 3, 4, 0.25, 0.0)"
+        )
+        connection.execute("INSERT INTO cache_metadata VALUES ('schema', '1')")
+
+    cache = AnalysisCache(path)
+
+    with sqlite3.connect(path) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        schema = connection.execute(
+            "SELECT value FROM cache_metadata WHERE key = 'schema'"
+        ).fetchone()[0]
+
+    assert "corrections" not in tables
+    assert schema == "2"
+
+    # And the cache is still usable afterwards.
+    cache.put_result("beats", "abc123", "v1", {"mode": "fast"}, {"bpm": 120})
+    assert cache.get_result("beats", "abc123", "v1", {"mode": "fast"}) == {"bpm": 120}
 
 
 

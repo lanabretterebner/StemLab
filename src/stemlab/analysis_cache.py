@@ -1,4 +1,4 @@
-"""Local-only cache and user corrections for source analysis."""
+"""Local-only cache for source analysis."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from typing import Any
 from .paths import analysis_dir
 from .runtime import CancellationToken
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 
 def managed_analysis_dir() -> Path:
@@ -86,22 +86,18 @@ class AnalysisCache:
                     PRIMARY KEY (kind, source_hash, algorithm_version, settings_hash)
                 );
 
-                CREATE TABLE IF NOT EXISTS corrections (
-                    source_hash TEXT PRIMARY KEY,
-                    bpm REAL,
-                    key TEXT,
-                    meter_numerator INTEGER,
-                    meter_denominator INTEGER,
-                    bar_one REAL,
-                    updated_at REAL NOT NULL
-                );
-
                 CREATE TABLE IF NOT EXISTS cache_metadata (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
                 """
             )
+            # Schema 1 carried a "corrections" table of manual BPM/key
+            # overrides. Nothing writes or reads them any more, so it is
+            # dropped rather than left behind: a stale row in it used to
+            # override the analysis on every run of that file, and a store
+            # nothing can edit is worse than no store.
+            connection.execute("DROP TABLE IF EXISTS corrections")
             connection.execute(
                 "INSERT OR REPLACE INTO cache_metadata(key, value) VALUES ('schema', ?)",
                 (str(_SCHEMA_VERSION),),
@@ -145,59 +141,12 @@ class AnalysisCache:
                 (kind, source_hash, algorithm_version, settings_hash, payload, time.time()),
             )
 
-    def get_correction(self, source_hash: str) -> dict[str, Any] | None:
-        with self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT bpm, key, meter_numerator, meter_denominator, bar_one
-                FROM corrections WHERE source_hash = ?
-                """,
-                (source_hash,),
-            ).fetchone()
-        if row is None:
-            return None
-        return {
-            "bpm": row[0],
-            "key": row[1],
-            "meter_numerator": row[2],
-            "meter_denominator": row[3],
-            "bar_one": row[4],
-        }
-
-    def set_correction(self, source_hash: str, correction: Mapping[str, Any]) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT OR REPLACE INTO corrections
-                    (source_hash, bpm, key, meter_numerator, meter_denominator, bar_one, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    source_hash,
-                    correction.get("bpm"),
-                    correction.get("key"),
-                    correction.get("meter_numerator"),
-                    correction.get("meter_denominator"),
-                    correction.get("bar_one"),
-                    time.time(),
-                ),
-            )
-
-    def forget_correction(self, source_hash: str) -> bool:
-        with self._connect() as connection:
-            cursor = connection.execute(
-                "DELETE FROM corrections WHERE source_hash = ?", (source_hash,)
-            )
-        return cursor.rowcount > 0
-
     def clear(self) -> int:
-        """Clear cached analyses and corrections while retaining the schema."""
+        """Clear cached analyses while retaining the schema."""
         with self._connect() as connection:
             result_count = connection.execute("SELECT COUNT(*) FROM analysis_results").fetchone()[0]
-            correction_count = connection.execute("SELECT COUNT(*) FROM corrections").fetchone()[0]
             connection.execute("DELETE FROM analysis_results")
-            connection.execute("DELETE FROM corrections")
-        return int(result_count + correction_count)
+        return int(result_count)
 
 
 def cleanup_stale_midi_drag_files(max_age_days: int = 7) -> int:

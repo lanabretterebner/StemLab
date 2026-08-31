@@ -66,7 +66,6 @@ namespace stemlab::widgets
             double halfBpm = 0.0;
             double detectedBpm = 0.0;
             double doubleBpm = 0.0;
-            bool canForgetCorrection = false;
 
             bool fusedNormalise = false;
             bool fusedNormaliseAvailable = false;
@@ -100,7 +99,6 @@ namespace stemlab::widgets
         std::function<void(int)> onAnalysisQuality;
         std::function<void(int)> onTempoMode;
         std::function<void(int)> onTempoInterpretation;
-        std::function<void()> onForgetCorrection;
         std::function<void()> onClearAnalysisCache;
         std::function<void(bool)> onFusedNormalise;
         std::function<void()> onCheckUpdates;

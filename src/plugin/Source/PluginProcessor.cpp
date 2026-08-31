@@ -2292,7 +2292,6 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
     sourceBarOne.store(0.0);
     sourceMeterNumerator.store(4);
     sourceMeterDenominator.store(4);
-    sourceAnalysisCorrected.store(false);
 
     {
         const juce::ScopedLock lock(stateLock);
@@ -6230,9 +6229,7 @@ juce::AudioProcessorEditor* StemLabAudioProcessor::createEditor()
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new StemLabAudioProcessor(); }
 
-bool StemLabAudioProcessor::startSourceAnalysis(const juce::File& source,
-                                                const juce::StringArray& correctionArguments,
-                                                const juce::String& correctionLabel)
+bool StemLabAudioProcessor::startSourceAnalysis(const juce::File& source)
 {
     analysisThread.reset();
     sourceAnalysisRunning.store(true);
@@ -6247,7 +6244,6 @@ bool StemLabAudioProcessor::startSourceAnalysis(const juce::File& source,
     sourceDetectedBpm.store(-1.0);
     sourceHalfBpm.store(-1.0);
     sourceDoubleBpm.store(-1.0);
-    sourceAnalysisCorrected.store(false);
     {
         const juce::ScopedLock lock(stateLock);
         sourceKey.clear();
@@ -6310,13 +6306,6 @@ bool StemLabAudioProcessor::startSourceAnalysis(const juce::File& source,
         }
     }
 
-    // A correction rides along with the analysis rather than in a process of
-    // its own: the CLI writes it to the local store before it reads the
-    // cancel token, so it survives a cancelled analysis half, and the
-    // sourceAnalysis kind is the one that streams stdout here and honors the
-    // cancel file at all.
-    command.addArray(correctionArguments);
-
     analysisThread = std::make_unique<StemLabUtilityThread>(
         *this, StemLabUtilityThread::sourceAnalysis, command, source, output, juce::String{},
         juce::String{}, cancelFile);
@@ -6329,11 +6318,7 @@ bool StemLabAudioProcessor::startSourceAnalysis(const juce::File& source,
         return false;
     }
 
-    // The correction is applied first and silently; naming it here is the
-    // only point at which the user sees it happen, and the engine's own
-    // stage lines take the footer over as soon as the analysis half starts.
-    setStatus(correctionLabel.isEmpty() ? "Analyzing source with Beat This!..."
-                                        : correctionLabel + ", then re-analyzing...");
+    setStatus("Analyzing source with Beat This!...");
     sendChangeMessage();
     return true;
 }
@@ -6372,7 +6357,6 @@ void StemLabAudioProcessor::finishSourceAnalysis(const juce::File& source, const
     int denominator = 4;
     bool tempoSteady = true;
     std::vector<StemLabTempoSegment> tempoSegments;
-    bool corrected = false;
     juce::String hash;
     juce::String analysisDevice;
     juce::String beatModel;
@@ -6419,7 +6403,6 @@ void StemLabAudioProcessor::finishSourceAnalysis(const juce::File& source, const
                 }
             }
 
-            corrected = static_cast<bool>(object->getProperty("corrected"));
             hash = object->getProperty("source_hash").toString();
             analysisDevice = object->getProperty("device").toString();
             beatModel = object->getProperty("beat_model").toString();
@@ -6466,12 +6449,7 @@ void StemLabAudioProcessor::finishSourceAnalysis(const juce::File& source, const
     sourceMeterNumerator.store(numerator);
     sourceMeterDenominator.store(denominator);
     sourceTempoSteady.store(tempoSteady);
-    sourceAnalysisCorrected.store(corrected);
-
-    if (corrected)
-        sourceBpm.store(bpm > 0.0 ? bpm : -1.0);
-    else
-        setTempoInterpretation(tempoInterpretation.load());
+    setTempoInterpretation(tempoInterpretation.load());
 
     sourceAnalysisRunning.store(false);
     engineCancelRequested.store(false);
@@ -6877,51 +6855,10 @@ void StemLabAudioProcessor::setTempoInterpretation(int interpretation)
     interpretation = juce::jlimit(static_cast<int>(tempoHalf), static_cast<int>(tempoDouble),
                                    interpretation);
     tempoInterpretation.store(interpretation);
-    if (sourceAnalysisCorrected.load())
-        return;
     const double choices[] = {sourceHalfBpm.load(), sourceDetectedBpm.load(),
                               sourceDoubleBpm.load()};
     sourceBpm.store(choices[interpretation] > 0.0 ? choices[interpretation] : -1.0);
     sendChangeMessage();
-}
-
-bool StemLabAudioProcessor::saveSourceCorrection(double bpm, const juce::String& key,
-                                                 int numerator, int denominator, double barOne)
-{
-    return applySourceCorrection(
-        {"--set-correction", "--correct-bpm", juce::String(bpm, 4), "--correct-key", key,
-         "--correct-meter-numerator", juce::String(numerator), "--correct-meter-denominator",
-         juce::String(denominator), "--correct-bar-one", juce::String(barOne, 6)},
-        "Saving local analysis correction");
-}
-
-bool StemLabAudioProcessor::forgetSourceCorrection()
-{
-    return applySourceCorrection({"--forget-correction"}, "Forgetting local analysis correction");
-}
-
-bool StemLabAudioProcessor::applySourceCorrection(const juce::StringArray& correctionArguments,
-                                                  const juce::String& label)
-{
-    const auto source = getCaptureFile();
-
-    if (!source.existsAsFile() || sourceAnalysisRunning.load())
-        return false;
-
-    // One process for both halves. The two-process form re-entered
-    // startSourceAnalysis from the maintenance thread's own run(), where its
-    // first statement - analysisThread.reset() - destroyed and joined the
-    // thread it was running on.
-    if (beatThisEnabled.load())
-        return startSourceAnalysis(source, correctionArguments, label);
-
-    // Analysis switched off: there is nothing for the correction to be
-    // followed by, and the CLI's correction-only form is the one that
-    // returns as soon as the store is written.
-    juce::StringArray arguments{"--input", source.getFullPathName()};
-    arguments.addArray(correctionArguments);
-
-    return launchAnalysisMaintenance(arguments, label);
 }
 
 bool StemLabAudioProcessor::clearAnalysisCache()

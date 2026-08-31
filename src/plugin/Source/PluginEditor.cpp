@@ -98,7 +98,6 @@ constexpr int manualTempoId = 405;
 constexpr int analysisModeMenuBase = 410;
 constexpr int tempoMenuBase = 420;
 constexpr int analysisEnableId = 430;
-constexpr int analysisForgetId = 431;
 constexpr int analysisClearCacheId = 432;
 constexpr int versionItemId = 440;
 constexpr int modelManagerId = 441;
@@ -4842,14 +4841,6 @@ void StemLabAudioProcessorEditor::wireSettingsPage()
         refreshFromProcessor();
     };
 
-    settingsPanel.onForgetCorrection = [this]
-    {
-        if (processor.forgetSourceCorrection())
-            processor.postUiStatus("Saved analysis correction removed");
-
-        refreshFromProcessor();
-    };
-
     settingsPanel.onClearAnalysisCache = [this]
     {
         // No feedback post: the launch already reports the clearing job on
@@ -4962,7 +4953,6 @@ void StemLabAudioProcessorEditor::refreshSettingsPage()
                 juce::String(sections.size()) + " sections: " + parts.joinIntoString(", ");
         }
     }
-    settings.canForgetCorrection = processor.getSourceBpm() > 0.0;
 
     settings.fusedNormalise = processor.isFusedStemNormalisation();
     settings.fusedNormaliseAvailable =
