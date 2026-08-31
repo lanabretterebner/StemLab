@@ -1,6 +1,5 @@
 param(
-    [string]$UserLibrary,
-    [switch]$ElevatedChild
+    [string]$UserLibrary
 )
 
 $ErrorActionPreference = "Stop"
@@ -28,7 +27,14 @@ $RemoteSource = if (Test-Path -LiteralPath (Join-Path $PortableRemote "__init__.
 } else {
     Join-Path $RepoRoot "src\integrations\ableton\StemLabRemote"
 }
-$VstDestination = Join-Path $env:CommonProgramFiles "VST3\StemLab.vst3"
+# The per-user VST3 folder Steinberg's plug-in-locations page lists first,
+# which is where the installer now puts the bundle. Writing here needs no
+# elevation, and neither does anything else this script does.
+$Vst3Root = Join-Path $env:LOCALAPPDATA "Programs\Common\VST3"
+$VstDestination = Join-Path $Vst3Root "StemLab.vst3"
+# Where 0.1.x put it: machine-wide, under Program Files, and removable only
+# with administrator rights. Hosts scan both folders, so one left behind means
+# the DAW lists StemLab twice.
 $LegacyVstDestination = Join-Path $env:CommonProgramFiles "VST3\StemLab.vst3"
 $VstModule = Join-Path $VstDestination "Contents\x86_64-win\StemLab.vst3"
 
@@ -91,14 +97,8 @@ function Resolve-UserLibrary([string]$ExplicitPath) {
     throw "Ableton User Library was not found. In Ableton, right-click User Library, choose Show in Explorer, then pass that folder with -UserLibrary."
 }
 
-function Test-Administrator {
-    $Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $Principal = New-Object Security.Principal.WindowsPrincipal($Identity)
-    return $Principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
-
 if (-not $VstSource -and -not (Test-Path -LiteralPath $VstModule -PathType Leaf)) {
-    throw "StemLab.vst3 was not found in the portable/source payload or the system VST3 directory."
+    throw "StemLab.vst3 was not found in the payload, in a source build, or in $Vst3Root."
 }
 if (-not (Test-Path -LiteralPath (Join-Path $RemoteSource "__init__.py") -PathType Leaf)) {
     throw "StemLabRemote source is missing: $RemoteSource"
@@ -109,35 +109,51 @@ if (Get-Process -Name "Ableton*" -ErrorAction SilentlyContinue) {
 
 $ResolvedUserLibrary = Resolve-UserLibrary $UserLibrary
 
-if (-not (Test-Administrator)) {
-    $Arguments = @(
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-File", ('"' + $PSCommandPath + '"'),
-        "-ElevatedChild",
-        "-UserLibrary", ('"' + $ResolvedUserLibrary + '"')
-    )
-    $Process = Start-Process powershell.exe -Verb RunAs -ArgumentList $Arguments -Wait -PassThru
-    exit $Process.ExitCode
+# Only this one removal needs administrator rights, so only it is elevated.
+#
+# The rest of this script must NOT run elevated, which is why the whole thing
+# no longer relaunches itself: under over-the-shoulder elevation the elevated
+# process belongs to the administrator, and $env:LOCALAPPDATA and the Ableton
+# User Library would then be their profile rather than the one at the keyboard.
+if (Test-Path -LiteralPath $LegacyVstDestination) {
+    Write-Host "Removing the old machine-wide StemLab.vst3 (needs administrator rights)..."
+
+    $Quoted = $LegacyVstDestination.Replace("'", "''")
+    $Removal = "`$ErrorActionPreference='Stop'; Remove-Item -LiteralPath '$Quoted' -Recurse -Force"
+
+    # Declining the UAC prompt throws rather than returning a code, and with
+    # $ErrorActionPreference = Stop that would end the script on a raw .NET
+    # message instead of the one below.
+    $ExitCode = 1
+    try {
+        $Process = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList @(
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-Command", $Removal
+        )
+        $ExitCode = $Process.ExitCode
+    }
+    catch {
+        $ExitCode = 1
+    }
+
+    if ($ExitCode -ne 0 -or (Test-Path -LiteralPath $LegacyVstDestination)) {
+        throw @"
+The old machine-wide plug-in is still installed:
+  $LegacyVstDestination
+Delete that folder as an administrator and run this again. Leaving it there
+makes your DAW list StemLab twice, and the old copy cannot find its Engine.
+"@
+    }
 }
 
 $RemoteRoot = Join-Path $ResolvedUserLibrary "Remote Scripts"
 $RemoteDestination = Join-Path $RemoteRoot "StemLabRemote"
-$LegacyRemoteDestination = Join-Path $RemoteRoot "StemLabRemote"
 $ResolvedRemoteRoot = [System.IO.Path]::GetFullPath($RemoteRoot).TrimEnd('\') + '\'
 $ResolvedRemoteDestination = [System.IO.Path]::GetFullPath($RemoteDestination)
 
 if (-not $ResolvedRemoteDestination.StartsWith($ResolvedRemoteRoot, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Refusing unsafe Remote Script destination: $ResolvedRemoteDestination"
-}
-
-if (Test-Path -LiteralPath $LegacyVstDestination) {
-    Write-Host "Removing legacy VST3..."
-    Remove-Item -LiteralPath $LegacyVstDestination -Recurse -Force -ErrorAction SilentlyContinue
-}
-if (Test-Path -LiteralPath $LegacyRemoteDestination) {
-    Write-Host "Removing legacy Ableton Remote Script..."
-    Remove-Item -LiteralPath $LegacyRemoteDestination -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 if ($VstSource) {
@@ -147,7 +163,7 @@ if ($VstSource) {
     Copy-Item -LiteralPath $VstSource -Destination $VstDestination -Recurse -Force
 }
 else {
-    Write-Host "StemLab.vst3 is already installed in the system VST3 directory."
+    Write-Host "StemLab.vst3 is already installed in $Vst3Root."
 }
 
 Write-Host "Installing StemLabRemote..."
@@ -156,27 +172,18 @@ Remove-Item -LiteralPath $RemoteDestination -Recurse -Force -ErrorAction Silentl
 Copy-Item -LiteralPath $RemoteSource -Destination $RemoteDestination -Recurse -Force
 Remove-Item -LiteralPath (Join-Path $RemoteDestination "__pycache__") -Recurse -Force -ErrorAction SilentlyContinue
 
-# Record the exact engine command for the separately installed VST3. Portable
-# builds point at Engine\python.exe; source-development installs point at the
-# venv worker. This avoids embedding a developer-specific absolute checkout path
-# into the C++ binary.
-$PortableEnginePython = Join-Path $RepoRoot "Engine\python.exe"
-$DevelopmentWorker = Join-Path $RepoRoot ".venv\Scripts\stemlab-plugin-job.exe"
-$EnginePointer = $null
-if (Test-Path -LiteralPath $PortableEnginePython -PathType Leaf) {
-    $EnginePointer = $PortableEnginePython
-}
-elseif (Test-Path -LiteralPath $DevelopmentWorker -PathType Leaf) {
-    $EnginePointer = $DevelopmentWorker
-}
+# Nothing is written to say where the Engine is. The plug-in resolves exactly
+# %LOCALAPPDATA%\StemLab\Engine\python.exe, which is where the installer puts
+# it, and does not look anywhere else - so an install has nothing to record and
+# nothing to get wrong. A source checkout has no Engine there: set
+# STEMLAB_ENGINE to the interpreter you want before starting Ableton.
+$InstalledEngine = Join-Path $env:LOCALAPPDATA "StemLab\Engine\python.exe"
 
-if ($EnginePointer) {
-    $FiStemData = Join-Path $env:LOCALAPPDATA "StemLab"
-    New-Item -ItemType Directory -Path $FiStemData -Force | Out-Null
-    Set-Content `
-        -LiteralPath (Join-Path $FiStemData "portable_engine_path.txt") `
-        -Encoding ASCII `
-        -Value ([System.IO.Path]::GetFullPath($EnginePointer))
+if (-not (Test-Path -LiteralPath $InstalledEngine -PathType Leaf)) {
+    Write-Host ""
+    Write-Host "No Engine at $InstalledEngine." -ForegroundColor Yellow
+    Write-Host "Separation will not run until StemLab is installed, or until you set"
+    Write-Host "STEMLAB_ENGINE to an interpreter that has stemlab installed."
 }
 
 if (-not (Test-Path -LiteralPath $VstModule -PathType Leaf)) {

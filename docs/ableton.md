@@ -23,11 +23,22 @@ The final command installs:
 
 ```text
 StemLab.vst3
-  -> C:\Program Files\Common Files\VST3\StemLab.vst3
+  -> %LOCALAPPDATA%\Programs\Common\VST3\StemLab.vst3
 
 StemLabRemote
   -> <Ableton User Library>\Remote Scripts\StemLabRemote
 ```
+
+Both are per-user, so the script asks for no administrator rights. The one
+exception is a machine-wide `StemLab.vst3` left behind by a 0.1.x installer,
+under `C:\Program Files\Common Files\VST3`: hosts scan that folder too, so
+one left there makes Ableton list StemLab twice. The script removes it, and
+that single removal is the only thing it elevates for.
+
+Nothing is written to say where the Engine is. The plug-in resolves
+`%LOCALAPPDATA%\StemLab\Engine\python.exe` and looks nowhere else, so a
+source checkout needs `STEMLAB_ENGINE` set to the interpreter you want before
+Ableton starts.
 
 If automatic User Library detection fails, locate it with **Browser > User
 Library > Show in Explorer**, then run:

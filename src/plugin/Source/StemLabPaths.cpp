@@ -215,6 +215,13 @@ juce::File engineExecutable()
         return juce::File (override_);
 
    #if JUCE_WINDOWS
+    /*  Exactly where scripts/win/StemLab.iss puts it: its DefaultDirName is
+        {localappdata}\StemLab and the Engine follows {app}, so this and the
+        installer are two halves of one path. They came apart once - the
+        installer was still writing to Program Files when this stopped
+        searching - which is why the installer now refuses to finish unless
+        python.exe is here, and why a test reads both files and compares them.
+    */
     return userDataDirectory()
         .getChildFile ("Engine")
         .getChildFile ("python.exe");
