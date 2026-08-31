@@ -77,8 +77,6 @@ music_dir() {
 
 MEDIA_HOME="$(music_dir)/StemLab"
 
-POINTER="$CONFIG_HOME/StemLab/portable_engine_path.txt"
-
 # Everything the bundle lays down, and nothing else. install_backend.sh on its
 # own creates only Engine/, so a source install is the same list minus the app.
 BUNDLE_ENTRIES=(
@@ -100,14 +98,10 @@ BUNDLE_ENTRIES=(
 # above it (Engine/bin/python3 -> Engine -> the folder).
 installed_dir=""
 
+# One location, so nothing to look up. STEMLAB_INSTALL_DIR is still honoured
+# for an install built somewhere else with --dest.
 if [[ -n "${STEMLAB_INSTALL_DIR:-}" ]]; then
     installed_dir="$STEMLAB_INSTALL_DIR"
-elif [[ -f "$POINTER" ]]; then
-    engine_python="$(head -1 "$POINTER" 2>/dev/null || true)"
-
-    if [[ -n "$engine_python" && "$engine_python" == /* ]]; then
-        installed_dir="$(dirname "$(dirname "$(dirname "$engine_python")")")"
-    fi
 fi
 
 [[ -n "$installed_dir" ]] || installed_dir="$DATA_HOME/StemLab"

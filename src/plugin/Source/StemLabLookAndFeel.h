@@ -137,4 +137,9 @@ namespace stemlab::icons
 
     /** Drag this stem out: a square, a diagonal arrow, a target corner. */
     juce::Path dragOut(juce::Rectangle<float> bounds);
+
+    /** Drag this stem's MIDI out: an eighth note leaving on the same
+        diagonal arrow dragOut uses. The arrow is what the pair have in
+        common - it says "drag" - and the source shape says what of. */
+    juce::Path midiDragOut(juce::Rectangle<float> bounds);
 }

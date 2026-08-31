@@ -21,25 +21,18 @@ juce::File stemLabSettingsDirectory()
     return stemlab::paths::configDirectory();
 }
 
-juce::File firstRunMarkerFile()
-{
-    return stemLabSettingsDirectory().getChildFile("portable-first-run-0.9.9.txt");
-}
-
-juce::File portableRootDirectory()
+/** The directory the running binary sits in. */
+juce::File applicationDirectory()
 {
     return juce::File::getSpecialLocation(juce::File::currentExecutableFile).getParentDirectory();
 }
 
 juce::File abletonSetupScript()
 {
-    auto root = portableRootDirectory();
+    auto root = applicationDirectory();
 
     for (int depth = 0; depth < 6 && root.exists(); ++depth)
     {
-        // A source checkout keeps it under scripts/win/; the portable
-        // payload's flat scripts/ layout predates that split and is what
-        // installed copies already have.
         for (const auto& candidate :
              {root.getChildFile("scripts").getChildFile("win").getChildFile(
                   "install_ableton.ps1"),
@@ -270,6 +263,26 @@ StemLaneWaveform::ViewGeometry StemLaneWaveform::viewGeometryFor(double viewStar
     return geometry;
 }
 
+void StemLaneWaveform::refreshMidiNotes()
+{
+    // Both halves matter: the count moves when a stem is converted or
+    // re-converted, and the id moves when this well is reused for another
+    // lane, which can carry the same count as the one it replaced.
+    if (midiNotesId == selectionId && midiNotesCount == lastDisplay.midiNoteCount)
+        return;
+
+    midiNotesId = selectionId;
+    midiNotesCount = lastDisplay.midiNoteCount;
+
+    if (midiNotesCount == 0)
+    {
+        midiNotes.clear();
+        return;
+    }
+
+    midiNotes = processor.getMidiInfo(selectionId).notes;
+}
+
 StemLaneWaveform::DisplayState StemLaneWaveform::readDisplayState() const
 {
     DisplayState state;
@@ -296,6 +309,8 @@ StemLaneWaveform::DisplayState StemLaneWaveform::readDisplayState() const
     state.gridBpm = grid.bpm;
     state.gridBarOne = grid.barOne;
     state.gridNumerator = grid.numerator;
+
+    state.midiNoteCount = processor.getMidiNoteCount(selectionId);
 
     const auto range = processor.getStemSelectionRange(selectionId);
 
@@ -759,6 +774,70 @@ void StemLaneWaveform::paint(juce::Graphics& g)
     if (!haveColumns)
         return;
 
+    /*
+     * The transcription, over the audio it came from. Drawn after the
+     * waveform blit so the notes read as an overlay rather than something
+     * the audio is painted on top of, and before the playhead and the
+     * selection, which have to stay legible over both.
+     */
+    refreshMidiNotes();
+
+    if (!midiNotes.empty())
+    {
+        const auto viewEnd = snappedStart + viewLength;
+
+        /*
+         * The pitch span is taken from the whole transcription, not from
+         * what is on screen: a span recomputed per view would make notes
+         * slide up and down the well as the view scrolls past the highest
+         * and lowest of them, which reads as the pitches changing.
+         */
+        int lowest = 127;
+        int highest = 0;
+
+        for (const auto& note : midiNotes)
+        {
+            lowest = juce::jmin(lowest, note.pitch);
+            highest = juce::jmax(highest, note.pitch);
+        }
+
+        // A stem on one pitch - a kick, a single held note - would divide by
+        // zero. Give it an octave of room and let it sit in the middle.
+        if (highest - lowest < 12)
+        {
+            const auto centre = (lowest + highest) / 2;
+            lowest = juce::jmax(0, centre - 6);
+            highest = lowest + 12;
+        }
+
+        const auto span = static_cast<float>(highest - lowest);
+
+        // Inset so the top and bottom rows are not clipped by the well edge.
+        const auto band = inner.reduced(0.0f, lanes::wellRadius);
+        const auto rowHeight = juce::jmax(1.5f, band.getHeight() / (span + 1.0f));
+
+        g.setColour(theme::colours::midiOverlay());
+
+        for (const auto& note : midiNotes)
+        {
+            if (note.end <= snappedStart || note.start >= viewEnd)
+                continue;
+
+            const auto x1 = secondsToX(juce::jmax(note.start, snappedStart));
+            const auto x2 = secondsToX(juce::jmin(note.end, viewEnd));
+
+            // A note shorter than a pixel still has to be visible: a hi-hat
+            // at 64x zoomed out is the whole part.
+            const auto width = juce::jmax(1.0f, x2 - x1);
+
+            const auto fromTop = static_cast<float>(highest - note.pitch) / span;
+            const auto y = band.getY() + fromTop * (band.getHeight() - rowHeight);
+
+            g.fillRoundedRectangle(x1, y, width, rowHeight,
+                                   juce::jmin(1.5f, rowHeight * 0.5f));
+        }
+    }
+
     const float playheadX = secondsToX(juce::jmax(0.0, playNormalised) * length);
 
     // Selection / loop range, live while dragging and persistent after.
@@ -1217,6 +1296,23 @@ StemLaneComponent::StemLaneComponent(StemLabAudioProcessor& processorIn, int ste
 
     addAndMakeVisible(*dragButton);
 
+    midiDragButton = std::make_unique<widgets::IconButton>(
+        "drag-midi", [](juce::Rectangle<float> b) { return stemlab::icons::midiDragOut(b); },
+        static_cast<float>(theme::metrics::lanes::layersIcon), true,
+        theme::metrics::lanes::smRadius, false);
+
+    midiDragButton->setTooltip("Drag this stem's MIDI to a DAW or a folder");
+    midiDragButton->setMouseCursor(juce::MouseCursor::DraggingHandCursor);
+
+    midiDragButton->onClick = [this]
+    {
+        processor.postUiStatus("Drag this button onto a DAW track or a folder");
+    };
+
+    // Hidden until there is a .mid to carry; refresh() owns that from here.
+    midiDragButton->setVisible(false);
+    addChildComponent(*midiDragButton);
+
     /*
      * A kebab, not a layers glyph: this menu stopped being about splitting
      * when MIDI conversion, audition and export moved into it. The old icon
@@ -1312,26 +1408,60 @@ void StemLaneComponent::mouseDrag(const juce::MouseEvent& event)
      * here also means the whole lane is a valid drag source once the gesture
      * has begun, rather than the pointer having to stay inside 22 pixels.
      */
-    if (externalDragStarted || dragButton == nullptr || !dragButton->isEnabled())
+    if (externalDragStarted || dragButton == nullptr)
         return;
 
-    if (event.eventComponent != dragButton.get())
-        return;
+    const bool fromAudio = event.eventComponent == dragButton.get() && dragButton->isEnabled();
 
-    if (!laneFile.existsAsFile())
+    const bool fromMidi = midiDragButton != nullptr &&
+                          event.eventComponent == midiDragButton.get() &&
+                          midiDragButton->isVisible() && midiDragButton->isEnabled();
+
+    if (!fromAudio && !fromMidi)
         return;
 
     if (event.getDistanceFromDragStart() < theme::metrics::waveform::clickVersusDragThreshold)
         return;
 
-    // A highlighted range means this drag carries that range, not the whole
-    // stem - the same rule the footer's Drag Stems pill already follows.
     const auto selectionId =
         isChildLane() ? childId : StemLabAudioProcessor::getStemName(stemIndex);
-    const auto dragFile = processor.getStemDragFile(laneFile, selectionId);
+
+    juce::File dragFile;
+
+    if (fromMidi)
+    {
+        /*
+         * The job's own midi/ copy, never the Engine's managed MidiDrag one.
+         * That directory is a cache and StemLab's own housekeeping deletes
+         * from it after seven days (midi.cleanup_stale_midi_drag_files), so
+         * a project holding a path into it loses its notes in a week. The
+         * job directory is permanent - that is what jobsDirectory now
+         * guarantees - and it is the same place the audio handle beside this
+         * one drags from, so a dropped pair lands from one folder.
+         */
+        const auto info = processor.getMidiInfo(selectionId);
+
+        dragFile = info.midiFile;
+    }
+    else
+    {
+        if (!laneFile.existsAsFile())
+            return;
+
+        // A highlighted range means this drag carries that range, not the
+        // whole stem - the same rule the footer's Drag Stems pill follows.
+        // Ranges are an audio idea; the MIDI handle above always carries the
+        // whole conversion, which is what the notes in it describe.
+        dragFile = processor.getStemDragFile(laneFile, selectionId);
+    }
 
     if (!dragFile.existsAsFile())
+    {
+        if (fromMidi)
+            processor.postUiStatus("That MIDI file is no longer on disk");
+
         return;
+    }
 
     externalDragStarted = juce::DragAndDropContainer::performExternalDragDropOfFiles(
         juce::StringArray{dragFile.getFullPathName()}, false, this);
@@ -1472,6 +1602,24 @@ void StemLaneComponent::refresh()
     dragButton->setEnabled(ready);
 
     /*
+     * The MIDI handle appears the moment a conversion lands and goes away
+     * again if the lane is reused for a stem that has none. Laying the row
+     * out is what makes room for it, so that only happens when the answer
+     * actually changes - refresh runs on every UI tick.
+     */
+    const auto midiId = isChildLane() ? childId : StemLabAudioProcessor::getStemName(stemIndex);
+    const bool haveMidi = ready && processor.hasMidiInfo(midiId);
+
+    if (haveMidi != midiHandleShown)
+    {
+        midiHandleShown = haveMidi;
+        midiDragButton->setVisible(haveMidi);
+        resized();
+    }
+
+    midiDragButton->setEnabled(haveMidi);
+
+    /*
      * Dimmed means "you are not hearing this", not "this lane's own M is
      * down". Soloing one lane silences the other five and muting an
      * ancestor silences everything below it; the processor answers from
@@ -1525,6 +1673,17 @@ void StemLaneComponent::resized()
     // across the lane among the controls that act on playback.
     dragButton->setBounds(row.removeFromLeft(lanes::smButton)
                               .withSizeKeepingCentre(lanes::smButton, lanes::smButton));
+
+    // Beside the audio handle, and only when there is MIDI to drag: an
+    // always-reserved gap would leave a hole in every lane that has not
+    // been converted, which is most of them most of the time.
+    if (midiHandleShown)
+    {
+        row.removeFromLeft(lanes::smGap);
+
+        midiDragButton->setBounds(row.removeFromLeft(lanes::smButton)
+                                      .withSizeKeepingCentre(lanes::smButton, lanes::smButton));
+    }
 
     row.removeFromLeft(lanes::dragGap);
 
@@ -2203,17 +2362,6 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     applyRefreshRate(theme::metrics::uiRefreshHz);
     refreshFromProcessor();
 
-    if (processor.isStandaloneApp())
-    {
-        auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
-
-        juce::MessageManager::callAsync(
-            [safeThis]
-            {
-                if (safeThis != nullptr)
-                    safeThis->showFirstRunWelcome();
-            });
-    }
 }
 
 StemLabAudioProcessorEditor::~StemLabAudioProcessorEditor()
@@ -4073,8 +4221,7 @@ void StemLabAudioProcessorEditor::chooseStandaloneAudioFile()
         return;
 
     /*
-     * Start where the current source lives, the way chooseEngineExecutable
-     * does. Handing the chooser the file itself rather than its folder both
+     * Handing the chooser the file itself rather than its folder both
      * opens that folder and preselects the file, so working through several
      * takes from one folder does not mean navigating back from $HOME every
      * time. After a capture the source is a recording under the job root and
@@ -4554,10 +4701,6 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
 
     menu.addSectionHeader("StemLab engine");
 
-    menu.addItem(2, "Choose engine executable...");
-
-    menu.addItem(3, "Auto-detect engine");
-
     menu.addItem(modelManagerId, "Model Manager...");
 
     // Ticked = on. Only the hybrid engine fuses, so it is greyed out for the
@@ -4599,14 +4742,6 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
             if (result == 1)
             {
                 safeThis->showStandaloneAudioSettings();
-            }
-            else if (result == 2)
-            {
-                safeThis->chooseEngineExecutable();
-            }
-            else if (result == 3)
-            {
-                safeThis->processor.resetEngineCommandToAutoDiscover();
             }
             else if (result == modelManagerId)
             {
@@ -4687,49 +4822,6 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
 
             safeThis->refreshFromProcessor();
         });
-}
-
-void StemLabAudioProcessorEditor::showFirstRunWelcome()
-{
-    if (!processor.isStandaloneApp())
-        return;
-
-    const auto root = portableRootDirectory();
-    const auto portableEngine = root.getChildFile("Engine").getChildFile("python.exe");
-    const auto setupScript = abletonSetupScript();
-
-    // Only show onboarding for an actual extracted portable release. Normal
-    // source/development builds should open directly without nagging.
-    if (!portableEngine.existsAsFile() || !setupScript.existsAsFile() ||
-        firstRunMarkerFile().existsAsFile())
-    {
-        return;
-    }
-
-    auto options = juce::MessageBoxOptions()
-                       .withIconType(juce::MessageBoxIconType::InfoIcon)
-                       .withTitle("Welcome to StemLab")
-                       .withMessage("StemLab is ready to use as a standalone app.\n\n"
-                                    "If you use Ableton Live, StemLab can set up its VST3 and "
-                                    "Remote Script now. This does not copy the large ML engine a "
-                                    "second time.")
-                       .withButton("Set Up Ableton")
-                       .withButton("Use Standalone")
-                       .withAssociatedComponent(this);
-
-    auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
-
-    juce::AlertWindow::showAsync(options,
-                                 [safeThis](int result)
-                                 {
-                                     auto settings = stemLabSettingsDirectory();
-                                     settings.createDirectory();
-                                     firstRunMarkerFile().replaceWithText(
-                                         "StemLab portable onboarding completed.\n");
-
-                                     if (safeThis != nullptr && result == 1)
-                                         safeThis->launchAbletonSetup();
-                                 });
 }
 
 void StemLabAudioProcessorEditor::promptForManualTempo()
@@ -4926,41 +5018,3 @@ void StemLabAudioProcessorEditor::considerAutoShowingModelManager()
     showModelManager();
 }
 
-void StemLabAudioProcessorEditor::chooseEngineExecutable()
-{
-    auto start = juce::File(processor.getEngineCommand());
-
-    if (!start.exists())
-        start = juce::File::getSpecialLocation(juce::File::userHomeDirectory);
-
-    // On Linux the engine is an extensionless console script or a python
-    // binary, so an "*.exe" filter showed an empty listing everywhere and
-    // made manual engine selection impossible. An empty pattern shows all
-    // files.
-    const juce::String executablePattern {
-#if JUCE_WINDOWS
-        "*.exe"
-#else
-        ""
-#endif
-    };
-
-    fileChooser = std::make_unique<juce::FileChooser>("Choose stemlab-plugin-job executable", start,
-                                                      executablePattern);
-
-    fileChooser->launchAsync(juce::FileBrowserComponent::openMode |
-                                 juce::FileBrowserComponent::canSelectFiles,
-                             [this](const juce::FileChooser& chooser)
-                             {
-                                 const auto result = chooser.getResult();
-
-                                 if (result.existsAsFile())
-                                 {
-                                     processor.setEngineCommand(result.getFullPathName());
-
-                                     processor.postUiStatus("Engine path updated");
-
-                                     refreshFromProcessor();
-                                 }
-                             });
-}

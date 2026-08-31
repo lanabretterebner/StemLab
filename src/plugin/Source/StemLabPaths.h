@@ -5,11 +5,10 @@
 /*
     Every user-writable location StemLab uses, in one place.
 
-    Windows keeps the 0.9.9 layout byte-for-byte: everything under
-    Documents\StemLab, with the engine pointer in %LOCALAPPDATA%\StemLab.
-    Existing installs must keep finding their old captures and jobs, so the
-    Windows branches here are a straight transcription of what the processor
-    used to build inline.
+    Windows follows the platform's own conventions rather than a single
+    Documents\StemLab tree: application data in %LOCALAPPDATA%\StemLab, and
+    the user's own audio in their Music folder, which the shell resolves to
+    the real localised path.
 
     Linux follows the XDG Base Directory spec instead of inventing a
     Documents-shaped layout that does not exist there:
@@ -51,6 +50,24 @@ namespace stemlab::paths
     /** One-shot host-bridge reply files. Temp, because they are throwaway. */
     juce::File bridgeTempDirectory();
 
-    /** Fixed reply location understood by StemLabRemote 0.9.3 and earlier. */
-    juce::File legacyBridgeDirectory();
+    /** Where StemLabRemote writes its heartbeat and its clip replies.
+
+        Pinned to Documents\StemLab\Ableton on Windows because that is
+        where the Remote script itself builds the path (see
+        integrations/ableton/StemLabRemote). It is installed into Ableton
+        and updated separately from the plugin, so this is a protocol
+        location shared with another program, not a layout choice - moving
+        it here would break every install whose Remote had not been
+        updated in the same minute. */
+    juce::File remoteStatusDirectory();
+
+    /** The Engine's interpreter. One fixed location per platform.
+
+        There is no discovery. StemLab installs its Engine here and looks
+        for it here, and if it is not here it is not installed - which is a
+        thing the app can say plainly, rather than searching ten directories
+        up from wherever a host happened to load a VST3 from and reporting
+        whatever it found. STEMLAB_ENGINE still overrides it, for running
+        against a development checkout. */
+    juce::File engineExecutable();
 }

@@ -597,6 +597,11 @@ public:
     bool isMidiConversionRunning() const noexcept;
     StemLabMidiInfo getMidiInfo(const juce::String& id) const;
     bool hasMidiInfo(const juce::String& id) const;
+
+    /** How many notes this id's conversion holds, without copying any of
+        them. What the UI timer asks; getMidiInfo is for the paths that
+        actually read the notes. */
+    size_t getMidiNoteCount(const juce::String& id) const;
     bool auditionMidi(const juce::String& id);
     bool isMidiAuditioning(const juce::String& id) const;
     void stopMidiAudition();
@@ -647,9 +652,7 @@ public:
     int getReadyStemRevision() const;
 
     /** Override or query the executable used for the main Python worker. */
-    void setEngineCommand(const juce::String&);
     juce::String getEngineCommand() const;
-    void resetEngineCommandToAutoDiscover();
 
     void setRefinementEnabled(bool enabled) noexcept { refinementEnabled.store(enabled); }
 
@@ -856,7 +859,6 @@ private:
 
     /** Solo on a lane is only audible in the stem mix; switch to it. */
     void followSoloIntoStemMix();
-    juce::String discoverEngineCommand() const;
     void appendEngineLog(const juce::String&);
     bool sendAbletonBridgeNotification(const juce::File& manifestFile);
     bool sendAbletonControlMessage(const juce::String& message);
@@ -934,7 +936,6 @@ private:
     juce::File lastJobDirectory;
     juce::File jobRootDirectory;
     juce::File abletonClipReplyFile;
-    juce::File abletonLegacyClipReplyFile;
     juce::String inputSourceLabel;
     juce::String abletonClipRequestId;
 
@@ -1033,7 +1034,6 @@ private:
 
     std::atomic<bool> abletonBridgeActive{false};
 
-    juce::String engineCommand{"stemlab-plugin-job"};
     juce::String status{"Ready"};
     StatusSeverity statusSeverity = statusInfo;
 

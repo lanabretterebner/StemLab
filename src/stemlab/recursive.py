@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterable
@@ -17,6 +16,7 @@ from typing import TYPE_CHECKING, Callable, Iterable
 from .adaptive.analysis import analyse_audio, assess_children
 from .adaptive.foreground import split_foreground
 from .adaptive.policy import MAX_ADAPTIVE_DEPTH, should_offer_split
+from .paths import recursive_models_dir
 from .runtime import report_downloads
 
 if TYPE_CHECKING:
@@ -67,13 +67,7 @@ class RecursiveChild:
 
 def default_model_dir() -> Path:
     """Return the per-user cache directory for recursive model files."""
-    packaged = os.environ.get("STEMLAB_RECURSIVE_MODEL_DIR")
-    if packaged:
-        return Path(packaged)
-    local = os.environ.get("LOCALAPPDATA")
-    if local:
-        return Path(local) / "StemLab" / "Models" / "Recursive"
-    return Path.home() / ".stemlab" / "models" / "recursive"
+    return recursive_models_dir()
 
 
 # audio-separator keeps its model registry beside the weights, and fetches it

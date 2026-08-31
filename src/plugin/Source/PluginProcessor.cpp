@@ -531,13 +531,17 @@ bool looksLikePythonInterpreter(const juce::File& file)
 }
 
 /**
- * True for the relocatable interpreter shipped inside a portable release, as
- * opposed to a development venv or a system Python.
+ * True for StemLab's own installed Engine interpreter, as opposed to a
+ * development venv or a system Python reached through STEMLAB_ENGINE.
  *
  *     Windows   Engine\python.exe
  *     Linux     Engine/bin/python3
+ *
+ * What it decides is whether -s is passed, which is not cosmetic: the
+ * Engine's dependencies must not be shadowed by the user's ~/.local, and a
+ * venv install must keep user site because that is where it lives.
  */
-bool isPortableEngineRuntime(const juce::File& file)
+bool isSelfContainedEngineRuntime(const juce::File& file)
 {
     if (!looksLikePythonInterpreter(file))
         return false;
@@ -1792,30 +1796,8 @@ StemLabAudioProcessor::StemLabAudioProcessor()
 
     exportTorchCompilePreference();
 
-    const auto discoveredEngine = discoverEngineCommand();
-
-    if (discoveredEngine.isNotEmpty())
-        engineCommand = discoveredEngine;
-
     if (isStandaloneApp())
     {
-        // When the portable Standalone app is launched, remember the exact
-        // sibling Engine path for the separately installed VST3. This keeps
-        // the multi-gigabyte ML runtime portable instead of copying it into
-        // the config directory a second time just to make the plugin work.
-        const juce::File discoveredFile(discoveredEngine);
-
-        if (isPortableEngineRuntime(discoveredFile))
-        {
-            auto settingsDirectory = stemlab::paths::configDirectory();
-
-            if (settingsDirectory.createDirectory())
-            {
-                settingsDirectory.getChildFile("portable_engine_path.txt")
-                    .replaceWithText(discoveredFile.getFullPathName());
-            }
-        }
-
         // The processor's own AudioSource override routes between the
         // single-file transport and the stem-mix transport, so the player
         // pulls from it rather than from either transport directly.
@@ -3555,45 +3537,23 @@ bool StemLabAudioProcessor::requestAbletonSourceClip()
 
     const auto replyFile = replyFolder.getChildFile("clip_" + requestId + ".json");
 
-    auto legacyFolder = stemlab::paths::legacyBridgeDirectory();
-
-    legacyFolder.createDirectory();
-
-    const auto legacyReply = legacyFolder.getChildFile("stemlab_clip_reply.json");
-
     if (replyFile.existsAsFile())
         replyFile.deleteFile();
-
-    if (legacyReply.existsAsFile())
-        legacyReply.deleteFile();
 
     {
         const juce::ScopedLock lock(stateLock);
         abletonClipRequestId = requestId;
         abletonClipReplyFile = replyFile;
-        abletonLegacyClipReplyFile = legacyReply;
     }
 
     abletonClipRequestPending.store(true);
     abletonClipRequestStartMs.store(nowMs());
 
-    // 0.9.4+ protocol: tell StemLabRemote exactly where to write the one-shot
-    // reply. This avoids Documents/OneDrive latency.
-    const auto modernPayload =
+    // Tell StemLabRemote exactly where to write the one-shot reply.
+    const auto payload =
         "stemlab_get_clip " + requestId + " " + utf8ToHex(replyFile.getFullPathName());
 
-    const bool modernSent = sendAbletonControlMessage(modernPayload);
-
-    // Compatibility fallback: 0.9.3 and earlier StemLabRemote versions only
-    // understand the request-id form and write to
-    // Documents/StemLab/Ableton/stemlab_clip_reply.json.
-    //
-    // Sending both is intentional. New Remote Scripts understand both forms;
-    // old scripts will mishandle the first message but immediately receive the
-    // second compatible one. The VST accepts whichever valid reply arrives.
-    const bool legacySent = sendAbletonControlMessage("stemlab_get_clip " + requestId);
-
-    if (!modernSent && !legacySent)
+    if (!sendAbletonControlMessage(payload))
     {
         abletonClipRequestPending.store(false);
         abletonClipRequestStartMs.store(0.0);
@@ -3615,24 +3575,14 @@ void StemLabAudioProcessor::refreshAbletonSourceClipFromDisk()
         return;
     }
 
-    juce::File modernReply;
-    juce::File legacyReply;
+    juce::File reply;
     juce::String requestId;
 
     {
         const juce::ScopedLock lock(stateLock);
-        modernReply = abletonClipReplyFile;
-        legacyReply = abletonLegacyClipReplyFile;
+        reply = abletonClipReplyFile;
         requestId = abletonClipRequestId;
     }
-
-    juce::File reply;
-
-    // Prefer the low-latency Temp reply from 0.9.4+ Remote Scripts.
-    if (modernReply.existsAsFile())
-        reply = modernReply;
-    else if (legacyReply.existsAsFile())
-        reply = legacyReply;
 
     if (!reply.existsAsFile())
     {
@@ -3663,9 +3613,9 @@ void StemLabAudioProcessor::refreshAbletonSourceClipFromDisk()
 
     if (object->getProperty("request_id").toString() != requestId)
     {
-        // With an old Remote Script, the first modern-format request can be
-        // interpreted as one long request id. The second compatibility request
-        // overwrites this legacy file with the correct id shortly afterward.
+        // A reply for a request this instance did not make - another plugin
+        // instance's, or one from before a reload. Leave it; the timer
+        // retries and its owner will consume it.
         return;
     }
 
@@ -3684,12 +3634,8 @@ void StemLabAudioProcessor::refreshAbletonSourceClipFromDisk()
 
     const auto clipName = object->getProperty("clip_name").toString();
 
-    // Clean both possible reply locations regardless of which one won.
-    if (modernReply.existsAsFile())
-        modernReply.deleteFile();
-
-    if (legacyReply.existsAsFile())
-        legacyReply.deleteFile();
+    if (reply.existsAsFile())
+        reply.deleteFile();
 
     if (!success)
     {
@@ -3779,7 +3725,7 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
             // site-packages from shadowing the Engine's own dependencies. A
             // system or venv interpreter must NOT get it: a user-site
             // "pip install --user -e ." setup depends on user site.
-            if (isPortableEngineRuntime(commandFile))
+            if (isSelfContainedEngineRuntime(commandFile))
                 command.add("-s");
 
             command.add("-m");
@@ -3918,7 +3864,7 @@ StemLabAudioProcessor::makePythonModuleCommand(const juce::String& moduleName) c
     {
         command.add(commandName);
 
-        if (isPortableEngineRuntime(commandFile))
+        if (isSelfContainedEngineRuntime(commandFile))
             command.add("-s");
 
         command.add("-m");
@@ -5176,7 +5122,7 @@ void StemLabAudioProcessor::refreshAbletonBridgeStatusFromDisk()
     if (!hasSuccessfulJob())
     {
         const auto globalStatusFile =
-            stemlab::paths::legacyBridgeDirectory().getChildFile("stemlab_remote_status.json");
+            stemlab::paths::remoteStatusDirectory().getChildFile("stemlab_remote_status.json");
 
         // A heartbeat unchanged since the last poll cannot change the
         // answer either; mtime + size stand in for the content so the poll
@@ -5922,160 +5868,23 @@ void StemLabAudioProcessor::runReaperSelfTestAction(const juce::String& action,
     report.replaceWithText(text);
 }
 
-juce::String StemLabAudioProcessor::discoverEngineCommand() const
-{
-    const auto env = juce::SystemStats::getEnvironmentVariable("STEMLAB_ENGINE", {});
-
-    if (env.isNotEmpty())
-    {
-        const juce::File envFile(env);
-
-        if (envFile.existsAsFile())
-            return envFile.getFullPathName();
-    }
-
-    auto checkRoot = [](juce::File root) -> juce::String
-    {
-        const juce::StringArray relativeCandidates{
-#if JUCE_WINDOWS
-            // Portable release: keep the whole runtime beside StemLab.exe or
-            // beside a VST3 folder that the host scans directly.
-            "Engine/python.exe", "engine/python.exe",
-
-            // Development fallbacks.
-            ".venv/Scripts/stemlab-plugin-job.exe", ".venv/Scripts/stemlab-plugin-job",
-            "venv/Scripts/stemlab-plugin-job.exe", "venv/Scripts/stemlab-plugin-job"
-#else
-            // Same portable layout, POSIX interpreter location. The "engine"
-            // spelling is kept because ext4 will not forgive the difference.
-            "Engine/bin/python3", "engine/bin/python3", "Engine/bin/python", "engine/bin/python",
-
-            // Development fallbacks. Only the console script proves stemlab
-            // is actually installed in a venv; a bare venv python would let
-            // an unrelated ~/.venv shadow the discovery pointer.
-            ".venv/bin/stemlab-plugin-job", "venv/bin/stemlab-plugin-job"
-#endif
-        };
-
-        for (int depth = 0; depth < 10 && root.exists(); ++depth)
-        {
-            for (const auto& relative : relativeCandidates)
-            {
-                const auto candidate = root.getChildFile(relative);
-
-                if (candidate.existsAsFile())
-                    return candidate.getFullPathName();
-            }
-
-            const auto parent = root.getParentDirectory();
-
-            if (parent == root)
-                break;
-
-            root = parent;
-        }
-
-        return {};
-    };
-
-    // Prefer a sibling Engine directory. This makes an extracted portable
-    // build self-contained even when a development venv or an older installed
-    // engine also exists on the same machine.
-    if (const auto found = checkRoot(
-            juce::File::getSpecialLocation(juce::File::currentExecutableFile).getParentDirectory());
-        found.isNotEmpty())
-    {
-        return found;
-    }
-
-    // The Standalone portable app and scripts/linux/install_backend.sh write this
-    // pointer. The VST3 can then reuse the Engine from the extracted release
-    // or the installed backend instead of requiring a second copy.
-    {
-        const auto stemLabLocal = stemlab::paths::configDirectory();
-
-        const auto portablePointer = stemLabLocal.getChildFile("portable_engine_path.txt");
-
-        if (portablePointer.existsAsFile())
-        {
-            const auto portablePath = portablePointer.loadFileAsString().trim();
-            const juce::File portableRuntime(portablePath);
-
-            if (portableRuntime.existsAsFile())
-                return portableRuntime.getFullPathName();
-        }
-
-        // Backward-compatible fallback for older installer builds that copied
-        // the runtime under the config directory itself.
-        const auto installedRuntime = stemLabLocal.getChildFile("Engine")
-#if JUCE_WINDOWS
-                                          .getChildFile("python.exe");
-#else
-                                          .getChildFile("bin")
-                                          .getChildFile("python3");
-#endif
-
-        if (installedRuntime.existsAsFile())
-            return installedRuntime.getFullPathName();
-    }
-
-#ifdef STEMLAB_DEV_REPO_ROOT
-    {
-        const auto devRoot = juce::File(STEMLAB_DEV_REPO_ROOT);
-
-        if (const auto found = checkRoot(devRoot); found.isNotEmpty())
-        {
-            return found;
-        }
-    }
-#endif
-
-    if (const auto found = checkRoot(juce::File::getCurrentWorkingDirectory()); found.isNotEmpty())
-    {
-        return found;
-    }
-
-#if !JUCE_WINDOWS
-    // A pip/pipx install is the normal way to get the backend on Linux, and
-    // it leaves the launcher on PATH rather than in a sibling directory.
-    // Resolve it to an absolute path here so the host's environment - which
-    // may not inherit the user's shell PATH at all - cannot lose it later.
-    {
-        juce::StringArray searchPath;
-        searchPath.addTokens(juce::SystemStats::getEnvironmentVariable("PATH", {}), ":", {});
-
-        for (const auto& directory : searchPath)
-        {
-            if (!juce::File::isAbsolutePath(directory))
-                continue;
-
-            const auto candidate = juce::File(directory).getChildFile("stemlab-plugin-job");
-
-            if (candidate.existsAsFile())
-                return candidate.getFullPathName();
-        }
-    }
-#endif
-
-    return "stemlab-plugin-job";
-}
-
-void StemLabAudioProcessor::setEngineCommand(const juce::String& command)
-{
-    const juce::ScopedLock lock(stateLock);
-    engineCommand = command;
-}
-
 juce::String StemLabAudioProcessor::getEngineCommand() const
 {
-    const juce::ScopedLock lock(stateLock);
-    return engineCommand;
-}
-
-void StemLabAudioProcessor::resetEngineCommandToAutoDiscover()
-{
-    setEngineCommand(discoverEngineCommand());
-    setActionStatus("Engine path auto-detected");
+    /*
+     * No discovery. StemLab installs its Engine in one place and this is
+     * that place, so a missing Engine is reported as not installed rather
+     * than papered over.
+     *
+     * What was here walked up to ten directories from the running binary
+     * looking for eight different relative layouts, then consulted a
+     * pointer file, then a compatibility copy under the config directory,
+     * then the working directory, then PATH - and fell back to a bare
+     * command name that only resolves if a shell would have found it. A
+     * VST3 loaded from a host's scan directory could pick up an unrelated
+     * .venv several levels up, and which Engine ran depended on where the
+     * host happened to load the plugin from.
+     */
+    return stemlab::paths::engineExecutable().getFullPathName();
 }
 
 void StemLabAudioProcessor::setStemEnabled(int index, bool enabled)
@@ -6206,7 +6015,6 @@ juce::String StemLabAudioProcessor::getStemName(int index)
 void StemLabAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
     auto rootObject = std::make_unique<juce::DynamicObject>();
-    rootObject->setProperty("engineCommand", getEngineCommand());
     rootObject->setProperty("refinement", refinementEnabled.load());
     rootObject->setProperty("fusedStemNormalisation", fusedStemNormalisation.load());
     rootObject->setProperty("separatorEngine", separatorEngineIndex.load());
@@ -6243,43 +6051,13 @@ void StemLabAudioProcessor::setStateInformation(const void* data, int sizeInByte
     if (object == nullptr)
         return;
 
-    if (object->hasProperty("engineCommand"))
-    {
-        const auto savedEngine = object->getProperty("engineCommand").toString().trim();
-
-        const auto discoveredEngine = discoverEngineCommand();
-
-        const bool savedIsGeneric = savedEngine.isEmpty() || savedEngine == "stemlab-plugin-job";
-
-        const juce::File savedFile(savedEngine);
-
-        const bool savedLooksLikePath =
-            savedEngine.containsChar('\\') || savedEngine.containsChar('/');
-
-        const bool savedPathIsStale = savedLooksLikePath && !savedFile.existsAsFile();
-
-        const juce::File discoveredFile(discoveredEngine);
-        const bool discoveredIsPortableRuntime =
-            discoveredFile.getFileName().equalsIgnoreCase("python.exe") &&
-            discoveredFile.getParentDirectory().getFileName().equalsIgnoreCase("Engine");
-
-        // A self-contained release must not silently fall back to a saved
-        // development venv merely because that venv still exists on the build
-        // machine. Prefer the discovered sibling/installed Engine runtime.
-        if ((discoveredIsPortableRuntime || savedIsGeneric || savedPathIsStale) &&
-            discoveredEngine.isNotEmpty() && discoveredEngine != "stemlab-plugin-job")
-        {
-            setEngineCommand(discoveredEngine);
-        }
-        else
-        {
-            setEngineCommand(savedEngine);
-        }
-    }
-    else
-    {
-        resetEngineCommandToAutoDiscover();
-    }
+    /*
+     * engineCommand is deliberately not restored. Where the Engine lives is
+     * a fact about this machine's install, not about the project someone
+     * saved - a session carrying a path from another computer, or from a
+     * venv that has since been deleted, used to decide which interpreter ran
+     * here. Old states may still carry the property; it is ignored.
+     */
 
     if (object->hasProperty("refinement"))
     {
@@ -7547,10 +7325,26 @@ StemLabMidiInfo StemLabAudioProcessor::getMidiInfo(const juce::String& id) const
     return found != midiInfos.end() ? found->second : StemLabMidiInfo{};
 }
 
+size_t StemLabAudioProcessor::getMidiNoteCount(const juce::String& id) const
+{
+    /*
+     * The cheap probe. getMidiInfo returns by value, so it copies every
+     * note out from under the lock - fine for a menu opening, not for
+     * something the UI timer asks once per lane per tick, which is what
+     * both the lane's MIDI handle and the well's overlay need.
+     */
+    const juce::ScopedLock lock(midiInfoLock);
+    const auto found = midiInfos.find(id.toStdString());
+    return found != midiInfos.end() ? found->second.notes.size() : 0;
+}
+
 bool StemLabAudioProcessor::hasMidiInfo(const juce::String& id) const
 {
-    const auto info = getMidiInfo(id);
-    return !info.notes.empty() && info.midiFile.existsAsFile();
+    if (getMidiNoteCount(id) == 0)
+        return false;
+
+    // Only worth the copy once the cheap half has already said yes.
+    return getMidiInfo(id).midiFile.existsAsFile();
 }
 
 bool StemLabAudioProcessor::auditionMidi(const juce::String& id)
@@ -7759,12 +7553,25 @@ bool StemLabAudioProcessor::sendMidiToAbleton(const juce::String& id)
     }
     payload->setProperty("notes", juce::var(notes));
 
-    const auto manifest = job.getChildFile(
+    /*
+     * Temp, not the job directory. These two are read once by StemLab
+     * Remote and are meaningless a second later - the clip Ableton builds
+     * from them carries the notes itself, so nothing refers back. The job
+     * directory is somewhere the user opens now that it lives under their
+     * music folder, and a handful of stemlab_ableton_midi_*.json beside the
+     * stems is clutter in a folder they are meant to browse.
+     */
+    const auto bridge = stemlab::paths::bridgeTempDirectory();
+
+    if (!bridge.createDirectory())
+        return false;
+
+    const auto manifest = bridge.getChildFile(
         "stemlab_ableton_midi_" + juce::File::createLegalFileName(id.replace("/", "_")) + ".json");
     if (!manifest.replaceWithText(juce::JSON::toString(juce::var(payload.release()), true)))
         return false;
 
-    const auto ack = job.getChildFile("stemlab_ableton_midi_ack.json");
+    const auto ack = bridge.getChildFile("stemlab_ableton_midi_ack.json");
     if (ack.existsAsFile())
         ack.deleteFile();
 
