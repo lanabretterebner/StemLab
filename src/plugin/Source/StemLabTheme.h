@@ -483,6 +483,39 @@ namespace stemlab::theme
             constexpr int recordDot = 10;
 
             /*
+                Analyse and Set tempo, which share the left of the strip with
+                the source's name and meta line.
+
+                Tighter than the buttons to their right because they are not
+                competing with them for attention - they act on the source
+                already named beside them - and because that side of the
+                strip is what shrinks first as the window narrows.
+
+                metaMinWidth is the floor the text keeps for itself. Without
+                it a long enough label would take the whole line and leave
+                the source with no name at all.
+            */
+            constexpr int inlineButtonPadX = 20;
+            constexpr int inlineButtonMinWidth = 58;
+            constexpr int inlineButtonMaxWidth = 180;
+            constexpr int metaMinWidth = 48;
+
+            /*
+                groupButtonGap is the gap between two buttons that belong
+                together, anywhere in this strip - the Analyse/Set BPM pair
+                and the Import/Record pair alike. It is tighter than the gap
+                to whatever is outside the group:
+
+                    song.wav  [Analyse][Set BPM] | [Import from DAW][Record PC] | [Refine|Separate]
+
+                The first pair acts on the source named to their left; the
+                second picks a different source; the last consumes it.
+                Grouping them by spacing says which is which before any of
+                the labels are read.
+            */
+            constexpr int groupButtonGap = 8;
+
+            /*
                 A hairline in the gap before the Separate control, splitting
                 the strip into the sources you can pick and the action that
                 consumes one:
@@ -495,10 +528,31 @@ namespace stemlab::theme
             constexpr int dividerWidth = 1;
             constexpr int dividerHeight = 22;
 
-            // The Separate split control.
-            constexpr int separateMinWidth = 260;
+            /*
+                Every hairline in the strip is centred in dividerSpan, so the
+                space either side of one is the same wherever it appears.
+                Wider than the gap between two buttons of the same group,
+                which is what makes it read as a boundary rather than as one
+                more gap.
+            */
+            constexpr int dividerSpan = 20;
+
+            /*
+                The Separate split control.
+
+                A quarter of the strip rather than a third, and a floor low
+                enough to matter at the window's minimum width: the control
+                is one word and a toggle, and every pixel it was holding
+                beyond that came out of the source's own name - the one part
+                of this strip whose width is not the designer's to choose.
+
+                The floor is what "Refine [pill] | Separate" measures plus
+                room for the longer of the two labels, so the text inside it
+                never has to elide.
+            */
+            constexpr int separateMinWidth = 216;
+            constexpr int separateWidthDivisor = 4;
             constexpr int separateHeight = 36;
-            constexpr int separateExtraLeftGap = 8;
             constexpr float separateRadius = 8.0f;
             constexpr int refinePadLeft = 12;
             constexpr int refinePadRight = 14;

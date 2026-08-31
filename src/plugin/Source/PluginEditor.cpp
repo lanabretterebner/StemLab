@@ -2048,6 +2048,13 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     };
     panelContent.addChildComponent(analyseButton);
 
+    // One label whatever the tempo mode is. Static and dynamic do differ -
+    // one number against a whole tempo map - but the switch that chooses
+    // between them is two clicks away in Settings, and a button that renames
+    // itself when a setting elsewhere changes costs more attention than the
+    // distinction is worth on a line this narrow.
+    hostTempoButton.setButtonText("Set BPM");
+
     captureButton.setComponentID("accent-outline");
 
     if (processor.isStandaloneApp())
@@ -2598,10 +2605,15 @@ void StemLabAudioProcessorEditor::paintPanel(juce::Graphics& g)
     g.setColour(theme::colors::ground());
     g.fillRoundedRectangle(sourceStripBounds.toFloat(), theme::metrics::source::radius);
 
-    if (!sourceDividerBounds.isEmpty())
+    if (!sourceDividerBounds.isEmpty() || !sourceInlineDividerBounds.isEmpty())
     {
         g.setColour(theme::colors::divider());
-        g.fillRect(sourceDividerBounds);
+
+        if (!sourceDividerBounds.isEmpty())
+            g.fillRect(sourceDividerBounds);
+
+        if (!sourceInlineDividerBounds.isEmpty())
+            g.fillRect(sourceInlineDividerBounds);
     }
 
     // Accent glows behind the enabled primary actions. Drawn here, in the
@@ -2796,18 +2808,29 @@ void StemLabAudioProcessorEditor::layoutPanel()
     {
         auto strip = sourceStripBounds.reduced(source::padX, source::padY);
 
-        auto separateArea = strip.removeFromRight(
-            juce::jmax(source::separateMinWidth, strip.getWidth() / 3));
+        auto separateArea = strip.removeFromRight(juce::jmax(
+            source::separateMinWidth, strip.getWidth() / source::separateWidthDivisor));
 
         separateControl.setBounds(
             separateArea.withSizeKeepingCentre(separateArea.getWidth(),
                                                source::separateHeight));
 
-        // The hairline lives in the gap that already separated the sources
-        // from the action, so nothing either side of it moves.
-        sourceDividerBounds = strip.removeFromRight(source::gap + source::separateExtraLeftGap)
-                                  .withSizeKeepingCentre(source::dividerWidth,
-                                                         source::dividerHeight);
+        /*  Right to left, the strip is three groups of controls and the
+            source's own name:
+
+                name  [Analyse][Set BPM] | [Import from DAW][Record PC] | [Refine|Separate]
+
+            The first pair acts on the source named beside it, the second
+            picks a different source, and the last consumes it. Members of a
+            group are groupButtonGap apart; a hairline centred in
+            dividerSpan stands between groups. Only the name is elastic:
+            everything else takes the width it needs and the name keeps the
+            rest, because it is the one thing here whose length StemLab does
+            not choose.
+        */
+        sourceDividerBounds =
+            strip.removeFromRight(source::dividerSpan)
+                .withSizeKeepingCentre(source::dividerWidth, source::dividerHeight);
 
         if (recordInputButton.isVisible())
         {
@@ -2816,7 +2839,7 @@ void StemLabAudioProcessorEditor::layoutPanel()
                     .withSizeKeepingCentre(source::recordButtonWidth,
                                            theme::metrics::buttons::height));
 
-            strip.removeFromRight(source::gap);
+            strip.removeFromRight(source::groupButtonGap);
         }
 
         if (recordSystemButton.isVisible())
@@ -2826,7 +2849,7 @@ void StemLabAudioProcessorEditor::layoutPanel()
                     .withSizeKeepingCentre(source::recordButtonWidth,
                                            theme::metrics::buttons::height));
 
-            strip.removeFromRight(source::gap);
+            strip.removeFromRight(source::groupButtonGap);
         }
 
         captureButton.setBounds(
@@ -2834,37 +2857,91 @@ void StemLabAudioProcessorEditor::layoutPanel()
                 .withSizeKeepingCentre(source::captureButtonWidth,
                                        theme::metrics::buttons::height));
 
-        strip.removeFromRight(source::gap);
+        /*  Analyse and Set BPM take from the right of the whole strip, and
+            the two lines of text keep whatever is left. Taking from the left
+            would push the text along as Analyse became Stop and back, and a
+            line that shifts while a job runs reads as a glitch.
 
-        fileNameLabel.setBounds(strip.removeFromTop(strip.getHeight() / 2));
-
-        /*  Both buttons take from the right, and the meta text keeps
-            whatever is left. Taking from the left would push the text along
-            as the label changed - "Set host tempo" and "Set host tempo
-            (dynamic)" are different widths - and a line that moves when a
-            setting changes reads as a glitch. The label elides, so it gives
-            way to them rather than running underneath.
+            From the whole strip, not from the meta line: the buttons are
+            taller than one of the two lines, so a rect taken from the meta
+            row alone would centre them over its edges and let them cover the
+            name above. Taking the full height first keeps them inside the
+            strip and leaves the text a column of its own.
         */
         const auto buttonWidth = [](const juce::TextButton& button)
         {
             return juce::jlimit(
-                72, 200,
+                source::inlineButtonMinWidth, source::inlineButtonMaxWidth,
                 juce::roundToInt(juce::GlyphArrangement::getStringWidth(
                     juce::Font(theme::fonts::meta()), button.getButtonText()))
-                    + 28);
+                    + source::inlineButtonPadX);
         };
 
-        for (auto* button : {&hostTempoButton, &analyseButton})
-        {
-            if (!button->isVisible())
-                continue;
+        sourceInlineDividerBounds = {};
 
-            const auto width = buttonWidth(*button);
+        /*  The hairline is only worth its space if something will stand on
+            the far side of it, so the room for one button is checked before
+            it is reserved rather than after - a divider with nothing behind
+            it would read as a dangling stroke in the middle of the card.
+
+            metaMinWidth is the floor the name keeps out of all of this: past
+            it the buttons give way instead, and vanish rather than being
+            drawn as slivers too narrow to read.
+        */
+        const auto inlineButtons = {&hostTempoButton, &analyseButton};
+
+        auto wantsInlineButton = false;
+
+        for (auto* button : inlineButtons)
+            wantsInlineButton = wantsInlineButton || button->isVisible();
+
+        const auto inlineRoom =
+            strip.getWidth() - source::metaMinWidth - source::dividerSpan - source::gap;
+
+        if (wantsInlineButton && inlineRoom >= source::inlineButtonMinWidth)
+            sourceInlineDividerBounds =
+                strip.removeFromRight(source::dividerSpan)
+                    .withSizeKeepingCentre(source::dividerWidth, source::dividerHeight);
+
+        auto placedInlineButton = false;
+
+        for (auto* button : inlineButtons)
+        {
+            if (!button->isVisible() || sourceInlineDividerBounds.isEmpty())
+            {
+                button->setBounds({});
+                continue;
+            }
+
+            if (placedInlineButton)
+                strip.removeFromRight(source::groupButtonGap);
+
+            /*  Never wider than the strip still holds. removeFromRight
+                clamps its own result, but withSizeKeepingCentre would then
+                grow it back to the width that did not fit and hang it off
+                the left of the card - which is exactly what a narrow window
+                used to do.
+            */
+            const auto room = strip.getWidth() - source::metaMinWidth;
+            const auto width = juce::jmin(buttonWidth(*button), room);
+
+            if (width < source::inlineButtonMinWidth)
+            {
+                button->setBounds({});
+                continue;
+            }
+
             button->setBounds(strip.removeFromRight(width).withSizeKeepingCentre(
                 width, theme::metrics::buttons::height));
-            strip.removeFromRight(source::gap);
+
+            placedInlineButton = true;
         }
 
+        // The strip's own gap between the pair and the text they act on:
+        // wider than the gap within the pair, narrower than a divider.
+        strip.removeFromRight(source::gap);
+
+        fileNameLabel.setBounds(strip.removeFromTop(strip.getHeight() / 2));
         fileMetaLabel.setBounds(strip);
     }
 
@@ -3564,6 +3641,7 @@ void StemLabAudioProcessorEditor::timerCallback()
          * changes rate: "every 5th tick" would have meant 2.5 s at idle.
          */
         processor.refreshAbletonSourceClipFromDisk();
+        processor.refreshAbletonTempoReplyFromDisk();
 
         if (nowMs - lastAbletonStatusPollMs >= 250)
         {
@@ -3855,18 +3933,20 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
         fileMeta = parts.joinIntoString(" · ");
 
-        /*  In a host, and only there: the standalone has no tempo to set.
-            Dynamic says so on the button, because the two do visibly
-            different things - one number against a row of markers - and
-            finding that out afterwards is the wrong time.
+        /*  Only where there is an API that can actually write the tempo.
+            The standalone has no host at all, and a plain VST3 host has no
+            way to be told a tempo - so in both the button could never do
+            anything, and a control that is permanently dead is worse than
+            no control. Where it can work but has nothing to write yet, it
+            is greyed instead (below).
         */
-        const auto dynamic =
-            processor.getTempoAnalysisMode() == StemLabAudioProcessor::tempoDynamic
-            && processor.getSourceTempoSegments().size() > 1;
+        const auto tempoHost =
+            !processor.isStandaloneApp()
+            && (processor.getHostIntegration() == StemLabAudioProcessor::hostIntegrationReaper
+                || processor.getHostIntegration()
+                       == StemLabAudioProcessor::hostIntegrationAbletonLive);
 
-        hostTempoButton.setButtonText(dynamic ? "Set host tempo (dynamic)"
-                                              : "Set host tempo");
-        hostTempoButton.setVisible(!processor.isStandaloneApp());
+        hostTempoButton.setVisible(tempoHost);
 
         // Out of the settings window and onto the line it describes: it acts
         // on this source, and it is the one control there anybody reaches for
