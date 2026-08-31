@@ -8,7 +8,7 @@
 #include "PluginProcessor.h"
 #include "SelfFileDragGuard.h"
 #include "StemLabLookAndFeel.h"
-#include "ModelManagerPanel.h"
+#include "SettingsPanel.h"
 #include "StemLabWidgets.h"
 #include "WaveformCache.h"
 
@@ -421,9 +421,11 @@ private:
 
 
     /** Open the Model Manager, or bring what it shows up to date. */
-    void showModelManager();
-    void closeModelManager();
-    void refreshModelManager();
+    void wireSettingsPage();
+    void refreshSettingsPage();
+    void showSettingsPanel(stemlab::widgets::SettingsPanel::Page page);
+    void closeSettingsPanel();
+    void refreshSettingsPanel();
 
     /** Decides whether the manager should let itself in on this refresh. */
     void considerAutoShowingModelManager();
@@ -545,7 +547,7 @@ private:
      * scale transform that way, so it needs no sizing rules of its own and
      * looks the same at every window size.
      */
-    stemlab::widgets::ModelManagerPanel modelManagerPanel;
+    stemlab::widgets::SettingsPanel settingsPanel;
 
     /*
      * Dismissal lasts for the session, not forever. Nothing is persisted: a

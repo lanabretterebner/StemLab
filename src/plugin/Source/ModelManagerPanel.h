@@ -10,17 +10,11 @@
 namespace stemlab::widgets
 {
     /**
-     * The Model Manager: what is on disk, and what to do about it.
+     * The Models page: what is on disk, and what to do about it.
      *
-     * A child of the panel rather than a window of its own. The panel is laid
-     * out at a fixed design size and scaled as a whole, so sitting inside it
-     * means this inherits that transform and needs no sizing rules; it is also
-     * the only shape that behaves the same in the Standalone and inside a
-     * host, where a real modal window would be an unwelcome guest.
-     *
-     * Modal is enforced by covering the panel and swallowing clicks, not by a
-     * JUCE modal loop: a loop would block the message thread that the running
-     * job's progress arrives on.
+     * One page inside SettingsPanel, which owns the card, the scrim, the tab
+     * strip and Close. This draws only its own content, into whatever
+     * rectangle it is given.
      */
     class ModelManagerPanel final : public juce::Component
     {
@@ -46,7 +40,6 @@ namespace stemlab::widgets
         std::function<void(juce::StringArray, juce::StringArray)> onRemove;
         std::function<void(bool)> onCompileEnabled;
         std::function<void()> onCancel;
-        std::function<void()> onClose;
 
         void paint(juce::Graphics&) override;
 
@@ -54,12 +47,6 @@ namespace stemlab::widgets
         void paintOverChildren(juce::Graphics&) override;
 
         void resized() override;
-
-        /** Escape closes, matching every other dismissable surface. */
-        bool keyPressed(const juce::KeyPress&) override;
-
-        /** The scrim eats clicks so the panel behind cannot be operated. */
-        void mouseUp(const juce::MouseEvent&) override {}
 
     private:
         /** One model or one cache, drawn as a row inside the list. */
@@ -70,7 +57,6 @@ namespace stemlab::widgets
 
         void rebuildRows();
         void layoutRows();
-        juce::Rectangle<int> cardBounds() const;
 
         std::vector<StemLabAudioProcessor::ManagedModel> models;
         std::vector<StemLabAudioProcessor::ManagedCache> caches;
@@ -83,7 +69,6 @@ namespace stemlab::widgets
          */
         juce::String inventoryDigest;
 
-        juce::Label titleLabel;
         juce::Label summaryLabel;
         std::unique_ptr<CompileSwitch> compileSwitch;
         juce::Label activityLabel;

@@ -326,10 +326,25 @@ downloader for RoFormer, the HuggingFace hub for Demucs, `audio-separator`
 for the adaptive models - and lifts `HF_HUB_OFFLINE` for that child only,
 since downloading is the one operation meant to reach the network.
 
-In the plugin it is a modal panel over the interface, always available from
-Settings and opening by itself only when a model the app cannot separate
-without is absent - `ESSENTIAL_MODEL_IDS`, which is RoFormer and Demucs.
-Dismissing it lasts the session only.
+In the plugin it is one page of the settings window - `SettingsPanel`, a modal
+over the interface with **Models** and **Settings** tabs. The gear opens it on
+Settings; a missing essential model opens it on Models by itself, and only
+then: `ESSENTIAL_MODEL_IDS` is RoFormer and Demucs. Dismissing it lasts the
+session only.
+
+`SettingsPanel` owns the scrim, the card, the tab strip, Close and the Escape
+key; each page draws only its own content into the rectangle it is handed.
+There is no popup menu anywhere in it, which is the point - a settings menu
+that opened another menu is what it replaced. Multi-choice settings are rows
+of pills (`ChoiceRow`), and every one of them ends at the same right edge as
+the action buttons.
+
+Indices are translated at the editor, never passed through. The page numbers
+what it draws, from zero, in reading order; the processor numbers what it
+means. Those agree for the beat grid and the tempo reading and disagree for
+analysis quality, where `analysisAccurate` is 0 and `analysisFast` is 1, so a
+straight-through index would silently invert that setting - and would invert
+any other the day an enum is renumbered.
 
 The rule is that narrow because the first one was not. It opened when any of
 the seven models was missing, including the optional ones that fetch

@@ -1771,14 +1771,16 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
     addAndMakeVisible(panelContent);
 
-    panelContent.addChildComponent(modelManagerPanel);
+    panelContent.addChildComponent(settingsPanel);
 
-    modelManagerPanel.onClose = [this] { closeModelManager(); };
+    settingsPanel.onClose = [this] { closeSettingsPanel(); };
 
-    modelManagerPanel.onCompileEnabled = [this](bool enabled)
+    wireSettingsPage();
+
+    settingsPanel.models().onCompileEnabled = [this](bool enabled)
     { processor.setTorchCompileEnabled(enabled); };
 
-    modelManagerPanel.onCancel = [this] { processor.cancelModelJob(); };
+    settingsPanel.models().onCancel = [this] { processor.cancelModelJob(); };
 
     /*
      * Each of these marks the status line worth showing from here on.
@@ -1787,19 +1789,19 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
      * begins and ends between two refreshes, and its outcome would land only
      * on the footer behind the scrim where it cannot be read.
      */
-    modelManagerPanel.onDownload = [this](juce::StringArray ids)
+    settingsPanel.models().onDownload = [this](juce::StringArray ids)
     {
         modelJobReported = true;
         processor.startModelDownload(ids);
     };
 
-    modelManagerPanel.onCompile = [this](juce::StringArray ids)
+    settingsPanel.models().onCompile = [this](juce::StringArray ids)
     {
         modelJobReported = true;
         processor.startModelCompile(ids);
     };
 
-    modelManagerPanel.onRemove = [this](juce::StringArray modelIds, juce::StringArray cacheIds)
+    settingsPanel.models().onRemove = [this](juce::StringArray modelIds, juce::StringArray cacheIds)
     {
         modelJobReported = true;
         processor.startModelRemoval(modelIds, cacheIds);
@@ -2702,7 +2704,7 @@ void StemLabAudioProcessorEditor::resized()
 
     // Covers the panel at its design size, so the editor's own transform
     // scales it with everything else.
-    modelManagerPanel.setBounds(panelContent.getLocalBounds());
+    settingsPanel.setBounds(panelContent.getLocalBounds());
 }
 
 void StemLabAudioProcessorEditor::layoutPanel()
@@ -3628,7 +3630,7 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     // Ahead of the rest: the manager can open itself here, and it should be
     // showing current state on the frame it appears rather than one later.
     considerAutoShowingModelManager();
-    refreshModelManager();
+    refreshSettingsPanel();
 
     const auto capturing = processor.isCapturing();
     const auto recordingMode = processor.getStandaloneRecordingMode();
@@ -4607,221 +4609,195 @@ void StemLabAudioProcessorEditor::showWaveformColourMenu()
 
 void StemLabAudioProcessorEditor::showSettingsMenu()
 {
-    auto menu = makeMenu();
+    // Kept as the entry point the gear button calls, but it opens the window
+    // rather than a menu now: everything the menu held is a page in it, and a
+    // setting you can see beats one you have to go looking for.
+    showSettingsPanel(stemlab::widgets::SettingsPanel::Page::settings);
+}
 
-    if (processor.isStandaloneApp())
+void StemLabAudioProcessorEditor::wireSettingsPage()
+{
+    /*
+     * Every index the page reports is translated here rather than passed
+     * through. The page numbers what it draws, from zero, in reading order;
+     * the processor numbers what it means. Those two agree today for the beat
+     * grid and the tempo reading, and disagree for analysis quality, where
+     * accurate is 0 and fast is 1. Passing the index straight through would
+     * silently invert that one setting, and would invert any other the day an
+     * enum is renumbered.
+     */
+    settingsPanel.onGridMode = [this](int index)
     {
-        menu.addSectionHeader("Audio");
-        menu.addItem(1, "Audio/MIDI Settings...");
-        menu.addSeparator();
-    }
+        static constexpr int modes[] = {StemLabAudioProcessor::gridHost,
+                                        StemLabAudioProcessor::gridSource,
+                                        StemLabAudioProcessor::gridManual,
+                                        StemLabAudioProcessor::gridOff};
 
-    // The separation model and the waveform palette are header controls,
-    // not menu items - see showEngineMenu / showWaveformColourMenu.
+        if (!juce::isPositiveAndBelow(index, juce::numElementsInArray(modes)))
+            return;
 
-    // Beat grid drawn behind every lane's waveform.
-    juce::PopupMenu gridMenu;
+        const auto mode = modes[index];
 
-    gridMenu.addItem(gridModeMenuBase + StemLabAudioProcessor::gridHost, "Follow Host Tempo",
-                     !processor.isStandaloneApp(),
-                     processor.getWaveformGridMode() == StemLabAudioProcessor::gridHost);
+        processor.setWaveformGridMode(mode);
 
-    gridMenu.addItem(gridModeMenuBase + StemLabAudioProcessor::gridSource, "Follow Analysed Source",
-                     true,
-                     processor.getWaveformGridMode() == StemLabAudioProcessor::gridSource);
+        if (mode == StemLabAudioProcessor::gridOff)
+        {
+            processor.postUiStatus("Beat grid off");
+        }
+        else if (mode == StemLabAudioProcessor::gridSource && processor.getSourceBpm() <= 0.0)
+        {
+            // The grid draws nothing until an analysis exists, so say that
+            // rather than leave an empty lane looking broken.
+            processor.postUiStatus(
+                "Beat grid follows the analysed source - none yet, so no grid is drawn");
+        }
+        else
+        {
+            const juce::StringArray names{"host tempo", "analysed source", "manual tempo"};
 
-    gridMenu.addItem(gridModeMenuBase + StemLabAudioProcessor::gridManual, "Manual Tempo", true,
-                     processor.getWaveformGridMode() == StemLabAudioProcessor::gridManual);
+            processor.postUiStatus("Beat grid follows " + names[mode]);
+        }
 
-    gridMenu.addItem(gridModeMenuBase + StemLabAudioProcessor::gridOff, "Off", true,
-                     processor.getWaveformGridMode() == StemLabAudioProcessor::gridOff);
-
-    gridMenu.addSeparator();
-
-    // Selecting Manual Tempo on its own left the grid on whatever tempo it
-    // already held, with nothing anywhere to change it.
-    gridMenu.addItem(manualTempoId,
-                     "Set Manual Tempo (" + formatBpmForDisplay(processor.getManualGridBpm()) +
-                         " BPM)...");
-
-    menu.addSubMenu("Beat Grid", gridMenu);
-
-    menu.addSeparator();
-
-    menu.addSectionHeader("Source analysis");
-
-    menu.addItem(analysisEnableId,
-                 processor.isBeatThisEnabled() ? "Stop / Disable Key & BPM Analysis"
-                                               : "Analyse Key & BPM",
-                 !processor.isEngineRunning() || processor.isBeatThisEnabled());
-
-    juce::PopupMenu analysisModeMenu;
-
-    analysisModeMenu.addItem(analysisModeMenuBase + StemLabAudioProcessor::analysisFast, "Fast",
-                             true,
-                             processor.getSourceAnalysisMode() == StemLabAudioProcessor::analysisFast);
-
-    analysisModeMenu.addItem(analysisModeMenuBase + StemLabAudioProcessor::analysisAccurate,
-                             "Accurate (loads the Beat This! model)", true,
-                             processor.getSourceAnalysisMode()
-                                 == StemLabAudioProcessor::analysisAccurate);
-
-    menu.addSubMenu("Analysis Quality", analysisModeMenu);
-
-    juce::PopupMenu tempoMenu;
-
-    const auto detected = processor.getDetectedSourceBpm();
-
-    auto tempoLabel = [](const char* name, double bpm)
-    {
-        return bpm > 0.0 ? juce::String(name) + " (" + juce::String(bpm, 1) + " BPM)"
-                         : juce::String(name);
+        refreshFromProcessor();
     };
 
-    tempoMenu.addItem(tempoMenuBase + StemLabAudioProcessor::tempoHalf,
-                      tempoLabel("Half Time", processor.getHalfTimeSourceBpm()), detected > 0.0,
-                      processor.getTempoInterpretation() == StemLabAudioProcessor::tempoHalf);
+    settingsPanel.onSetManualTempo = [this] { promptForManualTempo(); };
 
-    tempoMenu.addItem(tempoMenuBase + StemLabAudioProcessor::tempoDetected,
-                      tempoLabel("As Detected", detected), detected > 0.0,
-                      processor.getTempoInterpretation() == StemLabAudioProcessor::tempoDetected);
-
-    tempoMenu.addItem(tempoMenuBase + StemLabAudioProcessor::tempoDouble,
-                      tempoLabel("Double Time", processor.getDoubleTimeSourceBpm()), detected > 0.0,
-                      processor.getTempoInterpretation() == StemLabAudioProcessor::tempoDouble);
-
-    menu.addSubMenu("Tempo Interpretation", tempoMenu, detected > 0.0);
-
-    menu.addItem(analysisForgetId, "Forget Saved Correction For This Source",
-                 processor.getSourceBpm() > 0.0);
-
-    menu.addItem(analysisClearCacheId, "Clear Analysis Cache");
-
-    menu.addSeparator();
-
-    menu.addSectionHeader("StemLab engine");
-
-    menu.addItem(modelManagerId, "Model Manager...");
-
-    // Ticked = on. Only the hybrid engine fuses, so it is greyed out for the
-    // single-model engines rather than hidden: the state still persists, and
-    // hiding it would make the setting look like it had been lost.
-    menu.addItem(fusedNormaliseId, "Normalise Fused Stems",
-                 processor.getSeparatorEngineIndex() == StemLabAudioProcessor::separatorHybrid,
-                 processor.isFusedStemNormalisation());
-
-    menu.addSeparator();
-
-    menu.addItem(4, "Copy diagnostics to clipboard", processor.hasEngineLog());
-
-    // The version this binary was built as (project VERSION in CMakeLists,
-    // stamped by JUCE). Informational, so never selectable.
-    menu.addItem(versionItemId, "StemLab v" JucePlugin_VersionString, false);
-
-    if (processor.isStandaloneApp())
+    settingsPanel.onAnalysisToggle = [this]
     {
-        menu.addSeparator();
-#if JUCE_WINDOWS
-        menu.addSectionHeader("Ableton Live");
-        menu.addItem(5, "Install / Repair Ableton Integration...");
-#endif
+        processor.setBeatThisEnabled(!processor.isBeatThisEnabled());
+        refreshFromProcessor();
+    };
+
+    settingsPanel.onAnalysisQuality = [this](int index)
+    {
+        // The one that does not line up: 0 is Accurate in the processor.
+        static constexpr int qualities[] = {StemLabAudioProcessor::analysisFast,
+                                            StemLabAudioProcessor::analysisAccurate};
+
+        if (!juce::isPositiveAndBelow(index, juce::numElementsInArray(qualities)))
+            return;
+
+        processor.setSourceAnalysisMode(qualities[index]);
+        refreshFromProcessor();
+    };
+
+    settingsPanel.onTempoInterpretation = [this](int index)
+    {
+        static constexpr int readings[] = {StemLabAudioProcessor::tempoHalf,
+                                           StemLabAudioProcessor::tempoDetected,
+                                           StemLabAudioProcessor::tempoDouble};
+
+        if (!juce::isPositiveAndBelow(index, juce::numElementsInArray(readings)))
+            return;
+
+        processor.setTempoInterpretation(readings[index]);
+        refreshFromProcessor();
+    };
+
+    settingsPanel.onForgetCorrection = [this]
+    {
+        if (processor.forgetSourceCorrection())
+            processor.postUiStatus("Saved analysis correction removed");
+
+        refreshFromProcessor();
+    };
+
+    settingsPanel.onClearAnalysisCache = [this]
+    {
+        // No feedback post: the launch already reports the clearing job on
+        // the work status line.
+        processor.clearAnalysisCache();
+        refreshFromProcessor();
+    };
+
+    settingsPanel.onFusedNormalise = [this](bool on)
+    {
+        processor.setFusedStemNormalisation(on);
+
+        processor.postUiStatus(on
+                                   ? "Fused stems will be normalised to 0.999 each"
+                                   : "Fused stems keep their level and sum back to the source");
+
+        refreshFromProcessor();
+    };
+
+    settingsPanel.onCopyDiagnostics = [this]
+    {
+        juce::SystemClipboard::copyTextToClipboard(processor.getEngineLog());
+
+        processor.postUiStatus("Diagnostics copied to clipboard");
+    };
+
+    settingsPanel.onAudioSettings = [this] { showStandaloneAudioSettings(); };
+    settingsPanel.onAbletonIntegration = [this] { launchAbletonSetup(); };
+}
+
+namespace
+{
+    /** Where a processor value sits in the order the settings page draws. */
+    template <size_t N>
+    int pageIndexOf(const int (&values)[N], int value)
+    {
+        for (size_t index = 0; index < N; ++index)
+            if (values[index] == value)
+                return static_cast<int>(index);
+
+        return 0;
     }
+}
 
-    auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
+void StemLabAudioProcessorEditor::refreshSettingsPage()
+{
+    stemlab::widgets::SettingsPanel::Settings settings;
 
-    // Parented to panelContent for the reasons given in showRootLayersMenu.
-    menu.showMenuAsync(
-        juce::PopupMenu::Options()
-            .withTargetComponent(settingsButton.get())
-            .withParentComponent(&panelContent),
-        [safeThis](int result)
-        {
-            if (safeThis == nullptr)
-                return;
+    settings.standalone = processor.isStandaloneApp();
 
-            if (result == 1)
-            {
-                safeThis->showStandaloneAudioSettings();
-            }
-            else if (result == modelManagerId)
-            {
-                safeThis->showModelManager();
-            }
-            else if (result == fusedNormaliseId)
-            {
-                const bool on = !safeThis->processor.isFusedStemNormalisation();
+    static constexpr int modes[] = {StemLabAudioProcessor::gridHost,
+                                    StemLabAudioProcessor::gridSource,
+                                    StemLabAudioProcessor::gridManual,
+                                    StemLabAudioProcessor::gridOff};
 
-                safeThis->processor.setFusedStemNormalisation(on);
+    settings.gridMode = pageIndexOf(modes, processor.getWaveformGridMode());
 
-                safeThis->processor.postUiStatus(
-                    on ? "Fused stems will be normalised to 0.999 each"
-                       : "Fused stems keep their level and sum back to the source");
-            }
-            else if (result == 4)
-            {
-                juce::SystemClipboard::copyTextToClipboard(safeThis->processor.getEngineLog());
+    settings.hostTempoAvailable = !processor.isStandaloneApp();
+    settings.manualBpm = processor.getManualGridBpm();
 
-                safeThis->processor.postUiStatus("Diagnostics copied to clipboard");
-            }
-            else if (result == 5)
-            {
-                safeThis->launchAbletonSetup();
-            }
-            else if (result == manualTempoId)
-            {
-                safeThis->promptForManualTempo();
-            }
-            else if (result >= gridModeMenuBase && result <= gridModeMenuBase + 3)
-            {
-                const int mode = result - gridModeMenuBase;
+    settings.analysisRunning = processor.isBeatThisEnabled();
+    settings.analysisToggleEnabled =
+        !processor.isEngineRunning() || processor.isBeatThisEnabled();
 
-                safeThis->processor.setWaveformGridMode(mode);
+    settings.analysisQuality =
+        processor.getSourceAnalysisMode() == StemLabAudioProcessor::analysisAccurate ? 1 : 0;
 
-                if (mode == StemLabAudioProcessor::gridOff)
-                {
-                    safeThis->processor.postUiStatus("Beat grid off");
-                }
-                else if (mode == StemLabAudioProcessor::gridSource &&
-                         safeThis->processor.getSourceBpm() <= 0.0)
-                {
-                    // The grid draws nothing until an analysis exists, so say
-                    // that rather than leave an empty lane looking broken.
-                    safeThis->processor.postUiStatus(
-                        "Beat grid follows the analysed source - none yet, so no grid is drawn");
-                }
-                else
-                {
-                    const juce::StringArray names{"host tempo", "analysed source", "manual tempo"};
+    static constexpr int readings[] = {StemLabAudioProcessor::tempoHalf,
+                                       StemLabAudioProcessor::tempoDetected,
+                                       StemLabAudioProcessor::tempoDouble};
 
-                    safeThis->processor.postUiStatus("Beat grid follows " + names[mode]);
-                }
-            }
-            else if (result >= analysisModeMenuBase && result <= analysisModeMenuBase + 1)
-            {
-                safeThis->processor.setSourceAnalysisMode(result - analysisModeMenuBase);
-            }
-            else if (result >= tempoMenuBase && result <= tempoMenuBase + 2)
-            {
-                safeThis->processor.setTempoInterpretation(result - tempoMenuBase);
-            }
-            else if (result == analysisEnableId)
-            {
-                safeThis->processor.setBeatThisEnabled(!safeThis->processor.isBeatThisEnabled());
-            }
-            else if (result == analysisForgetId)
-            {
-                if (safeThis->processor.forgetSourceCorrection())
-                    safeThis->processor.postUiStatus("Saved analysis correction removed");
-            }
-            else if (result == analysisClearCacheId)
-            {
-                // No feedback post: the launch already reports the clearing
-                // job on the work status line.
-                safeThis->processor.clearAnalysisCache();
-            }
+    settings.tempoInterpretation =
+        pageIndexOf(readings, processor.getTempoInterpretation());
 
-            safeThis->refreshFromProcessor();
-        });
+    settings.detectedBpm = processor.getDetectedSourceBpm();
+    settings.halfBpm = processor.getHalfTimeSourceBpm();
+    settings.doubleBpm = processor.getDoubleTimeSourceBpm();
+    settings.tempoAvailable = settings.detectedBpm > 0.0;
+    settings.canForgetCorrection = processor.getSourceBpm() > 0.0;
+
+    settings.fusedNormalise = processor.isFusedStemNormalisation();
+    settings.fusedNormaliseAvailable =
+        processor.getSeparatorEngineIndex() == StemLabAudioProcessor::separatorHybrid;
+
+    settings.hasDiagnostics = processor.hasEngineLog();
+
+#if JUCE_WINDOWS
+    settings.abletonAvailable = processor.isStandaloneApp();
+#else
+    settings.abletonAvailable = false;
+#endif
+
+    settings.version = JucePlugin_VersionString;
+
+    settingsPanel.setSettings(settings);
 }
 
 void StemLabAudioProcessorEditor::promptForManualTempo()
@@ -4938,15 +4914,17 @@ void StemLabAudioProcessorEditor::showStandaloneAudioSettings()
     processor.postUiStatus("Standalone audio settings are unavailable");
 }
 
-void StemLabAudioProcessorEditor::showModelManager()
+void StemLabAudioProcessorEditor::showSettingsPanel(
+    stemlab::widgets::SettingsPanel::Page page)
 {
     modelManagerDismissed = false;
 
-    modelManagerPanel.setBounds(panelContent.getLocalBounds());
-    modelManagerPanel.setVisible(true);
-    modelManagerPanel.toFront(true);
+    settingsPanel.setBounds(panelContent.getLocalBounds());
+    settingsPanel.showPage(page);
+    settingsPanel.setVisible(true);
+    settingsPanel.toFront(true);
 
-    refreshModelManager();
+    refreshSettingsPanel();
 
     // Ask the engine again on every open. The inventory is cheap, and a user
     // who has just downloaded a model outside StemLab should not be told it
@@ -4954,46 +4932,48 @@ void StemLabAudioProcessorEditor::showModelManager()
     processor.refreshModelInventory();
 }
 
-void StemLabAudioProcessorEditor::closeModelManager()
+void StemLabAudioProcessorEditor::closeSettingsPanel()
 {
     modelManagerDismissed = true;
     modelJobReported = false;
-    modelManagerPanel.setVisible(false);
+    settingsPanel.setVisible(false);
 
     // Give the keyboard back, or the panel behind stays deaf to shortcuts.
     grabKeyboardFocus();
 }
 
-void StemLabAudioProcessorEditor::refreshModelManager()
+void StemLabAudioProcessorEditor::refreshSettingsPanel()
 {
-    if (!modelManagerPanel.isVisible())
+    if (!settingsPanel.isVisible())
         return;
+
+    refreshSettingsPage();
 
     if (processor.modelInventoryFailed())
     {
-        modelManagerPanel.setUnavailable(
+        settingsPanel.models().setUnavailable(
             "The StemLab engine could not report its models.\n"
             "Check the engine under Settings, then reopen this.");
     }
     else if (processor.hasModelInventory())
     {
-        modelManagerPanel.setInventory(processor.getManagedModels(),
+        settingsPanel.models().setInventory(processor.getManagedModels(),
                                        processor.getManagedCaches());
     }
     else
     {
-        modelManagerPanel.setUnavailable("Asking the engine what is installed...");
+        settingsPanel.models().setUnavailable("Asking the engine what is installed...");
     }
 
-    modelManagerPanel.setCompileState(processor.isTorchCompileEnabled(),
-                                      processor.isCompileSupported(),
-                                      processor.getCompileReason());
+    settingsPanel.models().setCompileState(processor.isTorchCompileEnabled(),
+                                          processor.isCompileSupported(),
+                                          processor.getCompileReason());
 
     const auto busy = processor.isModelJobRunning();
 
     // Once something has been asked for, the status line is the only account
     // of how it went that the user can actually see from here.
-    modelManagerPanel.setActivity(
+    settingsPanel.models().setActivity(
         busy || modelJobReported ? processor.getStatus() : juce::String{},
         processor.getEngineProgress(), busy);
 }
@@ -5005,7 +4985,7 @@ void StemLabAudioProcessorEditor::considerAutoShowingModelManager()
     if (modelManagerAutoShown || modelManagerDismissed)
         return;
 
-    if (!processor.hasModelInventory() || modelManagerPanel.isVisible())
+    if (!processor.hasModelInventory() || settingsPanel.isVisible())
         return;
 
     // Only a missing essential model. Compiling being available but not yet
@@ -5015,6 +4995,6 @@ void StemLabAudioProcessorEditor::considerAutoShowingModelManager()
         return;
 
     modelManagerAutoShown = true;
-    showModelManager();
+    showSettingsPanel(stemlab::widgets::SettingsPanel::Page::models);
 }
 

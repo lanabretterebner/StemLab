@@ -105,6 +105,8 @@ target_sources(StemLabPlugin
         Source/StemLabWidgets.cpp
         Source/ModelManagerPanel.h
         Source/ModelManagerPanel.cpp
+        Source/SettingsPanel.h
+        Source/SettingsPanel.cpp
         Source/StemLabPaths.cpp
         Source/StemLabPaths.h
         Source/HostIntegrationPolicy.h

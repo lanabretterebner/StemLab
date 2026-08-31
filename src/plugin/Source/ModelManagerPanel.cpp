@@ -9,13 +9,6 @@ namespace stemlab::widgets
     {
         namespace card
         {
-            constexpr int width = 700;
-            constexpr int height = 496;
-            constexpr float radius = 12.0f;
-            constexpr int padX = 22;
-            constexpr int padY = 18;
-
-            constexpr int titleHeight = 24;
             constexpr int summaryHeight = 18;
             constexpr int compileHeight = 22;
             constexpr int footerHeight = 30;
@@ -362,18 +355,6 @@ namespace stemlab::widgets
     {
         namespace colours = theme::colours;
 
-        setWantsKeyboardFocus(true);
-
-        // Opaque would be wrong: the scrim is deliberately translucent so the
-        // panel stays visible behind it and the overlay reads as covering the
-        // interface rather than replacing it.
-        setInterceptsMouseClicks(true, true);
-
-        titleLabel.setText("Model Manager", juce::dontSendNotification);
-        titleLabel.setFont(juce::Font(theme::fonts::make(17.0f, true)));
-        titleLabel.setColour(juce::Label::textColourId, colours::text());
-        addAndMakeVisible(titleLabel);
-
         summaryLabel.setFont(juce::Font(theme::fonts::make(11.5f, false)));
         summaryLabel.setColour(juce::Label::textColourId, colours::text50());
         addAndMakeVisible(summaryLabel);
@@ -432,25 +413,11 @@ namespace stemlab::widgets
                 onCancel();
         };
 
-        closeButton.onClick = [this]
-        {
-            if (onClose)
-                onClose();
-        };
-
         addAndMakeVisible(downloadAllButton);
         addChildComponent(cancelButton);
-        addAndMakeVisible(closeButton);
     }
 
     ModelManagerPanel::~ModelManagerPanel() = default;
-
-    juce::Rectangle<int> ModelManagerPanel::cardBounds() const
-    {
-        return getLocalBounds().withSizeKeepingCentre(
-            juce::jmin(card::width, getWidth() - 40),
-            juce::jmin(card::height, getHeight() - 40));
-    }
 
     void ModelManagerPanel::setInventory(
         const std::vector<StemLabAudioProcessor::ManagedModel>& modelsIn,
@@ -670,25 +637,9 @@ namespace stemlab::widgets
 
     void ModelManagerPanel::paint(juce::Graphics& g)
     {
-        namespace colours = theme::colours;
-
-        // The scrim: dark enough that the card is unmistakably in front, not
-        // so dark that the interface behind it disappears and the overlay
-        // reads as a different screen.
-        g.setColour(colours::ground().withAlpha(0.82f));
-        g.fillAll();
-
-        const auto bounds = cardBounds().toFloat();
-
-        g.setColour(colours::surface());
-        g.fillRoundedRectangle(bounds, card::radius);
-
-        g.setColour(colours::outline());
-        g.drawRoundedRectangle(bounds.reduced(0.5f), card::radius, 1.0f);
-
         // Both rules come from what resized() actually laid out, rather than
         // from a second reading of the same constants.
-        g.setColour(colours::divider());
+        g.setColour(theme::colours::divider());
         g.fillRect(listArea.getX(), headerRuleY, listArea.getWidth(), 1);
         g.fillRect(listArea.getX(), footerRuleY, listArea.getWidth(), 1);
     }
@@ -730,9 +681,8 @@ namespace stemlab::widgets
 
     void ModelManagerPanel::resized()
     {
-        auto inner = cardBounds().reduced(card::padX, card::padY);
+        auto inner = getLocalBounds();
 
-        titleLabel.setBounds(inner.removeFromTop(card::titleHeight));
         summaryLabel.setBounds(inner.removeFromTop(card::summaryHeight));
 
         inner.removeFromTop(card::gap / 2);
@@ -777,21 +727,9 @@ namespace stemlab::widgets
             footer.removeFromRight(row::gap);
         };
 
-        place(closeButton, 82);
         place(cancelButton, 82);
         place(downloadAllButton, 110);
 
         layoutRows();
-    }
-
-    bool ModelManagerPanel::keyPressed(const juce::KeyPress& key)
-    {
-        if (key != juce::KeyPress::escapeKey)
-            return false;
-
-        if (onClose)
-            onClose();
-
-        return true;
     }
 }
