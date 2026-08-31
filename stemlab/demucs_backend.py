@@ -12,7 +12,38 @@ from typing import Callable
 from .audio import STEM_NAMES
 from .device import resolve_torch_device
 from .pretrained import _normalise_input_for_backend
+from .resample import rate_and_frames, restore_folder_sample_rate
 from .runtime import CancellationToken, run_progress_process
+
+# Demucs is never told a rate. separate.py loads with model.samplerate and
+# saves with it, and every htdemucs/hdemucs variant sets that to 44100, so a
+# 48 kHz session gets 44.1 kHz stems back unless something puts them right.
+DEMUCS_MODEL_SAMPLE_RATE = 44100
+
+
+def _warn_if_not_float(stems: list[Path], log: Callable[[str], None]) -> None:
+    """Say so if --float32 did not take, rather than leaving it to be heard.
+
+    Reported, never raised. A 16 bit stem is lower fidelity, not wrong - it
+    plays at the right pitch, length and level - so failing a finished
+    separation over it would cost the user more than the defect does. What
+    it would mean is that this torchaudio cannot write PCM_F, which is worth
+    knowing before the stems are gain-staged rather than after.
+    """
+    import soundfile as sf
+
+    for path in stems:
+        try:
+            subtype = sf.info(str(path)).subtype
+        except Exception:
+            continue
+
+        if subtype != "FLOAT":
+            log(
+                f"Demucs wrote {path.name} as {subtype}, not 32-bit float, "
+                "despite --float32. The stems are usable but carry a "
+                "quantisation floor the other engines do not."
+            )
 
 DEFAULT_DEMUCS_MODEL = "htdemucs_6s"
 PACKAGED_DEMUCS_SIGNATURE = "5c90dfd2"
@@ -90,6 +121,14 @@ class DemucsBackend:
                 log=self._log,
                 cancellation=self.cancellation,
             )
+            try:
+                source_rate, source_frames = rate_and_frames(staged)
+            except Exception as exc:
+                # Unreadable header: nothing to conform to, and demucs is
+                # about to give a clearer error than this could.
+                self._log(f"Could not read the input's sample rate: {exc}")
+                source_rate, source_frames = DEMUCS_MODEL_SAMPLE_RATE, None
+
             raw_output = Path(td) / "demucs_output"
             model_name = self.model
             packaged_repo = os.environ.get("STEMLAB_DEMUCS_MODEL_REPO")
@@ -113,6 +152,16 @@ class DemucsBackend:
                 *repo_args,
                 "--device",
                 device,
+                # Without this demucs writes 16 bit (separate.py defaults
+                # bits_per_sample to 16), while the RoFormer path publishes
+                # 32 bit float. A stem is not a master - it gets gain-staged,
+                # often pushed well up - and a -101 dBFS quantisation floor
+                # rides up with it. Costs 2x the bytes.
+                #
+                # This does NOT disable demucs' prevent_clip: that runs before
+                # the format branch whatever the bit depth, and the CLI
+                # exposes only rescale and clamp, never none.
+                "--float32",
                 "--out",
                 str(raw_output),
                 str(staged),
@@ -150,6 +199,12 @@ class DemucsBackend:
                 destination = output_dir / f"{stem}.wav"
                 shutil.copy2(candidates[0], destination)
                 copied.append(destination)
+
+            if source_rate != DEMUCS_MODEL_SAMPLE_RATE:
+                self._log(f"Returning stems to {source_rate} Hz...")
+                restore_folder_sample_rate(output_dir, source_rate, source_frames, self._log)
+
+            _warn_if_not_float(copied, self._log)
 
             self._progress(100.0)
             self._log("Demucs separation complete: " + ", ".join(path.name for path in copied))

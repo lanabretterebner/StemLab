@@ -10,9 +10,16 @@ from pathlib import Path
 from typing import Callable
 
 from .device import resolve_torch_device
+from .resample import rate_and_frames, resample_file, restore_folder_sample_rate
 from .runtime import CancellationToken, run_progress_process
 
 DEFAULT_MODEL = "roformer-model-bs-roformer-sw-by-jarredou"
+
+
+# BS-RoFormer's band split is defined in FFT bins, not in Hz, so the band
+# edges only land on the frequencies the model was trained for when it is fed
+# the rate it was trained at. Feeding 48 kHz moves every edge up by 8.8%.
+ROFORMER_SAMPLE_RATE = 44100
 
 
 def _find_ffmpeg() -> str | None:
@@ -113,12 +120,32 @@ class RoFormerBackend:
 
         with tempfile.TemporaryDirectory(prefix="stemlab_input_") as td:
             staging = Path(td)
-            _normalise_input_for_backend(
+            staged = _normalise_input_for_backend(
                 input_path=input_path,
                 staging_dir=staging,
                 log=self._log,
                 cancellation=self.cancellation,
             )
+
+            # Read the rate off the staged file rather than the original: an
+            # ffmpeg conversion above may already have changed it.
+            try:
+                source_rate, source_frames = rate_and_frames(staged)
+            except Exception as exc:
+                # Not fatal. An unreadable header means the rate cannot be
+                # conformed either way, and the separator is about to report
+                # a far clearer error than this could.
+                self._log(f"Could not read the sample rate of {staged.name}: {exc}")
+                source_rate, source_frames = ROFORMER_SAMPLE_RATE, None
+
+            if source_rate != ROFORMER_SAMPLE_RATE:
+                self._log(
+                    f"Resampling {source_rate} Hz input to {ROFORMER_SAMPLE_RATE} Hz "
+                    "for BS-RoFormer..."
+                )
+                aligned = staging / f"{staged.stem}_stemlab_{ROFORMER_SAMPLE_RATE}.wav"
+                resample_file(staged, aligned, ROFORMER_SAMPLE_RATE)
+                aligned.replace(staged)
             command = [
                 sys.executable,
                 "-m",
@@ -148,6 +175,13 @@ class RoFormerBackend:
             if return_code != 0:
                 raise subprocess.CalledProcessError(return_code, command)
             self._progress(100.0)
+
+            # Fusion reads its rate off the RoFormer stem itself, so a stem
+            # left at 44.1 kHz would make every fused output of a 48 kHz
+            # session 44.1 kHz too.
+            if source_rate != ROFORMER_SAMPLE_RATE:
+                self._log(f"Returning stems to {source_rate} Hz...")
+                restore_folder_sample_rate(output_dir, source_rate, source_frames, self._log)
 
         files = sorted(
             p

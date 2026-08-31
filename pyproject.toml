@@ -16,6 +16,11 @@ dependencies = [
   "numpy>=1.26",
   "scipy>=1.12",
   "soundfile>=0.12",
+  # Reached directly by audio.load_audio and by the rate conforming in
+  # resample.py. It arrives transitively through librosa today, which is not
+  # a guarantee worth a ModuleNotFoundError at a user's first 48 kHz
+  # separation, after the model has already loaded.
+  "soxr>=0.3.2",
   "librosa>=0.11",
   "mido>=1.3",
   "beat-this==1.1.0",
