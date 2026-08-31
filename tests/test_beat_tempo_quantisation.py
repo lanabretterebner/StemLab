@@ -253,12 +253,103 @@ class TestTheAnchorComesFromTheGridNotOneBeat:
         assert fitted_error < raw_error
         assert fitted_error * 44_100 < 50
 
-    def test_the_anchor_sharpens_as_the_track_gets_longer(self):
+    def test_the_anchor_does_not_need_a_long_track(self):
+        """The anchor no longer buys its accuracy with track length.
+
+        It used to: the fitted slope and intercept averaged the frame
+        rounding down together, so a 480 s track placed bar 1 better than a
+        60 s one did. Now that a round tempo is reported as the round tempo,
+        the period is not fitted to that rounding at all, and what is left in
+        the anchor is the rounding's own shape rather than a slope that keeps
+        improving. Measured across four sub-frame offsets at 174:
+
+          offset  0.009 s   4.6 -> 1.5 samples at 60 s   1.9 -> 1.5 at 480 s
+                  0.013 s  21.3 -> 4.5                   6.7 -> 4.5
+                  0.017 s  18.0 -> 10.6                 11.6 -> 10.6
+
+        So the property to hold is the one that matters to a host placing bar
+        1: the anchor is inside half a millisecond whatever the track's
+        length, and a longer track is never the worse for it.
+        """
         offset = 0.013
         short = abs(_analyse(self._offset_track(offset, 60.0)).bar_one - offset)
         long = abs(_analyse(self._offset_track(offset, 480.0)).bar_one - offset)
 
-        assert long < short
+        assert long <= short
+        assert short * 1000.0 < 0.5
+
+
+class TestARoundTempoIsReportedRound:
+    """Tempo is chosen, not measured, and the grid is drawn from it.
+
+    A producer sets 174 and the machine plays 174. What the analysis has is a
+    least-squares slope through several hundred beat times that each carry a
+    few milliseconds of the network's own error, and that slope lands a
+    hundredth of a BPM off often enough to matter: a 174 track reading
+    173.99, which is what the plugin then writes into the host.
+
+    A hundredth of a BPM is not a display problem. The overlay draws bar one
+    plus a beat period, so a tempo read 0.01 low lays every line 19 us late
+    and the grid walks behind the music as the track goes on. Measured
+    against a track that really is 174, over 240 s:
+
+      grid drawn at 173.99   0.00 to +13.77 ms   late, and accumulating
+      grid drawn at 174.00   0.00 to   0.00 ms
+
+    What the snap costs when it is wrong - when the track really was 173.99
+    and it is reported 174 - is the same number shared between the two ends,
+    because the phase is refitted at the round period rather than carried
+    over: -6.91 to +6.87 ms over 240 s. That is the trade, and it is bounded
+    by the drift budget rather than open-ended.
+    """
+
+    @staticmethod
+    def _track(bpm: float, seconds: float) -> np.ndarray:
+        return _quantise(np.arange(0.0, seconds, 60.0 / bpm))
+
+    @pytest.mark.parametrize("seconds", [120.0, 240.0, 300.0])
+    def test_a_hundredth_off_is_reported_round(self, seconds):
+        analysis = _analyse(self._track(173.99, seconds))
+
+        assert analysis.bpm == 174.0
+        assert analysis.detected_bpm == 174.0
+        # The derived tempos come off the reported one, so they are round too.
+        assert analysis.half_time_bpm == 87.0
+        assert analysis.double_time_bpm == 348.0
+
+    def test_the_segments_agree_with_the_headline(self):
+        segments = _analyse(self._track(173.99, 240.0)).tempo_segments
+
+        assert segments
+        assert all(segment.bpm == 174.0 for segment in segments)
+
+    def test_a_longer_track_snaps_less(self):
+        """The budget is drift end to end, so evidence narrows the window.
+
+        480 s of beats separate 173.99 from 174 by 27 ms, more than the frame
+        they arrive on, and at that point the fit is no longer guessing: the
+        reading is reported as it was measured.
+        """
+        assert _analyse(self._track(173.99, 480.0)).bpm == pytest.approx(173.99, abs=0.002)
+
+    @pytest.mark.parametrize("bpm", [173.5, 173.4, 174.6, 90.25, 127.3])
+    def test_a_tempo_that_is_not_round_is_left_alone(self, bpm):
+        assert _analyse(self._track(bpm, 240.0)).bpm == pytest.approx(bpm, abs=0.01)
+
+    def test_the_drawn_grid_lands_on_the_beats(self):
+        """What the overlay does with the answer: bar one plus a period.
+
+        The snap is only worth having if the grid it produces still explains
+        the music. Half a frame is the resolution the beats themselves arrive
+        with, so the grid has no business being further out than that.
+        """
+        music = np.arange(0.0, 240.0, 60.0 / 173.99)
+        analysis = _analyse(_quantise(music))
+
+        period = 60.0 / analysis.bpm
+        drawn = analysis.bar_one + np.round((music - analysis.bar_one) / period) * period
+
+        assert np.max(np.abs(drawn - music)) < 0.5 / FPS
 
 
 class TestAQuietStartOrEndingDoesNotMoveTheReading:
