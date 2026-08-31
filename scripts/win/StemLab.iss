@@ -113,11 +113,11 @@ begin
   Result := ExpandConstant('{localappdata}\StemLab\portable_engine_path.txt');
 end;
 
-{ The install directory is fixed, so there is nothing here about drive roots
-  or the Windows folder any more - nobody can choose those. What is left is
-  the question that can still go wrong: can Setup actually create and write
-  the one directory it is going to use. A roaming profile on a full disk is a
-  real answer of "no", and finding that out after unpacking gigabytes is not. }
+// The install directory is fixed, so there is nothing here about drive roots
+// or the Windows folder any more - nobody can choose those. What is left is
+// the question that can still go wrong: can Setup actually create and write
+// the one directory it is going to use. A roaming profile on a full disk is a
+// real answer of "no", and finding that out after unpacking gigabytes is not.
 function EnsureInstallDirectoryUsable(InstallDir: String; var ErrorText: String): Boolean;
 var
   ProbeIndex: Integer;
@@ -174,10 +174,10 @@ begin
   Result := True;
 end;
 
-{ A machine-wide 0.1.x install and this one would leave two copies of the
-  plug-in in two folders a host scans, and the host would list both. Setup
-  cannot remove the old one - it is under Program Files and this Setup never
-  elevates - so it refuses and says exactly what to do instead. }
+// A machine-wide 0.1.x install and this one would leave two copies of the
+// plug-in in two folders a host scans, and the host would list both. Setup
+// cannot remove the old one - it is under Program Files and this Setup never
+// elevates - so it refuses and says exactly what to do instead.
 function InitializeSetup: Boolean;
 begin
   Result := True;
@@ -185,8 +185,8 @@ begin
   if DirExists(MachineWideVst3()) then
   begin
     MsgBox(
-      'An older StemLab is installed for all users on this computer.' + #13#10 +
-      #13#10 +
+      'An older StemLab is installed for all users on this computer.'
+      + #13#10 + #13#10 +
       'StemLab now installs for your account only. Installing over the old one'
       + #13#10 +
       'would leave two copies of the plug-in, and your DAW would list both.'
@@ -220,10 +220,10 @@ begin
       'Setup cannot complete successfully.');
 end;
 
-{ The one invariant this installer exists to hold. The plug-in resolves this
-  exact path and does not look anywhere else, so an install that finished with
-  the Engine somewhere else is an install that cannot separate anything - and
-  it would only be discovered on the user's first attempt. }
+// The one invariant this installer exists to hold. The plug-in resolves this
+// exact path and does not look anywhere else, so an install that finished with
+// the Engine somewhere else is an install that cannot separate anything - and
+// it would only be discovered on the user's first attempt.
 procedure VerifyEngine;
 var
   EnginePython: String;
@@ -237,8 +237,9 @@ begin
       'Setup cannot complete successfully.');
 end;
 
-{ Written by 0.1.x, read by nothing since engine discovery was removed. It
-  sits inside {app}, so it is ours to clear. }
+// Written by 0.1.x, read by nothing since engine discovery was removed. It
+// sits inside {app}, so it is ours to clear - and writing that constant in a
+// brace comment would have closed the comment at the brace.
 procedure RemoveStaleEnginePointer;
 begin
   if FileExists(StaleEnginePointer()) then
