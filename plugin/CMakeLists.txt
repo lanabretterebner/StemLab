@@ -53,6 +53,11 @@ juce_add_plugin(FIStemPlugin
 juce_add_binary_data(FIStemAssets
     SOURCES
         Resources/FIStemIcon.png
+        # Inter, under the SIL Open Font License (Resources/fonts/OFL.txt).
+        # Registered by StemLabLookAndFeel; the interface falls back to the
+        # platform face if these are ever absent.
+        Resources/fonts/Inter-Regular.ttf
+        Resources/fonts/Inter-Medium.ttf
 )
 
 target_sources(FIStemPlugin
@@ -63,6 +68,9 @@ target_sources(FIStemPlugin
         Source/PluginEditor.h
         Source/HostIntegrationPolicy.h
         Source/SelfFileDragGuard.h
+        Source/StemLabLookAndFeel.cpp
+        Source/StemLabLookAndFeel.h
+        Source/StemLabTheme.h
         Source/WaveformGrid.h
         Source/LinuxSystemCapture.cpp
         Source/LinuxSystemCapture.h
@@ -85,6 +93,23 @@ if (BUILD_TESTING)
                                                         juce::juce_audio_formats
                                                         juce::juce_gui_extra)
     add_test(NAME FIStemHostCaptureTests COMMAND FIStemHostCaptureTests)
+
+    # Pins the theme's contrast guarantees, and by compiling the
+    # look-and-feel proves the drawing code builds independently of the
+    # processor.
+    add_executable(FIStemThemeTests Tests/ThemeTests.cpp Source/StemLabLookAndFeel.cpp
+                   Source/StemLabTheme.h Source/StemLabLookAndFeel.h)
+    target_include_directories(FIStemThemeTests PRIVATE Source
+                               "${CMAKE_CURRENT_BINARY_DIR}/FIStemPlugin_artefacts/JuceLibraryCode"
+                               "${CMAKE_CURRENT_BINARY_DIR}/juce_binarydata_FIStemAssets/JuceLibraryCode")
+    target_compile_features(FIStemThemeTests PRIVATE cxx_std_20)
+    # gui_basics, not gui_extra: the look-and-feel needs LookAndFeel_V4 and
+    # nothing from the browser module, which would drag in GTK on Linux.
+    target_compile_definitions(FIStemThemeTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
+                                                        JUCE_STANDALONE_APPLICATION=1)
+    target_link_libraries(FIStemThemeTests PRIVATE FIStemAssets juce::juce_gui_basics
+                                                   juce::juce_graphics)
+    add_test(NAME FIStemThemeTests COMMAND FIStemThemeTests)
 endif()
 
 target_compile_definitions(FIStemPlugin

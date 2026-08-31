@@ -5,6 +5,7 @@
 #include <functional>
 #include "PluginProcessor.h"
 #include "SelfFileDragGuard.h"
+#include "StemLabLookAndFeel.h"
 
 
 /** Toggle used for export selection. Right-click invokes a separate solo callback. */
@@ -175,6 +176,14 @@ private:
     static bool isSupportedAudioFile(const juce::File& file);
 
     StemLabAudioProcessor& processor;
+
+    /*
+        Declared before every component below, and that order is load-bearing:
+        members are destroyed in reverse, so the look-and-feel outlives the
+        widgets pointing at it. Shared because registering the bundled
+        typefaces is worth doing once per process rather than once per editor.
+    */
+    juce::SharedResourcePointer<StemLabLookAndFeel> lookAndFeel;
 
     juce::Label titleLabel;
     juce::Label subtitleLabel;
