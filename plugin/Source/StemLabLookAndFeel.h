@@ -107,6 +107,9 @@ namespace stemlab::icons
     /** Waveform zoom: a stroked magnifier, lens and handle. */
     juce::Path magnifier(juce::Rectangle<float> bounds);
 
+    juce::Path play(juce::Rectangle<float> bounds);
+    juce::Path pause(juce::Rectangle<float> bounds);
+
     /** The tick on a checked menu item, and on include checkboxes. */
     juce::Path check(juce::Rectangle<float> bounds);
 

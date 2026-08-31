@@ -247,9 +247,27 @@ private:
     juce::TextButton enginePrevButton{"<"};
     juce::TextButton engineNextButton{">"};
     juce::Label engineLabel;
-    IconComponent paletteGlyph;
     IconComponent settingsGlyph;
-    juce::TextButton paletteButton;
+
+    // Source card. The filename and its duration stack at the left of the
+    // card, where upstream had them inline in a status string.
+    // Where paint() draws the source card behind its controls.
+    juce::Rectangle<int> sourceCardBounds;
+    juce::Rectangle<int> transportBarBounds;
+
+    juce::Label sourceNameLabel;
+    juce::Label sourceLengthLabel;
+
+    // Transport. Position, length and seeking all come from the preview
+    // transport upstream already runs; nothing here is new state.
+    IconComponent transportGlyph;
+    juce::TextButton transportButton;
+    juce::Label transportTimeLabel;
+    juce::Slider transportScrubber{juce::Slider::LinearHorizontal, juce::Slider::NoTextBox};
+
+    // Footer.
+    IconComponent statusGlyph;
+    juce::Label outputPathLabel;
 
     juce::TextButton captureButton{"Capture"};
     juce::TextButton importFromPcButton{"Import from PC"};
@@ -294,7 +312,7 @@ private:
     juce::TextButton sendSelectedButton{"Send Selected"};
     juce::TextButton dragSelectedButton{"Drag Selected"};
     juce::TextButton retryImportButton{"Retry"};
-    juce::TextButton openJobButton{"Choose File Location"};
+    juce::TextButton openJobButton{"Change"};
 
     juce::Label bridgeLabel;
 

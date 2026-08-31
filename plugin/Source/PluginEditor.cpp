@@ -999,10 +999,6 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     zoomGlyph.setIcon(stemlab::icons::magnifier, tc::text().withAlpha(0.62f), true);
     addAndMakeVisible(zoomGlyph);
 
-    paletteGlyph.setIcon(stemlab::icons::palette, tc::text().withAlpha(0.78f));
-    paletteGlyph.setInterceptsMouseClicks(false, false);
-    addAndMakeVisible(paletteGlyph);
-
     settingsGlyph.setIcon(stemlab::icons::sliders, tc::text().withAlpha(0.78f));
     settingsGlyph.setInterceptsMouseClicks(false, false);
     addAndMakeVisible(settingsGlyph);
@@ -1067,18 +1063,65 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     engineLabel.setColour(juce::Label::textColourId, tc::text());
     addAndMakeVisible(engineLabel);
 
-    paletteButton.setComponentID("neutral");
-    paletteButton.setTooltip("Waveform colour");
-    paletteButton.onClick = [this]
-    {
-        const auto count = StemLabAudioProcessor::waveformColourCount;
-        processor.setWaveformColourIndex((processor.getWaveformColourIndex() + 1) % count);
-        refreshFromProcessor();
-    };
-    addAndMakeVisible(paletteButton);
 
     settingsButton.setButtonText({});
     settingsButton.setTooltip("Settings");
+    sourceNameLabel.setFont(stemlab::theme::fonts::bodyMedium());
+    sourceNameLabel.setColour(juce::Label::textColourId, tc::text());
+    sourceNameLabel.setJustificationType(juce::Justification::bottomLeft);
+    addAndMakeVisible(sourceNameLabel);
+
+    sourceLengthLabel.setFont(stemlab::theme::fonts::meta());
+    sourceLengthLabel.setColour(juce::Label::textColourId, tc::text().withAlpha(0.55f));
+    sourceLengthLabel.setJustificationType(juce::Justification::topLeft);
+    addAndMakeVisible(sourceLengthLabel);
+
+    /*
+        One transport for the whole stack, over upstream's preview player.
+        Upstream drives that player from a Play button on each lane; those
+        stay, because they choose *which* stem is auditioned. This starts and
+        stops whatever is loaded, and shows where it is.
+    */
+    transportButton.setComponentID("primary");
+    transportButton.setTooltip("Play / pause");
+    transportButton.onClick = [this]
+    {
+        if (processor.isStandalonePlaying())
+            processor.stopStandalonePlayback();
+        else
+            processor.toggleStandalonePlayback();
+
+        refreshFromProcessor();
+    };
+    addAndMakeVisible(transportButton);
+
+    transportGlyph.setIcon(stemlab::icons::play, tc::primaryText());
+    transportGlyph.setInterceptsMouseClicks(false, false);
+    addAndMakeVisible(transportGlyph);
+
+    transportTimeLabel.setFont(stemlab::theme::fonts::time());
+    transportTimeLabel.setColour(juce::Label::textColourId, tc::text().withAlpha(0.72f));
+    transportTimeLabel.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(transportTimeLabel);
+
+    transportScrubber.setRange(0.0, 1.0, 0.0001);
+    transportScrubber.onDragEnd = [this]
+    {
+        // Seeks the stem upstream is previewing; with nothing loaded there is
+        // nothing to seek and the call is a no-op.
+        processor.seekCompletedStem(juce::jmax(0, processor.getPreviewStemIndex()),
+                                    transportScrubber.getValue());
+    };
+    addAndMakeVisible(transportScrubber);
+
+    statusGlyph.setIcon(stemlab::icons::check, tc::accent());
+    addAndMakeVisible(statusGlyph);
+
+    outputPathLabel.setFont(stemlab::theme::fonts::meta());
+    outputPathLabel.setColour(juce::Label::textColourId, tc::text().withAlpha(0.55f));
+    outputPathLabel.setJustificationType(juce::Justification::centredRight);
+    addAndMakeVisible(outputPathLabel);
+
     addAndMakeVisible(settingsButton);
 
     captureButton.setColour(juce::TextButton::buttonColourId, accent());
@@ -1100,8 +1143,8 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
         addAndMakeVisible(playButton);
 
         recordSystemButton.setButtonText("Record System");
-        recordSystemButton.setColour(juce::TextButton::buttonColourId,
-                                     stemlab::theme::colours::dangerFill());
+        // Neutral until armed; refreshFromProcessor paints it while recording.
+        recordSystemButton.setComponentID("neutral");
 
         recordSystemButton.onClick = [this]
         {
@@ -1119,8 +1162,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
         addAndMakeVisible(recordSystemButton);
 
         recordInputButton.setButtonText("Record Input");
-        recordInputButton.setColour(juce::TextButton::buttonColourId,
-                                    stemlab::theme::colours::neutral700());
+        recordInputButton.setComponentID("neutral");
 
         recordInputButton.onClick = [this]
         {
@@ -1158,8 +1200,8 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
         addAndMakeVisible(playButton);
 
         recordSystemButton.setButtonText("Record PC");
-        recordSystemButton.setColour(juce::TextButton::buttonColourId,
-                                     stemlab::theme::colours::dangerFill());
+        // Neutral until armed; refreshFromProcessor paints it while recording.
+        recordSystemButton.setComponentID("neutral");
 
         recordSystemButton.onClick = [this]
         {
@@ -1202,8 +1244,8 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
         addAndMakeVisible(playButton);
 
         recordSystemButton.setButtonText("Record PC");
-        recordSystemButton.setColour(juce::TextButton::buttonColourId,
-                                     stemlab::theme::colours::dangerFill());
+        // Neutral until armed; refreshFromProcessor paints it while recording.
+        recordSystemButton.setComponentID("neutral");
         recordSystemButton.onClick = [this]
         {
             if (processor.getStandaloneRecordingMode() == StemLabAudioProcessor::recordingSystem)
@@ -1580,10 +1622,25 @@ void StemLabAudioProcessorEditor::paint(juce::Graphics& g)
 
     auto area = getLocalBounds().toFloat().reduced(18.0f);
 
-    auto panelArea = area.withTrimmedTop(78.0f);
+    auto panelArea = area.withTrimmedTop(52.0f);
 
     g.setColour(panel());
     g.fillRoundedRectangle(panelArea, 12.0f);
+
+    namespace tc = stemlab::theme::colours;
+
+    // The source card and the transport bar are wells cut into the panel, so
+    // the eye reads three bands rather than one field of controls.
+    for (const auto& well : {sourceCardBounds, transportBarBounds})
+    {
+        if (well.isEmpty())
+            continue;
+
+        g.setColour(tc::laneWell());
+        g.fillRoundedRectangle(well.toFloat(), 8.0f);
+        g.setColour(tc::outline());
+        g.drawRoundedRectangle(well.toFloat(), 8.0f, 1.0f);
+    }
 
     g.setColour(dragActive ? accent() : stemlab::theme::colours::outline());
 
@@ -1852,8 +1909,6 @@ void StemLabAudioProcessorEditor::resized()
     settingsButton.setBounds(headerRow.removeFromRight(rowHeight));
     settingsGlyph.setBounds(settingsButton.getBounds().reduced(7));
     headerRow.removeFromRight(6);
-    paletteButton.setBounds(headerRow.removeFromRight(rowHeight));
-    paletteGlyph.setBounds(paletteButton.getBounds().reduced(7));
     headerRow.removeFromRight(10);
 
     // Engine picker: chevron, name, chevron.
@@ -1884,89 +1939,88 @@ void StemLabAudioProcessorEditor::resized()
 
     const int compact = height < 620 ? 1 : 0;
 
-    const int inputHeight = compact ? 30 : 34;
+    /*
+        Source card: what is loaded on the left, how to load something in the
+        middle, and the action on the right. Upstream spread these over three
+        stacked rows of buttons; the controls and their behaviour are
+        unchanged, only where they sit.
+    */
+    const int cardHeight = compact ? 46 : 54;
+    auto card = area.removeFromTop(cardHeight);
+    sourceCardBounds = card;
 
-    auto inputRow = area.removeFromTop(inputHeight);
+    card.reduce(compact ? 8 : 12, compact ? 6 : 8);
+
+    // Separate is the primary action and sits at the far right, with the
+    // Refine toggle immediately before it - the pair reads as one control.
+    const int separateWidth = width < 620 ? 104 : 132;
+    if (cancelButton.isVisible())
+    {
+        cancelButton.setBounds(card.removeFromRight(width < 620 ? 78 : 92));
+        card.removeFromRight(6);
+    }
+    else
+    {
+        cancelButton.setBounds(0, 0, 0, 0);
+    }
+
+    separateButton.setBounds(card.removeFromRight(separateWidth));
+    card.removeFromRight(8);
+    refinementButton.setBounds(card.removeFromRight(width < 620 ? 104 : 132));
+    card.removeFromRight(14);
+
+    // Name over duration, at the width the longest of the two needs.
+    auto nameArea = card.removeFromLeft(width < 620 ? 128 : 168);
+    sourceNameLabel.setBounds(nameArea.removeFromTop(nameArea.getHeight() / 2));
+    sourceLengthLabel.setBounds(nameArea);
+    card.removeFromLeft(14);
 
     const auto hostUiMode = processor.getHostUiMode();
-    const int useClipWidth = processor.isStandaloneApp()
-                                 ? (width < 620 ? 92 : 102)
-                             : hostUiMode == stemlab::host::UiMode::genericVst
-                                 ? (width < 620 ? 92 : 102)
-                                 : (width < 620 ? 98 : 108);
+    const int pillWidth = width < 620 ? 84 : 96;
 
-    captureButton.setBounds(inputRow.removeFromLeft(useClipWidth));
-
-    inputRow.removeFromLeft(5);
+    captureButton.setBounds(card.removeFromLeft(pillWidth));
+    card.removeFromLeft(6);
 
     if (stemlab::host::showsImportFromPc(hostUiMode))
     {
-        importFromPcButton.setBounds(inputRow.removeFromLeft(width < 620 ? 102 : 112));
-        inputRow.removeFromLeft(5);
+        importFromPcButton.setBounds(card.removeFromLeft(pillWidth + 16));
+        card.removeFromLeft(6);
     }
     else
     {
         importFromPcButton.setBounds(0, 0, 0, 0);
     }
 
-    playButton.setBounds(inputRow.removeFromLeft(width < 620 ? 52 : 58));
-
-    inputRow.removeFromLeft(5);
-
-    if (!processor.isStandaloneApp())
-    {
-        recordSystemButton.setBounds(inputRow.removeFromLeft(width < 620 ? 82 : 92));
-
-        inputRow.removeFromLeft(6);
-    }
-
-    analysisDetailsButton.setBounds(inputRow.removeFromRight(width < 620 ? 102 : 116));
-    inputRow.removeFromRight(5);
-    captureTimeLabel.setBounds(inputRow);
+    recordSystemButton.setBounds(card.removeFromLeft(pillWidth + 12));
+    card.removeFromLeft(6);
 
     if (processor.isStandaloneApp())
     {
-        area.removeFromTop(compact ? 2 : 4);
-
-        auto recordingRow = area.removeFromTop(compact ? 28 : 32);
-
-        recordSystemButton.setBounds(recordingRow.removeFromLeft(width < 620 ? 104 : 116));
-
-        recordingRow.removeFromLeft(5);
-
-        recordInputButton.setBounds(recordingRow.removeFromLeft(width < 620 ? 96 : 108));
-    }
-
-    area.removeFromTop(compact ? 3 : 5);
-
-    auto optionRow = area.removeFromTop(compact ? 22 : 25);
-    const int optionGap = 6;
-    const int optionWidth = juce::jmax(0, (optionRow.getWidth() - optionGap) / 2);
-    refinementButton.setBounds(optionRow.removeFromLeft(optionWidth));
-    optionRow.removeFromLeft(optionGap);
-    beatThisButton.setBounds(optionRow);
-
-    area.removeFromTop(compact ? 3 : 5);
-
-    auto processRow = area.removeFromTop(compact ? 31 : 36);
-    if (cancelButton.isVisible())
-    {
-        cancelButton.setBounds(processRow.removeFromRight(width < 620 ? 92 : 108));
-        processRow.removeFromRight(5);
+        recordInputButton.setBounds(card.removeFromLeft(pillWidth + 4));
+        card.removeFromLeft(6);
     }
     else
     {
-        cancelButton.setBounds(0, 0, 0, 0);
+        recordInputButton.setBounds(0, 0, 0, 0);
     }
-    separateButton.setBounds(processRow);
 
-    area.removeFromTop(compact ? 3 : 5);
+    // Upstream's own preview button and its readout keep their behaviour, but
+    // the global transport below now carries play/pause, so these trail the
+    // pills rather than leading them.
+    playButton.setBounds(0, 0, 0, 0);
+    analysisDetailsButton.setBounds(card.removeFromRight(0));
+    captureTimeLabel.setBounds(0, 0, 0, 0);
+
+    beatThisButton.setBounds(0, 0, 0, 0);
+
+    area.removeFromTop(compact ? 6 : 10);
 
     statusLabel.setBounds(area.removeFromTop(compact ? 18 : 20));
 
     progressBar.setBounds(area.removeFromTop(compact ? 15 : 18));
 
     timingLabel.setBounds(area.removeFromTop(compact ? 17 : 20));
+
 
     area.removeFromTop(compact ? 2 : 4);
 
@@ -1987,6 +2041,28 @@ void StemLabAudioProcessorEditor::resized()
     auto actionRow = area.removeFromBottom(actionHeight);
 
     area.removeFromBottom(bottomGap);
+
+    /*
+        Transport, between the lanes and the footer: one play control, where
+        it is, and a scrubber. All three read the preview transport upstream
+        already runs.
+    */
+    const int transportHeight = compact ? 34 : 40;
+    auto transportBar = area.removeFromBottom(transportHeight);
+    transportBarBounds = transportBar;
+    area.removeFromBottom(bottomGap);
+
+    transportBar.reduce(compact ? 6 : 10, compact ? 3 : 5);
+
+    const int playSize = transportBar.getHeight();
+    transportButton.setBounds(transportBar.removeFromLeft(playSize));
+    transportGlyph.setBounds(transportButton.getBounds().reduced(playSize / 4));
+    transportBar.removeFromLeft(10);
+
+    transportTimeLabel.setBounds(transportBar.removeFromLeft(width < 620 ? 88 : 104));
+    transportBar.removeFromLeft(8);
+
+    transportScrubber.setBounds(transportBar);
 
     int requestedContentHeight = 0;
     for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
@@ -2056,36 +2132,39 @@ void StemLabAudioProcessorEditor::resized()
         }
     }
 
-    if (processor.isStandaloneApp())
+    /*
+        Footer: how the job went on the left, where it went on the right, and
+        the one action that takes the stems out of here at the far right.
+        Which button that is still depends on the host, exactly as before.
+    */
+    statusGlyph.setBounds(actionRow.removeFromLeft(actionRow.getHeight()).reduced(9));
+    actionRow.removeFromLeft(2);
+
+    auto* primaryAction = processor.isStandaloneApp() ? &saveSelectedButton
+                          : processor.isAbletonHost() ? &sendSelectedButton
+                                                      : &dragSelectedButton;
+
+    for (auto* button : {&saveSelectedButton, &sendSelectedButton, &dragSelectedButton})
+        if (button != primaryAction)
+            button->setBounds(0, 0, 0, 0);
+
+    primaryAction->setBounds(actionRow.removeFromRight(width < 620 ? 112 : 132));
+    actionRow.removeFromRight(8);
+
+    if (retryImportButton.isVisible())
     {
-        saveSelectedButton.setBounds(actionRow.removeFromLeft(width < 620 ? 112 : 128));
-
-        actionRow.removeFromLeft(5);
-    }
-    else if (processor.isAbletonHost())
-    {
-        sendSelectedButton.setBounds(actionRow.removeFromLeft(width < 620 ? 108 : 126));
-
-        actionRow.removeFromLeft(5);
-
-        retryImportButton.setBounds(actionRow.removeFromLeft(width < 620 ? 60 : 70));
-
-        actionRow.removeFromLeft(5);
+        retryImportButton.setBounds(actionRow.removeFromRight(width < 620 ? 60 : 70));
+        actionRow.removeFromRight(6);
     }
     else
     {
-        dragSelectedButton.setBounds(actionRow.removeFromLeft(width < 620 ? 108 : 126));
-
-        actionRow.removeFromLeft(5);
-
-        retryImportButton.setBounds(actionRow.removeFromLeft(width < 620 ? 60 : 70));
-
-        actionRow.removeFromLeft(5);
+        retryImportButton.setBounds(0, 0, 0, 0);
     }
 
-    const int locationWidth = juce::jmin(width < 620 ? 132 : 150, actionRow.getWidth());
+    openJobButton.setBounds(actionRow.removeFromRight(width < 620 ? 66 : 76));
+    actionRow.removeFromRight(8);
 
-    openJobButton.setBounds(actionRow.removeFromLeft(juce::jmax(0, locationWidth)));
+    outputPathLabel.setBounds(actionRow);
 }
 
 void StemLabAudioProcessorEditor::timerCallback()
@@ -2117,6 +2196,8 @@ void StemLabAudioProcessorEditor::changeListenerCallback(juce::ChangeBroadcaster
 
 void StemLabAudioProcessorEditor::refreshFromProcessor()
 {
+    namespace tc = stemlab::theme::colours;
+
     // Header, from the processor's own state rather than from anything the
     // header remembers itself - the wheel over a lane moves the zoom too, and
     // the two have to agree.
@@ -2138,6 +2219,36 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
                              juce::dontSendNotification);
 
     engineLabel.setText(processor.getSeparatorEngineDisplayName(), juce::dontSendNotification);
+
+    // Source card and transport, from the preview player upstream runs.
+    const auto sourceLabel = processor.getInputSourceLabel();
+    sourceNameLabel.setText(sourceLabel.isNotEmpty() ? sourceLabel : "No file selected",
+                            juce::dontSendNotification);
+
+    const auto previewLength = processor.getPreviewLengthSeconds();
+    const auto previewPosition = processor.getPreviewPositionSeconds();
+
+    sourceLengthLabel.setText(previewLength > 0.0 ? formatSeconds(previewLength) : juce::String(),
+                              juce::dontSendNotification);
+
+    const auto playing = processor.isStandalonePlaying();
+    transportGlyph.setIcon(playing ? stemlab::icons::pause : stemlab::icons::play,
+                           tc::primaryText());
+    transportButton.setEnabled(previewLength > 0.0);
+
+    transportTimeLabel.setText(formatSeconds(previewPosition) + " / " +
+                                   formatSeconds(previewLength),
+                               juce::dontSendNotification);
+
+    if (!transportScrubber.isMouseButtonDown())
+        transportScrubber.setValue(previewLength > 0.0 ? previewPosition / previewLength : 0.0,
+                                   juce::dontSendNotification);
+
+    transportScrubber.setEnabled(previewLength > 0.0);
+
+    const auto jobDirectory = processor.getLastJobDirectory();
+    outputPathLabel.setText(jobDirectory.getFullPathName(), juce::dontSendNotification);
+    statusGlyph.setVisible(processor.hasSuccessfulJob());
 
     const auto capturing = processor.isCapturing();
 
@@ -2737,15 +2848,6 @@ void StemLabAudioProcessorEditor::showManualGridDialog()
         "Manual Waveform Grid", "Set the grid used for waveform alignment and MIDI placement.",
         juce::MessageBoxIconType::NoIcon, this);
 
-    /*
-        An AlertWindow is its own top-level window, so it takes the default
-        look-and-feel rather than the editor's - which left this dialog in
-        JUCE's stock grey while the interface around it was not. It has to be
-        told explicitly. Set on the window rather than as the process default:
-        this runs inside a host, and the process default is not ours to take.
-    */
-    window->setLookAndFeel(&*lookAndFeel);
-
     window->addTextEditor("bpm", juce::String(grid.bpm, 3), "BPM");
     window->addTextEditor("numerator", juce::String(grid.numerator), "Meter numerator");
     window->addTextEditor("denominator", juce::String(grid.denominator), "Meter denominator");
@@ -2755,19 +2857,10 @@ void StemLabAudioProcessorEditor::showManualGridDialog()
 
     auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
 
-    /*
-        The dialog is modal and holds itself alive through this callback, so
-        it can outlive the editor that opened it - and it now points at that
-        editor's look-and-feel. The closure takes its own reference, captured
-        before the window: closure members are destroyed in reverse, so the
-        window goes first and never sees a dead look-and-feel.
-    */
-    juce::SharedResourcePointer<StemLabLookAndFeel> dialogLookAndFeel;
-
     window->enterModalState(
         true,
         juce::ModalCallbackFunction::create(
-            [dialogLookAndFeel, safeThis, window](int result)
+            [safeThis, window](int result)
             {
                 if (result != 1 || safeThis == nullptr)
                     return;
@@ -2793,10 +2886,6 @@ void StemLabAudioProcessorEditor::showAnalysisCorrectionDialog()
         "Correct Source Analysis", "Corrections are stored locally for this exact source file.",
         juce::MessageBoxIconType::NoIcon, this);
 
-    // As in showManualGridDialog: a top-level window does not inherit the
-    // editor's look-and-feel, so it is told.
-    window->setLookAndFeel(&*lookAndFeel);
-
     window->addTextEditor("bpm", juce::String(processor.getSourceBpm(), 3), "BPM");
     window->addTextEditor("key", processor.getSourceKey(), "Key");
     window->addTextEditor("numerator", juce::String(processor.getSourceMeterNumerator()),
@@ -2810,19 +2899,10 @@ void StemLabAudioProcessorEditor::showAnalysisCorrectionDialog()
 
     auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
 
-    /*
-        The dialog is modal and holds itself alive through this callback, so
-        it can outlive the editor that opened it - and it now points at that
-        editor's look-and-feel. The closure takes its own reference, captured
-        before the window: closure members are destroyed in reverse, so the
-        window goes first and never sees a dead look-and-feel.
-    */
-    juce::SharedResourcePointer<StemLabLookAndFeel> dialogLookAndFeel;
-
     window->enterModalState(
         true,
         juce::ModalCallbackFunction::create(
-            [dialogLookAndFeel, safeThis, window](int result)
+            [safeThis, window](int result)
             {
                 if (result != 1 || safeThis == nullptr)
                     return;

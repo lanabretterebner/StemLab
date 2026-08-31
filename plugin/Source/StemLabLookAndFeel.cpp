@@ -818,6 +818,23 @@ namespace stemlab::icons
         return p;
     }
 
+    juce::Path play(juce::Rectangle<float> b)
+    {
+        juce::Path p;
+        p.addTriangle(b.getX(), b.getY(), b.getX(), b.getBottom(), b.getRight(), b.getCentreY());
+        p = p.createPathWithRoundedCorners(1.5f);
+        return p;
+    }
+
+    juce::Path pause(juce::Rectangle<float> b)
+    {
+        juce::Path p;
+        const float barW = b.getWidth() * 0.32f;
+        p.addRoundedRectangle(b.getX(), b.getY(), barW, b.getHeight(), 1.0f);
+        p.addRoundedRectangle(b.getRight() - barW, b.getY(), barW, b.getHeight(), 1.0f);
+        return p;
+    }
+
     juce::Path check(juce::Rectangle<float> b)
     {
         juce::Path p;
