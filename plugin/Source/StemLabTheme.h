@@ -213,7 +213,7 @@ namespace stemlab::theme
         inline juce::String paletteName(int index)
         {
             static const char* const names[paletteCount] = {
-                "Nocturne", "Stem Color", "Spectrum", "RGB", "3-Band"};
+                "Accent", "Stem Color", "Spectrum", "RGB", "3-Band"};
 
             return names[juce::jlimit(0, paletteCount - 1, index)];
         }
@@ -254,6 +254,9 @@ namespace stemlab::theme
 
             case 0:
             default:
+                // Flat accent. Named for what it draws, not for the design
+                // system it came from - "Nocturne" told a user nothing about
+                // the colour they were about to get.
                 return colours::wavePlayed();
             }
         }

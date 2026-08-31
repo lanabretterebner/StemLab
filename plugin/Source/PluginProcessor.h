@@ -479,7 +479,12 @@ public:
 
     int getWaveformColourIndex() const noexcept { return waveformColourIndex.load(); }
 
-    static constexpr int waveformColourCount = 7;
+    /*  Upstream listed seven: one spectral mode and six flat colours. This
+        build draws a different five (see stemlab::theme::waveform), sharing
+        the same persisted slot, so the clamp has to be five - at seven, an
+        index restored from an upstream session stayed at 5 or 6, drew as the
+        last palette, and left the menu with nothing ticked. */
+    static constexpr int waveformColourCount = 5;
 
     static juce::String getStemName(int index);
     static constexpr int stemCount = 6;

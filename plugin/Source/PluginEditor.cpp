@@ -4547,19 +4547,23 @@ void StemLabAudioProcessorEditor::showEngineMenu()
 
 void StemLabAudioProcessorEditor::showWaveformColourMenu()
 {
-    /*
-        The palette is this backend's, not ours: seven named ramps it already
-        persists an index into. Ours had five. The assertion that they match
-        was right to exist and wrong to keep here - the menu is built from
-        the backend's own count below, so the two cannot drift apart.
-    */
-
     auto menu = makeMenu();
 
-    // The menu's order and spelling are the design's: Spectrum, RGB,
-    // 3-Band, Stem Color, Nocturne. Persisted indices stay put; only the
-    // listing order differs from them.
+    /*
+        The listing order is the design's - Spectrum, RGB, 3-Band, Stem
+        Color, Accent - and differs from the persisted index order, which
+        must not move. The static_assert is the whole point of writing the
+        order out: it fails if a palette is ever added to the theme without
+        being given a place in this menu, which is how index 5 and 6 came to
+        be selectable in the processor and unlistable here.
+    */
     static constexpr int menuPalettes[] = {2, 3, 4, 1, 0};
+
+    static_assert(std::size(menuPalettes) == theme::waveform::paletteCount,
+                  "every waveform palette needs a place in this menu");
+    static_assert(theme::waveform::paletteCount ==
+                      StemLabAudioProcessor::waveformColourCount,
+                  "the persisted colour index must clamp to a palette we can draw");
 
     for (const int palette : menuPalettes)
     {
