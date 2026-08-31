@@ -57,13 +57,47 @@ PluginProcessor sends manifest path over localhost UDP
 
 Owns the visible UI:
 
-- `StemWaveformComponent` draws and seeks waveforms.
-- `RecursiveStemRowComponent` renders one adaptive-tree child.
+- `StemLaneComponent` is one lane: its include checkbox, name, waveform,
+  play control, drag handles and menu.
+- `StemLaneWaveform` draws the audio, the beat grid and the selection, and
+  turns drags into a loop/export range.
 - `StemLabAudioProcessorEditor` creates controls, lays them out, and turns
   button clicks into processor calls.
 
-Use this area for labels, colors, row sizing, menus, and layout. Keep file
-processing and model-selection logic in the processor/Python layer.
+Layout constants, colours and type live in `StemLabTheme.h`; the drawing of
+stock JUCE widgets lives in `StemLabLookAndFeel`. The editor itself holds no
+colour or font literals, and only two colour literals remain anywhere in it:
+the per-stem identity colours and the level-mapped spectrum ramp, both of
+which describe the audio rather than the product.
+
+Use this area for row sizing, menus and layout. Keep file processing and
+model-selection logic in the processor/Python layer.
+
+### Supporting UI files
+
+| File | Holds |
+| --- | --- |
+| `StemLabTheme.h` | Every colour, font and layout constant. |
+| `StemLabLookAndFeel.h/.cpp` | Buttons, menus, tooltips, toggles, icons. |
+| `StemLabWidgets.h/.cpp` | Icon buttons, segmented controls, checkboxes. |
+| `WaveformAnalysis.h` | Peak envelope, stereo split, palette mapping. |
+| `WaveformCache.h/.cpp` | Keeps lanes from re-analysing on every repaint. |
+| `WaveformGrid.h` | Bar/beat lines, and the shared zoom window. |
+| `LoopRegions.h` | Loop and export range maths. |
+| `SourceLabel.h` | Joins a DAW track and take into one source name. |
+
+### What the interface does not offer
+
+Some controls were removed rather than drawn dead, because this backend has
+nothing for them to act on:
+
+- **Solo and Mute** need a stem mix. Playback here is a single preview
+  player holding one stem at a time, so each lane has a play control
+  instead.
+- **Model management** — no inventory, download, compile or removal exists.
+- **Editor scale, monitor mode, cache management, fused-stem normalisation
+  and torch-compile** were a settings overlay; the gear opens a dropdown.
+- **REAPER** actions — this build targets Windows hosts and Ableton Live.
 
 ### `plugin/Source/PluginProcessor.h/.cpp`
 

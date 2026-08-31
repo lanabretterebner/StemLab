@@ -4562,20 +4562,11 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
         menu.addSeparator();
     }
 
-    menu.addSectionHeader("Display");
-
-    juce::PopupMenu waveformMenu;
-
-    const juce::StringArray colourNames{
-        "Spectrum (Volume)", "Violet", "Cyan", "Emerald", "Amber", "Pink", "Ice"};
-
-    for (int i = 0; i < colourNames.size(); ++i)
-    {
-        waveformMenu.addItem(100 + i, colourNames[i], true,
-                             processor.getWaveformColourIndex() == i);
-    }
-
-    menu.addSubMenu("Waveform Color", waveformMenu);
+    /*
+        No Waveform Color here, and no Separation Engine below: the header
+        carries a palette button and an engine picker for exactly those, and a
+        setting reachable two ways is a setting you have to check twice.
+    */
 
     menu.addSeparator();
 
@@ -4615,20 +4606,6 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
 
     menu.addSeparator();
 
-    menu.addSectionHeader("Separator");
-
-    juce::PopupMenu separatorMenu;
-
-    const juce::StringArray separatorNames{"BS-RoFormer", "Demucs (htdemucs_6s)",
-                                           "Hybrid (RoFormer + Demucs)"};
-
-    for (int i = 0; i < separatorNames.size(); ++i)
-    {
-        separatorMenu.addItem(200 + i, separatorNames[i], !processor.isEngineRunning(),
-                              processor.getSeparatorEngineIndex() == i);
-    }
-
-    menu.addSubMenu("Separation Engine", separatorMenu);
 
     menu.addSeparator();
 

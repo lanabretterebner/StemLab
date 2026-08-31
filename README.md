@@ -18,9 +18,9 @@ scripts and checksum manifests are source-controlled; their generated output is 
 - Optional kick-bleed refinement
 - Adaptive vocal, drum, and foreground stem trees
 - File, physical-input, and Windows system-audio capture
-- Waveform preview and selective export
+- Waveform preview and selective export, with per-lane auditioning
 - Optional Beat This! key/BPM analysis (Fast by default, Accurate available)
-- Per-stem MIDI export, waveform zoom/range selection, and cancellable jobs
+- Per-stem MIDI export, shared waveform zoom, range selection, cancellable jobs
 - Direct import into Ableton through `FIStemRemote`
 
 ## Set Up Development
@@ -103,6 +103,16 @@ every behavior change:
 
 The tests use synthetic audio, so they do not download model weights or require
 Ableton.
+
+The C++ side has its own suite, run through CTest after a build:
+
+```powershell
+ctest --test-dir plugin\build --output-on-failure
+```
+
+It covers the JUCE-free parts of the interface - the beat-grid and shared-zoom
+maths, the host-capture policy, the source-label join, loop ranges, waveform
+analysis, and the theme's contrast guarantees. Those run without a display.
 
 ## How It Fits Together
 
@@ -189,7 +199,9 @@ supported.
 ```text
 docs/                    Development, Ableton, and licensing notes
 integrations/ableton/    Ableton Live control-surface bridge
-plugin/                  JUCE C++ frontend, assets, and CMake definition
+plugin/Source/           JUCE C++ interface, theme, look-and-feel, widgets
+plugin/Tests/            C++ unit tests, run through CTest
+plugin/Resources/        Icon and the bundled Inter faces
 scripts/                 Development setup, build, and install commands
 stemlab/                 Python separation and DSP engine
 tests/                   Fast unit tests using generated audio
