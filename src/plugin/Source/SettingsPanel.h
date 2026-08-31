@@ -29,10 +29,11 @@ namespace stemlab::widgets
     class SettingsPanel final : public juce::Component
     {
     public:
+        /** Listed in the order the tab strip draws them. */
         enum class Page
         {
-            models,
-            settings
+            settings,
+            models
         };
 
         /** Everything the settings page draws, filled by the editor.
@@ -111,7 +112,7 @@ namespace stemlab::widgets
         Page page = Page::settings;
 
         juce::Label titleLabel;
-        SegmentedControl tabs{"Models", "Settings"};
+        SegmentedControl tabs{"Settings", "Models"};
         juce::TextButton closeButton{"Close"};
 
         ModelManagerPanel modelsPage;

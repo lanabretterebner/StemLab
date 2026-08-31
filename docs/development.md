@@ -327,10 +327,10 @@ for the adaptive models - and lifts `HF_HUB_OFFLINE` for that child only,
 since downloading is the one operation meant to reach the network.
 
 In the plugin it is one page of the settings window - `SettingsPanel`, a modal
-over the interface with **Models** and **Settings** tabs. The gear opens it on
-Settings; a missing essential model opens it on Models by itself, and only
-then: `ESSENTIAL_MODEL_IDS` is RoFormer and Demucs. Dismissing it lasts the
-session only.
+over the interface with **Settings** and **Models** tabs, in that order. The
+gear opens it on Settings, which is why Settings is first; a missing essential
+model opens it on Models by itself, and only then: `ESSENTIAL_MODEL_IDS` is
+RoFormer and Demucs. Dismissing it lasts the session only.
 
 `SettingsPanel` owns the scrim, the card, the tab strip, Close and the Escape
 key; each page draws only its own content into the rectangle it is handed.
