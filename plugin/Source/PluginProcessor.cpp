@@ -129,6 +129,18 @@ juce::String timestampForFilename()
 
 double nowMs() { return juce::Time::getMillisecondCounterHiRes(); }
 
+/*  How much audio the disk writer refused, in the terms the user cares about.
+    Reported at stop rather than logged when it happens: the count is raised on
+    the audio thread, where nothing may allocate or format text.
+*/
+juce::String describeDroppedCapture(juce::int64 samples, double sampleRate)
+{
+    if (sampleRate > 0.0)
+        return juce::String(static_cast<double>(samples) / sampleRate, 2) + " s";
+
+    return juce::String(samples) + " samples";
+}
+
 juce::String utf8ToHex(const juce::String& text)
 {
     const auto utf8 = text.toUTF8();
@@ -928,12 +940,16 @@ public:
             return;
         }
 
+        // Two seconds of margin at whatever rate the endpoint runs: once the
+        // FIFO is full, write() discards rather than waits.
         auto writer = std::make_unique<juce::AudioFormatWriter::ThreadedWriter>(
-            formatWriter.release(), owner.diskWriterThread, 65536);
+            formatWriter.release(), owner.diskWriterThread,
+            juce::jmax(65536, static_cast<int>(sampleRate * 2.0)));
 
         owner.currentSampleRate = sampleRate;
         owner.currentInputChannels = outputChannels;
         owner.capturedSamples.store(0);
+        owner.droppedCaptureSamples.store(0);
 
         hr = audioClient->Start();
 
@@ -1057,9 +1073,15 @@ public:
                     }
                 }
 
-                writer->write(converted.getArrayOfReadPointers(), static_cast<int>(frames));
-
-                owner.capturedSamples.fetch_add(static_cast<juce::int64>(frames));
+                // ThreadedWriter::write returns false and DISCARDS the block
+                // when its FIFO is full. Waiting it out here is not an option
+                // - the endpoint buffer is still held by GetBuffer and would
+                // overrun - so the loss is counted and reported at stop
+                // instead of passing for a clean recording.
+                if (writer->write(converted.getArrayOfReadPointers(), static_cast<int>(frames)))
+                    owner.capturedSamples.fetch_add(static_cast<juce::int64>(frames));
+                else
+                    owner.droppedCaptureSamples.fetch_add(static_cast<juce::int64>(frames));
 
                 captureClient->ReleaseBuffer(frames);
 
@@ -1306,9 +1328,17 @@ void StemLabAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
     {
         if (auto* writer = activeWriter.load(std::memory_order_acquire))
         {
-            writer->write(buffer.getArrayOfReadPointers(), buffer.getNumSamples());
+            const auto numSamples = buffer.getNumSamples();
 
-            capturedSamples.fetch_add(buffer.getNumSamples());
+            // ThreadedWriter::write never blocks: a full FIFO returns false
+            // and DISCARDS the block. Counting a discarded block as captured
+            // is what turned a disk hiccup into a silently time-compressed
+            // recording that still read as clean, so the two outcomes are
+            // counted apart and the stop path reports the loss.
+            if (writer->write(buffer.getArrayOfReadPointers(), numSamples))
+                capturedSamples.fetch_add(numSamples);
+            else
+                droppedCaptureSamples.fetch_add(numSamples);
         }
     }
 
@@ -1528,6 +1558,7 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
         // may be perfectly separable even when JUCE has no source-preview
         // decoder for that specific format.
         capturedSamples.store(0);
+    droppedCaptureSamples.store(0);
         inputDurationSeconds.store(0.0);
 
         previewTransport.stop();
@@ -2831,8 +2862,15 @@ bool StemLabAudioProcessor::startThreadedInputCapture(const juce::String& prefix
         return false;
     }
 
+    // The FIFO is the whole margin against disk jitter: once it is full,
+    // write() discards blocks rather than waiting. 32768 samples was 0.68 s at
+    // 48 kHz, inside the range of an ordinary flush stall, so budget two
+    // seconds at whatever rate the device is actually running.
+    const int captureFifoSamples =
+        juce::jmax(32768, static_cast<int>(currentSampleRate * 2.0));
+
     threadedWriter = std::make_unique<juce::AudioFormatWriter::ThreadedWriter>(
-        formatWriter.release(), diskWriterThread, 32768);
+        formatWriter.release(), diskWriterThread, captureFifoSamples);
 
     {
         const juce::ScopedLock lock(stateLock);
@@ -2846,6 +2884,7 @@ bool StemLabAudioProcessor::startThreadedInputCapture(const juce::String& prefix
     }
 
     capturedSamples.store(0);
+    droppedCaptureSamples.store(0);
     inputDurationSeconds.store(0.0);
     captureStartPpq.store(juce::jmax(0.0, startPpq));
     engineCompletedSuccessfully.store(false);
@@ -2873,7 +2912,15 @@ void StemLabAudioProcessor::stopStandaloneRecording()
 
     if (recordingFile.existsAsFile() && setStandaloneInputFile(recordingFile))
     {
-        setStatus("Input recording ready");
+        // A short recording that reads as clean is worse than a loud
+        // failure: the audio is gone either way, but only one of the
+        // two tells the user the take is not the one they played.
+        if (const auto dropped = droppedCaptureSamples.load(); dropped > 0)
+            setStatus("Input recording ready - "
+                      + describeDroppedCapture(dropped, currentSampleRate)
+                      + " was lost, the recording disk could not keep up");
+        else
+            setStatus("Input recording ready");
     }
     else
     {
@@ -2917,7 +2964,15 @@ void StemLabAudioProcessor::stopHostAudioCapture()
     if (recordingFile.existsAsFile() && recordingFile.getSize() > 44 &&
         setInputAudioFile(recordingFile, captureStartPpq.load(), "Host audio capture"))
     {
-        setStatus("Host audio capture ready");
+        // A short recording that reads as clean is worse than a loud
+        // failure: the audio is gone either way, but only one of the
+        // two tells the user the take is not the one they played.
+        if (const auto dropped = droppedCaptureSamples.load(); dropped > 0)
+            setStatus("Host audio capture ready - "
+                      + describeDroppedCapture(dropped, currentSampleRate)
+                      + " was lost, the recording disk could not keep up");
+        else
+            setStatus("Host audio capture ready");
     }
     else
     {
@@ -2963,6 +3018,7 @@ bool StemLabAudioProcessor::startSystemAudioRecording()
     }
 
     capturedSamples.store(0);
+    droppedCaptureSamples.store(0);
     inputDurationSeconds.store(0.0);
 
     captureStartPpq.store(isStandaloneApp() ? 0.0 : juce::jmax(0.0, lastKnownHostPpq.load()));
@@ -3015,7 +3071,15 @@ void StemLabAudioProcessor::stopSystemAudioRecording()
     if (successful && recordingFile.existsAsFile() && recordingFile.getSize() > 44 &&
         setInputAudioFile(recordingFile, captureStartPpq.load(), "System audio recording"))
     {
-        setStatus("System audio recording ready");
+        // A short recording that reads as clean is worse than a loud
+        // failure: the audio is gone either way, but only one of the
+        // two tells the user the take is not the one they played.
+        if (const auto dropped = droppedCaptureSamples.load(); dropped > 0)
+            setStatus("System audio recording ready - "
+                      + describeDroppedCapture(dropped, currentSampleRate)
+                      + " was lost, the recording disk could not keep up");
+        else
+            setStatus("System audio recording ready");
     }
     else if (!getStatus().startsWithIgnoreCase("System audio recording failed"))
     {
