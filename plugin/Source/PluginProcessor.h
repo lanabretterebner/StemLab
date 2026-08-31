@@ -1,6 +1,8 @@
 #pragma once
 
 #include <JuceHeader.h>
+
+#include "WaveformCache.h"
 #include <array>
 #include <atomic>
 #include <deque>
@@ -114,11 +116,90 @@ public:
         tempoDouble = 2
     };
 
+    /*
+        Which host the interface is talking to. This backend knows two: a
+        standalone window and Ableton Live. Our editor also had a REAPER
+        case; there is no REAPER support here to attach it to, so it is not
+        in the enum and its branches come out rather than sitting unreachable.
+    */
+    /*
+        Adapters. Each of these is our interface asking for something this
+        backend already keeps, under a name it does not use. Nothing here is
+        new state except the waveform cache, which is a drawing cache rather
+        than anything the audio path touches.
+    */
+    void transportTogglePlay();
+    void transportSeekNormalised(double normalisedPosition);
+    bool isTransportPlaying() const noexcept { return isStandalonePlaying(); }
+    double getTransportPositionSeconds() const noexcept { return getPreviewPositionSeconds(); }
+    double getTransportLengthSeconds() const noexcept { return getPreviewLengthSeconds(); }
+
+    double getManualGridBpm() const noexcept { return manualGridBpm.load(); }
+    StemLabGridInfo getWaveformGridScalars() const { return getWaveformGridInfo(); }
+    juce::Range<double> getWaveformViewRange(double totalLengthSeconds) const;
+
+    bool hasCompletedStemFile(int index) const
+    {
+        return getCompletedStemFile(index).existsAsFile();
+    }
+
+    juce::File getReadyStemFile(int index) const { return getCompletedStemFile(index); }
+    juce::File getStemDragFile(const juce::File& source, const juce::String& selectionId);
+    bool isFileFromCurrentJob(const juce::File& file) const;
+
+    double getMainJobDurationSeconds() const noexcept { return getEngineElapsedSeconds(); }
+    bool wasLastJobRefined() const noexcept { return lastJobRefinement.load(); }
+
+    juce::String getActionStatus() const { return getStatus(); }
+    int getActionStatusRevision() const noexcept { return statusRevision.load(); }
+
+    bool isBackgroundWorkRunning() const noexcept
+    {
+        return isEngineRunning() || isRecursiveEngineRunning();
+    }
+
+    void cancelSeparation() { cancelRunningJob(); }
+    bool usesLocalFileWorkflow() const noexcept { return !isAbletonHost(); }
+
+    /** No MIDI transcription in this backend, so no notes to report. */
+    size_t getMidiNoteCount(const juce::String&) const { return 0; }
+
+    StemLabWaveformCache& getWaveformCache() noexcept { return waveformProfiles; }
+
+    enum HostIntegration
+    {
+        hostIntegrationNone = 0,
+        hostIntegrationAbletonLive = 1,
+        /*  Never returned by this backend, which has no REAPER support. It
+            stays in the enum so the interface's switches over host remain
+            exhaustive; the REAPER actions themselves are gone. */
+        hostIntegrationReaper = 2
+    };
+
+    HostIntegration getHostIntegration() const noexcept
+    {
+        return isAbletonHost() ? hostIntegrationAbletonLive : hostIntegrationNone;
+    }
+
+    /** Whether this build can record the machine's own output. */
+    static bool isSystemAudioCaptureSupported() noexcept
+    {
+#if JUCE_WINDOWS || JUCE_LINUX
+        return true;
+#else
+        return false;
+#endif
+    }
+
     enum WaveformGridMode
     {
         gridHost = 0,
         gridSource = 1,
-        gridManual = 2
+        gridManual = 2,
+        /*  No grid. Source mode falls back to 120 BPM when nothing has been
+            analysed, which draws a confident bar grid at an invented tempo;
+            this is the way to say "don't". */
+        gridOff = 3
     };
 
     StemLabAudioProcessor();
@@ -239,6 +320,16 @@ public:
     double getEngineEstimatedRemainingSeconds() const noexcept;
     void refreshEngineProgressFromDisk();
 
+    enum StatusSeverity
+    {
+        statusNeutral = 0,
+        statusSuccess = 1,
+        statusFailure = 2
+    };
+
+    /** How the status line should read, not just what it says. */
+    StatusSeverity getStatusSeverity() const noexcept { return statusSeverity.load(); }
+
     juce::String getStatus() const;
     juce::String getEngineLog() const;
 
@@ -345,6 +436,10 @@ public:
 
     juce::String getSeparatorEngineId() const;
     juce::String getSeparatorEngineDisplayName() const;
+
+    /** The same engine named for two different widths. */
+    juce::String getSeparatorEngineMenuName(int index) const;
+    juce::String getSeparatorEngineShortName(int index) const;
 
     static constexpr int separatorEngineCount = 3;
 
@@ -481,6 +576,9 @@ private:
     std::atomic<bool> beatThisEnabled{false};
     std::atomic<int> sourceAnalysisMode{analysisFast};
     std::atomic<int> tempoInterpretation{tempoDetected};
+    std::atomic<StatusSeverity> statusSeverity{statusNeutral};
+    std::atomic<int> statusRevision{0};
+    std::atomic<bool> lastJobRefinement{false};
     std::atomic<double> waveformZoom{1.0};
     std::atomic<int> waveformGridMode{gridSource};
     std::atomic<double> manualGridBpm{120.0};
@@ -559,6 +657,9 @@ private:
     std::atomic<double> previewLoopEnd{0.0};
 
     juce::AudioFormatManager previewFormats;
+
+    // Declared after the manager it borrows, so it outlives nothing it needs.
+    StemLabWaveformCache waveformProfiles{previewFormats};
     std::unique_ptr<juce::AudioFormatReaderSource> previewReaderSource;
     juce::AudioTransportSource previewTransport;
     juce::AudioSourcePlayer previewPlayer;

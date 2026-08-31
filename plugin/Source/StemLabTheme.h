@@ -2,45 +2,45 @@
 
 #include <JuceHeader.h>
 
+#include <cmath>
+#include <optional>
+
 /*
-    Every visual decision the interface makes, in one place.
+    Every visual decision StemLab's interface makes, in one place: the
+    "Nocturne" design system, draft 1a "Lanes". The design handoff this was
+    built from is no longer in the repository, so these values are the only
+    record of the tokens - treat this file as the spec, not as a copy of one.
 
-    The editor holds no colour, font or radius literals: it asks for a role
-    ("the primary fill", "the lane playhead") and this file decides what that
-    looks like. Restyling happens here and in StemLabLookAndFeel's drawing
-    code; only re-arrangements of the interface itself touch the editor.
+    The editor deliberately contains no colour or font literals; layout
+    values are tokens apart from a few small one-off trims at their call
+    sites. Restyle by changing values here and in the drawing code of
+    StemLabLookAndFeel / StemLabWidgets; only re-arrangements of the
+    interface itself touch the editor.
 
-        colours   Ground and surface, the accent and neutral ramps, and the
-                  per-component colour roles built on them.
-        fonts     The type scale.
-        metrics   Radii and dimensions the look-and-feel draws to.
+        colours   Ground/surface/text, the accent and neutral ramps, and
+                  per-component colour roles.
+        palette   The cross-DAW stem identity colours shared with the
+                  Ableton Remote Script.
+        fonts     Inter-based type scale (weight 500 is expressed as
+                  juce::Font::bold and resolved to Inter Medium by
+                  StemLabLookAndFeel; nothing renders bolder than 500).
+        metrics   Layout dimensions of the Lanes panel, at the design
+                  size the whole panel is scaled from.
 */
 
 namespace stemlab::theme
 {
     namespace colours
     {
-        // Ground and surface.
+        // Nocturne ground and surface.
         inline juce::Colour ground() { return juce::Colour(0xff161826); }
         inline juce::Colour surface() { return juce::Colour(0xff232532); }
 
         inline juce::Colour text() { return juce::Colour(0xffe9e9ed); }
         inline juce::Colour divider() { return text().withAlpha(0.16f); }
 
-        /*
-            The accent is the amber the product's own icon is drawn in -
-            #FCB901, which is 63% of that image's opaque pixels and the only
-            colour in it besides black. It reaches 10.1:1 on ground(), where
-            the violet it replaces reached 4.0:1.
 
-            Amber does not behave like a violet down the ramp. The light end
-            carries the brand; below accent500 the chroma is pulled hard,
-            because holding it would turn the shadows olive rather than
-            making them a deeper amber. Those steps are warm neutrals, and
-            are meant to be.
-        */
-        // Accent ramp. Lightness steps are even in OKLCH, and accent400 is
-        // the icon's colour exactly rather than something near it.
+        // Accent ramp (OKLCH-generated in the token sheet).
         inline juce::Colour accent100() { return juce::Colour(0xfffbf5ea); }
         inline juce::Colour accent200() { return juce::Colour(0xfffae6c0); }
         inline juce::Colour accent300() { return juce::Colour(0xfffccc73); }
@@ -51,7 +51,9 @@ namespace stemlab::theme
         inline juce::Colour accent800() { return juce::Colour(0xff474237); }
         inline juce::Colour accent900() { return juce::Colour(0xff2f2b24); }
 
-        // The brand colour itself, named for the role rather than the step.
+        /*  The accent is the amber the product's icon is drawn in - #FCB901,
+            63% of that image's opaque pixels and the only colour in it besides
+            black. 10.1:1 on ground(), where the violet it replaces reached 4.0. */
         inline juce::Colour accent() { return accent400(); }
 
         // Neutral ramp.
@@ -65,14 +67,15 @@ namespace stemlab::theme
         inline juce::Colour neutral800() { return juce::Colour(0xff3f424d); }
         inline juce::Colour neutral900() { return juce::Colour(0xff292b31); }
 
-        // Muted text is the body colour at a per-component opacity.
+        // Muted text = text at a per-component opacity (spec: 40-75%).
         inline juce::Colour text75() { return text().withAlpha(0.75f); }
         inline juce::Colour text50() { return text().withAlpha(0.50f); }
         inline juce::Colour text45() { return text().withAlpha(0.45f); }
-        inline juce::Colour textMuted() { return text().withAlpha(0.62f); }
 
-        // Menu section headings, deliberately above the disabled-item colour
-        // so a heading never reads as an unavailable command.
+        // Menu section headings. Deliberately above the disabled-item colour
+        // (text at metrics::disabledOpacity, which is also 45%), so a heading
+        // never reads as an unavailable command: 60% is 5.49:1 on surface(),
+        // against 3.71:1, and 11px headings need 4.5:1 to clear WCAG AA.
         inline juce::Colour sectionHeader() { return text().withAlpha(0.60f); }
 
         // Shared interactive roles.
@@ -82,78 +85,45 @@ namespace stemlab::theme
         inline juce::Colour accentTint10() { return accent().withAlpha(0.10f); }
         inline juce::Colour accentTint13() { return accent().withAlpha(0.13f); }
         inline juce::Colour accentHover18() { return accent300().withAlpha(0.18f); }
+
         inline juce::Colour accentGlow() { return accent().withAlpha(0.40f); }
 
-        /*
-            Primary (filled) action.
-
-            Light-on-dark, which every other filled role here uses, is the
-            one arrangement this accent cannot take: white on #FCB901 is
-            1.7:1, which is unreadable. So the primary action inverts - the
-            fill is the brand amber at full strength and the label is the
-            ground it sits on, which measures 10.1:1. It is also the more
-            honest button: the primary action is the one place the product's
-            own colour should be unmissable.
-        */
+        // Primary (filled) action: Separate control shell, Insert Stems.
         inline juce::Colour primaryFill() { return accent400(); }
         inline juce::Colour primaryFillHover() { return accent300(); }
         inline juce::Colour primaryEdge() { return accent200(); }
         inline juce::Colour primaryText() { return ground(); }
 
-        // Secondary / toggle segment: dark fill, amber label.
+        // Refine toggle segment.
         inline juce::Colour refineFill() { return accent900(); }
         inline juce::Colour refineFillHover() { return accent800(); }
         inline juce::Colour refineText() { return accent300(); }
         inline juce::Colour refineDivider() { return accent200().withAlpha(0.30f); }
-
         inline juce::Colour pillTrack() { return accent500(); }
         inline juce::Colour pillTrackOff() { return neutral800(); }
         inline juce::Colour pillKnob() { return accent100(); }
 
-        // Destructive action. Kept off the accent ramp: cancel and error
-        // must not read as the brand.
+        // Destructive action, kept off the accent ramp.
         inline juce::Colour dangerFill() { return juce::Colour(0xffa8364a); }
         inline juce::Colour dangerText() { return juce::Colour(0xfffde7ea); }
 
-        // The accent doubles as the arm/recording indicator.
+        // Record dot: the accent doubles as the arm/recording indicator.
         inline juce::Colour recordDot() { return accent(); }
 
-        /*
-            Stem lanes.
-
-            The well is deliberately darker than the ground rather than equal
-            to it: the lane is a recess cut into the panel, and the waveform
-            palette is drawn against it. This is the value the level-mapped
-            spectrum ramp was tuned against, kept unchanged so that ramp
-            still reads the way it was designed to.
-        */
-        inline juce::Colour laneWell() { return juce::Colour(0xff0c0f14); }
-
-        /*
-            Grid rules are a ruler behind the audio, not a thing to read, so
-            they are held near the well: neutral700 measures 2.9:1 on it,
-            where a step lighter reaches 4.5:1 and starts competing with the
-            waveform it is meant to sit behind.
-        */
-        inline juce::Colour gridLine() { return neutral700(); }
-        inline juce::Colour laneCentreLine() { return neutral800(); }
-
+        // Stem lanes.
+        inline juce::Colour laneWell() { return ground(); }
         inline juce::Colour wavePlayed() { return accent(); }
         inline juce::Colour waveMuted() { return neutral800(); }
+        /*  Transcribed notes over a lane's audio. Text rather than accent:
+            accent is the playhead and the played waveform, and notes lying
+            under both must not be mistaken for either. Translucent so the
+            waveform stays readable through them - the notes describe the
+            audio, they do not replace it. */
+        inline juce::Colour midiOverlay() { return text().withAlpha(0.55f); }
+
         inline juce::Colour playhead() { return accent(); }
         inline juce::Colour playheadGlow() { return accent().withAlpha(0.35f); }
 
-        /*  Transcribed notes over a lane's audio. The text colour, not the
-            accent: the accent is the playhead, and notes lying under it must
-            not be mistaken for it - which they would be now that both are the
-            same amber. Translucent so the waveform stays readable through
-            them; the notes describe the audio, they do not replace it. */
-        inline juce::Colour midiOverlay() { return text().withAlpha(0.55f); }
-        inline juce::Colour midiOverlayEdge() { return text().withAlpha(0.42f); }
-        inline juce::Colour selectionFill() { return accent().withAlpha(0.20f); }
-        inline juce::Colour selectionEdge() { return accent().withAlpha(0.90f); }
-
-        // A tick drawn in the ground colour, over an accent fill.
         inline juce::Colour checkboxFill() { return accent(); }
         inline juce::Colour checkboxCheck() { return ground(); }
         inline juce::Colour checkboxBorder() { return text().withAlpha(0.30f); }
@@ -163,9 +133,11 @@ namespace stemlab::theme
         inline juce::Colour soloActiveFill() { return accent800(); }
         inline juce::Colour soloActiveText() { return accent100(); }
 
-        // Transport and footer.
+        // Transport.
         inline juce::Colour scrubTrack() { return neutral800(); }
         inline juce::Colour scrubFill() { return accent(); }
+
+        // Footer.
         inline juce::Colour progressTrack() { return neutral800(); }
         inline juce::Colour progressFill() { return accent(); }
         inline juce::Colour statusCheck() { return accent(); }
@@ -174,17 +146,151 @@ namespace stemlab::theme
         inline juce::Colour spinnerTrack() { return accent().withAlpha(0.18f); }
     }
 
+    namespace palette
+    {
+        /*
+            Cross-DAW stem identity colours: the track colours REAPER and
+            Ableton create for inserted stems, so a user moving between hosts
+            sees the same stem identity.
+
+            Must stay byte-identical with _stem_color in
+            integrations/ableton/StemLabRemote/__init__.py - the Remote
+            Script cannot include this header. Deliberately independent from
+            the interface accent: these belong to the user's DAW project,
+            not to StemLab's theme.
+        */
+        inline std::optional<juce::Colour> stemIdentityColour(const juce::String& stemName)
+        {
+            struct Entry
+            {
+                const char* name;
+                juce::uint32 rgb;
+            };
+
+            static constexpr Entry entries[] = {
+                {"vocals", 0xF15BAA}, {"drums", 0xFF9A42}, {"bass", 0x34D2FF},
+                {"guitar", 0x46E797}, {"piano", 0x8466FF}, {"other", 0xDCEAF4},
+            };
+
+            for (const auto& entry : entries)
+            {
+                if (stemName.equalsIgnoreCase(entry.name))
+                    return juce::Colour(0xff000000u | entry.rgb);
+            }
+
+            return std::nullopt;
+        }
+    }
+
+    namespace waveform
+    {
+        /*
+            User-selectable lane waveform colours.
+
+            The redesign shipped with a single accent waveform, which lost
+            the one thing colour was carrying: which lane you are looking at
+            in a tall adaptive tree. Index 0 is that accent look; every
+            palette colours the whole lane at full strength - playback
+            position is the playhead's job, not a brightness split.
+
+            Beyond the accent and the per-stem identity colours, every
+            palette is driven by the audio itself: Spectrum sweeps a hue
+            from the spectral centroid, and RGB / 3-Band paint the DJ-
+            deck-style low/mid/high balance. The solid single-colour fills
+            that used to sit here said nothing a lane name did not.
+
+            The index persists in plugin state, so the order of these must
+            stay stable.
+        */
+        constexpr int paletteCount = 5;
+
+        // The two palettes the painter has to treat specially: RGB blends
+        // one colour per bar from the band balance, 3-Band nests one bar
+        // per band.
+        constexpr int paletteRgb = 3;
+        constexpr int paletteThreeBand = 4;
+
+        inline juce::String paletteName(int index)
+        {
+            static const char* const names[paletteCount] = {
+                "Nocturne", "Stem Color", "Spectrum", "RGB", "3-Band"};
+
+            return names[juce::jlimit(0, paletteCount - 1, index)];
+        }
+
+        /**
+         * The played-portion colour of one waveform bar.
+         *
+         * @param index      selected palette
+         * @param stemName   identity key ("vocals"...) for Stem Color
+         * @param brightness 0..1 spectral brightness of the audio under this
+         *                   bar, for Spectrum; 0.5 means "not analysed yet"
+         */
+        inline juce::Colour playedColour(int index, const juce::String& stemName,
+                                         float brightness)
+        {
+            switch (juce::jlimit(0, paletteCount - 1, index))
+            {
+            case 1:
+                return palette::stemIdentityColour(stemName).value_or(colours::accent());
+
+            case 2:
+                /*
+                    Violet where the audio's spectral centroid sits low and
+                    amber where it sits high, so a bass lane reads violet and
+                    a hi-hat lane reads amber.
+
+                    This used to be driven by the bar's position across the
+                    lane, which looked like a spectrum and meant nothing: a
+                    sine tone and a drum loop came out identically coloured.
+                    The value now comes from stemlab::waveform::brightnessAt
+                    over a real FFT of the file.
+
+                    Saturation and value are fixed so no bar can land on an
+                    unreadable colour, whatever the audio does.
+                */
+                return juce::Colour::fromHSV(
+                    0.72f - 0.62f * juce::jlimit(0.0f, 1.0f, brightness), 0.55f, 0.98f, 1.0f);
+
+            case 0:
+            default:
+                return colours::wavePlayed();
+            }
+        }
+
+        /*
+            rekordbox-style RGB: the low band drives blue, the mid green,
+            the high red, so a kick reads blue, a vocal reads green into
+            yellow, and a full mix washes toward white. The gamma lifts the
+            quieter bands - band shares of a real mix rarely pass 0.5, and
+            linearly that would leave every bar a saturated primary.
+        */
+        inline juce::Colour rgbColour(float low, float mid, float high)
+        {
+            const auto lift = [](float share)
+            { return std::pow(juce::jlimit(0.0f, 1.0f, share), 0.6f); };
+
+            return juce::Colour::fromFloatRGBA(lift(high), lift(mid), lift(low), 1.0f);
+        }
+
+        // 3-Band's fixed band colours, rekordbox-style: blue lows, amber
+        // mids, near-white highs.
+        inline juce::Colour bandLowColour() { return juce::Colour(0xff4472ff); }
+        inline juce::Colour bandMidColour() { return juce::Colour(0xffffb454); }
+        inline juce::Colour bandHighColour() { return juce::Colour(0xfff0f4ff); }
+    }
+
     namespace fonts
     {
         /*
             The bundled Inter faces, registered once by StemLabLookAndFeel's
-            constructor. Every token carries the typeface explicitly: JUCE 9's
-            font resolution does not consult LookAndFeel::getTypefaceForFont,
-            so a FontOptions without one renders in the platform fallback.
+            constructor. Every token below carries the typeface explicitly:
+            JUCE 9's font resolution does not consult
+            LookAndFeel::getTypefaceForFont, so a FontOptions without a
+            typeface would silently render in the platform fallback.
 
-            When the faces are not available - a build without the binary
-            resources - make() returns a plain FontOptions and the interface
-            renders in the host's default face rather than failing.
+            Weight 500 ("medium: true") uses Inter Medium - per Nocturne,
+            nothing renders bolder than 500.
         */
         inline juce::Typeface::Ptr& regularTypeface()
         {
@@ -208,56 +314,331 @@ namespace stemlab::theme
             return juce::FontOptions(size, medium ? juce::Font::bold : juce::Font::plain);
         }
 
-        // Wordmark: 17/500 with -0.015em letter-spacing.
+        // "StemLab" wordmark: 17/500 with -0.015em letter-spacing.
         constexpr float titleKerning = -0.015f;
         inline juce::FontOptions title() { return make(17.0f, true); }
 
         inline juce::FontOptions body() { return make(13.0f, false); }
         inline juce::FontOptions bodyMedium() { return make(13.0f, true); }
+
         inline juce::FontOptions laneName() { return make(13.5f, true); }
-        inline juce::FontOptions buttonLabel() { return make(13.0f, true); }
+
+        inline juce::FontOptions separateLabel() { return make(13.5f, true); }
+
+        inline juce::FontOptions refineLabel() { return make(11.0f, false); }
+
         inline juce::FontOptions meta() { return make(11.0f, false); }
         inline juce::FontOptions status() { return make(12.5f, false); }
         inline juce::FontOptions progress() { return make(12.0f, false); }
         inline juce::FontOptions time() { return make(12.0f, false); }
+        inline juce::FontOptions footerPath() { return make(12.0f, false); }
         inline juce::FontOptions smallButton() { return make(10.0f, false); }
+
+        // Bar numbers on the lane grid: small and quiet, since they are a
+        // ruler behind the audio rather than something to read.
         inline juce::FontOptions gridLabel() { return make(9.0f, false); }
         inline juce::FontOptions tooltip() { return make(12.0f, false); }
     }
 
     namespace metrics
     {
-        // A disabled control keeps its colour and loses strength.
-        constexpr float disabledOpacity = 0.45f;
-        constexpr float disabledAlphaFloor = 0.34f;
-        constexpr float disabledAlphaCeiling = 0.85f;
+        namespace window
+        {
+            /*
+                The surface runs edge to edge: no ground margin, no rounded
+                corners, no shadow. Floating the panel on a ground inset made
+                sense in a mock; in a host's FX window it is a dead border
+                around the only thing on screen.
 
-        static_assert(disabledAlphaFloor < disabledOpacity,
-                      "the disabled alpha floor must sit below disabledOpacity");
+                880x564 is the content stack exactly - panel::padY either
+                side of a header, source strip, six lanes, transport and
+                footer. The six root lanes and the lanes viewport are the
+                same height BY CONSTRUCTION: whatever the chrome does not
+                use, wellHeight absorbs, so there is never a dead band
+                between the last lane and the transport. Re-run the sum
+                after touching any vertical metric. Adaptive child lanes
+                scroll within the lanes region rather than growing the
+                window.
+            */
+            constexpr int groundMargin = 0;
+            constexpr int width = 880 + 2 * groundMargin;
+            constexpr int height = 564 + 2 * groundMargin;
 
-        namespace buttons
+            /*
+                The window resizes, but the layout does not reflow: the whole
+                panel is drawn at the size above and scaled by one transform,
+                between these bounds. The window is free to take any shape;
+                the panel is not, so a lane's proportions are identical at
+                every size and an off-shape window letterboxes the panel
+                rather than stretching it. These two are the range of that
+                scale, not window sizes.
+            */
+            constexpr double minScale = 0.70;
+            constexpr double maxScale = 2.50;
+        }
+
+        namespace panel
+        {
+            constexpr int padX = 22;
+            constexpr int padY = 14;
+            constexpr int stackGap = 10;
+        }
+
+        namespace header
+        {
+            constexpr int height = 30;
+            constexpr int glyphSize = 20;
+            constexpr int glyphGap = 10;
+            constexpr int settingsButton = 32;
+            constexpr float settingsRadius = 8.0f;
+            constexpr int settingsIcon = 16;
+
+            /*
+                The separation model and the waveform palette sit in the
+                header rather than three levels down a settings menu: they
+                are choices made while working, and the model in particular
+                belongs next to the Separate button that runs it.
+
+                    < [ * Hybrid v ] >   (palette)   (settings)
+            */
+            constexpr int selectorHeight = 30;
+            constexpr float selectorRadius = 8.0f;
+            constexpr int selectorPadX = 10;
+            constexpr int selectorIcon = 13;
+            constexpr int selectorGap = 7;
+            constexpr int selectorCaret = 8;
+            constexpr int selectorMinWidth = 104;
+
+            // The step arrows either side of the selector.
+            constexpr int stepButton = 20;
+            constexpr int stepIcon = 9;
+
+            // Between the selector group, the palette, and the settings icon.
+            constexpr int groupGap = 10;
+            // Square, and the same square as the settings icon beside it:
+            // the two sit side by side and their hover backgrounds have to
+            // match. The glyph stays a shade smaller, since a filled
+            // palette reads heavier than the settings icon's strokes.
+            constexpr int paletteButton = settingsButton;
+            constexpr int paletteIcon = 15;
+
+            /*
+                Which stems the job carries forward is a per-lane checkbox,
+                which is fine for one change and tedious for six. The two
+                pills act on every lane at once, and the readout to their
+                left answers for whatever the user changed last - model,
+                palette, transport, a rejected click - before settling back
+                on where the selection stands:
+
+                    5 of 6 stems will be saved  [Select all] [Deselect all]
+
+                The bottom status line is the other half of that split: it
+                reports only the work the plugin is doing.
+            */
+            constexpr int selectButtonHeight = 22;
+            constexpr int selectButtonPadX = 12;
+            constexpr int selectButtonGap = 6;
+            constexpr int selectCountGap = 10;
+            constexpr int userStatusHeight = 16;
+
+            /*
+                Waveform zoom, sitting between that group and the model:
+
+                    (o) [-----O------------]  4x
+
+                The lanes draw a window of the file rather than the whole of
+                it, so the readout is a multiplier, not a duration.
+            */
+            constexpr int zoomIcon = 15;
+            constexpr int zoomIconGap = 7;
+            constexpr int zoomTrackWidth = 92;
+            constexpr int zoomTrackHeight = 4;
+            constexpr int zoomKnob = 13;
+            constexpr int zoomLabelGap = 8;
+            constexpr int zoomLabelWidth = 26;
+        }
+
+        namespace source
         {
             constexpr float radius = 8.0f;
-            constexpr int height = 30;
             constexpr int padX = 12;
+            constexpr int padY = 8;
+            constexpr int gap = 12;
+            constexpr int height = 52;
+
+            constexpr int captureButtonWidth = 132;
+            constexpr int recordButtonWidth = 108;
+            constexpr int recordDot = 10;
+
+            /*
+                A hairline in the gap before the Separate control, splitting
+                the strip into the sources you can pick and the action that
+                consumes one:
+
+                    song.wav   [Import from DAW] [Record PC] | [Refine|Separate]
+
+                Shorter than the buttons either side, so it reads as a
+                separator rather than a fourth control.
+            */
+            constexpr int dividerWidth = 1;
+            constexpr int dividerHeight = 22;
+
+            // The Separate split control.
+            constexpr int separateMinWidth = 260;
+            constexpr int separateHeight = 36;
+            constexpr int separateExtraLeftGap = 8;
+            constexpr float separateRadius = 8.0f;
+            constexpr int refinePadLeft = 12;
+            constexpr int refinePadRight = 14;
+            constexpr int pillWidth = 22;
+            constexpr int pillHeight = 12;
+            constexpr int pillKnob = 8;
+            constexpr int pillGap = 8;
         }
 
         namespace lanes
         {
+            // Grid per row: twisty | include | name | waveform | controls.
+            constexpr int twistyColumn = 16;
+            constexpr int twistyIcon = 11;
+
+            // The twisty used to butt straight up against the checkbox.
+            constexpr int twistyGap = 6;
+
+            // A collapsed row whose hidden descendants are soloed or muted
+            // carries this dot in the gap beside its twisty, so the state
+            // does not vanish with the rows. Fits the 6px gap with a pixel
+            // of air on each side.
+            constexpr float hiddenActivityDot = 4.0f;
+
+            constexpr int includeColumn = 18;
+            constexpr int nameColumn = 92;
+
+            // S, M and the menu. The drag handle sits on the other side of
+            // the waveform, next to the name it belongs to.
+            constexpr int controlsColumn = 78;
+
+            // Between the drag handle and the waveform it drags.
+            constexpr int dragGap = 8;
+            constexpr int columnGap = 12;
+
+            // The wells sit close together: this is the whole gap between one
+            // lane's waveform and the next, halved.
+            constexpr int rowPadY = 1;
+            constexpr float rowRadius = 6.0f;
+            constexpr int wellHeight = 54;
+            constexpr float wellRadius = 6.0f;
+
+            constexpr int checkbox = 15;
+            constexpr float checkboxRadius = 4.0f;
+            constexpr float checkboxBorder = 1.5f;
+
+            constexpr int smButton = 22;
             constexpr float smRadius = 6.0f;
+            constexpr int smGap = 6;
+            constexpr int layersIcon = 14;
+
+            // The well's inset: the waveform draws inside this, and clicks
+            // are measured against the same rectangle.
+            constexpr float wellPadX = 6.0f;
+            constexpr float wellPadY = 5.0f;
+
+            // Stereo draws as two half-height waveforms with this between:
+            // enough to read as two channels, not enough to waste the well.
+            constexpr float channelGap = 1.0f;
+
+            // Silence still draws a hairline, so an empty stem reads as flat
+            // rather than as a lane that failed to load.
+            constexpr float waveMinHeight = 1.0f;
+
+            // Retained for the reference layout; the lanes now draw one
+            // column per pixel from a peak envelope rather than these bars.
+            constexpr float barWidth = 2.0f;
+            constexpr float barPitch = 4.0f;
+            constexpr float barMinHeight = 2.0f;
+            constexpr float playheadWidth = 1.0f;
+            constexpr float playheadGlowWidth = 8.0f;
+
+            constexpr float excludedOpacity = 0.45f;
+
+            // Adaptive child lanes indent under their root.
+            constexpr int childIndent = 26;
+
+            constexpr int scrollbarThickness = 8;
+
+            // Bar-number labels on the beat grid. Below this spacing the
+            // numbers would run into each other, so the ruler thins out to
+            // every 2nd, 4th, 8th bar instead of crowding.
+            constexpr float gridLabelMinSpacing = 42.0f;
+            constexpr float gridLabelWidth = 26.0f;
+            constexpr float gridLabelHeight = 11.0f;
+
+            // Each number sits on a small plate of the well's own ground so
+            // it keeps the contrast it was measured for whatever the audio
+            // under it is doing. On a quiet lane the plate is the colour
+            // already there, so nothing shows; on a loud one it is the only
+            // reason the number is still legible.
+            constexpr float gridLabelPlateAlpha = 0.90f;
+            constexpr float gridLabelPlateRadius = 2.0f;
+            constexpr float gridLabelPlatePadding = 2.5f;
+        }
+
+        namespace transport
+        {
+            constexpr int height = 34;
+            constexpr int playButton = 34;
+            constexpr int gap = 14;
+            constexpr int timeWidth = 92;
+            constexpr int scrubHeight = 3;
+            constexpr float scrubRadius = 2.0f;
+            constexpr int abWidth = 150;
+            constexpr int abHeight = 28;
+            constexpr float abRadius = 8.0f;
+
+            // The selected option is a closed pill inset inside the shell.
+            constexpr float abInset = 3.0f;
         }
 
         namespace footer
         {
-            constexpr int progressHeight = 6;
+            constexpr int dividerFade = 48;
+            constexpr int dividerGap = 8;
+            constexpr int height = 34;
+            constexpr int gap = 10;
+            /*
+                The status block shifts down by statusTopInset while the
+                progress row shows: the thin track sits centred in its row,
+                so without the shift the text's clearance above is visibly
+                smaller than the track's clearance below. The readout's
+                descender dips past the footer row into the panel padding,
+                which is empty.
+            */
+            constexpr int statusTopInset = 2;
+            constexpr int statusLineHeight = 16;
+            constexpr int statusLineGap = 4;
+            constexpr int statusTextGap = 6;
+            constexpr int statusRightMargin = 28;
+            constexpr float progressHeight = 3.0f;
+            constexpr int progressRowHeight = 14;
+            constexpr int progressBarWidth = 320;
+            constexpr int progressLabelGap = 10;
+            constexpr int folderIcon = 14;
+            constexpr int folderIconGap = 6;
+            constexpr int pathWidth = 170;
+            constexpr int changeWidth = 56;
+            constexpr int retryWidth = 60;
+            constexpr int saveWidth = 96;
+            constexpr int insertWidth = 108;
+            constexpr int buttonHeight = 30;
         }
 
         namespace menu
         {
             /*
-                Popup menus are drawn here rather than left to JUCE's stock
-                look: a square surface card, rows that highlight as inset
-                pills, and the same check glyph the include checkboxes use.
+                Popup menus are drawn by StemLabLookAndFeel rather than left
+                to JUCE's stock look: a square surface card, rows that
+                highlight as inset pills, and the same check glyph the
+                include checkboxes use.
             */
             constexpr int borderSize = 4;
 
@@ -278,6 +659,64 @@ namespace stemlab::theme
             constexpr int separatorHeight = 7;
             constexpr int sectionHeaderHeight = 22;
         }
+
+        namespace buttons
+        {
+            constexpr float radius = 8.0f;
+            constexpr int height = 30;
+            constexpr int padX = 12;
+        }
+
+        namespace waveform
+        {
+            // Thumbnail resolution/cache for the lane previews.
+            constexpr int thumbnailResolution = 512;
+            constexpr int thumbnailCacheSize = 24;
+
+            // Below this many pixels of travel a gesture is a seek click;
+            // beyond it, an external file drag.
+            constexpr int clickVersusDragThreshold = 8;
+        }
+
+        constexpr float disabledOpacity = 0.45f;
+
+        /*
+            Disabled foregrounds are floored. Several roles are themselves
+            alpha tokens - text45, text50, outline - so a flat 0.45 multiply
+            lands them near alpha 0.2, which reads as absent rather than as
+            inactive; the magnifier glyph sat at 1.8:1 against the panel.
+
+            The ceiling is what keeps the floor honest. Without it any token
+            quieter than the floor - outline, at 0.16 - would be raised to
+            0.34 and render BRIGHTER dead than alive. Capping at 85% of the
+            live alpha guarantees every role still steps down.
+        */
+        constexpr float disabledAlphaFloor = 0.34f;
+        constexpr float disabledAlphaCeiling = 0.85f;
+
+        // Retune these together: a floor at or above the multiply would make
+        // every fully opaque token brighter disabled than enabled.
+        static_assert(disabledAlphaFloor < disabledOpacity,
+                      "the disabled alpha floor must sit below disabledOpacity");
+
+        // The editor repaints lanes and re-polls processor state at this rate
+        // while anything can change on its own: a job narrating, the transport
+        // moving, a timed readout still counting down.
+        constexpr int uiRefreshHz = 20;
+
+        /*
+            ...and at this rate once nothing can. Almost every user action
+            already calls refreshFromProcessor() inside its own handler, so
+            the idle tick is only catching what the editor is never told
+            about; half a second of latency on that is invisible, and it
+            removes 90% of the wakeups an open-but-idle window was costing.
+        */
+        constexpr int uiIdleRefreshHz = 2;
+
+        // Full rate is held this long past the last reason for it, so a
+        // stream of events cannot thrash the timer between the two rates
+        // and a reason that flickers off for one tick does not demote.
+        constexpr int uiIdleHoldMs = 1500;
     }
 
     /*

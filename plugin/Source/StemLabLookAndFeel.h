@@ -124,6 +124,9 @@ namespace stemlab::icons
 
     juce::Path folder(juce::Rectangle<float> bounds);
 
+    juce::Path alert(juce::Rectangle<float> bounds);
+    juce::Path midiDragOut(juce::Rectangle<float> bounds);
+
     /** The tick on a checked menu item, and on include checkboxes. */
     juce::Path check(juce::Rectangle<float> bounds);
 

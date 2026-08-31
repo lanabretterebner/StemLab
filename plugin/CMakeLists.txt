@@ -68,9 +68,18 @@ target_sources(FIStemPlugin
         Source/PluginEditor.h
         Source/HostIntegrationPolicy.h
         Source/SelfFileDragGuard.h
+        Source/LoopRegions.h
+        Source/SourceLabel.h
         Source/StemLabLookAndFeel.cpp
         Source/StemLabLookAndFeel.h
+        Source/StemLabPaths.cpp
+        Source/StemLabPaths.h
         Source/StemLabTheme.h
+        Source/StemLabWidgets.cpp
+        Source/StemLabWidgets.h
+        Source/WaveformAnalysis.h
+        Source/WaveformCache.cpp
+        Source/WaveformCache.h
         Source/WaveformGrid.h
         Source/LinuxSystemCapture.cpp
         Source/LinuxSystemCapture.h

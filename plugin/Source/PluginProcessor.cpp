@@ -1,4 +1,5 @@
 #include "PluginProcessor.h"
+#include "WaveformGrid.h"
 #include "PluginEditor.h"
 #include "WaveformGrid.h"
 
@@ -2022,7 +2023,7 @@ bool StemLabAudioProcessor::clearAnalysisCache()
 void StemLabAudioProcessor::setWaveformGridMode(int mode) noexcept
 {
     waveformGridMode.store(
-        juce::jlimit(static_cast<int>(gridHost), static_cast<int>(gridManual), mode));
+        juce::jlimit(static_cast<int>(gridHost), static_cast<int>(gridOff), mode));
     sendChangeMessage();
 }
 
@@ -2034,6 +2035,56 @@ void StemLabAudioProcessor::setManualGrid(double bpm, int numerator, int denomin
     manualGridDenominator.store(juce::jlimit(1, 32, denominator));
     manualGridBarOne.store(juce::jmax(0.0, barOne));
     sendChangeMessage();
+}
+
+void StemLabAudioProcessor::transportTogglePlay()
+{
+    if (isStandalonePlaying())
+        stopStandalonePlayback();
+    else
+        toggleStandalonePlayback();
+}
+
+void StemLabAudioProcessor::transportSeekNormalised(double normalisedPosition)
+{
+    seekCompletedStem(juce::jmax(0, getPreviewStemIndex()),
+                      juce::jlimit(0.0, 1.0, normalisedPosition));
+}
+
+juce::Range<double> StemLabAudioProcessor::getWaveformViewRange(double totalLengthSeconds) const
+{
+    const auto length = getTransportLengthSeconds();
+    const auto playhead = length > 0.0 ? getTransportPositionSeconds() / length : 0.0;
+    const auto window =
+        stemlab::waveform::visibleWindow(totalLengthSeconds, waveformZoom.load(), playhead);
+
+    return {window.start, window.end};
+}
+
+juce::File StemLabAudioProcessor::getStemDragFile(const juce::File& source,
+                                                  const juce::String& selectionId)
+{
+    // A selection means the drag carries that range; without one it carries
+    // the stem itself, and there is nothing to write.
+    const auto range = getStemSelectionRange(selectionId);
+
+    if (!range.active)
+        return source;
+
+    const auto folder = getLastJobDirectory().getChildFile("selected_regions");
+    folder.createDirectory();
+
+    const auto safeName = selectionId.replace("/", "_").replace("\\", "_");
+
+    return exportSelectedRegion(source, folder.getChildFile(safeName + "_selection.wav"),
+                                selectionId);
+}
+
+bool StemLabAudioProcessor::isFileFromCurrentJob(const juce::File& file) const
+{
+    const auto job = getLastJobDirectory();
+
+    return job.isDirectory() && file.isAChildOf(job);
 }
 
 void StemLabAudioProcessor::setWaveformZoom(double zoom)
@@ -5181,6 +5232,27 @@ juce::String StemLabAudioProcessor::getSeparatorEngineId() const
     }
 }
 
+juce::String StemLabAudioProcessor::getSeparatorEngineMenuName(int index) const
+{
+    const auto previous = separatorEngineIndex.load();
+    const_cast<StemLabAudioProcessor*>(this)->separatorEngineIndex.store(
+        juce::jlimit(0, separatorEngineCount - 1, index));
+    const auto name = getSeparatorEngineDisplayName();
+    const_cast<StemLabAudioProcessor*>(this)->separatorEngineIndex.store(previous);
+
+    return name;
+}
+
+juce::String StemLabAudioProcessor::getSeparatorEngineShortName(int index) const
+{
+    // The header chip is narrower than a menu row, so the name is cut at its
+    // first qualifier rather than ellipsised mid-word.
+    const auto full = getSeparatorEngineMenuName(index);
+    const auto cut = full.indexOfChar('(');
+
+    return cut > 0 ? full.substring(0, cut).trim() : full;
+}
+
 juce::String StemLabAudioProcessor::getSeparatorEngineDisplayName() const
 {
     switch (getSeparatorEngineIndex())
@@ -5338,7 +5410,7 @@ void StemLabAudioProcessor::setStateInformation(const void* data, int sizeInByte
 
     if (object->hasProperty("waveformGridMode"))
         waveformGridMode.store(juce::jlimit(
-            static_cast<int>(gridHost), static_cast<int>(gridManual),
+            static_cast<int>(gridHost), static_cast<int>(gridOff),
             static_cast<int>(object->getProperty("waveformGridMode"))));
 
     if (object->hasProperty("waveformZoom"))
