@@ -500,13 +500,19 @@ public:
     /** Each stretch of the source one constant tempo explains, in order. */
     std::vector<StemLabTempoSegment> getSourceTempoSegments() const;
 
-    /** Whether Set Host Tempo has everything it needs: a REAPER project, a
-        source item it can still reach, an analysis to read a tempo from, and
-        a REAPER new enough to expose the tempo calls. */
+    /** Whether Set BPM has everything it needs: an analysis to read a tempo
+        from, and a host StemLab can actually write a tempo to - a REAPER new
+        enough to expose the tempo calls and a source item it can still
+        reach, or Live with StemLabRemote listening. */
     bool canSetHostTempo() const;
-    /** Puts the analysed tempo into the project, and the source item onto a
-        timebase that will not follow it. Returns what to tell the user. */
+    /** Puts the analysed tempo into the host, and the source onto a timebase
+        that will not follow it. Returns what to tell the user - or, for
+        Live, what to tell them while the Remote Script's reply is on its
+        way. */
     juce::String setHostTempo();
+    /** Live's half of setHostTempo: the Remote Script answers on disk, the
+        same way it answers a clip request. */
+    void refreshAbletonTempoReplyFromDisk();
     void setTempoInterpretation(int interpretation);
     int getTempoInterpretation() const noexcept { return tempoInterpretation.load(); }
     bool saveSourceCorrection(double bpm, const juce::String& key, int numerator, int denominator,
@@ -924,6 +930,7 @@ private:
     void appendEngineLog(const juce::String&);
     bool sendAbletonBridgeNotification(const juce::File& manifestFile);
     bool sendAbletonControlMessage(const juce::String& message);
+    juce::String setAbletonTempo();
 
     bool startThreadedInputCapture(const juce::String& prefix, double sampleRate, int channels,
                                    double startPpq, int recordingMode,
@@ -977,6 +984,8 @@ private:
 
     std::atomic<bool> abletonClipRequestPending{false};
     std::atomic<double> abletonClipRequestStartMs{0.0};
+    std::atomic<bool> abletonTempoRequestPending{false};
+    std::atomic<double> abletonTempoRequestStartMs{0.0};
     std::atomic<double> inputDurationSeconds{0.0};
 
     double currentSampleRate = 44100.0;
@@ -998,8 +1007,11 @@ private:
     juce::File lastJobDirectory;
     juce::File jobRootDirectory;
     juce::File abletonClipReplyFile;
+    juce::File abletonTempoReplyFile;
+    juce::File abletonTempoRequestFile;
     juce::String inputSourceLabel;
     juce::String abletonClipRequestId;
+    juce::String abletonTempoRequestId;
 
     juce::String sourceKey;
     juce::String sourceHash;

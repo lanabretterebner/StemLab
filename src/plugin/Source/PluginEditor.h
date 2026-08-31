@@ -723,6 +723,9 @@ private:
     juce::Rectangle<int> brandGlyphBounds;
     juce::Rectangle<int> sourceStripBounds;
     juce::Rectangle<int> sourceDividerBounds;
+    // The second hairline: between Analyse/Set BPM and the buttons that pick
+    // or consume a source. Empty whenever neither of the pair is on screen.
+    juce::Rectangle<int> sourceInlineDividerBounds;
     juce::Rectangle<int> folderIconBounds;
     juce::Rectangle<int> statusAreaBounds;
 

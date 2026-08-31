@@ -25,6 +25,13 @@ BUFFER_SIZE = 65535
 
 PROTOCOL = "stemlab-ableton-bridge"
 ACK_PROTOCOL = "stemlab-ableton-ack"
+TEMPO_PROTOCOL = "stemlab-ableton-tempo"
+TEMPO_REPLY_PROTOCOL = "stemlab-ableton-tempo-reply"
+
+# Live's own limits on Song.tempo. Sending anything outside them raises out
+# of the Live API rather than being clamped for us.
+TEMPO_MIN = 20.0
+TEMPO_MAX = 999.0
 
 FI_STEM_DEVICE_TOKENS = ("stemlab", "fistem", "stemlab")
 
@@ -197,6 +204,34 @@ class StemLabRemote(ControlSurface):
             )
             return
 
+        if text.startswith("stemlab_set_tempo "):
+            payload = text[len("stemlab_set_tempo ") :].strip()
+            parts = payload.split(" ", 1)
+
+            request_id = parts[0].strip() if parts else ""
+
+            if not request_id or len(parts) < 2 or not parts[1].strip():
+                self.log_message("StemLabRemote: malformed tempo request")
+                return
+
+            try:
+                request_path = bytes.fromhex(parts[1].strip()).decode(
+                    "utf-8",
+                    errors="strict",
+                )
+            except Exception as exc:
+                self.log_message("StemLabRemote: invalid tempo request path: %s" % exc)
+                return
+
+            # Song.tempo and Clip.warping are Live Object Model writes, so
+            # like every other write here they have to happen on Live's own
+            # thread rather than on this socket thread.
+            self.schedule_message(
+                1,
+                lambda rid=request_id, rp=request_path: self._set_tempo_on_live_thread(rid, rp),
+            )
+            return
+
         if text.startswith("stemlab_get_clip "):
             payload = text[len("stemlab_get_clip ") :].strip()
             parts = payload.split(" ", 1)
@@ -251,6 +286,229 @@ class StemLabRemote(ControlSurface):
                 song.start_playing()
         except Exception:
             self.log_message("StemLabRemote: transport toggle failed:\n%s" % traceback.format_exc())
+
+    # ------------------------------------------------------------------
+    # Tempo
+    # ------------------------------------------------------------------
+
+    def _set_tempo_on_live_thread(self, request_id, request_path):
+        """Put StemLab's analysed tempo into the Live Set.
+
+        Two writes, in this order and always in this order:
+
+        Warp off first. A warped clip is pinned to the Set's tempo, so
+        raising the tempo underneath it speeds the audio up - and the audio
+        is the very thing the tempo was measured from. Unwarped it plays at
+        the rate it was recorded at, which is the only state in which the
+        new tempo describes what you hear. This is the same reason REAPER's
+        side of StemLab sets the item to a time timebase before it touches
+        the project tempo.
+
+        Then the tempo itself.
+        """
+        reply_path = ""
+        song = None
+        undo_open = False
+
+        try:
+            request = self._load_json(request_path) or {}
+
+            # Before the protocol check, not after it: a rejected request
+            # still has to answer on the path the plugin is watching, or the
+            # plugin sits out its whole timeout and reports that nothing came
+            # back instead of saying what was wrong with it.
+            reply_path = str(request.get("reply_path") or "")
+
+            if str(request.get("protocol") or "") != TEMPO_PROTOCOL:
+                raise RuntimeError("Unrecognised StemLab tempo request")
+
+            segments = self._normalise_tempo_segments(request.get("segments"))
+
+            bpm = float(request.get("bpm") or 0.0)
+
+            # The first section is what the track starts at, and the start
+            # is what has to line up for anything after it to line up. With
+            # no sections at all the single analysed tempo is the answer.
+            if segments:
+                bpm = float(segments[0]["bpm"])
+
+            if not (TEMPO_MIN <= bpm <= TEMPO_MAX):
+                raise RuntimeError(
+                    "Analysed tempo %.2f is outside Live's range (%g-%g BPM)"
+                    % (bpm, TEMPO_MIN, TEMPO_MAX)
+                )
+
+            song = self.song()
+
+            source_path = str(request.get("source_path") or "")
+
+            song.begin_undo_step()
+            undo_open = True
+
+            unwarped = self._unwarp_source_clips(song, source_path)
+
+            song.tempo = bpm
+
+            song.end_undo_step()
+            undo_open = False
+
+            message = "Live tempo set to %.2f BPM" % bpm
+
+            if unwarped:
+                message += " (Warp off on %d clip%s)" % (
+                    unwarped,
+                    "" if unwarped == 1 else "s",
+                )
+
+            # Said here rather than left for the user to discover: Live's
+            # Remote Script API has no call that writes Arrangement
+            # automation, and the tempo lives on the Main track, so a tempo
+            # map cannot be written from a script at all. One tempo is
+            # genuinely all that can be applied.
+            if len(segments) > 1:
+                message += ". %d tempo sections were detected - Live's API takes only one, " % len(
+                    segments
+                )
+                message += "so draw the rest on the Main track's Song Tempo lane"
+
+            self._write_tempo_reply(
+                request_id=request_id,
+                success=True,
+                tempo=bpm,
+                segments_total=len(segments),
+                message=message,
+                reply_path=reply_path,
+            )
+
+            self.log_message("StemLabRemote: %s" % message)
+
+        except Exception as exc:
+            if undo_open and song is not None:
+                try:
+                    song.end_undo_step()
+                except Exception:
+                    pass
+
+            self._write_tempo_reply(
+                request_id=request_id,
+                success=False,
+                message=str(exc),
+                reply_path=reply_path,
+            )
+
+            self.log_message("StemLabRemote: set tempo failed:\n%s" % traceback.format_exc())
+
+    @staticmethod
+    def _normalise_tempo_segments(items):
+        """Validate the segment contract before any of it reaches Live."""
+        segments = []
+
+        for item in items or ():
+            try:
+                bpm = float(item["bpm"])
+                start = float(item.get("start", 0.0))
+            except (KeyError, TypeError, ValueError):
+                continue
+
+            if TEMPO_MIN <= bpm <= TEMPO_MAX:
+                segments.append({"start": start, "bpm": bpm})
+
+        segments.sort(key=lambda entry: entry["start"])
+
+        return segments
+
+    def _unwarp_source_clips(self, song, source_path):
+        """Turn Warp off on every clip playing StemLab's source file.
+
+        Matched by file, not by selection: by the time the tempo is set the
+        user may well have clicked somewhere else, and the clip that must
+        stop following the tempo is the one the tempo was measured from -
+        wherever in the Set it happens to sit.
+        """
+        if not source_path:
+            return 0
+
+        try:
+            target = os.path.abspath(str(source_path))
+        except Exception:
+            return 0
+
+        unwarped = 0
+
+        for track in list(song.tracks):
+            clips = []
+
+            try:
+                clips.extend(list(track.arrangement_clips))
+            except Exception:
+                pass
+
+            try:
+                for slot in list(track.clip_slots):
+                    if slot.has_clip:
+                        clips.append(slot.clip)
+            except Exception:
+                pass
+
+            for clip in clips:
+                try:
+                    if not clip.is_audio_clip:
+                        continue
+
+                    if os.path.abspath(str(clip.file_path or "")) != target:
+                        continue
+
+                    # Reading it first: assigning warping re-analyses the
+                    # clip, so an already-unwarped clip is left alone rather
+                    # than nudged.
+                    if clip.warping:
+                        clip.warping = False
+                        unwarped += 1
+                except Exception:
+                    continue
+
+        return unwarped
+
+    def _write_tempo_reply(
+        self,
+        request_id,
+        success,
+        tempo=0.0,
+        segments_total=0,
+        message="",
+        reply_path="",
+    ):
+        if reply_path:
+            reply_path = os.path.abspath(str(reply_path))
+            folder = os.path.dirname(reply_path)
+
+            if folder and not os.path.isdir(folder):
+                os.makedirs(folder)
+        else:
+            folder = os.path.join(
+                self._documents_folder(),
+                "StemLab",
+                "Ableton",
+            )
+
+            if not os.path.isdir(folder):
+                os.makedirs(folder)
+
+            reply_path = os.path.join(folder, "stemlab_tempo_reply.json")
+
+        self._atomic_write_json(
+            reply_path,
+            {
+                "protocol": TEMPO_REPLY_PROTOCOL,
+                "version": 1,
+                "request_id": str(request_id),
+                "success": bool(success),
+                "tempo": float(tempo),
+                "segments_total": int(segments_total),
+                "message": str(message),
+                "timestamp": time.time(),
+            },
+        )
 
     # ------------------------------------------------------------------
     # Source clip lookup

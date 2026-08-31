@@ -6589,10 +6589,19 @@ void StemLabAudioProcessor::setBeatThisEnabled(bool enabled)
 
 bool StemLabAudioProcessor::canSetHostTempo() const
 {
-    if (getHostIntegration() != hostIntegrationReaper)
+    if (sourceDetectedBpm.load() <= 0.0)
         return false;
 
-    if (sourceDetectedBpm.load() <= 0.0)
+    if (getHostIntegration() == hostIntegrationAbletonLive)
+    {
+        // Nothing else to check: Song.tempo and Clip.warping are always
+        // there in Live, and whether StemLabRemote is listening only shows
+        // up as a reply that never arrives - which the poll below reports
+        // as its own message rather than pretending the button was dead.
+        return !isStandaloneApp() && !abletonTempoRequestPending.load();
+    }
+
+    if (getHostIntegration() != hostIntegrationReaper)
         return false;
 
     if (reaperApi == nullptr || !reaperApi->isValid())
@@ -6618,7 +6627,10 @@ bool StemLabAudioProcessor::canSetHostTempo() const
 juce::String StemLabAudioProcessor::setHostTempo()
 {
     if (!canSetHostTempo())
-        return "Set host tempo needs REAPER, an analysed source, and a tempo";
+        return "Set BPM needs REAPER or Live, an analysed source, and a tempo";
+
+    if (getHostIntegration() == hostIntegrationAbletonLive)
+        return setAbletonTempo();
 
     const auto& api = *reaperApi;
     // nullptr is the current project, as everywhere else in the bridge.
@@ -6688,6 +6700,154 @@ juce::String StemLabAudioProcessor::setHostTempo()
         api.UpdateArrange();
 
     return result;
+}
+
+juce::String StemLabAudioProcessor::setAbletonTempo()
+{
+    /*  Live's side is a Remote Script, not an API this process can call, so
+        the request goes out over the same UDP socket as everything else and
+        the answer comes back as a file. The plugin writes the request to
+        disk rather than putting it in the datagram: a dynamic analysis can
+        carry dozens of sections, and a request that grows with the music is
+        not something to size a UDP buffer against.
+    */
+    const auto requestId = juce::Uuid().toString();
+
+    auto folder = stemlab::paths::bridgeTempDirectory();
+
+    folder.createDirectory();
+
+    const auto replyFile = folder.getChildFile("tempo_reply_" + requestId + ".json");
+    const auto requestFile = folder.getChildFile("tempo_" + requestId + ".json");
+
+    if (replyFile.existsAsFile())
+        replyFile.deleteFile();
+
+    auto* request = new juce::DynamicObject();
+
+    request->setProperty("protocol", "stemlab-ableton-tempo");
+    request->setProperty("version", 1);
+    request->setProperty("request_id", requestId);
+    request->setProperty("reply_path", replyFile.getFullPathName());
+    request->setProperty("bpm", sourceDetectedBpm.load());
+    request->setProperty("source_path", getCaptureFile().getFullPathName());
+
+    /*  Only in dynamic: in static the whole point is that one tempo
+        explains the track, and sending sections Live would have to reduce
+        back to one would just invite it to pick a different one.
+    */
+    juce::Array<juce::var> segments;
+
+    if (tempoAnalysisMode.load() == tempoDynamic)
+    {
+        for (const auto& segment : sourceTempoSegments)
+        {
+            if (segment.bpm <= 0.0)
+                continue;
+
+            auto* entry = new juce::DynamicObject();
+
+            entry->setProperty("start", segment.start);
+            entry->setProperty("bpm", segment.bpm);
+
+            segments.add(juce::var(entry));
+        }
+    }
+
+    request->setProperty("segments", segments);
+
+    if (!requestFile.replaceWithText(juce::JSON::toString(juce::var(request))))
+        return "Could not write the tempo request for StemLabRemote";
+
+    {
+        const juce::ScopedLock lock(stateLock);
+        abletonTempoRequestId = requestId;
+        abletonTempoReplyFile = replyFile;
+        abletonTempoRequestFile = requestFile;
+    }
+
+    abletonTempoRequestPending.store(true);
+    abletonTempoRequestStartMs.store(nowMs());
+
+    if (!sendAbletonControlMessage("stemlab_set_tempo " + requestId + " "
+                                   + utf8ToHex(requestFile.getFullPathName())))
+    {
+        abletonTempoRequestPending.store(false);
+        abletonTempoRequestStartMs.store(0.0);
+        requestFile.deleteFile();
+
+        return "Could not contact StemLabRemote";
+    }
+
+    return "Setting Live's tempo...";
+}
+
+void StemLabAudioProcessor::refreshAbletonTempoReplyFromDisk()
+{
+    if (isStandaloneApp() || !abletonTempoRequestPending.load())
+        return;
+
+    if (getHostIntegration() != hostIntegrationAbletonLive)
+        return;
+
+    juce::File reply;
+    juce::File request;
+    juce::String requestId;
+
+    {
+        const juce::ScopedLock lock(stateLock);
+        reply = abletonTempoReplyFile;
+        request = abletonTempoRequestFile;
+        requestId = abletonTempoRequestId;
+    }
+
+    if (!reply.existsAsFile())
+    {
+        const auto started = abletonTempoRequestStartMs.load();
+
+        if (started > 0.0 && nowMs() - started > 5000.0)
+        {
+            abletonTempoRequestPending.store(false);
+            abletonTempoRequestStartMs.store(0.0);
+
+            // Nothing else ever deletes these: the Remote Script only reads
+            // the request, and on a timeout it may not even have done that.
+            request.deleteFile();
+
+            setStatus("StemLabRemote did not set the tempo. Re-select StemLabRemote in Live "
+                      "Settings and try again.");
+        }
+
+        return;
+    }
+
+    const auto parsed = juce::JSON::parse(reply.loadFileAsString());
+
+    auto* object = parsed.getDynamicObject();
+
+    // Same rule as the clip reply: a half-written or foreign file leaves the
+    // request pending so the next tick can read it properly.
+    if (object == nullptr
+        || object->getProperty("protocol").toString() != "stemlab-ableton-tempo-reply")
+        return;
+
+    if (object->getProperty("request_id").toString() != requestId)
+        return;
+
+    abletonTempoRequestPending.store(false);
+    abletonTempoRequestStartMs.store(0.0);
+
+    const bool success = static_cast<bool>(object->getProperty("success"));
+    const auto message = object->getProperty("message").toString();
+
+    reply.deleteFile();
+    request.deleteFile();
+
+    if (success)
+        setActionStatus(message.isNotEmpty() ? message : "Live tempo set");
+    else
+        setStatus(message.isNotEmpty() ? "Live tempo: " + message
+                                       : "Could not set Live's tempo");
 }
 
 void StemLabAudioProcessor::setTempoAnalysisMode(int mode)
