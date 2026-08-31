@@ -364,3 +364,73 @@ class TestAQuietStartOrEndingDoesNotMoveTheReading:
         beats = self._replace((0.0, 20.0), transform)
 
         assert _analyse(beats).detected_bpm == pytest.approx(self.BPM, abs=0.05)
+
+
+class TestBeatsComeOffTheFrameGrid:
+    """50 fps is the model's own rate; the logits behind it are continuous.
+
+    Beat This! reports an integer frame divided by 50, so every beat it emits
+    carries up to 10 ms - 441 samples at 44.1 kHz - of rounding. That rate is
+    the spectrogram hop the network was trained on and cannot be raised
+    without retraining it. What can be recovered is where the peak in its
+    output actually sits: the network emits a logit per frame, and a beat
+    between two frames leaves a peak centred between them.
+
+    These drive the interpolation with logits whose true peak position is
+    known, which is the part that can be checked without the model. Whether
+    the network's peak tracks the true onset sub-frame is a property of the
+    model, and is not asserted here.
+    """
+
+    @staticmethod
+    def _bump(centre: float, frames: int = 200, width: float = 1.1) -> np.ndarray:
+        """Log-odds of a Gaussian beat probability centred at ``centre``."""
+        index = np.arange(frames, dtype=np.float64)
+        # Gaussian in probability is exactly a parabola in log-odds, which is
+        # the shape the three-point fit assumes.
+        return -(((index - centre) / width) ** 2)
+
+    @pytest.mark.parametrize("offset", [-0.45, -0.3, -0.1, 0.0, 0.1, 0.3, 0.45])
+    def test_a_peak_between_frames_is_reported_between_frames(self, offset):
+        from stemlab.beat_tracking import _sub_frame_events
+
+        centre = 100.0 + offset
+        logits = self._bump(centre)
+        reported = _sub_frame_events(np.array([round(centre) / FPS]), logits)
+
+        assert reported[0] == pytest.approx(centre / FPS, abs=1e-6)
+
+    def test_the_rounding_it_removes_is_worth_hundreds_of_samples(self):
+        from stemlab.beat_tracking import _sub_frame_events
+
+        centre = 100.4
+        logits = self._bump(centre)
+        rounded = round(centre) / FPS
+        refined = float(_sub_frame_events(np.array([rounded]), logits)[0])
+
+        assert abs(rounded - centre / FPS) * 44_100 > 300
+        assert abs(refined - centre / FPS) * 44_100 < 1
+
+    def test_a_frame_that_is_not_a_peak_is_left_alone(self):
+        # Nothing to interpolate on a flat or rising run, and inventing an
+        # offset there would move a beat for no reason.
+        from stemlab.beat_tracking import _sub_frame_events
+
+        flat = np.zeros(50)
+        assert _sub_frame_events(np.array([20 / FPS]), flat)[0] == pytest.approx(
+            20 / FPS
+        )
+
+    def test_events_on_the_first_and_last_frame_survive(self):
+        from stemlab.beat_tracking import _sub_frame_events
+
+        logits = np.zeros(10)
+        events = np.array([0.0, 9 / FPS])
+
+        assert _sub_frame_events(events, logits) == pytest.approx(events)
+
+    def test_no_events_and_no_logits_are_not_an_error(self):
+        from stemlab.beat_tracking import _sub_frame_events
+
+        assert _sub_frame_events(np.array([]), np.zeros(10)).size == 0
+        assert _sub_frame_events(np.array([0.0]), np.zeros(1)).size == 1

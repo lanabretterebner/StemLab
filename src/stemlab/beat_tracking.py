@@ -33,7 +33,10 @@ BEAT_THIS_VERSION = "1.1.0"
 # this module derives change. -2 is the tempo coming from the mean of the
 # inlier intervals rather than their median; without the bump every track
 # already analysed would keep serving the frame-quantised BPM it cached.
-BEAT_ALGORITHM_VERSION = "beat-this-1.1.0-stemlab-3"
+BEAT_ALGORITHM_VERSION = "beat-this-1.1.0-stemlab-4"
+
+# Beat This!'s frame rate, and so the grid every beat it reports lands on.
+_BEAT_FPS = 50.0
 
 
 @dataclass(frozen=True)
@@ -409,6 +412,62 @@ def _robust_intervals(beats: np.ndarray) -> tuple[np.ndarray, float, float]:
     return inliers, robust_cv, inlier_ratio
 
 
+def _sub_frame_events(events: np.ndarray, logits: np.ndarray) -> np.ndarray:
+    """Move each event off the 20 ms frame grid, using the shape of its peak.
+
+    50 fps is Beat This!'s own frame rate - the spectrogram hop it was
+    trained on - so it cannot be raised without retraining the model, and
+    every beat its postprocessor reports is an integer frame divided by it
+    (postprocessor.py: beat_time = beat_frame / self.fps). That is 20 ms of
+    quantisation, 882 samples at 44.1 kHz, on every beat.
+
+    The frames are quantised; the network's output is not. It emits a logit
+    per frame, and around a beat those form a peak whose centre lies between
+    frames when the beat does. Fitting a parabola through the peak frame and
+    its two neighbours recovers where that centre actually is.
+
+    The fit is done on the logits rather than on the probabilities they
+    become: a bump that is Gaussian in probability is exactly a parabola in
+    log-odds, so this is the domain the three-point fit is least wrong in.
+
+    A frame that is not a local maximum has no peak to interpolate - the
+    curvature term comes out flat or convex - and is left where it is, as
+    are events on the first and last frame, which have no neighbour on one
+    side.
+
+    Takes the logits as a plain array rather than a tensor: this module is
+    imported for its constants by paths that must not pay for torch, and
+    three-point interpolation is not a reason to break that.
+    """
+    values = np.asarray(logits, dtype=np.float64)
+    events = np.asarray(events, dtype=np.float64)
+
+    if values.size < 3 or events.size == 0:
+        return events
+
+    frames = np.rint(events * _BEAT_FPS).astype(int)
+    interior = (frames >= 1) & (frames <= values.size - 2)
+    refined = frames.astype(np.float64)
+
+    if np.any(interior):
+        centre = frames[interior]
+        left, middle, right = (
+            values[centre - 1],
+            values[centre],
+            values[centre + 1],
+        )
+        curvature = left - 2.0 * middle + right
+        peak = curvature < -1.0e-9
+        offset = np.zeros(centre.shape, dtype=np.float64)
+        offset[peak] = 0.5 * (left[peak] - right[peak]) / curvature[peak]
+        # A parabola through three samples cannot put its vertex outside the
+        # middle one; anything that says otherwise is noise, not a peak.
+        offset = np.clip(offset, -0.5, 0.5)
+        refined[interior] = centre + offset
+
+    return refined / _BEAT_FPS
+
+
 # Half a frame either side of a beat, plus a frame of slack for a detector
 # that is a little late on one. Wide enough to keep the beats a grid really
 # does explain, narrow enough that a grid one beat out of phase keeps none.
@@ -657,15 +716,22 @@ def analyse_beats(
             beat_logits.float(), downbeat_logits.float()
         )
         beat_frames = np.clip(
-            np.rint(np.asarray(beats) * 50).astype(int), 0, beat_logits.numel() - 1
+            np.rint(np.asarray(beats) * _BEAT_FPS).astype(int),
+            0,
+            beat_logits.numel() - 1,
         )
         probabilities = torch.sigmoid(beat_logits[beat_frames]).detach().cpu().numpy()
         model_confidence = float(np.mean(probabilities)) if probabilities.size else 0.0
         if progress:
             progress(0.92, "Interpreting tempo, meter, and downbeats")
+        # Off the frame grid before anything reads them: the tempo fit, the
+        # anchor, the overlay and the MIDI export all inherit whatever
+        # resolution the beats arrive with.
+        beat_curve = beat_logits.detach().float().cpu().numpy()
+        downbeat_curve = downbeat_logits.detach().float().cpu().numpy()
         return derive_musical_time(
-            np.asarray(beats),
-            np.asarray(downbeats),
+            _sub_frame_events(np.asarray(beats), beat_curve),
+            _sub_frame_events(np.asarray(downbeats), downbeat_curve),
             model_confidence,
             model=spec.name,
             device=selected_device.type,
