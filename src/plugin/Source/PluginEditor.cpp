@@ -21,25 +21,18 @@ juce::File stemLabSettingsDirectory()
     return stemlab::paths::configDirectory();
 }
 
-juce::File firstRunMarkerFile()
-{
-    return stemLabSettingsDirectory().getChildFile("portable-first-run-0.9.9.txt");
-}
-
-juce::File portableRootDirectory()
+/** The directory the running binary sits in. */
+juce::File applicationDirectory()
 {
     return juce::File::getSpecialLocation(juce::File::currentExecutableFile).getParentDirectory();
 }
 
 juce::File abletonSetupScript()
 {
-    auto root = portableRootDirectory();
+    auto root = applicationDirectory();
 
     for (int depth = 0; depth < 6 && root.exists(); ++depth)
     {
-        // A source checkout keeps it under scripts/win/; the portable
-        // payload's flat scripts/ layout predates that split and is what
-        // installed copies already have.
         for (const auto& candidate :
              {root.getChildFile("scripts").getChildFile("win").getChildFile(
                   "install_ableton.ps1"),
@@ -2369,17 +2362,6 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     applyRefreshRate(theme::metrics::uiRefreshHz);
     refreshFromProcessor();
 
-    if (processor.isStandaloneApp())
-    {
-        auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
-
-        juce::MessageManager::callAsync(
-            [safeThis]
-            {
-                if (safeThis != nullptr)
-                    safeThis->showFirstRunWelcome();
-            });
-    }
 }
 
 StemLabAudioProcessorEditor::~StemLabAudioProcessorEditor()
@@ -4239,8 +4221,7 @@ void StemLabAudioProcessorEditor::chooseStandaloneAudioFile()
         return;
 
     /*
-     * Start where the current source lives, the way chooseEngineExecutable
-     * does. Handing the chooser the file itself rather than its folder both
+     * Handing the chooser the file itself rather than its folder both
      * opens that folder and preselects the file, so working through several
      * takes from one folder does not mean navigating back from $HOME every
      * time. After a capture the source is a recording under the job root and
@@ -4720,10 +4701,6 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
 
     menu.addSectionHeader("StemLab engine");
 
-    menu.addItem(2, "Choose engine executable...");
-
-    menu.addItem(3, "Auto-detect engine");
-
     menu.addItem(modelManagerId, "Model Manager...");
 
     // Ticked = on. Only the hybrid engine fuses, so it is greyed out for the
@@ -4765,14 +4742,6 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
             if (result == 1)
             {
                 safeThis->showStandaloneAudioSettings();
-            }
-            else if (result == 2)
-            {
-                safeThis->chooseEngineExecutable();
-            }
-            else if (result == 3)
-            {
-                safeThis->processor.resetEngineCommandToAutoDiscover();
             }
             else if (result == modelManagerId)
             {
@@ -4853,49 +4822,6 @@ void StemLabAudioProcessorEditor::showSettingsMenu()
 
             safeThis->refreshFromProcessor();
         });
-}
-
-void StemLabAudioProcessorEditor::showFirstRunWelcome()
-{
-    if (!processor.isStandaloneApp())
-        return;
-
-    const auto root = portableRootDirectory();
-    const auto portableEngine = root.getChildFile("Engine").getChildFile("python.exe");
-    const auto setupScript = abletonSetupScript();
-
-    // Only show onboarding for an actual extracted portable release. Normal
-    // source/development builds should open directly without nagging.
-    if (!portableEngine.existsAsFile() || !setupScript.existsAsFile() ||
-        firstRunMarkerFile().existsAsFile())
-    {
-        return;
-    }
-
-    auto options = juce::MessageBoxOptions()
-                       .withIconType(juce::MessageBoxIconType::InfoIcon)
-                       .withTitle("Welcome to StemLab")
-                       .withMessage("StemLab is ready to use as a standalone app.\n\n"
-                                    "If you use Ableton Live, StemLab can set up its VST3 and "
-                                    "Remote Script now. This does not copy the large ML engine a "
-                                    "second time.")
-                       .withButton("Set Up Ableton")
-                       .withButton("Use Standalone")
-                       .withAssociatedComponent(this);
-
-    auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
-
-    juce::AlertWindow::showAsync(options,
-                                 [safeThis](int result)
-                                 {
-                                     auto settings = stemLabSettingsDirectory();
-                                     settings.createDirectory();
-                                     firstRunMarkerFile().replaceWithText(
-                                         "StemLab portable onboarding completed.\n");
-
-                                     if (safeThis != nullptr && result == 1)
-                                         safeThis->launchAbletonSetup();
-                                 });
 }
 
 void StemLabAudioProcessorEditor::promptForManualTempo()
@@ -5092,41 +5018,3 @@ void StemLabAudioProcessorEditor::considerAutoShowingModelManager()
     showModelManager();
 }
 
-void StemLabAudioProcessorEditor::chooseEngineExecutable()
-{
-    auto start = juce::File(processor.getEngineCommand());
-
-    if (!start.exists())
-        start = juce::File::getSpecialLocation(juce::File::userHomeDirectory);
-
-    // On Linux the engine is an extensionless console script or a python
-    // binary, so an "*.exe" filter showed an empty listing everywhere and
-    // made manual engine selection impossible. An empty pattern shows all
-    // files.
-    const juce::String executablePattern {
-#if JUCE_WINDOWS
-        "*.exe"
-#else
-        ""
-#endif
-    };
-
-    fileChooser = std::make_unique<juce::FileChooser>("Choose stemlab-plugin-job executable", start,
-                                                      executablePattern);
-
-    fileChooser->launchAsync(juce::FileBrowserComponent::openMode |
-                                 juce::FileBrowserComponent::canSelectFiles,
-                             [this](const juce::FileChooser& chooser)
-                             {
-                                 const auto result = chooser.getResult();
-
-                                 if (result.existsAsFile())
-                                 {
-                                     processor.setEngineCommand(result.getFullPathName());
-
-                                     processor.postUiStatus("Engine path updated");
-
-                                     refreshFromProcessor();
-                                 }
-                             });
-}

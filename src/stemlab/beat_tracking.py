@@ -169,7 +169,6 @@ def _candidate_model_directories() -> list[Path]:
             executable_dir / "Models" / "BeatThis",
             Path(sys.prefix).resolve() / "Models" / "BeatThis",
             Path(__file__).resolve().parents[1] / "models" / "beat_this",
-            Path(__file__).resolve().parents[1] / ".portable-cache" / "beat-this-models",
         )
     )
 

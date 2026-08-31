@@ -8,7 +8,6 @@
 # works with zero further configuration.
 #
 #   Engine   ~/.local/share/StemLab/Engine        ($XDG_DATA_HOME override)
-#   Pointer  ~/.config/StemLab/portable_engine_path.txt
 #
 # Usage:
 #   ./scripts/install_backend.sh              # auto-detect GPU -> cuda/rocm/cpu
@@ -596,22 +595,32 @@ if torch.__version__.split("+")[0] != torchaudio.__version__.split("+")[0]:
     raise SystemExit(1)
 PYCHECK
 
-# ------------------------------------------------------------------- pointer
+# -------------------------------------------------------------------- report
 
 if [[ $WRITE_POINTER -eq 1 ]]; then
-    mkdir -p "$CONFIG_HOME/StemLab"
-    printf '%s\n' "$PYTHON" > "$CONFIG_HOME/StemLab/portable_engine_path.txt"
-
     cat <<EOF
 
 StemLab backend installed.
 
   Engine:  $DEST
-  Pointer: $CONFIG_HOME/StemLab/portable_engine_path.txt
+EOF
 
-The plugin and Standalone app will discover it automatically - no settings
+    # There is no discovery any more: the plugin looks in one place. A custom
+    # --dest is still useful for building a bundle, but it is not somewhere
+    # the app will go looking, so say so rather than let it look installed.
+    if [[ "$DEST" != "$DATA_HOME/StemLab/Engine" ]]; then
+        cat <<EOF
+This is not the location StemLab reads. Point it here explicitly:
+
+  export STEMLAB_ENGINE="$PYTHON"
+
+EOF
+    else
+        cat <<EOF
+The plugin and Standalone app read this location directly - no settings
 needed. Re-run this script any time to update.
 EOF
+    fi
 else
     cat <<EOF
 

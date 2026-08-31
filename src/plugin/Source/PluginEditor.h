@@ -419,7 +419,6 @@ private:
     void timerCallback() override;
     void changeListenerCallback(juce::ChangeBroadcaster*) override;
 
-    void chooseEngineExecutable();
 
     /** Open the Model Manager, or bring what it shows up to date. */
     void showModelManager();
@@ -437,7 +436,6 @@ private:
     void revealJobFolder();
     void showSettingsMenu();
     void showStandaloneAudioSettings();
-    void showFirstRunWelcome();
 
     /** Ask for the beat grid's tempo, and switch to the manual grid on OK. */
     void promptForManualTempo();
