@@ -1,4 +1,4 @@
-# StemLab  [![Release](https://github.com/lanabretterebner/StemLab/actions/workflows/release.yml/badge.svg)](https://github.com/lanabretterebner/StemLab/actions/workflows/release.yml)  [![CI](https://github.com/lanabretterebner/StemLab/actions/workflows/ci.yml/badge.svg)](https://github.com/lanabretterebner/StemLab/actions/workflows/ci.yml)
+# StemLab  [![CI](https://github.com/lanabretterebner/StemLab/actions/workflows/ci.yml/badge.svg)](https://github.com/lanabretterebner/StemLab/actions/workflows/ci.yml) [![Release](https://github.com/lanabretterebner/StemLab/actions/workflows/release.yml/badge.svg)](https://github.com/lanabretterebner/StemLab/actions/workflows/release.yml) ![GitHub Release](https://img.shields.io/github/v/release/lanabretterebner/stemlab?label=Release%20Version&color=green) ![GitHub License](https://img.shields.io/github/license/lanabretterebner/stemlab?label=License) 
 
 StemLab is a Windows and Linux application and VST3 for separating music into
 vocals, drums, bass, guitar, piano, and other stems, with direct Ableton Live
