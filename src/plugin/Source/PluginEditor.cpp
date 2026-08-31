@@ -247,13 +247,10 @@ StemLaneWaveform::ViewGeometry StemLaneWaveform::viewGeometryFor(double viewStar
         return geometry;
 
     geometry.viewLength = juce::jmax(1.0e-6, viewLength);
+    geometry.start = viewStart;
 
-    const auto secondsPerColumn =
-        geometry.viewLength / static_cast<double>(geometry.inner.getWidth());
-
-    geometry.snappedStart = secondsPerColumn > 0.0
-                                ? std::floor(viewStart / secondsPerColumn) * secondsPerColumn
-                                : viewStart;
+    geometry.snappedStart = stemlab::waveform::snappedViewStart(
+        viewStart, geometry.viewLength, static_cast<double>(geometry.inner.getWidth()));
 
     return geometry;
 }
@@ -596,10 +593,28 @@ void StemLaneWaveform::paint(juce::Graphics& g)
 
     refreshColumns(inner, snappedStart, viewLength);
 
-    const auto secondsToX = [&inner, snappedStart, viewLength](double seconds)
+    /*  Measured from the true start, not the snapped one.
+
+        The window is centred on the playhead, so mid-file the playhead
+        belongs at the middle of the well and should not move at all. Against
+        the snapped origin it did: the floor lags the true start by up to a
+        column and that lag grows every frame until the snap catches up, so
+        the playhead crept backwards a fraction of a pixel per frame and
+        jumped forward a whole one when it did. Zoomed in that reads as
+        jitter; at 1x the window never scrolls, so it never showed.
+
+        Everything on absolute time shares this origin, so the grid, the
+        notes and the selection stay with the playhead. The column image is
+        still blitted from snappedStart and is therefore up to one column out
+        - a sub-pixel offset on a picture that is scrolling anyway, against a
+        playhead that is now still.
+    */
+    const auto viewStart = geometry.start;
+
+    const auto secondsToX = [&inner, viewStart, viewLength](double seconds)
     {
         return inner.getX() +
-               static_cast<float>((seconds - snappedStart) / viewLength) * inner.getWidth();
+               static_cast<float>((seconds - viewStart) / viewLength) * inner.getWidth();
     };
 
     const auto transportLength = lastDisplay.transportLength;
@@ -997,10 +1012,12 @@ bool StemLaneWaveform::timerRefresh()
         const auto normalised =
             juce::jlimit(0.0, 1.0, transportPosition / now.transportLength);
 
+        // geometry.start, matching paint: this decides which strip to
+        // invalidate, so an origin paint does not use would repaint pixels
+        // beside the playhead and leave the ones under it stale.
         return geometry.inner.getX() +
-               static_cast<float>(
-                   (normalised * profile->lengthSeconds - geometry.snappedStart) /
-                   geometry.viewLength) *
+               static_cast<float>((normalised * profile->lengthSeconds - geometry.start) /
+                                  geometry.viewLength) *
                    geometry.inner.getWidth();
     };
 

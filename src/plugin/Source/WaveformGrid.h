@@ -47,6 +47,29 @@ inline ViewWindow visibleWindow(double totalLengthSeconds, double zoom,
     return {start, start + span};
 }
 
+/**
+ * A view start floored to a whole column of time.
+ *
+ * A scrolling view has to re-bucket the audio into the same columns every
+ * frame or the whole waveform crawls, so the cached column image is drawn
+ * from this rather than from the true start.
+ *
+ * It is only ever an origin for the picture. Anything placed by absolute
+ * time - the playhead above all - must use the true start: the floor lags
+ * it by a fraction of a column that grows every frame and resets when the
+ * snap catches up, so a playhead measured from here creeps backwards and
+ * jumps forward instead of moving. See the test beside this.
+ */
+inline double snappedViewStart(double viewStart, double viewLength, double columns)
+{
+    if (!(viewLength > 0.0) || !(columns > 0.0))
+        return viewStart;
+
+    const auto secondsPerColumn = viewLength / columns;
+
+    return std::floor(viewStart / secondsPerColumn) * secondsPerColumn;
+}
+
 enum class GridLineKind
 {
     subdivision,
