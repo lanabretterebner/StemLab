@@ -425,6 +425,7 @@ namespace stemlab::widgets
 
             add(appearanceHeading);
             add(accentRow);
+            add(waveformPalette);
 
             add(audioHeading);
             add(audioSettings);
@@ -454,6 +455,12 @@ namespace stemlab::widgets
             {
                 if (onAccent)
                     onAccent(index);
+            };
+
+            waveformPalette.onSelected = [this](int index)
+            {
+                if (onWaveformPalette)
+                    onWaveformPalette(index);
             };
 
             gridMode.onSelected = [this](int index)
@@ -513,6 +520,7 @@ namespace stemlab::widgets
             audioSettings.setVisible(settings.standalone);
 
             accentRow.setSelectedIndex(settings.accent);
+            waveformPalette.setSelectedIndex(settings.waveformPalette);
 
             gridMode.setSelectedIndex(settings.gridMode);
             manualTempo.setCaption("Manual tempo (" + bpm(settings.manualBpm) + " BPM)");
@@ -597,6 +605,7 @@ namespace stemlab::widgets
         }
 
         std::function<void(int)> onAccent;
+        std::function<void(int)> onWaveformPalette;
         std::function<void(int)> onGridMode;
         std::function<void()> onSetManualTempo;
         std::function<void()> onAnalysisToggle;
@@ -617,6 +626,14 @@ namespace stemlab::widgets
 
         HeadingRow appearanceHeading{"Appearance"};
         SwatchRow accentRow{"Accent color"};
+
+        /*  The order the palette menu in the header used, kept: Spectrum
+            first because it is the default, and the two audio-driven ones
+            beside it. The editor maps these positions onto the theme's
+            indices, which are a different order.
+        */
+        ChoiceRow waveformPalette{"Waveform",
+                                  {"Spectrum", "RGB", "3-Band", "Stem", "Accent"}};
 
         HeadingRow audioHeading{"Audio"};
         ActionRow audioSettings{"Audio and MIDI devices", "Open..."};
@@ -695,6 +712,9 @@ namespace stemlab::widgets
 
         settingsPage->onAccent = [this](int index)
         { if (onAccent) onAccent(index); };
+
+        settingsPage->onWaveformPalette = [this](int index)
+        { if (onWaveformPalette) onWaveformPalette(index); };
 
         settingsPage->onGridMode = [this](int index)
         { if (onGridMode) onGridMode(index); };

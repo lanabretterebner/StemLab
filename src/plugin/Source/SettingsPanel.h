@@ -47,6 +47,7 @@ namespace stemlab::widgets
             bool standalone = false;
 
             int accent = 0;
+            int waveformPalette = 0;
 
             int gridMode = 0;
             bool hostTempoAvailable = false;
@@ -88,6 +89,7 @@ namespace stemlab::widgets
         std::function<void()> onClose;
 
         std::function<void(int)> onAccent;
+        std::function<void(int)> onWaveformPalette;
         std::function<void(int)> onGridMode;
         std::function<void()> onSetManualTempo;
         std::function<void()> onAnalysisToggle;

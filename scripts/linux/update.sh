@@ -13,15 +13,12 @@
 # the copy that shipped with the release being installed, so this never has to
 # track how a future bundle is laid out.
 #
-# Your audio in <your music folder>/StemLab and your settings under ~/.config
-# are not inside the install, so replacing it leaves both where they are.
-#
-# The model weights are split. The RoFormer and Demucs downloads live under
-# ~/.cache and survive; the adaptive-split weights are written to
-# <install>/models/recursive - the data directory and the install directory
-# are the same folder on Linux, see src/stemlab/paths.py - and the setup
-# script replaces the install wholesale. Those re-download on first use after
-# an update.
+# Nothing you own is touched. Your audio in <your music folder>/StemLab and
+# your settings under ~/.config are not inside the install at all, and the
+# model weights that are - the adaptive-split ones, in <install>/models,
+# because the data directory and the install directory are the same folder on
+# Linux - are carried across by the setup script rather than replaced. It
+# replaces what the new bundle contains and keeps everything else.
 #
 # STEMLAB_LATEST_TAG short-circuits the release lookup. It exists so the tests
 # can drive this without a network, and is documented here rather than hidden
@@ -46,7 +43,7 @@ while [[ $# -gt 0 ]]; do
             esac
             shift 2 ;;
         -h|--help)
-            sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         *)
             echo "Unknown option: $1" >&2

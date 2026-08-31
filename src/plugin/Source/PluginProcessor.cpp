@@ -1810,6 +1810,10 @@ StemLabAudioProcessor::StemLabAudioProcessor()
                        [] { stemlab::theme::accents::setIndex(readRememberedAccent()); });
     }
 
+    // Per instance rather than per process: unlike the accent this is a
+    // value on the processor, so every instance reads it for itself.
+    waveformColorIndex.store(readRememberedWaveformColor());
+
     if (isStandaloneApp())
     {
         // The processor's own AudioSource override routes between the
@@ -5915,9 +5919,49 @@ bool StemLabAudioProcessor::isStemEnabled(int index) const
     return stemEnabled[static_cast<size_t>(index)].load();
 }
 
+juce::File StemLabAudioProcessor::waveformColorPreferenceFile()
+{
+    return stemlab::paths::configDirectory().getChildFile("waveform_palette.txt");
+}
+
+int StemLabAudioProcessor::readRememberedWaveformColor()
+{
+    const auto file = waveformColorPreferenceFile();
+
+    if (!file.existsAsFile())
+        return defaultWaveformColorIndex;
+
+    // By name, for the reason the accent gives: an index would turn a
+    // reordered list into somebody's lanes quietly changing palette. A name
+    // this build does not know falls back to the default.
+    const auto stored = file.loadFileAsString().trim();
+
+    for (int palette = 0; palette < waveformColorCount; ++palette)
+        if (stemlab::theme::waveform::paletteName(palette).equalsIgnoreCase(stored))
+            return palette;
+
+    return defaultWaveformColorIndex;
+}
+
+void StemLabAudioProcessor::rememberWaveformColor(int index)
+{
+    auto directory = stemlab::paths::configDirectory();
+
+    // Best effort. Failing to remember how you like waveforms drawn must
+    // never be the reason anything else fails.
+    if (directory.exists() || directory.createDirectory())
+        waveformColorPreferenceFile().replaceWithText(
+            stemlab::theme::waveform::paletteName(index));
+}
+
 void StemLabAudioProcessor::setWaveformColorIndex(int index)
 {
-    waveformColorIndex.store(juce::jlimit(0, waveformColorCount - 1, index));
+    const auto wanted = juce::jlimit(0, waveformColorCount - 1, index);
+
+    if (waveformColorIndex.exchange(wanted) == wanted)
+        return;
+
+    rememberWaveformColor(wanted);
 
     sendChangeMessage();
 }
@@ -6032,7 +6076,6 @@ void StemLabAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     rootObject->setProperty("refinement", refinementEnabled.load());
     rootObject->setProperty("fusedStemNormalisation", fusedStemNormalisation.load());
     rootObject->setProperty("separatorEngine", separatorEngineIndex.load());
-    rootObject->setProperty("waveformColor", waveformColorIndex.load());
     rootObject->setProperty("waveformZoom", waveformZoom.load());
     rootObject->setProperty("gridMode", waveformGridMode.load());
     rootObject->setProperty("manualGridBpm", manualGridBpm.load());
@@ -6127,18 +6170,25 @@ void StemLabAudioProcessor::setStateInformation(const void* data, int sizeInByte
                           : manualGridBarOne.load());
     }
 
-    /*  The old spelling is still read, because it is on disk. Every project
-        saved before the rename carries "waveformColour", and a load that only
-        looked for the new key would silently reset those to the default
-        palette - a setting quietly losing its value on upgrade. New saves
-        write the new key only, so the old one ages out on its own.
+    /*  The palette is a preference now, not project state, so this no longer
+        writes it and reads it only to carry an old choice forward once.
+
+        Both spellings, because both are on disk: projects from before the
+        rename carry "waveformColour". And only when nothing is remembered
+        yet, or the first project opened after an upgrade would decide the
+        preference for every project after it. Once the file exists, saved
+        state is ignored entirely - which is the point of it being a
+        preference.
     */
-    for (const auto* key : { "waveformColor", "waveformColour" })
+    if (!waveformColorPreferenceFile().existsAsFile())
     {
-        if (object->hasProperty(key))
+        for (const auto* key : { "waveformColor", "waveformColour" })
         {
-            setWaveformColorIndex(static_cast<int>(object->getProperty(key)));
-            break;
+            if (object->hasProperty(key))
+            {
+                setWaveformColorIndex(static_cast<int>(object->getProperty(key)));
+                break;
+            }
         }
     }
 

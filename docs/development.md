@@ -163,11 +163,21 @@ byte-for-byte what shipped.
 lightness survives a hue turn, the ramp still descends, and every preset
 clears 4.5:1 where the theme puts accent text on an accent fill.
 
-Chosen in **Settings > Appearance** and remembered in
-`<config>/accent.txt` by name, not index, so reordering the presets cannot
+Chosen in **Settings > Appearance** and remembered in `accent.txt` in the
+config directory - by name, not index, so reordering the presets cannot
 silently change somebody's accent. It is a preference about the application
 rather than about a project, so it is not in `getStateInformation`: opening
 someone else's session does not restyle your editor.
+
+The lane waveform palette works the same way, in `waveform_palette.txt`, and
+is chosen in the same **Appearance** section - it used to be a palette icon in
+the header opening a popup menu, which is one more thing in the header and one
+more menu than the settings window was meant to leave. Its first entry is named
+**Accent** rather than Nocturne, because it draws with whichever accent is set -
+naming it after the design system would name it after a color it may not be. `setStateInformation` still reads the old
+`waveformColour`/`waveformColor` keys, but only when no preference file
+exists yet, so an existing project's choice carries forward once instead of
+the first project opened deciding the palette for every project after it.
 
 ### `src/plugin/Source/PluginProcessor.h/.cpp`
 

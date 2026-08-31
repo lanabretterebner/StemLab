@@ -722,18 +722,30 @@ public:
     void setWaveformColorIndex(int index);
     int getWaveformColorIndex() const noexcept { return waveformColorIndex.load(); }
 
-    /** Number of selectable lane waveform palettes; the index persists in
-        plugin state, so this must stay in step with the theme's palette.
-        State saved when the solid fills existed clamps into range here. */
+    /** Number of selectable lane waveform palettes; must stay in step with
+        the theme's list. A remembered palette that no longer exists - state
+        saved when the solid fills did - clamps into range here. */
     static constexpr int waveformColorCount = 5;
+
+    /*  The waveform palette is remembered the same way the accent is, and
+        for the same reason: it is how you like to read a waveform, not
+        something about this project's audio, so it should still be your
+        palette in the next session and in the next host.
+
+        Stored by name, so reordering the theme's list cannot silently
+        repaint someone's lanes.
+    */
+    static juce::File waveformColorPreferenceFile();
+    static int readRememberedWaveformColor();
+    static void rememberWaveformColor(int index);
 
     /**
      * Which palette a fresh instance starts on: Spectrum, index 2.
      *
      * It shows what the audio is actually doing - violet where the spectral
      * centroid sits low, amber where it sits high - which is worth more on
-     * first sight than one accent color repeated down every lane. Saved
-     * state still wins, so nobody's chosen palette changes under them.
+     * first sight than one accent color repeated down every lane. Only
+     * until someone chooses: a remembered palette always wins.
      */
     static constexpr int defaultWaveformColorIndex = 2;
 

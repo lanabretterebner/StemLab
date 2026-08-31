@@ -494,7 +494,6 @@ private:
     juce::PopupMenu makeMenu();
 
     void showEngineMenu();
-    void showWaveformColorMenu();
     void setSeparatorEngine(int index);
     void stepSeparatorEngine(int delta);
 
@@ -581,7 +580,6 @@ private:
     std::unique_ptr<stemlab::widgets::IconButton> enginePrevButton;
     std::unique_ptr<stemlab::widgets::SelectorButton> engineSelector;
     std::unique_ptr<stemlab::widgets::IconButton> engineNextButton;
-    std::unique_ptr<stemlab::widgets::IconButton> paletteButton;
     std::unique_ptr<stemlab::widgets::IconButton> settingsButton;
 
     // Which lanes the job carries forward, in one gesture rather than six.
