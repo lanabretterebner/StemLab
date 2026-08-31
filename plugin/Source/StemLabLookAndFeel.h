@@ -110,6 +110,12 @@ namespace stemlab::icons
     juce::Path play(juce::Rectangle<float> bounds);
     juce::Path pause(juce::Rectangle<float> bounds);
 
+    /** Per-lane actions: three dots, the usual "more actions" affordance. */
+    juce::Path kebab(juce::Rectangle<float> bounds);
+
+    /** Drag this stem out: a square, a diagonal arrow, a target corner. */
+    juce::Path dragOut(juce::Rectangle<float> bounds);
+
     /** The tick on a checked menu item, and on include checkboxes. */
     juce::Path check(juce::Rectangle<float> bounds);
 

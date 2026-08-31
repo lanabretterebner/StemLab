@@ -292,6 +292,23 @@ void StemLabLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& b
     const auto dimmed = [enabled = button.isEnabled()](juce::Colour c)
     { return theme::colours::dimIfDisabled(c, enabled); };
 
+    /*
+        A transport control is a circle, not a rounded rectangle: it is the
+        one control that is pressed rather than read, and the shape says so
+        before the glyph does.
+    */
+    if (variant == "transport")
+    {
+        const auto circle = bounds.withSizeKeepingCentre(
+            std::min(bounds.getWidth(), bounds.getHeight()),
+            std::min(bounds.getWidth(), bounds.getHeight()));
+
+        g.setColour(dimmed(hover ? theme::colours::primaryFillHover()
+                                 : theme::colours::primaryFill()));
+        g.fillEllipse(circle);
+        return;
+    }
+
     if (const auto fill = explicitFill(button))
     {
         g.setColour(dimmed(hover ? fill->brighter(0.12f) : *fill));
@@ -832,6 +849,76 @@ namespace stemlab::icons
         const float barW = b.getWidth() * 0.32f;
         p.addRoundedRectangle(b.getX(), b.getY(), barW, b.getHeight(), 1.0f);
         p.addRoundedRectangle(b.getRight() - barW, b.getY(), barW, b.getHeight(), 1.0f);
+        return p;
+    }
+
+    juce::Path kebab(juce::Rectangle<float> b)
+    {
+        // Three dots up the centre: the usual "more actions" affordance.
+        // Filled, because a 2px ring at this size closes up into a smudge.
+        const auto size = juce::jmin(b.getWidth(), b.getHeight());
+        const auto dot = size * 0.19f;
+        const auto centreX = b.getCentreX();
+
+        juce::Path p;
+
+        for (int i = 0; i < 3; ++i)
+        {
+            const auto centreY = b.getY() + size * (0.18f + 0.32f * static_cast<float>(i));
+
+            p.addEllipse(centreX - dot * 0.5f, centreY - dot * 0.5f, dot, dot);
+        }
+
+        return p;
+    }
+
+    juce::Path dragOut(juce::Rectangle<float> b)
+    {
+        /*
+         * Drag this stem out: a rounded square, and an arrow leaving it
+         * diagonally. Two elements, not three.
+         *
+         * The reference art puts a dashed destination square opposite the
+         * source. At 14px dashes close up into a grey smear, so it was once
+         * reduced to a corner bracket - but a bracket is the same L shape as
+         * the arrowhead, and at this size the two sat five pixels apart and
+         * read as one arrow with a stray duplicate of its own corner. There
+         * is no room to separate them: moving the bracket far enough to stop
+         * reading as detached puts it on top of the head. A square with an
+         * arrow leaving it already says "drag out" without a third element.
+         */
+        const auto size = juce::jmin(b.getWidth(), b.getHeight());
+
+        juce::Path p;
+
+        // Source: rounded square in the top-left, inset so its 1.4px stroke
+        // stays in the box. The old square ran to the very edge, which put
+        // half the pen outside it and made this glyph read heavier than the
+        // kebab sitting next to it.
+        const auto inset = size * 0.03f;
+        const auto square = size * 0.42f;
+        p.addRoundedRectangle(b.getX() + inset, b.getY() + inset, square, square, size * 0.10f);
+
+        /*
+         * The arrow, on the diagonal. It starts clear of the square rather
+         * than inside it: the square's corner arc meets the diagonal at
+         * 0.42 of the box and the shaft's round cap reaches back to 0.52, so
+         * roughly a pixel of ground separates them at 14px. The shaft used
+         * to begin at 0.34, well inside the fill, and ate the square's
+         * bottom-right corner.
+         */
+        const auto from = juce::Point<float>(b.getX() + size * 0.56f, b.getY() + size * 0.56f);
+        const auto to = juce::Point<float>(b.getX() + size * 0.93f, b.getY() + size * 0.93f);
+
+        p.startNewSubPath(from);
+        p.lineTo(to);
+
+        const auto head = size * 0.24f;
+
+        p.startNewSubPath(to.x - head, to.y);
+        p.lineTo(to.x, to.y);
+        p.lineTo(to.x, to.y - head);
+
         return p;
     }
 

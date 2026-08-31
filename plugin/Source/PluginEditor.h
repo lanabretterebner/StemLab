@@ -295,6 +295,12 @@ private:
     std::array<juce::TextButton, StemLabAudioProcessor::stemCount> stemExpandButtons;
     std::array<juce::TextButton, StemLabAudioProcessor::stemCount> stemPlayButtons;
     std::array<juce::TextButton, StemLabAudioProcessor::stemCount> stemRecursiveButtons;
+
+    // Glyphs laid over the two icon buttons on each lane. Siblings rather
+    // than children, so they cannot swallow the button's clicks.
+    std::array<IconComponent, StemLabAudioProcessor::stemCount> stemRecursiveGlyphs;
+    std::array<juce::TextButton, StemLabAudioProcessor::stemCount> stemDragButtons;
+    std::array<IconComponent, StemLabAudioProcessor::stemCount> stemDragGlyphs;
     std::array<bool, StemLabAudioProcessor::stemCount> rootExpanded{};
 
     juce::AudioFormatManager waveformFormats;

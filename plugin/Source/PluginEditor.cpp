@@ -1082,7 +1082,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
         stay, because they choose *which* stem is auditioned. This starts and
         stops whatever is loaded, and shows where it is.
     */
-    transportButton.setComponentID("primary");
+    transportButton.setComponentID("transport");
     transportButton.setTooltip("Play / pause");
     transportButton.onClick = [this]
     {
@@ -1339,7 +1339,11 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
     addAndMakeVisible(timingLabel);
 
-    stemsLabel.setFont(juce::FontOptions(15.0f, juce::Font::bold));
+    // Help text, not a heading: it explains two gestures and should sit
+    // behind the lanes it describes rather than in front of them.
+    stemsLabel.setFont(stemlab::theme::fonts::meta());
+    stemsLabel.setColour(juce::Label::textColourId,
+                         stemlab::theme::colours::text().withAlpha(0.45f));
 
     stemsLabel.setText(
         "Drag waveform = select/loop/export range  |  Right-click checkbox = toggle solo export",
@@ -1411,15 +1415,64 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
             refreshFromProcessor();
         };
 
-        recursiveButton.setButtonText("...");
+        recursiveButton.setButtonText({});
         recursiveButton.setTooltip("Stem actions");
         recursiveButton.setVisible(rootSupportsAdaptiveSplit(i));
         recursiveButton.onClick = [this, i] { showRootRecursiveMenu(i); };
 
+        auto& recursiveGlyph = stemRecursiveGlyphs[static_cast<size_t>(i)];
+        recursiveGlyph.setIcon(stemlab::icons::kebab,
+                               stemlab::theme::colours::text().withAlpha(0.72f));
+        recursiveGlyph.setInterceptsMouseClicks(false, false);
+
+        /*
+            Drag one stem out, rather than the whole selection. Upstream drags
+            every enabled stem from a button in the footer, which is the right
+            control for "give me these six" but the wrong one for "give me
+            that". Both now exist, and this one carries a single file.
+        */
+        auto& dragButton = stemDragButtons[static_cast<size_t>(i)];
+        dragButton.setTooltip("Drag this stem out");
+        dragButton.onClick = [this, i]
+        {
+            const auto file = processor.getCompletedStemFile(i);
+
+            if (!file.existsAsFile())
+                return;
+
+            juce::StringArray files;
+            files.add(file.getFullPathName());
+
+            selfFileDragGuard.begin(files);
+            auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
+
+            const auto started = juce::DragAndDropContainer::performExternalDragDropOfFiles(
+                files, false, &stemDragButtons[static_cast<size_t>(i)],
+                [safeThis]
+                {
+                    if (safeThis != nullptr)
+                        safeThis->selfFileDragGuard.clear();
+                });
+
+            if (!started)
+            {
+                selfFileDragGuard.clear();
+                processor.postUiStatus("Could not start the audio file drag");
+            }
+        };
+
+        auto& dragGlyph = stemDragGlyphs[static_cast<size_t>(i)];
+        dragGlyph.setIcon(stemlab::icons::dragOut,
+                          stemlab::theme::colours::text().withAlpha(0.72f));
+        dragGlyph.setInterceptsMouseClicks(false, false);
+
         stemTreeContent.addAndMakeVisible(expandButton);
         stemTreeContent.addAndMakeVisible(button);
         stemTreeContent.addAndMakeVisible(preview);
+        stemTreeContent.addAndMakeVisible(dragButton);
+        stemTreeContent.addAndMakeVisible(dragGlyph);
         stemTreeContent.addAndMakeVisible(recursiveButton);
+        stemTreeContent.addAndMakeVisible(recursiveGlyph);
 
         waveformComponents[static_cast<size_t>(i)] =
             std::make_unique<StemWaveformComponent>(processor, i, waveformFormats, waveformCache);
@@ -2015,11 +2068,24 @@ void StemLabAudioProcessorEditor::resized()
 
     area.removeFromTop(compact ? 6 : 10);
 
-    statusLabel.setBounds(area.removeFromTop(compact ? 18 : 20));
-
-    progressBar.setBounds(area.removeFromTop(compact ? 15 : 18));
-
-    timingLabel.setBounds(area.removeFromTop(compact ? 17 : 20));
+    /*
+        The progress bar is the only one of these that belongs above the
+        lanes, and only while there is progress to report. Status and timing
+        move to the footer: three permanently occupied rows between the source
+        and the stems pushed the lanes down for information that is a footnote
+        except during a job.
+    */
+    if (processor.isEngineRunning() || processor.isRecursiveEngineRunning())
+    {
+        progressBar.setVisible(true);
+        progressBar.setBounds(area.removeFromTop(compact ? 15 : 18));
+        area.removeFromTop(compact ? 4 : 6);
+    }
+    else
+    {
+        progressBar.setVisible(false);
+        progressBar.setBounds(0, 0, 0, 0);
+    }
 
 
     area.removeFromTop(compact ? 2 : 4);
@@ -2107,13 +2173,37 @@ void StemLabAudioProcessorEditor::resized()
         row.removeFromLeft(4);
 
         auto& recursiveButton = stemRecursiveButtons[static_cast<size_t>(i)];
+        auto& recursiveGlyph = stemRecursiveGlyphs[static_cast<size_t>(i)];
         if (rootSupportsAdaptiveSplit(i) || hasChildren || processor.hasSuccessfulJob())
         {
             recursiveButton.setBounds(row.removeFromRight(actionWidth).reduced(0, rowPad));
+            recursiveGlyph.setBounds(recursiveButton.getBounds().reduced(actionWidth / 4));
             row.removeFromRight(3);
         }
         else
+        {
             recursiveButton.setBounds(0, 0, 0, 0);
+            recursiveGlyph.setBounds(0, 0, 0, 0);
+        }
+
+        // Dragging a single stem out only means anything once there is one.
+        auto& dragButton = stemDragButtons[static_cast<size_t>(i)];
+        auto& dragGlyph = stemDragGlyphs[static_cast<size_t>(i)];
+        const bool hasStem = processor.getCompletedStemFile(i).existsAsFile();
+        dragButton.setVisible(hasStem);
+        dragGlyph.setVisible(hasStem);
+
+        if (hasStem)
+        {
+            dragButton.setBounds(row.removeFromRight(actionWidth).reduced(0, rowPad));
+            dragGlyph.setBounds(dragButton.getBounds().reduced(actionWidth / 4));
+            row.removeFromRight(3);
+        }
+        else
+        {
+            dragButton.setBounds(0, 0, 0, 0);
+            dragGlyph.setBounds(0, 0, 0, 0);
+        }
 
         stemPlayButtons[static_cast<size_t>(i)].setBounds(
             row.removeFromRight(playWidth).reduced(0, rowPad));
@@ -2139,6 +2229,11 @@ void StemLabAudioProcessorEditor::resized()
     */
     statusGlyph.setBounds(actionRow.removeFromLeft(actionRow.getHeight()).reduced(9));
     actionRow.removeFromLeft(2);
+
+    auto statusColumn = actionRow.removeFromLeft(juce::jmax(0, actionRow.getWidth() / 2));
+    statusLabel.setBounds(statusColumn.removeFromTop(statusColumn.getHeight() / 2));
+    timingLabel.setBounds(statusColumn);
+    actionRow.removeFromLeft(10);
 
     auto* primaryAction = processor.isStandaloneApp() ? &saveSelectedButton
                           : processor.isAbletonHost() ? &sendSelectedButton
@@ -2568,7 +2663,7 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     }
     else
     {
-        timingLabel.setText("Elapsed 00:00   |   ETA --:--", juce::dontSendNotification);
+        timingLabel.setText({}, juce::dontSendNotification);
     }
 }
 
