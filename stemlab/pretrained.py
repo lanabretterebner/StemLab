@@ -75,7 +75,11 @@ def _normalise_input_for_backend(
 
     extension = input_path.suffix.lower()
     if extension in passthrough_extensions:
-        staged = staging_dir / input_path.name
+        # Stage under the lower-cased extension rather than the source's own.
+        # The same case-sensitive glob that hides a staged FLAC also hides
+        # SONG.WAV, which is an ordinary name on a Windows-authored file and
+        # failed with "No .wav files found" on Linux.
+        staged = staging_dir / f"{input_path.stem}{extension}"
         shutil.copy2(input_path, staged)
         return staged
 

@@ -265,3 +265,19 @@ def test_a_failed_flac_conversion_leaves_nothing_behind_for_ffmpeg(monkeypatch, 
 
     sf.write = real_write
     assert staging_seen["files"] == []
+
+
+def test_an_upper_case_wav_reaches_the_separator(monkeypatch, tmp_path):
+    """The CLI's glob("*.wav") is case-sensitive, and .WAV is an ordinary name.
+
+    Staging copied the source's own name through, so a Windows-authored
+    SONG.WAV failed with "No .wav files found" on any case-sensitive
+    filesystem - the same root cause that hid a staged FLAC.
+    """
+    source = _tone(tmp_path / "SONG.WAV", ROFORMER_SAMPLE_RATE)
+    output = tmp_path / "stems"
+
+    separator = _run(monkeypatch, source, output)
+
+    assert separator.seen_rates == [ROFORMER_SAMPLE_RATE]
+    assert sorted(output.rglob("*.wav")), "the separator saw no input it could open"
