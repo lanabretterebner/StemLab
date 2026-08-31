@@ -1,42 +1,52 @@
 #!/usr/bin/env bash
 #
-# Remove StemLab from this machine, in three widening steps.
+# Remove StemLab from this machine.
 #
-#   ./uninstall.sh                 the app: its files, the VST3, the settings
-#   ./uninstall.sh --models        ... and the model weights and analysis cache
-#   ./uninstall.sh --everything    ... and your captures, recordings and jobs
+#   ./uninstall.sh                 all of it: app, Engine, VST3, settings,
+#                                  model weights, caches
+#   ./uninstall.sh --keep-models   ... but leave the downloaded weights, for
+#                                  a reinstall that should not re-download
+#   ./uninstall.sh --everything    ... and your captures, recordings and
+#                                  separated stems as well
 #
 #   ./uninstall.sh --dry-run       print what would go; remove nothing
 #   ./uninstall.sh --yes           do not ask
 #
-# The default keeps the model weights on purpose: they are gigabytes over a
-# slow download, shared with nothing else, so an uninstall that took them
-# costs an hour to undo. --everything is the only mode that touches audio you
-# made, and it says so before it does.
+# The one thing the default never touches is audio: everything under
+# <music>/StemLab is yours, and a DAW project may reference it by path.
+# Removing StemLab must not silently break a session that opens next week.
+# --everything is the only mode that takes it, and it says so first.
 #
 # THE LOAD-BEARING DETAIL. On Linux the app's data directory and its default
 # install directory are the same folder: the bundle unpacks into
-# ~/.local/share/StemLab, and Captures/ and Recordings/ are written inside it.
-# So the app is removed entry by entry rather than with one rm -rf, and
-# anything in that folder which is not the app's is kept and named. Getting
-# this wrong deletes recordings during a routine uninstall.
+# ~/.local/share/StemLab, and older versions wrote Captures/ and Recordings/
+# inside it. So the app is removed entry by entry rather than with one rm -rf,
+# and anything in that folder which is not the app's is kept and named.
+# Getting this wrong deletes recordings during a routine uninstall.
+#
+# THE OTHER ONE. Two of the caches are not ours alone. ~/.cache/huggingface
+# and ~/.cache/torch/hub/checkpoints are where every torch application on the
+# machine keeps its downloads, so only StemLab's own entries inside them are
+# named and removed. An uninstaller that took the whole folder would delete
+# somebody else's models, which is a worse outcome than leaving a few
+# megabytes behind.
 
 set -euo pipefail
 shopt -s nullglob
 
-SCOPE_MODELS=0
+KEEP_MODELS=0
 SCOPE_EVERYTHING=0
 DRY_RUN=0
 ASSUME_YES=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --models)     SCOPE_MODELS=1;     shift ;;
-        --everything) SCOPE_MODELS=1; SCOPE_EVERYTHING=1; shift ;;
+        --keep-models) KEEP_MODELS=1;      shift ;;
+        --everything)  SCOPE_EVERYTHING=1; shift ;;
         --dry-run)    DRY_RUN=1;          shift ;;
         --yes|-y)     ASSUME_YES=1;       shift ;;
         -h|--help)
-            sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         *)
             echo "Unknown option: $1" >&2
@@ -77,8 +87,8 @@ music_dir() {
 
 MEDIA_HOME="$(music_dir)/StemLab"
 
-# Everything the bundle lays down, and nothing else. install_backend.sh on its
-# own creates only Engine/, so a source install is the same list minus the app.
+# What the bundle lays down. install_backend.sh on its own creates only
+# Engine/, so a source install is this list minus the app.
 BUNDLE_ENTRIES=(
     Engine
     StemLab
@@ -89,6 +99,17 @@ BUNDLE_ENTRIES=(
     README.txt
     .stemlab-version
 )
+
+# What the running app writes back into that same folder, which the bundle
+# never contained and an entry-by-entry removal would otherwise mistake for
+# the user's. models/ is src/stemlab/paths.py's recursive_models_dir; Ableton/
+# is StemLabPaths' remoteStatusDirectory.
+RUNTIME_ENTRIES=(Ableton)
+MODEL_ENTRIES=(models)
+
+APP_ENTRIES=("${BUNDLE_ENTRIES[@]}" "${RUNTIME_ENTRIES[@]}")
+
+[[ $KEEP_MODELS -eq 1 ]] || APP_ENTRIES+=("${MODEL_ENTRIES[@]}")
 
 # ------------------------------------------------------- finding the install
 
@@ -136,10 +157,10 @@ install_refused=""
 kept_in_install=()
 
 if looks_like_stemlab "$installed_dir"; then
-    if [[ $SCOPE_EVERYTHING -eq 1 ]]; then
+    if [[ $SCOPE_EVERYTHING -eq 1 && $KEEP_MODELS -eq 0 ]]; then
         consider "$installed_dir" "the app, its Engine, and everything beside them"
     else
-        for entry in "${BUNDLE_ENTRIES[@]}"; do
+        for entry in "${APP_ENTRIES[@]}"; do
             consider "$installed_dir/$entry" "part of the app"
         done
     fi
@@ -150,48 +171,76 @@ fi
 consider "$HOME/.vst3/StemLab.vst3" "the VST3 plug-in"
 consider "$CONFIG_HOME/StemLab" "settings: the torch-compile preference"
 
-# The setup script stages a download of several gigabytes here and removes it
-# when the install succeeds. A run that failed leaves it on purpose, so that
-# re-running resumes - which means an uninstall is the last chance anyone has
-# to notice it. It is installer debris, never anything the user made, so it
-# goes in the default scope.
-consider "$CACHE_HOME/StemLab/setup" "an unfinished download the setup script left"
+# Everything of ours under the cache directory, in one target: the analysis
+# database, the compiled kernels and their warm-up markers, the jobs folder
+# older installs kept here, and setup/ - where the setup script stages a
+# download of several gigabytes and leaves it on purpose when a run fails, so
+# that re-running resumes. All of it derived or installer debris; none of it
+# audio, which lives under the music folder.
+consider "$CACHE_HOME/StemLab" "analysis cache, compiled kernels, installer staging"
 
-if [[ $SCOPE_MODELS -eq 1 ]]; then
+# Only when it has been pointed somewhere else, since the line above covers
+# the default.
+if [[ -n "${STEMLAB_ANALYSIS_HOME:-}" ]]; then
+    consider "$STEMLAB_ANALYSIS_HOME" "analysis, MIDI staging, compiled kernels"
+fi
+
+# Nothing writes ~/.stemlab any more - the analysis cache and the model
+# weights moved to directories that say what they are and that a disk-cleaning
+# tool can reason about. Anyone who ran an older StemLab still has the old one,
+# holding gigabytes nothing will ever read again.
+consider "$HOME/.stemlab" "the directory older versions kept both in"
+
+# JUCE resolves its temp directory through TMPDIR before falling back to /tmp,
+# so this has to as well or it misses the folder on any machine that sets one.
+temp_root="${TMPDIR:-}"
+[[ "$temp_root" == /* ]] || temp_root="/tmp"
+
+consider "$temp_root/StemLab" "temporary files"
+
+if [[ $KEEP_MODELS -eq 0 ]]; then
     consider "$CACHE_HOME/bs-roformer-infer" "BS-RoFormer weights"
-    consider "$CACHE_HOME/torch/hub/checkpoints" "Demucs weights (torch hub)"
-    consider "$CACHE_HOME/huggingface" "the HuggingFace cache"
-    consider "${STEMLAB_ANALYSIS_HOME:-$CACHE_HOME/StemLab/analysis}" \
-        "analysis, MIDI staging, compiled kernels"
-    consider "$DATA_HOME/StemLab/models" "weights for the adaptive splits"
 
-    # Nothing writes ~/.stemlab any more - the analysis cache and the model
-    # weights moved to the two directories above, which say what they are and
-    # which a disk-cleaning tool can reason about. Anyone who ran an older
-    # StemLab still has the old one, holding gigabytes that nothing will ever
-    # read again, so an uninstall is the one moment worth naming it.
-    consider "$HOME/.stemlab" "the directory older versions kept both in"
+    # Named entries inside shared caches, never the caches themselves. See the
+    # note at the top: other torch applications keep their downloads here.
+    hf_cache="${HF_HUB_CACHE:-}"
+
+    if [[ "$hf_cache" != /* ]]; then
+        hf_home="${HF_HOME:-}"
+        [[ "$hf_home" == /* ]] || hf_home="$CACHE_HOME/huggingface"
+        hf_cache="$hf_home/hub"
+    fi
+
+    consider "$hf_cache/models--adefossez--HTDemucs-6s" "Demucs weights (HuggingFace copy)"
+
+    torch_home="${TORCH_HOME:-}"
+    [[ "$torch_home" == /* ]] || torch_home="$CACHE_HOME/torch"
+
+    consider "$torch_home/hub/checkpoints/5c90dfd2-34c22ccb.th" "Demucs weights (torch hub copy)"
 fi
 
 if [[ $SCOPE_EVERYTHING -eq 1 ]]; then
     consider "$MEDIA_HOME" "your captures, recordings and separated stems"
-    consider "$CACHE_HOME/StemLab" "separation jobs (older installs kept them here)"
 fi
 
 # Whatever else lives in the install directory is the user's - Captures and
-# Recordings by default, but the rule is "not the app's, and not already
-# going" rather than a second list.
+# Recordings from an install predating the move to the music folder - but the
+# rule is "not the app's, and not already going" rather than a second list.
+#
+# The model weights are the app's whether or not this run takes them, so they
+# are excluded here even under --keep-models: listing them as "not the app's"
+# would say the opposite of what is true.
 #
 # Computed after every consider above rather than beside the first one,
-# because the model weights live at $DATA_HOME/StemLab/models, which is inside
-# the install directory. --models takes them; without this ordering they would
-# be printed as removed and as kept in the same run.
-if [[ $SCOPE_EVERYTHING -eq 0 ]] && looks_like_stemlab "$installed_dir"; then
+# because those weights live inside the install directory, and without this
+# ordering one run printed them as removed and as kept.
+if ! [[ $SCOPE_EVERYTHING -eq 1 && $KEEP_MODELS -eq 0 ]] \
+    && looks_like_stemlab "$installed_dir"; then
     for path in "$installed_dir"/* "$installed_dir"/.[!.]*; do
         name="${path##*/}"
         mine=0
 
-        for entry in "${BUNDLE_ENTRIES[@]}"; do
+        for entry in "${APP_ENTRIES[@]}" "${MODEL_ENTRIES[@]}"; do
             [[ "$name" == "$entry" ]] && mine=1 && break
         done
 
@@ -236,12 +285,13 @@ fi
 
 echo
 
-if [[ $SCOPE_MODELS -eq 0 ]]; then
-    echo "Model weights and caches are kept. Add --models to remove those too."
+if [[ $KEEP_MODELS -eq 1 ]]; then
+    echo "Model weights are kept, so a reinstall will not download them again."
 fi
 
 if [[ $SCOPE_EVERYTHING -eq 0 ]]; then
-    echo "Your captures, recordings and separated stems in $MEDIA_HOME are kept."
+    echo "Your captures, recordings and separated stems in"
+    echo "$MEDIA_HOME are kept - a DAW project may still point at them."
 else
     echo "This includes audio you made. There is no undo."
 fi
@@ -304,8 +354,8 @@ if [[ ${#kept_in_install[@]} -gt 0 ]]; then
     echo "Your files are still in $installed_dir."
 fi
 
-if [[ $SCOPE_MODELS -eq 0 ]]; then
-    echo "Model weights are still on disk; ./uninstall.sh --models takes those."
+if [[ $KEEP_MODELS -eq 1 ]]; then
+    echo "Model weights are still on disk, as asked."
 fi
 
 echo "Rescan plug-ins in your DAW so it forgets the VST3."
