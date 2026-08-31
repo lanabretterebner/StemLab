@@ -1,5 +1,5 @@
-"""Contracts for the cache-aware fast paths: lazy imports, lazy decode,
-per-signal key-evidence reuse, and the combined correction+analysis CLI."""
+"""Contracts for the cache-aware fast paths: lazy imports, lazy decode, and
+per-signal key-evidence reuse."""
 
 from __future__ import annotations
 
@@ -119,18 +119,55 @@ def test_mix_key_evidence_survives_stem_hash_change(tmp_path, monkeypatch):
     assert with_stem == cold
 
 
-def test_combined_set_correction_and_analysis_single_invocation(tmp_path, monkeypatch):
+def test_correction_flags_are_gone(tmp_path, monkeypatch):
+    """The manual-override CLI is removed, not merely unwired.
+
+    Nothing in the app ever wrote a correction, and a stored one silently
+    overrode every later analysis of that file. The flags have to be refused
+    outright so a stale script cannot put the store back.
+    """
     source = tmp_path / "mix.wav"
     output = tmp_path / "analysis.json"
     cache_path = tmp_path / "cache.sqlite3"
     _write_tone(source, (220.0, 329.63))
     monkeypatch.setattr(source_analysis_module, "analyse_beats", _fake_beat_analysis)
+
+    # Warm the cache in-process, where analyse_beats is faked: the subprocess
+    # below has no torch, so it has to find every sub-result already stored.
     source_analysis_module.analyse_source(source, cache=AnalysisCache(cache_path))
 
     environment = {
         **os.environ,
         "PYTHONPATH": os.pathsep.join([str(_SRC_DIR), os.environ.get("PYTHONPATH", "")]),
     }
+
+    for flags in (
+        ["--set-correction", "--correct-bpm", "124.0"],
+        ["--forget-correction"],
+        ["--correct-key", "C major"],
+    ):
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "stemlab.source_analysis",
+                "--input",
+                str(source),
+                "--cache-path",
+                str(cache_path),
+                "--output",
+                str(output),
+                *flags,
+            ],
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+        assert completed.returncode != 0, flags
+        assert "unrecognized arguments" in completed.stderr, flags
+
+    # And the plain analysis still writes the contract, without a
+    # "corrected" field for the plugin to read.
     completed = subprocess.run(
         [
             sys.executable,
@@ -140,11 +177,6 @@ def test_combined_set_correction_and_analysis_single_invocation(tmp_path, monkey
             str(source),
             "--cache-path",
             str(cache_path),
-            "--set-correction",
-            "--correct-bpm",
-            "124.0",
-            "--correct-key",
-            "C major",
             "--output",
             str(output),
         ],
@@ -153,31 +185,8 @@ def test_combined_set_correction_and_analysis_single_invocation(tmp_path, monkey
         text=True,
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
-    assert "Analysis correction saved locally" in completed.stdout
-    assert "Source analysis:" in completed.stdout
 
     written = json.loads(output.read_text(encoding="utf-8"))
-    assert written["bpm"] == 124.0
-    assert written["key"] == "C major"
-    assert written["corrected"] is True
+    assert "corrected" not in written
+    assert written["bpm"] == 120.0
     assert written["detected_bpm"] == 120.0
-
-    # The historical exit-early contract without --output must be unchanged.
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "stemlab.source_analysis",
-            "--input",
-            str(source),
-            "--cache-path",
-            str(cache_path),
-            "--forget-correction",
-        ],
-        env=environment,
-        capture_output=True,
-        text=True,
-    )
-    assert completed.returncode == 0, completed.stderr or completed.stdout
-    assert "Correction forgotten" in completed.stdout
-    assert "Source analysis:" not in completed.stdout

@@ -33,7 +33,7 @@ BEAT_THIS_VERSION = "1.1.0"
 # this module derives change. -2 is the tempo coming from the mean of the
 # inlier intervals rather than their median; without the bump every track
 # already analysed would keep serving the frame-quantised BPM it cached.
-BEAT_ALGORITHM_VERSION = "beat-this-1.1.0-stemlab-5"
+BEAT_ALGORITHM_VERSION = "beat-this-1.1.0-stemlab-6"
 
 # Beat This!'s frame rate, and so the grid every beat it reports lands on.
 _BEAT_FPS = 50.0
@@ -567,6 +567,84 @@ def _dominant_grid(beats: np.ndarray, seed: float) -> _Grid:
     return _fit_grid(beats, best.period, best.phase)
 
 
+# The largest amount a reported tempo is ever moved to reach a round one.
+# 0.05 BPM at 174 is 0.4 ms across a bar - below anything a listener or a
+# producer separates - so a difference bigger than this is the track's, not
+# the fit's, and is reported as it was measured.
+_TEMPO_SNAP_LIMIT = 0.05
+
+# ...and the round tempo has to stay inside one frame of the fitted one from
+# the first beat to the last. The beats arrive on a 20 ms grid, so two
+# tempos whose grids never walk a frame apart across the whole track are not
+# tempos these beats can tell apart. Long tracks constrain the fit harder and
+# so snap less, which is the right way round.
+_TEMPO_DRIFT_BUDGET = 1.0 / _BEAT_FPS
+
+
+def _snap_tempo(grid: _Grid, beats: np.ndarray) -> _Grid:
+    """Report a round tempo where the beats cannot distinguish it from the fit.
+
+    Tempo is chosen, not measured: a producer sets 174 and the machine plays
+    174. What comes back here is a least-squares slope through several
+    hundred beat times that each carry a few milliseconds of the network's
+    own error, and that slope lands a hundredth of a BPM off a round number
+    often enough to matter - a 174 track reading 173.99.
+
+    A hundredth of a BPM is not a display problem. The plugin draws its grid
+    as bar one plus a beat period, so a tempo read 0.01 low lays every line
+    19 us late, and by the end of a four minute track the grid sits 14 ms
+    behind the music: exactly the "slightly delayed" a listener notices at
+    the end of a track and not at the start.
+
+    So the round tempo is preferred where the beats cannot argue with it -
+    where its grid stays inside a frame of the fitted one end to end - and
+    the phase is refitted at the round period, which keeps the error centred
+    over the track instead of piling it all at one end. Neither gate is a
+    round-off: a track really playing 173.5 walks two thirds of a second away
+    from a 174 grid over four minutes, and keeps the tempo it was fitted.
+    """
+    if beats.size < 8 or not (grid.period > 0.0):
+        return grid
+
+    fitted_bpm = 60.0 / grid.period
+    candidate = float(np.round(fitted_bpm))
+    difference = abs(candidate - fitted_bpm)
+
+    if candidate <= 0.0 or difference == 0.0 or difference > _TEMPO_SNAP_LIMIT:
+        return grid
+
+    span = float(beats[-1] - beats[0])
+    if span <= 0.0 or span * difference / fitted_bpm > _TEMPO_DRIFT_BUDGET:
+        return grid
+
+    # The same beats in the same slots at a different period. The snap is a
+    # reading of one grid, not a second chance to re-count the track: which
+    # beats the grid explains was settled by the fit, and the drift budget
+    # keeps every slot inside half a frame of where the fit put it.
+    relative = beats - beats[0]
+    fitted_slot = np.round((relative - grid.phase) / grid.period)
+    explained = (
+        np.abs(relative - (grid.phase + grid.period * fitted_slot)) <= _GRID_TOLERANCE
+    )
+    if int(explained.sum()) < 8:
+        return grid
+
+    period = 60.0 / candidate
+    offsets = relative - period * np.round((relative - grid.phase) / period)
+
+    # Refitted, not carried over: the round period's best phase centres the
+    # remaining difference over the track rather than leaving it to pile up
+    # at the far end, which is the half of this that the grid is drawn from.
+    phase = float(np.mean(offsets[explained]))
+    residual = offsets[explained] - phase
+    rms = float(np.sqrt(np.mean(residual**2)))
+
+    if rms > _GRID_TOLERANCE:
+        return grid
+
+    return _Grid(period, phase, rms, grid.ratio)
+
+
 def _snap_to_grid(seconds: float, grid: _Grid, origin: float) -> float:
     """The grid slot nearest a reported beat, in source seconds."""
     relative = seconds - origin
@@ -699,7 +777,7 @@ def _tempo_segments(beats: np.ndarray) -> tuple[TempoSegment, ...]:
         piece_seed = _seed_period(span)
         if piece_seed is None:
             continue
-        grid = _dominant_grid(span, piece_seed)
+        grid = _snap_tempo(_dominant_grid(span, piece_seed), span)
         # A piece is only a section if one tempo explains it. Where the
         # sliding window crosses a change it reports something in between,
         # and where beats are missing it can misjudge how many a span holds -
@@ -771,7 +849,7 @@ def derive_musical_time(
     beats = np.unique(np.asarray(beats, dtype=np.float64))
     downbeats = np.unique(np.asarray(downbeats, dtype=np.float64))
     _intervals, robust_cv, inlier_ratio = _robust_intervals(beats)
-    grid = _dominant_grid(beats, float(np.mean(_intervals)))
+    grid = _snap_tempo(_dominant_grid(beats, float(np.mean(_intervals))), beats)
     detected_bpm = 60.0 / grid.period
     meter, meter_confidence = _estimate_meter(beats, downbeats)
     stability = float(np.exp(-8.0 * robust_cv))

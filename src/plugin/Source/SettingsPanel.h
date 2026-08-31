@@ -33,7 +33,8 @@ namespace stemlab::widgets
         enum class Page
         {
             settings,
-            models
+            models,
+            credits
         };
 
         /** Everything the settings page draws, filled by the editor.
@@ -65,7 +66,6 @@ namespace stemlab::widgets
             double halfBpm = 0.0;
             double detectedBpm = 0.0;
             double doubleBpm = 0.0;
-            bool canForgetCorrection = false;
 
             bool fusedNormalise = false;
             bool fusedNormaliseAvailable = false;
@@ -99,7 +99,6 @@ namespace stemlab::widgets
         std::function<void(int)> onAnalysisQuality;
         std::function<void(int)> onTempoMode;
         std::function<void(int)> onTempoInterpretation;
-        std::function<void()> onForgetCorrection;
         std::function<void()> onClearAnalysisCache;
         std::function<void(bool)> onFusedNormalise;
         std::function<void()> onCheckUpdates;
@@ -120,16 +119,20 @@ namespace stemlab::widgets
         /** The settings page: rows of controls, no popups anywhere. */
         class Preferences;
 
+        /** The credits page: who else's work is in here. */
+        class Credits;
+
         juce::Rectangle<int> cardBounds() const;
 
         Page page = Page::settings;
 
         juce::Label titleLabel;
-        SegmentedControl tabs{"Settings", "Models"};
+        SegmentedControl tabs{juce::StringArray{"Settings", "Models", "Credits"}};
         juce::TextButton closeButton{"Close"};
 
         ModelManagerPanel modelsPage;
         std::unique_ptr<Preferences> settingsPage;
+        std::unique_ptr<Credits> creditsPage;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SettingsPanel)
     };

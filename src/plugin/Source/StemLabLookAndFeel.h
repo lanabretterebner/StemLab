@@ -124,7 +124,6 @@ namespace stemlab::icons
     juce::Path sparkle(juce::Rectangle<float> bounds);
 
     /** Waveform color: an artist's palette. */
-    juce::Path palette(juce::Rectangle<float> bounds);
 
     /** Waveform zoom: a stroked magnifier, lens and handle. */
     juce::Path magnifier(juce::Rectangle<float> bounds);

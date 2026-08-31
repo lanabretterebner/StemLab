@@ -2,6 +2,7 @@
 #include "HostIntegrationPolicy.h"
 
 #include <cassert>
+#include <algorithm>
 #include <cmath>
 
 using namespace stemlab::waveform;
@@ -111,6 +112,63 @@ int main()
     assert(clampLaneHeight(1) == 42);
     assert(clampLaneHeight(defaultLaneHeight) == defaultLaneHeight);
     assert(clampLaneHeight(999) == 180);
+
+    /*  The playhead must never move backwards while the transport moves
+        forwards.
+
+        A zoomed view is centred on the playhead, so mid-file the playhead
+        belongs at one fixed point in the well. Measured from the snapped
+        origin it did not stay there: the floor lags the true start by a
+        fraction of a column that grows each frame and resets when the snap
+        catches up, so the playhead crawled backwards and jumped forward
+        about a pixel - invisible at 1x, where the window never scrolls, and
+        plainly jittery zoomed in.
+
+        This walks a transport forward at the UI's own rate and asserts the
+        two origins behave the way the header says they do.
+    */
+    {
+        constexpr double total = 200.0, columns = 486.0, tick = 0.05;
+
+        for (const double zoom : {8.0, 32.0})
+        {
+            const auto span = total / zoom;
+
+            auto backwardsFrom = [&](bool snapped)
+            {
+                auto worst = 0.0;
+                auto previous = -1.0e18;
+
+                for (int step = 0; step < 200; ++step)
+                {
+                    const auto position = 40.0 + tick * step;
+                    const auto window =
+                        stemlab::waveform::visibleWindow(total, zoom, position / total);
+
+                    const auto origin =
+                        snapped ? stemlab::waveform::snappedViewStart(window.start, span, columns)
+                                : window.start;
+
+                    const auto x = (position - origin) / span * columns;
+
+                    worst = std::min(worst, x - previous);
+                    previous = x;
+                }
+
+                return worst;
+            };
+
+            // The true origin holds the playhead still, to well inside a
+            // pixel. Nothing about it may drift backwards.
+            if (!(backwardsFrom(false) > -1.0e-9))
+                return 1;
+
+            // And the snapped origin is why this test exists: it goes
+            // backwards by a visible fraction of a pixel, every frame.
+            if (!(backwardsFrom(true) < -0.01))
+                return 1;
+        }
+    }
 
     using stemlab::host::UiMode;
     if (stemlab::host::captureActionText(UiMode::ableton) != "Use Live Clip" ||

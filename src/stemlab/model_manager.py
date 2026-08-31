@@ -506,7 +506,10 @@ def caches() -> tuple[ManagedCache, ...]:
             "analysis",
             "Key & BPM results",
             analysis / "analysis.sqlite3" if analysis is not None else None,
-            "Also removes saved BPM, key and meter corrections",
+            # No warning: everything in here is a cached result that the next
+            # analysis recomputes. It used to also hold manual BPM/key
+            # corrections, which nothing could recover - those are gone.
+            "",
         ),
         (
             "device-probe",

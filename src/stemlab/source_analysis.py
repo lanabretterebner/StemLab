@@ -3,12 +3,6 @@
 CLI modes:
   - Analysis:            --input SRC --output OUT [--mode ...] [stem flags]
   - Cache maintenance:   --clear-cache
-  - Correction only:     --input SRC --set-correction [--correct-* ...]
-                         --input SRC --forget-correction
-  - Combined:            --input SRC --set-correction [--correct-* ...] --output OUT
-                         (also --forget-correction with --output) applies the
-                         correction to the local store first, then runs the
-                         cache-aware analysis and writes OUT in one process.
 """
 
 from __future__ import annotations
@@ -147,7 +141,6 @@ class SourceAnalysis:
     beat_model_version: str
     device: str
     tuning_cents: float
-    corrected: bool
 
 
 def _profile_correlation(chroma: np.ndarray, profile: np.ndarray, tonic: int) -> float:
@@ -611,21 +604,11 @@ def analyse_source(
         key_analysis = _key_from_cache(cached_key)
         report(0.93, "Loaded cached key analysis")
 
-    correction = cache.get_correction(source_hash)
     bpm = beat.bpm
     key = key_analysis.key
     meter_numerator = beat.meter_numerator
     meter_denominator = beat.meter_denominator
     bar_one = beat.bar_one
-    if correction:
-        bpm = float(correction["bpm"]) if correction.get("bpm") is not None else bpm
-        key = str(correction["key"]) if correction.get("key") else key
-        if correction.get("meter_numerator") is not None:
-            meter_numerator = int(correction["meter_numerator"])
-        if correction.get("meter_denominator") is not None:
-            meter_denominator = int(correction["meter_denominator"])
-        if correction.get("bar_one") is not None:
-            bar_one = float(correction["bar_one"])
 
     report(1.0, "Source analysis complete")
     return SourceAnalysis(
@@ -657,7 +640,6 @@ def analyse_source(
         beat_model_version=beat.model_version,
         device=beat.device,
         tuning_cents=key_analysis.tuning_cents,
-        corrected=correction is not None,
     )
 
 
@@ -671,31 +653,11 @@ def write_analysis(path: str | Path, analysis: SourceAnalysis) -> Path:
     return path
 
 
-def _set_correction(args: argparse.Namespace, cache: AnalysisCache) -> None:
-    source_hash = source_identity(args.input)
-    cache.set_correction(
-        source_hash,
-        {
-            "bpm": args.correct_bpm,
-            "key": args.correct_key,
-            "meter_numerator": args.correct_meter_numerator,
-            "meter_denominator": args.correct_meter_denominator,
-            "bar_one": args.correct_bar_one,
-        },
-    )
-    print("Analysis correction saved locally", flush=True)
-
-
 def main() -> None:
     """CLI entry used by JUCE's source-analysis worker."""
     configure_utf8_stdio()
     parser = argparse.ArgumentParser(
         description="Analyze source tempo, beats, meter, and key.",
-        epilog=(
-            "--set-correction/--forget-correction normally exit after updating the "
-            "local store; combined with --output they instead continue into the "
-            "cache-aware analysis and write the corrected result in one invocation."
-        ),
     )
     parser.add_argument("--input")
     parser.add_argument("--output")
@@ -707,13 +669,6 @@ def main() -> None:
     parser.add_argument("--cancel-file")
     parser.add_argument("--cache-path")
     parser.add_argument("--clear-cache", action="store_true")
-    parser.add_argument("--forget-correction", action="store_true")
-    parser.add_argument("--set-correction", action="store_true")
-    parser.add_argument("--correct-bpm", type=float)
-    parser.add_argument("--correct-key")
-    parser.add_argument("--correct-meter-numerator", type=int)
-    parser.add_argument("--correct-meter-denominator", type=int)
-    parser.add_argument("--correct-bar-one", type=float)
     args = parser.parse_args()
 
     cache = AnalysisCache(args.cache_path)
@@ -722,18 +677,6 @@ def main() -> None:
         return
     if not args.input:
         parser.error("--input is required")
-    # Correction flags without --output keep their historical exit-early
-    # contract; with --output the same invocation continues into analysis so
-    # the plugin can correct and re-emit the contract in one process.
-    if args.forget_correction:
-        removed = cache.forget_correction(source_identity(args.input))
-        print("Correction forgotten" if removed else "No correction was stored", flush=True)
-        if not args.output:
-            return
-    if args.set_correction:
-        _set_correction(args, cache)
-        if not args.output:
-            return
     if not args.output:
         parser.error("--output is required for analysis")
 

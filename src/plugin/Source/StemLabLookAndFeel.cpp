@@ -804,37 +804,6 @@ namespace stemlab::icons
         return p;
     }
 
-    juce::Path palette(juce::Rectangle<float> b)
-    {
-        /*
-         * Material Symbols "palette" (Apache 2.0; see docs/third-party.md):
-         * the familiar painter's palette with a thumb cup and four paint
-         * wells, scaled from its 24x24 viewBox into the requested bounds.
-         * Even-odd winding knocks the wells out of the body regardless of
-         * subpath direction.
-         */
-        static const juce::Path glyph = []
-        {
-            auto p = juce::Drawable::parseSVGPath(
-                "M12 22C6.49 22 2 17.51 2 12S6.49 2 12 2s10 4.04 10 9c0 "
-                "3.31-2.69 6-6 6h-1.77c-.28 0-.5.22-.5.5 0 "
-                ".12.05.23.13.33.41.47.64 1.06.64 1.67A2.5 2.5 0 0 1 12 "
-                "22zm-5.5-9c.83 0 1.5-.67 1.5-1.5S7.33 10 6.5 10 5 10.67 5 "
-                "11.5 5.67 13 6.5 13zm3-4C10.33 9 11 8.33 11 7.5S10.33 6 9.5 "
-                "6 8 6.67 8 7.5 8.67 9 9.5 9zm5 0c.83 0 1.5-.67 "
-                "1.5-1.5S15.33 6 14.5 6 13 6.67 13 7.5 13.67 9 14.5 9zm3 "
-                "4c.83 0 1.5-.67 1.5-1.5S18.33 10 17.5 10 16 10.67 16 "
-                "11.5s.67 1.5 1.5 1.5z");
-
-            p.setUsingNonZeroWinding(false);
-            return p;
-        }();
-
-        auto p = glyph;
-        p.applyTransform(glyph.getTransformToScaleToFit(b, true));
-        return p;
-    }
-
     juce::Path dragOut(juce::Rectangle<float> b)
     {
         /*

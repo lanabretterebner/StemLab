@@ -36,13 +36,6 @@ pretrained model.
 Demucs code and model artifacts remain third-party components and retain their
 upstream licensing/terms.
 
-## Material Symbols
-
-The waveform-color button's palette glyph is the "palette" icon from
-Google's Material Symbols, embedded as an SVG path in
-`src/plugin/Source/StemLabLookAndFeel.cpp`. Material Symbols are licensed
-under the Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0).
-
 ## Inter font
 
 The plugin interface embeds the Inter typeface (static Regular and Medium
@@ -62,8 +55,9 @@ recorded in `src/stemlab/beat_tracking.py`.
 ## Python / ML runtime
 
 StemLab's development environment contains third-party components including
-CPython, PyTorch, NumPy, SciPy, SoundFile, librosa, Mido, PyYAML, tqdm, Demucs, BS-RoFormer
-inference dependencies, audio-separator, and their transitive dependencies.
+CPython, PyTorch, NumPy, SciPy, SoundFile, librosa, Mido, PyYAML, tqdm,
+Demucs, BS-RoFormer inference dependencies, audio-separator, and their
+transitive dependencies.
 
 Those packages retain their respective upstream licenses.
 
