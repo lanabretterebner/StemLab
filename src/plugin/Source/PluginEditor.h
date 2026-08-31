@@ -11,6 +11,7 @@
 #include "SettingsPanel.h"
 #include "StemLabWidgets.h"
 #include "WaveformCache.h"
+#include "WaveformGrid.h"
 
 /**
  * One lane's waveform well: rounded ground-colored well, 2px rounded bars
@@ -83,6 +84,20 @@ private:
     struct ViewGeometry
     {
         juce::Rectangle<float> inner;
+
+        /*  Two origins, and they are not interchangeable.
+
+            snappedStart is floored to a whole column so a scrolling view
+            re-buckets the audio into the same columns every frame instead of
+            shimmering; it is what the cached column image is drawn from.
+
+            start is where the window actually begins. Everything positioned
+            by absolute time - the playhead above all - is measured from this
+            one, because the floor lags the true start by a fraction of a
+            column that grows and resets, and measuring the playhead from a
+            lagging origin makes it crawl backwards between snaps.
+        */
+        double start = 0.0;
         double snappedStart = 0.0;
         double viewLength = 0.0;
     };
