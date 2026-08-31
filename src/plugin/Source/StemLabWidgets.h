@@ -27,8 +27,8 @@ namespace stemlab::widgets
 
     /**
      * Square icon button. Default: 45% icon turning accent on hover (lane
-     * controls). textColoured: full text-colour icon that stays
-     * text-coloured on hover with only the hover fill (header settings).
+     * controls). textColored: full text-color icon that stays
+     * text-colored on hover with only the hover fill (header settings).
      */
     class IconButton final : public juce::Button
     {
@@ -37,7 +37,7 @@ namespace stemlab::widgets
 
         IconButton(const juce::String& name, PathFactory factory, float iconSize,
                    bool strokedIcon, float cornerRadius, bool outlined,
-                   bool textColoured = false);
+                   bool textColored = false);
 
         void paintButton(juce::Graphics&, bool highlighted, bool down) override;
 
@@ -47,7 +47,7 @@ namespace stemlab::widgets
         bool stroked;
         float radius;
         bool outlined;
-        bool textColoured;
+        bool textColored;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(IconButton)
     };

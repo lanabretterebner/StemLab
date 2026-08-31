@@ -294,7 +294,7 @@ StemLaneWaveform::DisplayState StemLaneWaveform::readDisplayState() const
 
     state.transportPosition = processor.getTransportPositionSeconds();
     state.transportLength = processor.getTransportLengthSeconds();
-    state.palette = processor.getWaveformColourIndex();
+    state.palette = processor.getWaveformColorIndex();
 
     // Scalars only: this runs per lane per tick, and the full grid info
     // takes the processor's state lock to copy beat vectors nothing here
@@ -331,9 +331,9 @@ void StemLaneWaveform::refreshColumns(juce::Rectangle<float> inner, double viewS
     }
 
     const auto channels = juce::jlimit(1, 2, profile->peaks.channels);
-    const auto palette = processor.getWaveformColourIndex();
+    const auto palette = processor.getWaveformColorIndex();
 
-    // Everything that shapes or colours the pixels; a change in any of it
+    // Everything that shapes or colors the pixels; a change in any of it
     // means neither the columns nor their rendering can be reused.
     const bool sameSetup = columnsFile == currentFile && columnsWidth == width &&
                            columnsHeight == height && columnsChannels == channels &&
@@ -470,7 +470,7 @@ void StemLaneWaveform::renderColumnStrip(int first, int count)
         const auto centreY = top + channelHeight * 0.5f;
         const auto halfHeight = channelHeight * 0.5f;
 
-        // The whole waveform draws in its full palette colour: position is
+        // The whole waveform draws in its full palette color: position is
         // the playhead's job, and dimming everything ahead of it greyed
         // most of the picture out for most of every playback.
         for (int i = 0; i < count; ++i)
@@ -505,12 +505,12 @@ void StemLaneWaveform::renderColumnStrip(int first, int count)
                 struct BandBar
                 {
                     float share;
-                    juce::Colour colour;
+                    juce::Colour color;
                 };
 
-                BandBar bars[3] = {{column.bands.low, theme::waveform::bandLowColour()},
-                                   {column.bands.mid, theme::waveform::bandMidColour()},
-                                   {column.bands.high, theme::waveform::bandHighColour()}};
+                BandBar bars[3] = {{column.bands.low, theme::waveform::bandLowColor()},
+                                   {column.bands.mid, theme::waveform::bandMidColor()},
+                                   {column.bands.high, theme::waveform::bandHighColor()}};
 
                 std::sort(std::begin(bars), std::end(bars),
                           [](const BandBar& a, const BandBar& b) { return a.share > b.share; });
@@ -528,25 +528,25 @@ void StemLaneWaveform::renderColumnStrip(int first, int count)
 
                     const auto half = halfExtent * bar.share;
 
-                    g.setColour(bar.colour);
+                    g.setColour(bar.color);
                     g.fillRect(x, centre - half, 1.0f, half * 2.0f);
                 }
 
                 continue;
             }
 
-            juce::Colour colour;
+            juce::Colour color;
 
             if (columnsMuted)
-                colour = theme::colours::waveMuted();
+                color = theme::colors::waveMuted();
             else if (columnsPalette == theme::waveform::paletteRgb)
-                colour = theme::waveform::rgbColour(column.bands.low, column.bands.mid,
+                color = theme::waveform::rgbColor(column.bands.low, column.bands.mid,
                                                     column.bands.high);
             else
-                colour = theme::waveform::playedColour(columnsPalette, columnsIdentity,
+                color = theme::waveform::playedColor(columnsPalette, columnsIdentity,
                                                        column.brightness);
 
-            g.setColour(colour);
+            g.setColour(color);
             g.fillRect(x, topY, 1.0f, bottomY - topY);
         }
     }
@@ -558,7 +558,7 @@ void StemLaneWaveform::paint(juce::Graphics& g)
 
     const auto full = getLocalBounds().toFloat();
 
-    g.setColour(theme::colours::laneWell());
+    g.setColour(theme::colors::laneWell());
     g.fillRoundedRectangle(full, lanes::wellRadius);
 
     // One ask from here per file; the timer's poll owns every ask after
@@ -678,7 +678,7 @@ void StemLaneWaveform::paint(juce::Graphics& g)
                     if (x < inner.getX() || x > inner.getRight())
                         continue;
 
-                    g.setColour(theme::colours::text().withAlpha(bar ? 0.22f : 0.10f));
+                    g.setColour(theme::colors::text().withAlpha(bar ? 0.22f : 0.10f));
                     g.fillRect(x, inner.getY(), bar ? 1.4f : 1.0f, inner.getHeight());
 
                     if (!bar && !labelBeats)
@@ -714,7 +714,7 @@ void StemLaneWaveform::paint(juce::Graphics& g)
 
     // The columns land in one blit; the per-column drawing itself lives in
     // renderColumnStrip, which only runs when the picture changes. Images
-    // draw at the current colour's opacity, and the grid rules left a
+    // draw at the current color's opacity, and the grid rules left a
     // mostly-transparent one behind.
     if (haveColumns)
     {
@@ -729,11 +729,11 @@ void StemLaneWaveform::paint(juce::Graphics& g)
      * well top to bottom and the blit took the ruler with it, so the labels
      * lost most of their ink whatever alpha they were given.
      *
-     * Each number carries a small plate of the well's own ground colour, so
+     * Each number carries a small plate of the well's own ground color, so
      * it reads against the surface its contrast was chosen against - 5.15:1
      * for a bar, 3.11:1 for a beat - instead of against whatever the audio
      * happens to be doing underneath. On a quiet lane the plate is the
-     * colour that was already there and nothing shows; on a loud one it is
+     * color that was already there and nothing shows; on a loud one it is
      * what keeps the number off the waveform. The rules stay behind the
      * audio, where rhythm belongs.
      */
@@ -757,11 +757,11 @@ void StemLaneWaveform::paint(juce::Graphics& g)
             if (!plate.isEmpty())
             {
                 g.setColour(
-                    theme::colours::laneWell().withAlpha(lanes::gridLabelPlateAlpha));
+                    theme::colors::laneWell().withAlpha(lanes::gridLabelPlateAlpha));
                 g.fillRoundedRectangle(plate, lanes::gridLabelPlateRadius);
             }
 
-            g.setColour(theme::colours::text().withAlpha(item.bar ? 0.55f : 0.38f));
+            g.setColour(theme::colors::text().withAlpha(item.bar ? 0.55f : 0.38f));
             g.drawText(item.text, item.bounds, juce::Justification::topLeft, false);
         }
     }
@@ -811,7 +811,7 @@ void StemLaneWaveform::paint(juce::Graphics& g)
         const auto band = inner.reduced(0.0f, lanes::wellRadius);
         const auto rowHeight = juce::jmax(1.5f, band.getHeight() / (span + 1.0f));
 
-        g.setColour(theme::colours::midiOverlay());
+        g.setColour(theme::colors::midiOverlay());
 
         for (const auto& note : midiNotes)
         {
@@ -863,11 +863,11 @@ void StemLaneWaveform::paint(juce::Graphics& g)
 
             if (clippedRight > clippedLeft)
             {
-                g.setColour(theme::colours::accent().withAlpha(0.16f));
+                g.setColour(theme::colors::accent().withAlpha(0.16f));
                 g.fillRect(clippedLeft, inner.getY(), clippedRight - clippedLeft,
                            inner.getHeight());
 
-                g.setColour(theme::colours::accent().withAlpha(0.75f));
+                g.setColour(theme::colors::accent().withAlpha(0.75f));
 
                 if (left >= inner.getX() && left <= inner.getRight())
                     g.fillRect(left, inner.getY(), 1.0f, inner.getHeight());
@@ -883,11 +883,11 @@ void StemLaneWaveform::paint(juce::Graphics& g)
     // where the view stops following it.
     if (playNormalised >= 0.0 && playheadX >= inner.getX() && playheadX <= inner.getRight())
     {
-        g.setColour(theme::colours::playheadGlow());
+        g.setColour(theme::colors::playheadGlow());
         g.fillRect(playheadX - lanes::playheadGlowWidth * 0.5f, inner.getY(),
                    lanes::playheadGlowWidth, inner.getHeight());
 
-        g.setColour(theme::colours::playhead());
+        g.setColour(theme::colors::playhead());
         g.fillRect(playheadX - lanes::playheadWidth * 0.5f, inner.getY(),
                    lanes::playheadWidth, inner.getHeight());
     }
@@ -1200,7 +1200,7 @@ StemLaneComponent::StemLaneComponent(StemLabAudioProcessor& processorIn, int ste
     addAndMakeVisible(include);
 
     nameLabel.setFont(theme::fonts::laneName());
-    nameLabel.setColour(juce::Label::textColourId, theme::colours::text());
+    nameLabel.setColour(juce::Label::textColourId, theme::colors::text());
     /*
      * A child lane's name carries the category/confidence tooltip that
      * setChildInfo attaches, and juce::TooltipWindow only ever asks the
@@ -1386,7 +1386,7 @@ void StemLaneComponent::setChildInfo(const StemLabRecursiveStemInfo& info)
     {
         waveform->setFile(laneFile);
 
-        // A child lane carries its root's identity colour, so a split stem
+        // A child lane carries its root's identity color, so a split stem
         // still reads as one family down the tree.
         waveform->setStemIdentity(info.rootStem);
         waveform->setSelectionId(info.id);
@@ -1709,7 +1709,7 @@ void StemLaneComponent::paint(juce::Graphics& g)
 {
     if (hovered)
     {
-        g.setColour(theme::colours::rowHoverFill());
+        g.setColour(theme::colors::rowHoverFill());
         g.fillRoundedRectangle(getLocalBounds().toFloat(),
                                theme::metrics::lanes::rowRadius);
     }
@@ -1727,8 +1727,8 @@ void StemLaneComponent::paint(juce::Graphics& g)
 
         const auto size = lanes::hiddenActivityDot;
 
-        g.setColour(hiddenDescendantSoloed ? theme::colours::accent()
-                                           : theme::colours::text75());
+        g.setColour(hiddenDescendantSoloed ? theme::colors::accent()
+                                           : theme::colors::text75());
 
         g.fillEllipse(static_cast<float>(twisty.getRight()) + 1.0f,
                       static_cast<float>(getHeight()) * 0.5f - size * 0.5f,
@@ -1873,10 +1873,10 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
                      * still hand the window more room than maxScale lets the
                      * editor take. The editor stays capped and the surplus is
                      * the window's own background, so paint that the ground
-                     * colour and the surplus reads as margin rather than as a
+                     * color and the surplus reads as margin rather than as a
                      * black band torn out of the panel.
                      */
-                    windowComponent->setBackgroundColour(theme::colours::ground());
+                    windowComponent->setBackgroundColour(theme::colors::ground());
 
                     windowComponent->setUsingNativeTitleBar(true);
                     windowComponent->setName("StemLab");
@@ -1889,7 +1889,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     titleLabel.setText("StemLab", juce::dontSendNotification);
     titleLabel.setFont(
         juce::Font(theme::fonts::title()).withExtraKerningFactor(theme::fonts::titleKerning));
-    titleLabel.setColour(juce::Label::textColourId, theme::colours::text());
+    titleLabel.setColour(juce::Label::textColourId, theme::colors::text());
     panelContent.addAndMakeVisible(titleLabel);
 
     // The separation model and the waveform palette live here rather than
@@ -1936,12 +1936,12 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     panelContent.addAndMakeVisible(*engineNextButton);
 
     paletteButton = std::make_unique<widgets::IconButton>(
-        "waveform-colour", [](juce::Rectangle<float> b) { return stemlab::icons::palette(b); },
+        "waveform-color", [](juce::Rectangle<float> b) { return stemlab::icons::palette(b); },
         static_cast<float>(theme::metrics::header::paletteIcon), false,
         theme::metrics::header::settingsRadius, true, true);
 
-    paletteButton->setTooltip("Waveform colour");
-    paletteButton->onClick = [this] { showWaveformColourMenu(); };
+    paletteButton->setTooltip("Waveform color");
+    paletteButton->onClick = [this] { showWaveformColorMenu(); };
     panelContent.addAndMakeVisible(*paletteButton);
 
     settingsButton = std::make_unique<widgets::IconButton>(
@@ -1974,7 +1974,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     // Select all pill on its right, so fresh messages grow leftward into
     // the header's free middle instead of pushing anything around.
     userStatusLabel.setFont(theme::fonts::meta());
-    userStatusLabel.setColour(juce::Label::textColourId, theme::colours::text50());
+    userStatusLabel.setColour(juce::Label::textColourId, theme::colors::text50());
     userStatusLabel.setJustificationType(juce::Justification::centredRight);
     panelContent.addAndMakeVisible(userStatusLabel);
 
@@ -2028,18 +2028,18 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     panelContent.addAndMakeVisible(zoomSlider);
 
     zoomLabel.setFont(theme::fonts::meta());
-    zoomLabel.setColour(juce::Label::textColourId, theme::colours::text50());
+    zoomLabel.setColour(juce::Label::textColourId, theme::colors::text50());
     zoomLabel.setJustificationType(juce::Justification::centredLeft);
     panelContent.addAndMakeVisible(zoomLabel);
 
     // -------------------------------------------------------- source strip
 
     fileNameLabel.setFont(theme::fonts::bodyMedium());
-    fileNameLabel.setColour(juce::Label::textColourId, theme::colours::text());
+    fileNameLabel.setColour(juce::Label::textColourId, theme::colors::text());
     panelContent.addAndMakeVisible(fileNameLabel);
 
     fileMetaLabel.setFont(theme::fonts::meta());
-    fileMetaLabel.setColour(juce::Label::textColourId, theme::colours::text50());
+    fileMetaLabel.setColour(juce::Label::textColourId, theme::colors::text50());
     panelContent.addAndMakeVisible(fileMetaLabel);
 
     captureButton.setComponentID("accent-outline");
@@ -2208,7 +2208,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     panelContent.addAndMakeVisible(playButton);
 
     timeLabel.setFont(theme::fonts::time());
-    timeLabel.setColour(juce::Label::textColourId, theme::colours::text75());
+    timeLabel.setColour(juce::Label::textColourId, theme::colors::text75());
     panelContent.addAndMakeVisible(timeLabel);
 
     scrubber.onSeek = [this](double normalised)
@@ -2238,18 +2238,18 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     panelContent.addAndMakeVisible(statusIndicator);
 
     statusLabel.setFont(theme::fonts::status());
-    statusLabel.setColour(juce::Label::textColourId, theme::colours::text50());
+    statusLabel.setColour(juce::Label::textColourId, theme::colors::text50());
     panelContent.addAndMakeVisible(statusLabel);
 
     panelContent.addAndMakeVisible(progressBar);
 
     progressLabel.setFont(theme::fonts::progress());
-    progressLabel.setColour(juce::Label::textColourId, theme::colours::text45());
+    progressLabel.setColour(juce::Label::textColourId, theme::colors::text45());
     progressLabel.setJustificationType(juce::Justification::centredLeft);
     panelContent.addAndMakeVisible(progressLabel);
 
     pathLabel.setFont(theme::fonts::footerPath());
-    pathLabel.setColour(juce::Label::textColourId, theme::colours::text50());
+    pathLabel.setColour(juce::Label::textColourId, theme::colors::text50());
     pathLabel.setJustificationType(juce::Justification::centredRight);
     panelContent.addAndMakeVisible(pathLabel);
 
@@ -2566,35 +2566,35 @@ void StemLabAudioProcessorEditor::paint(juce::Graphics& g)
     // the band reads as more window rather than as a hole behind the panel -
     // and painting every pixel here is what stops a host's backdrop, which is
     // plain black in the VST3 wrapper, from being what fills that gap.
-    g.fillAll(theme::colours::surface());
+    g.fillAll(theme::colors::surface());
 }
 
 void StemLabAudioProcessorEditor::paintPanel(juce::Graphics& g)
 {
-    g.fillAll(theme::colours::ground());
+    g.fillAll(theme::colors::ground());
 
     // The surface is the window: no inset, no corners, nothing behind it to
     // cast a shadow onto. Only the drag signal draws an edge.
-    g.setColour(theme::colours::surface());
+    g.setColour(theme::colors::surface());
     g.fillRect(panelBounds);
 
     if (dragActive)
     {
-        g.setColour(theme::colours::accent());
+        g.setColour(theme::colors::accent());
         g.drawRect(panelBounds.toFloat().reduced(1.0f), 2.0f);
     }
 
     // Brand glyph.
-    g.setColour(theme::colours::accent());
+    g.setColour(theme::colors::accent());
     g.fillPath(stemlab::icons::waveformBars(brandGlyphBounds.toFloat()));
 
     // Recessed source strip.
-    g.setColour(theme::colours::ground());
+    g.setColour(theme::colors::ground());
     g.fillRoundedRectangle(sourceStripBounds.toFloat(), theme::metrics::source::radius);
 
     if (!sourceDividerBounds.isEmpty())
     {
-        g.setColour(theme::colours::divider());
+        g.setColour(theme::colors::divider());
         g.fillRect(sourceDividerBounds);
     }
 
@@ -2615,10 +2615,10 @@ void StemLabAudioProcessorEditor::paintPanel(juce::Graphics& g)
 
     if (dragActive)
     {
-        g.setColour(theme::colours::accentTint10());
+        g.setColour(theme::colors::accentTint10());
         g.fillRect(panelBounds);
 
-        g.setColour(theme::colours::text());
+        g.setColour(theme::colors::text());
         g.setFont(theme::fonts::title());
         g.drawFittedText("Drop audio to load", panelBounds.reduced(60),
                          juce::Justification::centred, 1);
@@ -2642,11 +2642,11 @@ void StemLabAudioProcessorEditor::drawCachedGlow(juce::Graphics& g,
 
         juce::Graphics glow(image);
 
-        juce::DropShadow(theme::colours::accentGlow(), radius, {})
+        juce::DropShadow(theme::colors::accentGlow(), radius, {})
             .drawForRectangle(glow, {margin, margin, area.getWidth(), area.getHeight()});
     }
 
-    // Images draw at the current colour's opacity; the glow must not.
+    // Images draw at the current color's opacity; the glow must not.
     g.setOpacity(1.0f);
     g.drawImageAt(image, area.getX() - margin, area.getY() - margin);
 }
@@ -3257,7 +3257,7 @@ void StemLabAudioProcessorEditor::showRootLayersMenu(int stemIndex)
      * deriving the menu's scale from the target component - parented to the
      * editor, which carries no transform, every menu would draw at 1.0 while
      * the interface ran between 0.70x and 2.50x. And the editor includes the
-     * letterbox band paint() fills with surface(), the same colour the menu
+     * letterbox band paint() fills with surface(), the same color the menu
      * background uses, so a menu could spill into it with no visible edge.
      *
      * The same applies to the other four menus below; submenus inherit it.
@@ -3706,12 +3706,12 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     zoomResetButton->setEnabled(haveWaveform);
     zoomSlider.setEnabled(haveWaveform);
 
-    // The readout dims through its text colour rather than component alpha:
+    // The readout dims through its text color rather than component alpha:
     // 50% text at 45% alpha is 1.9:1 against the panel, and the floor in
-    // dimDisabled only applies to a colour. Label::colourChanged repaints
+    // dimDisabled only applies to a color. Label::colourChanged repaints
     // only when the value actually moves, so this is free on most ticks.
     zoomLabel.setColour(juce::Label::textColourId,
-                        theme::colours::dimIfDisabled(theme::colours::text50(), haveWaveform));
+                        theme::colors::dimIfDisabled(theme::colors::text50(), haveWaveform));
 
     // ------------------------------------------------------- source strip
 
@@ -4017,7 +4017,7 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
      * hasSuccessfulJob() standing - an adaptive split that will not start,
      * one whose manifest is rejected, a STEMLAB_ERROR from the recursive
      * worker - would otherwise latch red and, five seconds later, repaint
-     * the main job's success summary in the failure colour beside a red
+     * the main job's success summary in the failure color beside a red
      * cross, and stay that way until some later status changed severity.
      * A failure with no summary behind it still reads as one: launching a
      * main job clears hasSuccessfulJob() first, so showSummary is false
@@ -4031,8 +4031,8 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     {
         lastStatusWasError = statusIsError;
         statusLabel.setColour(juce::Label::textColourId, statusIsError
-                                                             ? theme::colours::statusError()
-                                                             : theme::colours::text50());
+                                                             ? theme::colors::statusError()
+                                                             : theme::colors::text50());
     }
 
     // busy outranks error, so a failure line left over from a previous job
@@ -4562,10 +4562,10 @@ void StemLabAudioProcessorEditor::showEngineMenu()
                        });
 }
 
-void StemLabAudioProcessorEditor::showWaveformColourMenu()
+void StemLabAudioProcessorEditor::showWaveformColorMenu()
 {
-    static_assert(StemLabAudioProcessor::waveformColourCount == theme::waveform::paletteCount,
-                  "The persisted waveform-colour range and the palette must stay in step");
+    static_assert(StemLabAudioProcessor::waveformColorCount == theme::waveform::paletteCount,
+                  "The persisted waveform-color range and the palette must stay in step");
 
     auto menu = makeMenu();
 
@@ -4577,7 +4577,7 @@ void StemLabAudioProcessorEditor::showWaveformColourMenu()
     for (const int palette : menuPalettes)
     {
         menu.addItem(palette + 1, theme::waveform::paletteName(palette), true,
-                     processor.getWaveformColourIndex() == palette);
+                     processor.getWaveformColorIndex() == palette);
     }
 
     auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
@@ -4593,10 +4593,10 @@ void StemLabAudioProcessorEditor::showWaveformColourMenu()
 
                            const int palette = result - 1;
 
-                           safeThis->processor.setWaveformColourIndex(palette);
+                           safeThis->processor.setWaveformColorIndex(palette);
 
                            safeThis->processor.postUiStatus(
-                               "Waveform colour: " + theme::waveform::paletteName(palette));
+                               "Waveform color: " + theme::waveform::paletteName(palette));
 
                            safeThis->refreshFromProcessor();
                        });
@@ -4621,6 +4621,32 @@ void StemLabAudioProcessorEditor::wireSettingsPage()
      * silently invert that one setting, and would invert any other the day an
      * enum is renumbered.
      */
+    /*  The accent is the one index that is not translated, because the page
+        and the theme number the same list: the swatches are drawn straight
+        from theme::accents::presets, in that order.
+    */
+    settingsPanel.onAccent = [this](int index)
+    {
+        if (index == StemLabAudioProcessor::getAccentIndex())
+            return;
+
+        StemLabAudioProcessor::setAccentIndex(index);
+
+        // The accent is in every token that derives from it, so nothing short
+        // of the whole editor is stale - including the window this was
+        // clicked in, which is drawing the swatch that now needs its ring.
+        if (auto* top = getTopLevelComponent())
+            top->repaint();
+        else
+            repaint();
+
+        refreshSettingsPage();
+
+        processor.postUiStatus("Accent: "
+                               + stemlab::theme::accents::name(
+                                   StemLabAudioProcessor::getAccentIndex()));
+    };
+
     settingsPanel.onGridMode = [this](int index)
     {
         static constexpr int modes[] = {StemLabAudioProcessor::gridHost,
@@ -4749,6 +4775,7 @@ void StemLabAudioProcessorEditor::refreshSettingsPage()
     stemlab::widgets::SettingsPanel::Settings settings;
 
     settings.standalone = processor.isStandaloneApp();
+    settings.accent = StemLabAudioProcessor::getAccentIndex();
 
     static constexpr int modes[] = {StemLabAudioProcessor::gridHost,
                                     StemLabAudioProcessor::gridSource,

@@ -128,7 +128,7 @@ namespace stemlab::widgets
             // Dimmed rather than disabled: a machine that cannot compile
             // today may be able to after installing a compiler, and a
             // control you cannot touch gives nowhere to hang the reason.
-            g.setColour(usable ? theme::colours::text75() : theme::colours::text45());
+            g.setColour(usable ? theme::colors::text75() : theme::colors::text45());
             g.setFont(juce::Font(theme::fonts::make(12.0f, false)));
             g.drawText("Compile separations", text, juce::Justification::centredLeft, true);
         }
@@ -253,19 +253,19 @@ namespace stemlab::widgets
 
         void paint(juce::Graphics& g) override
         {
-            namespace colours = theme::colours;
+            namespace colors = theme::colors;
 
             auto bounds = getLocalBounds();
 
             if (kind == Kind::heading)
             {
-                g.setColour(colours::sectionHeader());
+                g.setColour(colors::sectionHeader());
                 g.setFont(juce::Font(theme::fonts::make(11.0f, true)));
                 g.drawText(title, bounds.removeFromBottom(16), juce::Justification::centredLeft);
                 return;
             }
 
-            g.setColour(colours::rowHoverFill());
+            g.setColour(colors::rowHoverFill());
             g.fillRoundedRectangle(bounds.toFloat(), row::radius);
 
             auto text = bounds.reduced(10, 0);
@@ -277,7 +277,7 @@ namespace stemlab::widgets
             const auto sizeWidth = size.isNotEmpty() ? 78 : 0;
             auto sizeArea = text.removeFromRight(sizeWidth);
 
-            g.setColour(present ? colours::text75() : colours::text45());
+            g.setColour(present ? colors::text75() : colors::text45());
             g.setFont(juce::Font(theme::fonts::make(12.5f, true)));
 
             if (detail.isEmpty())
@@ -297,14 +297,14 @@ namespace stemlab::widgets
                 g.drawText(title, block.removeFromTop(titleLine),
                            juce::Justification::centredLeft, true);
 
-                g.setColour(colours::text45());
+                g.setColour(colors::text45());
                 g.setFont(juce::Font(theme::fonts::make(10.5f, false)));
                 g.drawText(detail, block, juce::Justification::centredLeft, true);
             }
 
             if (size.isNotEmpty())
             {
-                g.setColour(colours::text45());
+                g.setColour(colors::text45());
                 g.setFont(juce::Font(theme::fonts::make(10.5f, false)));
                 g.drawText(size, sizeArea, juce::Justification::centredRight, true);
             }
@@ -353,10 +353,10 @@ namespace stemlab::widgets
 
     ModelManagerPanel::ModelManagerPanel()
     {
-        namespace colours = theme::colours;
+        namespace colors = theme::colors;
 
         summaryLabel.setFont(juce::Font(theme::fonts::make(11.5f, false)));
-        summaryLabel.setColour(juce::Label::textColourId, colours::text50());
+        summaryLabel.setColour(juce::Label::textColourId, colors::text50());
         addAndMakeVisible(summaryLabel);
 
         compileSwitch = std::make_unique<CompileSwitch>();
@@ -368,13 +368,13 @@ namespace stemlab::widgets
         addAndMakeVisible(*compileSwitch);
 
         activityLabel.setFont(juce::Font(theme::fonts::make(11.5f, false)));
-        activityLabel.setColour(juce::Label::textColourId, colours::text50());
+        activityLabel.setColour(juce::Label::textColourId, colors::text50());
         addAndMakeVisible(activityLabel);
 
         // The percentage the bar cannot say. Right-aligned against the same
         // edge as the track so the two read as one readout.
         activityPercent.setFont(juce::Font(theme::fonts::make(11.5f, false)));
-        activityPercent.setColour(juce::Label::textColourId, colours::text50());
+        activityPercent.setColour(juce::Label::textColourId, colors::text50());
         activityPercent.setJustificationType(juce::Justification::centredRight);
         addChildComponent(activityPercent);
 
@@ -387,7 +387,7 @@ namespace stemlab::widgets
         addChildComponent(activityBar);
 
         unavailableLabel.setFont(juce::Font(theme::fonts::make(12.0f, false)));
-        unavailableLabel.setColour(juce::Label::textColourId, colours::text50());
+        unavailableLabel.setColour(juce::Label::textColourId, colors::text50());
         unavailableLabel.setJustificationType(juce::Justification::centred);
         addChildComponent(unavailableLabel);
 
@@ -639,7 +639,7 @@ namespace stemlab::widgets
     {
         // Both rules come from what resized() actually laid out, rather than
         // from a second reading of the same constants.
-        g.setColour(theme::colours::divider());
+        g.setColour(theme::colors::divider());
         g.fillRect(listArea.getX(), headerRuleY, listArea.getWidth(), 1);
         g.fillRect(listArea.getX(), footerRuleY, listArea.getWidth(), 1);
     }
@@ -653,7 +653,7 @@ namespace stemlab::widgets
         // few pixels into the card says "there is more below" in the one
         // place the list can be scrolled past, and costs nothing when it
         // cannot: both edges are drawn only where there is content beyond.
-        const auto surface = theme::colours::surface();
+        const auto surface = theme::colors::surface();
 
         auto wash = [&g, &surface](juce::Rectangle<int> area, bool downwards)
         {

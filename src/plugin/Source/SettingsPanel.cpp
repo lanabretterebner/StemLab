@@ -98,14 +98,14 @@ namespace stemlab::widgets
 
             void paint(juce::Graphics& g) override
             {
-                namespace colours = theme::colours;
+                namespace colors = theme::colors;
 
                 const auto live = isEnabled();
 
                 auto bounds = getLocalBounds();
                 bounds.removeFromRight(rows::controlWidth);
 
-                g.setColour(live ? colours::text75() : colours::text45());
+                g.setColour(live ? colors::text75() : colors::text45());
                 g.setFont(juce::Font(theme::fonts::make(12.0f, false)));
                 g.drawText(caption, bounds, juce::Justification::centredLeft, true);
 
@@ -119,22 +119,22 @@ namespace stemlab::widgets
 
                     if (chosen)
                     {
-                        g.setColour(live ? colours::primaryFill()
-                                         : colours::primaryFill().withAlpha(0.4f));
+                        g.setColour(live ? colors::primaryFill()
+                                         : colors::primaryFill().withAlpha(0.4f));
                         g.fillRoundedRectangle(cell, 6.0f);
                     }
                     else if (index == hovered && live)
                     {
-                        g.setColour(colours::hoverFill());
+                        g.setColour(colors::hoverFill());
                         g.fillRoundedRectangle(cell, 6.0f);
                     }
 
-                    g.setColour(colours::outline());
+                    g.setColour(colors::outline());
                     g.drawRoundedRectangle(cell.reduced(0.5f), 6.0f, 1.0f);
 
-                    g.setColour(!live      ? colours::text45()
-                                : chosen   ? colours::primaryText()
-                                           : colours::text75());
+                    g.setColour(!live      ? colors::text45()
+                                : chosen   ? colors::primaryText()
+                                           : colors::text75());
 
                     g.setFont(juce::Font(theme::fonts::make(11.0f, chosen)));
                     g.drawText(options[index], cell.toNearestInt(),
@@ -208,6 +208,135 @@ namespace stemlab::widgets
         };
 
         /** A label and one button on the right, for a row that does something. */
+        /**
+         * A label and one filled circle per accent, the chosen one ringed.
+         *
+         * Not a ChoiceRow of named pills: eight names do not fit the control
+         * column without shrinking past the point of being readable, and a
+         * color is the one setting where the swatch says more than its name
+         * anyway. The name is still there as the tooltip, for anyone reading
+         * the interface rather than looking at it.
+         */
+        class SwatchRow final : public juce::Component,
+                                public juce::TooltipClient
+        {
+        public:
+            explicit SwatchRow(juce::String captionIn) : caption(std::move(captionIn))
+            {
+                setMouseCursor(juce::MouseCursor::PointingHandCursor);
+            }
+
+            void setSelectedIndex(int index)
+            {
+                if (selected == index)
+                    return;
+
+                selected = index;
+                repaint();
+            }
+
+            std::function<void(int)> onSelected;
+
+            void paint(juce::Graphics& g) override
+            {
+                namespace colors = theme::colors;
+
+                auto bounds = getLocalBounds();
+                bounds.removeFromRight(rows::controlWidth);
+
+                g.setColour(colors::text75());
+                g.setFont(juce::Font(theme::fonts::make(12.0f, false)));
+                g.drawText(caption, bounds, juce::Justification::centredLeft, true);
+
+                for (int index = 0; index < theme::accents::count(); ++index)
+                {
+                    const auto cell = swatchBounds(index).toFloat();
+                    const auto dot = cell.withSizeKeepingCentre(diameter, diameter);
+
+                    g.setColour(theme::accents::swatch(index));
+                    g.fillEllipse(dot);
+
+                    /*  The ring is drawn outside the fill rather than over it,
+                        so the swatch a person is judging is the whole circle
+                        and not a circle with a line through its edge.
+                    */
+                    if (index == selected)
+                    {
+                        g.setColour(colors::text());
+                        g.drawEllipse(dot.expanded(3.0f), 1.5f);
+                    }
+                    else if (index == hovered)
+                    {
+                        g.setColour(colors::text50());
+                        g.drawEllipse(dot.expanded(3.0f), 1.0f);
+                    }
+                }
+            }
+
+            void mouseMove(const juce::MouseEvent& event) override
+            {
+                const auto index = indexAt(event.getPosition());
+
+                if (index == hovered)
+                    return;
+
+                hovered = index;
+                repaint();
+            }
+
+            /** The name of whichever swatch the pointer is over. */
+            juce::String getTooltip() override
+            {
+                return hovered >= 0 ? theme::accents::name(hovered) : juce::String();
+            }
+
+            void mouseExit(const juce::MouseEvent&) override
+            {
+                hovered = -1;
+                repaint();
+            }
+
+            void mouseUp(const juce::MouseEvent& event) override
+            {
+                const auto index = indexAt(event.getPosition());
+
+                if (index >= 0 && onSelected)
+                    onSelected(index);
+            }
+
+        private:
+            static constexpr float diameter = 16.0f;
+
+            int swatchWidth() const
+            {
+                return rows::controlWidth / juce::jmax(1, theme::accents::count());
+            }
+
+            /** Right-aligned, so this row ends where every other row does. */
+            juce::Rectangle<int> swatchBounds(int index) const
+            {
+                const auto width = swatchWidth();
+                const auto left = getWidth() - width * theme::accents::count();
+
+                return getLocalBounds().withX(left + index * width).withWidth(width);
+            }
+
+            int indexAt(juce::Point<int> point) const
+            {
+                for (int index = 0; index < theme::accents::count(); ++index)
+                    if (swatchBounds(index).contains(point))
+                        return index;
+
+                return -1;
+            }
+
+            juce::String caption;
+            int selected = 0;
+            int hovered = -1;
+
+            JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SwatchRow)
+        };
+
         class ActionRow final : public juce::Component
         {
         public:
@@ -233,7 +362,7 @@ namespace stemlab::widgets
                 auto bounds = getLocalBounds();
                 bounds.removeFromRight(rows::controlWidth);
 
-                g.setColour(isEnabled() ? theme::colours::text75() : theme::colours::text45());
+                g.setColour(isEnabled() ? theme::colors::text75() : theme::colors::text45());
                 g.setFont(juce::Font(theme::fonts::make(12.0f, false)));
                 g.drawText(caption, bounds, juce::Justification::centredLeft, true);
             }
@@ -264,7 +393,7 @@ namespace stemlab::widgets
 
             void paint(juce::Graphics& g) override
             {
-                g.setColour(theme::colours::sectionHeader());
+                g.setColour(theme::colors::sectionHeader());
                 g.setFont(juce::Font(theme::fonts::make(11.0f, true)));
                 g.drawText(text, getLocalBounds().removeFromBottom(16),
                            juce::Justification::centredLeft);
@@ -294,6 +423,9 @@ namespace stemlab::widgets
                 order.push_back(&component);
             };
 
+            add(appearanceHeading);
+            add(accentRow);
+
             add(audioHeading);
             add(audioSettings);
 
@@ -317,6 +449,12 @@ namespace stemlab::widgets
             add(diagnosticsHeading);
             add(copyDiagnostics);
             add(abletonIntegration);
+
+            accentRow.onSelected = [this](int index)
+            {
+                if (onAccent)
+                    onAccent(index);
+            };
 
             gridMode.onSelected = [this](int index)
             {
@@ -361,7 +499,7 @@ namespace stemlab::widgets
             wire(abletonIntegration, onAbletonIntegration);
 
             versionLabel.setFont(juce::Font(theme::fonts::make(11.0f, false)));
-            versionLabel.setColour(juce::Label::textColourId, theme::colours::text45());
+            versionLabel.setColour(juce::Label::textColourId, theme::colors::text45());
             versionLabel.setJustificationType(juce::Justification::centredRight);
             addAndMakeVisible(versionLabel);
         }
@@ -373,6 +511,8 @@ namespace stemlab::widgets
             // change anything.
             audioHeading.setVisible(settings.standalone);
             audioSettings.setVisible(settings.standalone);
+
+            accentRow.setSelectedIndex(settings.accent);
 
             gridMode.setSelectedIndex(settings.gridMode);
             manualTempo.setCaption("Manual tempo (" + bpm(settings.manualBpm) + " BPM)");
@@ -456,6 +596,7 @@ namespace stemlab::widgets
             content.setSize(width, juce::jmax(y, listViewport.getHeight()));
         }
 
+        std::function<void(int)> onAccent;
         std::function<void(int)> onGridMode;
         std::function<void()> onSetManualTempo;
         std::function<void()> onAnalysisToggle;
@@ -473,6 +614,9 @@ namespace stemlab::widgets
         juce::Viewport listViewport;
         juce::Component content;
         std::vector<juce::Component*> order;
+
+        HeadingRow appearanceHeading{"Appearance"};
+        SwatchRow accentRow{"Accent color"};
 
         HeadingRow audioHeading{"Audio"};
         ActionRow audioSettings{"Audio and MIDI devices", "Open..."};
@@ -516,7 +660,7 @@ namespace stemlab::widgets
 
         titleLabel.setText("StemLab", juce::dontSendNotification);
         titleLabel.setFont(juce::Font(theme::fonts::make(17.0f, true)));
-        titleLabel.setColour(juce::Label::textColourId, theme::colours::text());
+        titleLabel.setColour(juce::Label::textColourId, theme::colors::text());
         addAndMakeVisible(titleLabel);
 
         tabs.onSelected = [this](int index)
@@ -548,6 +692,9 @@ namespace stemlab::widgets
         forward(settingsPage->onCopyDiagnostics, onCopyDiagnostics);
         forward(settingsPage->onAudioSettings, onAudioSettings);
         forward(settingsPage->onAbletonIntegration, onAbletonIntegration);
+
+        settingsPage->onAccent = [this](int index)
+        { if (onAccent) onAccent(index); };
 
         settingsPage->onGridMode = [this](int index)
         { if (onGridMode) onGridMode(index); };
@@ -592,20 +739,20 @@ namespace stemlab::widgets
 
     void SettingsPanel::paint(juce::Graphics& g)
     {
-        namespace colours = theme::colours;
+        namespace colors = theme::colors;
 
         // The scrim: dark enough that the card is unmistakably in front, not
         // so dark that the interface behind it disappears and the overlay
         // reads as a different screen.
-        g.setColour(colours::ground().withAlpha(0.82f));
+        g.setColour(colors::ground().withAlpha(0.82f));
         g.fillAll();
 
         const auto bounds = cardBounds().toFloat();
 
-        g.setColour(colours::surface());
+        g.setColour(colors::surface());
         g.fillRoundedRectangle(bounds, card::radius);
 
-        g.setColour(colours::outline());
+        g.setColour(colors::outline());
         g.drawRoundedRectangle(bounds.reduced(0.5f), card::radius, 1.0f);
     }
 

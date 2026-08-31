@@ -123,7 +123,7 @@ namespace stemlab::icons
     /** Separation model: a four-point spark. */
     juce::Path sparkle(juce::Rectangle<float> bounds);
 
-    /** Waveform colour: an artist's palette. */
+    /** Waveform color: an artist's palette. */
     juce::Path palette(juce::Rectangle<float> bounds);
 
     /** Waveform zoom: a stroked magnifier, lens and handle. */

@@ -164,7 +164,7 @@ StemLabLookAndFeel::StemLabLookAndFeel()
     /*
      * The stock widgets this class does not draw itself - combo boxes, list
      * boxes, toggles, sliders, table headers - are painted by LookAndFeel_V4
-     * out of its colour scheme, which is JUCE's dark slate by default. That
+     * out of its color scheme, which is JUCE's dark slate by default. That
      * is what makes the standalone Audio/MIDI dialog the one foreign surface
      * in the app, so restate the scheme in Nocturne tokens.
      *
@@ -173,36 +173,36 @@ StemLabLookAndFeel::StemLabLookAndFeel()
      * values are positional - see ColourScheme::UIColour.
      */
     setColourScheme(juce::LookAndFeel_V4::ColourScheme{
-        theme::colours::ground().getARGB(),      // windowBackground
-        theme::colours::surface().getARGB(),     // widgetBackground
-        theme::colours::surface().getARGB(),     // menuBackground
-        theme::colours::outline().getARGB(),     // outline
-        theme::colours::text().getARGB(),        // defaultText
-        theme::colours::accent().getARGB(),      // defaultFill
-        theme::colours::primaryText().getARGB(), // highlightedText
-        theme::colours::primaryFill().getARGB(), // highlightedFill
-        theme::colours::text().getARGB()});      // menuText
+        theme::colors::ground().getARGB(),      // windowBackground
+        theme::colors::surface().getARGB(),     // widgetBackground
+        theme::colors::surface().getARGB(),     // menuBackground
+        theme::colors::outline().getARGB(),     // outline
+        theme::colors::text().getARGB(),        // defaultText
+        theme::colors::accent().getARGB(),      // defaultFill
+        theme::colors::primaryText().getARGB(), // highlightedText
+        theme::colors::primaryFill().getARGB(), // highlightedFill
+        theme::colors::text().getARGB()});      // menuText
 
-    setColour(juce::ResizableWindow::backgroundColourId, theme::colours::ground());
+    setColour(juce::ResizableWindow::backgroundColourId, theme::colors::ground());
 
-    setColour(juce::Label::textColourId, theme::colours::text());
+    setColour(juce::Label::textColourId, theme::colors::text());
 
-    setColour(juce::PopupMenu::backgroundColourId, theme::colours::surface());
-    setColour(juce::PopupMenu::textColourId, theme::colours::text());
-    setColour(juce::PopupMenu::headerTextColourId, theme::colours::sectionHeader());
-    setColour(juce::PopupMenu::highlightedBackgroundColourId, theme::colours::hoverFill());
-    setColour(juce::PopupMenu::highlightedTextColourId, theme::colours::text());
+    setColour(juce::PopupMenu::backgroundColourId, theme::colors::surface());
+    setColour(juce::PopupMenu::textColourId, theme::colors::text());
+    setColour(juce::PopupMenu::headerTextColourId, theme::colors::sectionHeader());
+    setColour(juce::PopupMenu::highlightedBackgroundColourId, theme::colors::hoverFill());
+    setColour(juce::PopupMenu::highlightedTextColourId, theme::colors::text());
 
-    setColour(juce::TooltipWindow::backgroundColourId, theme::colours::surface());
-    setColour(juce::TooltipWindow::textColourId, theme::colours::text());
-    setColour(juce::TooltipWindow::outlineColourId, theme::colours::outline());
+    setColour(juce::TooltipWindow::backgroundColourId, theme::colors::surface());
+    setColour(juce::TooltipWindow::textColourId, theme::colors::text());
+    setColour(juce::TooltipWindow::outlineColourId, theme::colors::outline());
 
-    setColour(juce::AlertWindow::backgroundColourId, theme::colours::surface());
-    setColour(juce::AlertWindow::textColourId, theme::colours::text());
-    setColour(juce::AlertWindow::outlineColourId, theme::colours::outline());
+    setColour(juce::AlertWindow::backgroundColourId, theme::colors::surface());
+    setColour(juce::AlertWindow::textColourId, theme::colors::text());
+    setColour(juce::AlertWindow::outlineColourId, theme::colors::outline());
 
-    setColour(juce::TextButton::textColourOffId, theme::colours::text());
-    setColour(juce::TextButton::textColourOnId, theme::colours::text());
+    setColour(juce::TextButton::textColourOffId, theme::colors::text());
+    setColour(juce::TextButton::textColourOnId, theme::colors::text());
 }
 
 juce::Typeface::Ptr StemLabLookAndFeel::getTypefaceForFont(const juce::Font& font)
@@ -229,28 +229,28 @@ void StemLabLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& b
     // Disabled controls drop as a whole - fill and border included, matching
     // the text dim in drawButtonText.
     const auto dimmed = [enabled = button.isEnabled()](juce::Colour c)
-    { return theme::colours::dimIfDisabled(c, enabled); };
+    { return theme::colors::dimIfDisabled(c, enabled); };
 
     if (variant == "primary")
     {
         // The accent glow behind primary actions is painted by the editor
         // (a shadow drawn inside the component would be clipped away).
-        g.setColour(dimmed(hover ? theme::colours::primaryFillHover()
-                                 : theme::colours::primaryFill()));
+        g.setColour(dimmed(hover ? theme::colors::primaryFillHover()
+                                 : theme::colors::primaryFill()));
         g.fillRoundedRectangle(bounds, radius);
 
-        g.setColour(dimmed(theme::colours::primaryEdge()));
+        g.setColour(dimmed(theme::colors::primaryEdge()));
         g.drawRoundedRectangle(bounds, radius, 1.0f);
         return;
     }
 
     if (variant == "accent-outline")
     {
-        g.setColour(dimmed(hover ? theme::colours::accentTint13()
-                                 : theme::colours::accentTint10()));
+        g.setColour(dimmed(hover ? theme::colors::accentTint13()
+                                 : theme::colors::accentTint10()));
         g.fillRoundedRectangle(bounds, radius);
 
-        g.setColour(dimmed(theme::colours::accent()));
+        g.setColour(dimmed(theme::colors::accent()));
         g.drawRoundedRectangle(bounds, radius, 1.0f);
         return;
     }
@@ -259,7 +259,7 @@ void StemLabLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& b
     {
         if (hover)
         {
-            g.setColour(theme::colours::accentTint10());
+            g.setColour(theme::colors::accentTint10());
             g.fillRoundedRectangle(bounds, radius);
         }
         return;
@@ -272,19 +272,19 @@ void StemLabLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& b
     {
         const bool solo = variant == "solo";
 
-        g.setColour(dimmed(solo ? theme::colours::soloActiveFill()
-                                : theme::colours::muteActiveFill()));
+        g.setColour(dimmed(solo ? theme::colors::soloActiveFill()
+                                : theme::colors::muteActiveFill()));
         g.fillRoundedRectangle(bounds, radius);
         return;
     }
 
     if (hover)
     {
-        g.setColour(theme::colours::hoverFill());
+        g.setColour(theme::colors::hoverFill());
         g.fillRoundedRectangle(bounds, radius);
     }
 
-    g.setColour(dimmed(theme::colours::outline()));
+    g.setColour(dimmed(theme::colors::outline()));
     g.drawRoundedRectangle(bounds, radius, 1.0f);
 }
 
@@ -298,30 +298,30 @@ void StemLabLookAndFeel::drawButtonText(juce::Graphics& g, juce::TextButton& but
 {
     const auto variant = variantOf(button);
 
-    juce::Colour colour = theme::colours::text();
+    juce::Colour color = theme::colors::text();
 
     if (variant == "primary")
-        colour = theme::colours::primaryText();
+        color = theme::colors::primaryText();
     else if (variant == "accent-outline" || variant == "ghost")
-        colour = theme::colours::accent();
+        color = theme::colors::accent();
     else if (variant == "solo" || variant == "mute")
     {
         if (button.getToggleState())
-            colour = variant == "solo" ? theme::colours::soloActiveText()
-                                       : theme::colours::muteActiveText();
+            color = variant == "solo" ? theme::colors::soloActiveText()
+                                       : theme::colors::muteActiveText();
         else
             // S and M are single letters at 10px, where antialiasing eats
             // most of a translucent stem. text45 measured 3.72:1 on the
             // panel before rendering and less after; text75 is 7.70:1, so
             // an untoggled Solo or Mute stays a readable letter rather
             // than a smudge.
-            colour = theme::colours::text75();
+            color = theme::colors::text75();
     }
 
     if (!button.isEnabled())
-        colour = theme::colours::dimDisabled(colour);
+        color = theme::colors::dimDisabled(color);
 
-    g.setColour(colour);
+    g.setColour(color);
     g.setFont(getTextButtonFont(button, button.getHeight()));
 
     g.drawText(button.getButtonText(), button.getLocalBounds().reduced(2, 0),
@@ -341,7 +341,7 @@ void StemLabLookAndFeel::drawProgressBar(juce::Graphics& g, juce::ProgressBar& b
 
     juce::ignoreUnused(bar);
 
-    g.setColour(theme::colours::progressTrack());
+    g.setColour(theme::colors::progressTrack());
     g.fillRoundedRectangle(track, 1.5f);
 
     const auto clamped = juce::jlimit(0.0, 1.0, progress);
@@ -350,10 +350,10 @@ void StemLabLookAndFeel::drawProgressBar(juce::Graphics& g, juce::ProgressBar& b
     {
         auto fill = track.withWidth(track.getWidth() * static_cast<float>(clamped));
 
-        juce::DropShadow(theme::colours::accentGlow(), 4, {})
+        juce::DropShadow(theme::colors::accentGlow(), 4, {})
             .drawForRectangle(g, fill.getSmallestIntegerContainer());
 
-        g.setColour(theme::colours::progressFill());
+        g.setColour(theme::colors::progressFill());
         g.fillRoundedRectangle(fill, 1.5f);
     }
 }
@@ -366,8 +366,8 @@ void StemLabLookAndFeel::drawScrollbar(juce::Graphics& g, juce::ScrollBar&, int 
                      ? juce::Rectangle<int>(x + 2, thumbStart, width - 4, thumbSize)
                      : juce::Rectangle<int>(thumbStart, y + 2, thumbSize, height - 4);
 
-    g.setColour(mouseOver || mouseDown ? theme::colours::neutral600()
-                                       : theme::colours::neutral700());
+    g.setColour(mouseOver || mouseDown ? theme::colors::neutral600()
+                                       : theme::colors::neutral700());
     g.fillRoundedRectangle(thumb.toFloat(), 3.0f);
 }
 
@@ -384,9 +384,9 @@ void StemLabLookAndFeel::drawPopupMenuBackgroundWithOptions(juce::Graphics& g, i
         juce::Rectangle<float>(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height))
             .reduced(0.5f);
 
-    g.fillAll(theme::colours::surface());
+    g.fillAll(theme::colors::surface());
 
-    g.setColour(theme::colours::outline());
+    g.setColour(theme::colors::outline());
     g.drawRect(bounds, 1.0f);
 }
 
@@ -402,17 +402,17 @@ void StemLabLookAndFeel::drawPopupMenuItemWithOptions(juce::Graphics& g,
     {
         auto line = area.withSizeKeepingCentre(area.getWidth() - 2 * menu::padX, 1);
 
-        g.setColour(theme::colours::divider());
+        g.setColour(theme::colors::divider());
         g.fillRect(line);
         return;
     }
 
     const auto dimmed = [enabled = item.isEnabled](juce::Colour c)
-    { return theme::colours::dimIfDisabled(c, enabled); };
+    { return theme::colors::dimIfDisabled(c, enabled); };
 
     if (isHighlighted && item.isEnabled)
     {
-        g.setColour(theme::colours::accentTint10());
+        g.setColour(theme::colors::accentTint10());
         g.fillRoundedRectangle(area.reduced(menu::rowInsetX, menu::rowInsetY).toFloat(),
                                menu::rowRadius);
     }
@@ -427,7 +427,7 @@ void StemLabLookAndFeel::drawPopupMenuItemWithOptions(juce::Graphics& g,
 
     if (item.isTicked)
     {
-        g.setColour(dimmed(theme::colours::accent()));
+        g.setColour(dimmed(theme::colors::accent()));
 
         g.strokePath(stemlab::icons::check(tickArea.toFloat()
                                                .withSizeKeepingCentre(
@@ -444,7 +444,7 @@ void StemLabLookAndFeel::drawPopupMenuItemWithOptions(juce::Graphics& g,
 
     if (hasSubMenu)
     {
-        g.setColour(dimmed(theme::colours::text45()));
+        g.setColour(dimmed(theme::colors::text45()));
 
         g.strokePath(
             stemlab::icons::chevron(trailing.toFloat().withSizeKeepingCentre(
@@ -456,17 +456,19 @@ void StemLabLookAndFeel::drawPopupMenuItemWithOptions(juce::Graphics& g,
     }
     else if (item.shortcutKeyDescription.isNotEmpty())
     {
-        g.setColour(dimmed(theme::colours::text45()));
+        g.setColour(dimmed(theme::colors::text45()));
         g.setFont(theme::fonts::meta());
         g.drawText(item.shortcutKeyDescription, trailing, juce::Justification::centredRight,
                    false);
     }
 
-    // A caller-supplied colour wins; the tick otherwise reads as the accent
+    // A caller-supplied color wins; the tick otherwise reads as the accent
     // and the label stays plain text.
-    auto textColour = item.colour != juce::Colour() ? item.colour : theme::colours::text();
+    // item.colour keeps JUCE's spelling: it is PopupMenu::Item's member.
+    auto textColor = item.colour != juce::Colour() ? item.colour
+                                                   : theme::colors::text();
 
-    g.setColour(dimmed(textColour));
+    g.setColour(dimmed(textColor));
     g.setFont(getPopupMenuFont());
     g.drawText(item.text, row, juce::Justification::centredLeft, true);
 }
@@ -486,7 +488,7 @@ void StemLabLookAndFeel::drawPopupMenuSectionHeaderWithOptions(juce::Graphics& g
      */
     const auto row = area.expanded(menu::borderSize, 0);
 
-    g.setColour(theme::colours::sectionHeader());
+    g.setColour(theme::colors::sectionHeader());
     g.setFont(juce::Font(theme::fonts::meta()).withExtraKerningFactor(0.04f));
 
     g.drawText(sectionName,
@@ -546,10 +548,10 @@ void StemLabLookAndFeel::drawCornerResizer(juce::Graphics& g, int width, int hei
 {
     // Three short diagonal ticks in the corner: enough to say the window
     // resizes, quiet enough to sit on top of the footer without shouting.
-    const auto colour = (mouseOver || mouseDown) ? theme::colours::accent()
-                                                 : theme::colours::text45();
+    const auto color = (mouseOver || mouseDown) ? theme::colors::accent()
+                                                 : theme::colors::text45();
 
-    g.setColour(colour.withMultipliedAlpha(mouseDown ? 1.0f : 0.75f));
+    g.setColour(color.withMultipliedAlpha(mouseDown ? 1.0f : 0.75f));
 
     const auto w = static_cast<float>(width);
     const auto h = static_cast<float>(height);
@@ -595,17 +597,17 @@ void StemLabLookAndFeel::drawTooltip(juce::Graphics& g, const juce::String& text
                                                static_cast<float>(height))
                             .reduced(0.5f);
 
-    g.setColour(theme::colours::surface());
+    g.setColour(theme::colors::surface());
     g.fillRoundedRectangle(bounds, 6.0f);
 
-    g.setColour(theme::colours::outline());
+    g.setColour(theme::colors::outline());
     g.drawRoundedRectangle(bounds, 6.0f, 1.0f);
 
     if (height <= tooltipLineHeight)
     {
         // A pixel inside the box's own padding, so a string measured to the
         // pixel cannot pick up an ellipsis from a rounding difference.
-        g.setColour(theme::colours::text());
+        g.setColour(theme::colors::text());
         g.setFont(theme::fonts::tooltip());
         g.drawText(text, bounds.reduced(tooltipPadX - 1.0f, 0.0f),
                    juce::Justification::centredLeft);
@@ -622,7 +624,7 @@ void StemLabLookAndFeel::drawTooltip(juce::Graphics& g, const juce::String& text
     auto row = textArea.withSizeKeepingCentre(textArea.getWidth(), block)
                    .removeFromTop(static_cast<float>(tooltipLineSpacing));
 
-    g.setColour(theme::colours::text());
+    g.setColour(theme::colors::text());
     g.setFont(theme::fonts::tooltip());
 
     for (const auto& line : lines)

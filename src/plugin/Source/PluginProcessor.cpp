@@ -3,10 +3,12 @@
 #include "ReaperBridge.h"
 #include "SourceLabel.h"
 #include "StemLabPaths.h"
+#include "StemLabTheme.h"
 #include "WaveformGrid.h"
 
 #include <algorithm>
 #include <functional>
+#include <mutex>
 #include <thread>
 
 #if JUCE_LINUX
@@ -1795,6 +1797,18 @@ StemLabAudioProcessor::StemLabAudioProcessor()
     }
 
     exportTorchCompilePreference();
+
+    /*  Once per process, not once per instance. The accent lives in the
+        theme, which every editor in this host shares, so a second plugin
+        loading would otherwise re-read the file and re-generate the ramp for
+        no reason - and would do it while the first one is painting.
+    */
+    {
+        static std::once_flag accentLoaded;
+
+        std::call_once(accentLoaded,
+                       [] { stemlab::theme::accents::setIndex(readRememberedAccent()); });
+    }
 
     if (isStandaloneApp())
     {
@@ -5596,7 +5610,7 @@ bool StemLabAudioProcessor::insertSelectedStemsIntoReaper()
     struct Node
     {
         juce::String name;
-        juce::String colourStem;
+        juce::String colorStem;
         juce::File file;
         bool selected = false;
         std::vector<int> children;
@@ -5614,7 +5628,7 @@ bool StemLabAudioProcessor::insertSelectedStemsIntoReaper()
         Node node;
         node.name = baseName + " - " + stemName.substring(0, 1).toUpperCase() +
                     stemName.substring(1).toLowerCase();
-        node.colourStem = stemName;
+        node.colorStem = stemName;
         node.selected = isStemEnabled(i);
 
         for (const auto& entry : *allStems)
@@ -5641,7 +5655,7 @@ bool StemLabAudioProcessor::insertSelectedStemsIntoReaper()
     {
         Node node;
         node.name = item.label.trim().isNotEmpty() ? item.label.trim() : juce::String("Stem");
-        node.colourStem = item.rootStem;
+        node.colorStem = item.rootStem;
         node.file = item.file;
         node.selected = item.selected;
 
@@ -5686,7 +5700,7 @@ bool StemLabAudioProcessor::insertSelectedStemsIntoReaper()
 
         stemlab::reaper::StemToInsert entry;
         entry.name = node.name;
-        entry.colourStem = node.colourStem;
+        entry.colorStem = node.colorStem;
         entry.file = node.file.existsAsFile() ? node.file : juce::File();
         entry.muted = !keptChildren.empty();
         entry.folderDepth = keptChildren.empty() ? 0 : 1;
@@ -5901,9 +5915,9 @@ bool StemLabAudioProcessor::isStemEnabled(int index) const
     return stemEnabled[static_cast<size_t>(index)].load();
 }
 
-void StemLabAudioProcessor::setWaveformColourIndex(int index)
+void StemLabAudioProcessor::setWaveformColorIndex(int index)
 {
-    waveformColourIndex.store(juce::jlimit(0, waveformColourCount - 1, index));
+    waveformColorIndex.store(juce::jlimit(0, waveformColorCount - 1, index));
 
     sendChangeMessage();
 }
@@ -6018,7 +6032,7 @@ void StemLabAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     rootObject->setProperty("refinement", refinementEnabled.load());
     rootObject->setProperty("fusedStemNormalisation", fusedStemNormalisation.load());
     rootObject->setProperty("separatorEngine", separatorEngineIndex.load());
-    rootObject->setProperty("waveformColour", waveformColourIndex.load());
+    rootObject->setProperty("waveformColor", waveformColorIndex.load());
     rootObject->setProperty("waveformZoom", waveformZoom.load());
     rootObject->setProperty("gridMode", waveformGridMode.load());
     rootObject->setProperty("manualGridBpm", manualGridBpm.load());
@@ -6113,13 +6127,26 @@ void StemLabAudioProcessor::setStateInformation(const void* data, int sizeInByte
                           : manualGridBarOne.load());
     }
 
-    if (object->hasProperty("waveformColour"))
+    /*  The old spelling is still read, because it is on disk. Every project
+        saved before the rename carries "waveformColour", and a load that only
+        looked for the new key would silently reset those to the default
+        palette - a setting quietly losing its value on upgrade. New saves
+        write the new key only, so the old one ages out on its own.
+    */
+    for (const auto* key : { "waveformColor", "waveformColour" })
     {
-        setWaveformColourIndex(static_cast<int>(object->getProperty("waveformColour")));
+        if (object->hasProperty(key))
+        {
+            setWaveformColorIndex(static_cast<int>(object->getProperty(key)));
+            break;
+        }
+    }
 
+    // Restored unconditionally. The brace this sat inside made the zoom
+    // depend on a waveform palette having been saved as well, so any state
+    // without that property came back at the default zoom.
     if (object->hasProperty("waveformZoom"))
         setWaveformZoom(static_cast<double>(object->getProperty("waveformZoom")));
-    }
 
     if (object->hasProperty("editorScale"))
     {
@@ -6614,6 +6641,54 @@ void StemLabAudioProcessor::rememberTorchCompile(bool enabled)
     // a separation does not start, so nothing here reports upwards.
     if (directory.exists() || directory.createDirectory())
         torchCompilePreferenceFile().replaceWithText(enabled ? "1" : "0");
+}
+
+juce::File StemLabAudioProcessor::accentPreferenceFile()
+{
+    return stemlab::paths::configDirectory().getChildFile("accent.txt");
+}
+
+int StemLabAudioProcessor::readRememberedAccent()
+{
+    const auto file = accentPreferenceFile();
+
+    if (!file.existsAsFile())
+        return 0;
+
+    /*  A name rather than an index, so the file survives the presets being
+        reordered or one being inserted in the middle - which an index would
+        turn into "your accent silently became a different color". An
+        unknown name falls back to the default rather than to whatever
+        happens to sit at that position.
+    */
+    const auto stored = file.loadFileAsString().trim();
+
+    for (int preset = 0; preset < stemlab::theme::accents::count(); ++preset)
+        if (stemlab::theme::accents::name(preset).equalsIgnoreCase(stored))
+            return preset;
+
+    return 0;
+}
+
+void StemLabAudioProcessor::rememberAccent(int presetIndex)
+{
+    auto directory = stemlab::paths::configDirectory();
+
+    // Best effort, for the reason the compile preference gives: failing to
+    // remember how the interface looks must not fail anything else.
+    if (directory.exists() || directory.createDirectory())
+        accentPreferenceFile().replaceWithText(stemlab::theme::accents::name(presetIndex));
+}
+
+void StemLabAudioProcessor::setAccentIndex(int presetIndex)
+{
+    stemlab::theme::accents::setIndex(presetIndex);
+    rememberAccent(stemlab::theme::accents::index());
+}
+
+int StemLabAudioProcessor::getAccentIndex()
+{
+    return stemlab::theme::accents::index();
 }
 
 void StemLabAudioProcessor::setTorchCompileEnabled(bool enabled)

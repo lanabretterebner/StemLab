@@ -188,6 +188,19 @@ if (BUILD_TESTING)
     stemlab_enable_test_assertions(StemLabSourceLabelTests)
     add_test(NAME StemLabSourceLabelTests COMMAND StemLabSourceLabelTests)
 
+    # The generated accent ramps: that the default is untouched, that a hue
+    # turn keeps lightness, and that the theme's contrast pairs survive on
+    # every preset. Links JUCE for juce::Colour; needs no display.
+    add_executable(StemLabAccentPaletteTests
+        Tests/AccentPaletteTests.cpp Source/StemLabAccent.h)
+    target_include_directories(StemLabAccentPaletteTests PRIVATE Source)
+    target_compile_features(StemLabAccentPaletteTests PRIVATE cxx_std_20)
+    target_link_libraries(StemLabAccentPaletteTests PRIVATE juce::juce_graphics)
+    target_compile_definitions(StemLabAccentPaletteTests PRIVATE
+        JUCE_STANDALONE_APPLICATION=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    stemlab_enable_test_assertions(StemLabAccentPaletteTests)
+    add_test(NAME StemLabAccentPaletteTests COMMAND StemLabAccentPaletteTests)
+
     # Which wheel events a lane forwards to the viewport and which it drops.
     # Links JUCE but needs no display: it asserts against MouseEvent identity,
     # not a window.

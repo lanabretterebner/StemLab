@@ -25,7 +25,7 @@ from scipy.signal import stft
 # exactly 0.0.
 SILENCE_PEAK = 1e-6
 
-# Guards the logarithms. Small enough not to colour a real comparison, large
+# Guards the logarithms. Small enough not to color a real comparison, large
 # enough that an all-zero stem yields a finite number instead of -inf.
 EPS = 1e-12
 

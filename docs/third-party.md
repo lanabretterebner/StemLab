@@ -38,7 +38,7 @@ upstream licensing/terms.
 
 ## Material Symbols
 
-The waveform-colour button's palette glyph is the "palette" icon from
+The waveform-color button's palette glyph is the "palette" icon from
 Google's Material Symbols, embedded as an SVG path in
 `src/plugin/Source/StemLabLookAndFeel.cpp`. Material Symbols are licensed
 under the Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0).

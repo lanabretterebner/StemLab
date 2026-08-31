@@ -9,7 +9,7 @@
 #include "WaveformAnalysis.h"
 
 /**
- * Waveform profiles - peak envelope and spectral colour - analysed off the
+ * Waveform profiles - peak envelope and spectral color - analysed off the
  * message thread and kept for as long as the processor lives.
  *
  * Analysis reads the whole stem once, reduces it to a peak envelope, and runs

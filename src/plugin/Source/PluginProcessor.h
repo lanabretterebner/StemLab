@@ -551,6 +551,24 @@ public:
     static juce::File torchCompilePreferenceFile();
     static bool readRememberedTorchCompile();
     static void rememberTorchCompile(bool enabled);
+
+    /*  The accent, which is how the interface looks rather than how this
+        project sounds - so it belongs to the person, not the session, and
+        is deliberately not in getStateInformation. Opening someone else's
+        project should not restyle your editor, and reopening your own on a
+        second machine should not undo the choice you made there.
+
+        Static because the accent is one process-wide value in the theme:
+        every editor in the host shares it, which is the correct behaviour
+        for a preference about the look of the application.
+    */
+    static juce::File accentPreferenceFile();
+    static int readRememberedAccent();
+    static void rememberAccent(int presetIndex);
+
+    /** Applies a preset to the theme and remembers it. */
+    static void setAccentIndex(int presetIndex);
+    static int getAccentIndex();
     bool isTorchCompileEnabled() const noexcept { return torchCompileEnabled.load(); }
     bool isCompileSupported() const noexcept { return compileSupported.load(); }
     juce::String getCompileReason() const;
@@ -701,23 +719,23 @@ public:
     void setStemEnabled(int index, bool enabled);
     bool isStemEnabled(int index) const;
 
-    void setWaveformColourIndex(int index);
-    int getWaveformColourIndex() const noexcept { return waveformColourIndex.load(); }
+    void setWaveformColorIndex(int index);
+    int getWaveformColorIndex() const noexcept { return waveformColorIndex.load(); }
 
     /** Number of selectable lane waveform palettes; the index persists in
         plugin state, so this must stay in step with the theme's palette.
         State saved when the solid fills existed clamps into range here. */
-    static constexpr int waveformColourCount = 5;
+    static constexpr int waveformColorCount = 5;
 
     /**
      * Which palette a fresh instance starts on: Spectrum, index 2.
      *
      * It shows what the audio is actually doing - violet where the spectral
      * centroid sits low, amber where it sits high - which is worth more on
-     * first sight than one accent colour repeated down every lane. Saved
+     * first sight than one accent color repeated down every lane. Saved
      * state still wins, so nobody's chosen palette changes under them.
      */
-    static constexpr int defaultWaveformColourIndex = 2;
+    static constexpr int defaultWaveformColorIndex = 2;
 
     /**
      * Horizontal waveform zoom, shared by every lane so they stay in step.
@@ -1095,7 +1113,7 @@ private:
     std::atomic<bool> fusedStemNormalisation{false};
     std::atomic<int> separatorEngineIndex{separatorRoFormer};
     std::atomic<double> waveformZoom{1.0};
-    std::atomic<int> waveformColourIndex{defaultWaveformColourIndex};
+    std::atomic<int> waveformColorIndex{defaultWaveformColorIndex};
     std::atomic<int> editorScalePercent{100};
 
     std::atomic<double> engineProgress{0.0};
