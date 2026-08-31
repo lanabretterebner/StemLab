@@ -38,6 +38,9 @@ public:
     juce::Font getTextButtonFont(juce::TextButton&, int buttonHeight) override;
     void drawButtonText(juce::Graphics&, juce::TextButton&, bool highlighted, bool down) override;
 
+    void drawToggleButton(juce::Graphics&, juce::ToggleButton&, bool highlighted,
+                          bool down) override;
+
     void drawProgressBar(juce::Graphics&, juce::ProgressBar&, int width, int height,
                          double progress, const juce::String& textToShow) override;
 

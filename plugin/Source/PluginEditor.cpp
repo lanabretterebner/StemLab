@@ -419,10 +419,9 @@ void StemWaveformComponent::paint(juce::Graphics& g)
     }
     else
     {
-        g.setColour(textMuted().withAlpha(0.65f));
-        g.setFont(juce::FontOptions(11.0f));
-
-        g.drawText("waveform", bounds, juce::Justification::centred);
+        // Nothing. An empty lane is waiting, and the centre rule drawn below
+        // already says where the audio will sit; a word floating in the
+        // middle of the well read as a broken image instead of an empty one.
     }
 
     if (length > 0.0)
@@ -1119,7 +1118,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     };
     addAndMakeVisible(transportScrubber);
 
-    statusGlyph.setIcon(stemlab::icons::check, tc::accent());
+    statusGlyph.setIcon(stemlab::icons::check, tc::accent(), true);
     addAndMakeVisible(statusGlyph);
 
     folderGlyph.setIcon(stemlab::icons::folder, tc::text().withAlpha(0.45f));
@@ -1292,6 +1291,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     };
     addAndMakeVisible(analysisDetailsButton);
 
+    refinementButton.setComponentID("pill");
     refinementButton.setToggleState(processor.isRefinementEnabled(), juce::dontSendNotification);
 
     refinementButton.setTooltip("Runs after " + processor.getSeparatorEngineDisplayName() +
@@ -1419,8 +1419,16 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
         expandButton.setTooltip("Expand/collapse adaptive children");
         expandButton.onClick = [this, i] { toggleRootExpanded(i); };
 
-        preview.setButtonText("Play");
-        preview.setComponentID("ghost");
+        // A glyph, like the two beside it. "Play" as bare text left a word
+        // floating between two icons at a different optical weight.
+        preview.setButtonText({});
+        preview.setComponentID("neutral");
+        preview.setTooltip("Audition this stem");
+
+        auto& playGlyph = stemPlayGlyphs[static_cast<size_t>(i)];
+        playGlyph.setIcon(stemlab::icons::play,
+                          stemlab::theme::colours::text().withAlpha(0.72f));
+        playGlyph.setInterceptsMouseClicks(false, false);
         preview.onClick = [this, i]
         {
             processor.playCompletedStem(i);
@@ -1475,12 +1483,13 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
         auto& dragGlyph = stemDragGlyphs[static_cast<size_t>(i)];
         dragGlyph.setIcon(stemlab::icons::dragOut,
-                          stemlab::theme::colours::text().withAlpha(0.72f));
+                          stemlab::theme::colours::text().withAlpha(0.72f), true);
         dragGlyph.setInterceptsMouseClicks(false, false);
 
         stemTreeContent.addAndMakeVisible(expandButton);
         stemTreeContent.addAndMakeVisible(button);
         stemTreeContent.addAndMakeVisible(preview);
+        stemTreeContent.addAndMakeVisible(playGlyph);
         stemTreeContent.addAndMakeVisible(dragButton);
         stemTreeContent.addAndMakeVisible(dragGlyph);
         stemTreeContent.addAndMakeVisible(recursiveButton);
@@ -2035,18 +2044,17 @@ void StemLabAudioProcessorEditor::resized()
         stacked rows of buttons; the controls and their behaviour are
         unchanged, only where they sit.
     */
-    const int cardHeight = compact ? 62 : 72;
+    const bool showCaptureTime = processor.isCapturing();
+
+    // One row, unless a capture is running and there is a second thing to say.
+    const int cardRow = compact ? 28 : 32;
+    const int cardHeight = (compact ? 18 : 22) + cardRow + (showCaptureTime ? cardRow : 0);
     auto card = area.removeFromTop(cardHeight);
     sourceCardBounds = card;
 
-    card.reduce(compact ? 8 : 12, compact ? 6 : 8);
+    card.reduce(compact ? 8 : 12, compact ? 9 : 11);
 
-    // Two rows: what is loaded and what to do with it on top, the live
-    // capture readout beneath.
-    auto cardTop = card.removeFromTop(compact ? 28 : 32);
-    card.removeFromTop(compact ? 4 : 6);
-    auto cardBottom = card;
-    card = cardTop;
+    auto cardBottom = showCaptureTime ? card.removeFromBottom(cardRow) : juce::Rectangle<int>();
 
     // Separate is the primary action and sits at the far right, with the
     // Refine toggle immediately before it - the pair reads as one control.
@@ -2061,10 +2069,10 @@ void StemLabAudioProcessorEditor::resized()
         cancelButton.setBounds(0, 0, 0, 0);
     }
 
-    auto action = card.removeFromRight(separateWidth + (width < 620 ? 88 : 108));
+    auto action = card.removeFromRight(separateWidth + (width < 620 ? 84 : 100));
     actionGroupBounds = action;
     separateButton.setBounds(action.removeFromRight(separateWidth));
-    refinementButton.setBounds(action.reduced(8, 0));
+    refinementButton.setBounds(action.reduced(10, 0));
     card.removeFromRight(14);
 
     // Name over duration, at the width the longest of the two needs.
@@ -2121,9 +2129,8 @@ void StemLabAudioProcessorEditor::resized()
 
     // The capture readout stays: it reports live recording length, which is
     // not a setting and has nowhere useful to be but on screen.
-    const bool showCaptureTime = processor.isCapturing();
     captureTimeLabel.setVisible(showCaptureTime);
-    captureTimeLabel.setBounds(showCaptureTime ? cardBottom : juce::Rectangle<int>());
+    captureTimeLabel.setBounds(cardBottom);
 
     area.removeFromTop(compact ? 6 : 10);
 
@@ -2204,8 +2211,10 @@ void StemLabAudioProcessorEditor::resized()
     auto treeArea = stemTreeContent.getLocalBounds().reduced(2, 0);
 
     const int checkboxWidth = width < 620 ? 88 : 116;
-    const int playWidth = width < 620 ? 48 : 55;
-    const int actionWidth = width < 620 ? 28 : 32;
+    const int actionWidth = width < 620 ? 24 : 26;
+    const int playWidth = actionWidth;
+    const int clusterGap = 4;
+    const int clusterInset = 8;
     const int expandWidth = 24;
 
     for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
@@ -2231,12 +2240,14 @@ void StemLabAudioProcessorEditor::resized()
         stemButtons[static_cast<size_t>(i)].setBounds(checkboxArea);
         row.removeFromLeft(4);
 
+        row.removeFromRight(clusterInset);
+
         auto& recursiveButton = stemRecursiveButtons[static_cast<size_t>(i)];
         auto& recursiveGlyph = stemRecursiveGlyphs[static_cast<size_t>(i)];
         if (rootSupportsAdaptiveSplit(i) || hasChildren || processor.hasSuccessfulJob())
         {
             recursiveButton.setBounds(row.removeFromRight(actionWidth).reduced(0, rowPad));
-            recursiveGlyph.setBounds(recursiveButton.getBounds().reduced(actionWidth / 4));
+            recursiveGlyph.setBounds(recursiveButton.getBounds());
             row.removeFromRight(3);
         }
         else
@@ -2246,7 +2257,7 @@ void StemLabAudioProcessorEditor::resized()
             // right down the stack.
             recursiveButton.setBounds(0, 0, 0, 0);
             recursiveGlyph.setBounds(0, 0, 0, 0);
-            row.removeFromRight(actionWidth + 3);
+            row.removeFromRight(actionWidth + clusterGap);
         }
 
         // Dragging a single stem out only means anything once there is one.
@@ -2259,7 +2270,7 @@ void StemLabAudioProcessorEditor::resized()
         if (hasStem)
         {
             dragButton.setBounds(row.removeFromRight(actionWidth).reduced(0, rowPad));
-            dragGlyph.setBounds(dragButton.getBounds().reduced(actionWidth / 4));
+            dragGlyph.setBounds(dragButton.getBounds());
             row.removeFromRight(3);
         }
         else
@@ -2268,9 +2279,10 @@ void StemLabAudioProcessorEditor::resized()
             dragGlyph.setBounds(0, 0, 0, 0);
         }
 
-        stemPlayButtons[static_cast<size_t>(i)].setBounds(
-            row.removeFromRight(playWidth).reduced(0, rowPad));
-        row.removeFromRight(5);
+        auto& playButtonBounds = stemPlayButtons[static_cast<size_t>(i)];
+        playButtonBounds.setBounds(row.removeFromRight(playWidth).reduced(0, rowPad));
+        stemPlayGlyphs[static_cast<size_t>(i)].setBounds(playButtonBounds.getBounds());
+        row.removeFromRight(10);
 
         if (auto* waveform = waveformComponents[static_cast<size_t>(i)].get())
             waveform->setBounds(row.reduced(0, juce::jmax(1, rowPad - 1)));
@@ -2290,7 +2302,7 @@ void StemLabAudioProcessorEditor::resized()
         the one action that takes the stems out of here at the far right.
         Which button that is still depends on the host, exactly as before.
     */
-    statusGlyph.setBounds(actionRow.removeFromLeft(actionRow.getHeight()).reduced(9));
+    statusGlyph.setBounds(actionRow.removeFromLeft(actionRow.getHeight()).reduced(7));
     actionRow.removeFromLeft(2);
 
     auto statusColumn = actionRow.removeFromLeft(juce::jmax(0, actionRow.getWidth() * 2 / 5));
@@ -2529,12 +2541,20 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
             preview.setEnabled(jobDone && !engineRunning && !capturing && stemFile.existsAsFile());
 
-            preview.setButtonText(
-                previewPlaying && previewIndex == i
-                    ? "Pause"
-                    : (processor.getStemSelectionRange(StemLabAudioProcessor::getStemName(i)).active
-                           ? "Loop"
-                           : "Play"));
+            const bool thisStemPlaying = previewPlaying && previewIndex == i;
+            const bool looping =
+                processor.getStemSelectionRange(StemLabAudioProcessor::getStemName(i)).active;
+
+            // The control is a glyph now, so its state shows in the glyph and
+            // the distinction upstream carried in the word goes to the tip.
+            stemPlayGlyphs[static_cast<size_t>(i)].setIcon(
+                thisStemPlaying ? stemlab::icons::pause : stemlab::icons::play,
+                stemlab::theme::colours::text().withAlpha(preview.isEnabled() ? 0.72f : 0.30f));
+
+            preview.setTooltip(thisStemPlaying
+                                   ? "Pause"
+                                   : (looping ? "Loop the selected range"
+                                              : "Audition this stem"));
 
             auto& recursiveButton = stemRecursiveButtons[static_cast<size_t>(i)];
 

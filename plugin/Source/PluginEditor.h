@@ -155,7 +155,14 @@ public:
         if (!paint_)
             return;
 
-        const auto path = paint_(getLocalBounds().toFloat().reduced(1.5f));
+        /*
+            Square, centred. These glyphs are drawn to a unit box; handed a
+            tall or wide rectangle they stretch, which turned the play
+            triangle into a spike and the status tick into a wedge.
+        */
+        const auto full = getLocalBounds().toFloat();
+        const auto side = juce::jmin(full.getWidth(), full.getHeight());
+        const auto path = paint_(full.withSizeKeepingCentre(side, side).reduced(1.5f));
 
         g.setColour(colour);
 
@@ -305,6 +312,7 @@ private:
     std::array<IconComponent, StemLabAudioProcessor::stemCount> stemRecursiveGlyphs;
     std::array<juce::TextButton, StemLabAudioProcessor::stemCount> stemDragButtons;
     std::array<IconComponent, StemLabAudioProcessor::stemCount> stemDragGlyphs;
+    std::array<IconComponent, StemLabAudioProcessor::stemCount> stemPlayGlyphs;
     std::array<bool, StemLabAudioProcessor::stemCount> rootExpanded{};
 
     juce::AudioFormatManager waveformFormats;

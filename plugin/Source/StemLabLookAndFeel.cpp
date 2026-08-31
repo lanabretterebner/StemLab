@@ -418,6 +418,70 @@ void StemLabLookAndFeel::drawButtonText(juce::Graphics& g, juce::TextButton& but
                juce::Justification::centred, false);
 }
 
+void StemLabLookAndFeel::drawToggleButton(juce::Graphics& g, juce::ToggleButton& button,
+                                          bool highlighted, bool)
+{
+    /*
+        JUCE's stock tick box was the only thing here still drawn by the
+        default look-and-feel, which put a generic control next to seven
+        styled ones. Two shapes: a switch for something that is on or off in
+        its own right, and a checkbox for something included in a set.
+    */
+    const auto on = button.getToggleState();
+    const auto enabled = button.isEnabled();
+
+    const auto dim = [enabled](juce::Colour colour)
+    { return theme::colours::dimIfDisabled(colour, enabled); };
+
+    auto bounds = button.getLocalBounds().toFloat();
+    const auto isSwitch = button.getComponentID() == "pill";
+
+    if (isSwitch)
+    {
+        const auto height = juce::jmin(18.0f, bounds.getHeight());
+        auto track = bounds.removeFromLeft(height * 1.85f).withSizeKeepingCentre(
+            height * 1.85f, height);
+
+        g.setColour(dim(on ? theme::colours::pillTrack() : theme::colours::pillTrackOff()));
+        g.fillRoundedRectangle(track, height * 0.5f);
+
+        const auto knob = height - 4.0f;
+        g.setColour(dim(on ? theme::colours::pillKnob() : theme::colours::text().withAlpha(0.65f)));
+        g.fillEllipse(on ? track.getRight() - knob - 2.0f : track.getX() + 2.0f,
+                      track.getCentreY() - knob * 0.5f, knob, knob);
+    }
+    else
+    {
+        const auto side = juce::jmin(16.0f, bounds.getHeight());
+        auto box = bounds.removeFromLeft(side).withSizeKeepingCentre(side, side);
+
+        if (on)
+        {
+            g.setColour(dim(theme::colours::checkboxFill()));
+            g.fillRoundedRectangle(box, 4.0f);
+            g.setColour(dim(theme::colours::checkboxCheck()));
+            g.strokePath(stemlab::icons::check(box.reduced(side * 0.28f)),
+                         juce::PathStrokeType(2.0f, juce::PathStrokeType::curved,
+                                              juce::PathStrokeType::rounded));
+        }
+        else
+        {
+            g.setColour(dim(theme::colours::checkboxBorder()));
+            g.drawRoundedRectangle(box.reduced(0.5f), 4.0f, 1.2f);
+        }
+    }
+
+    if (button.getButtonText().isEmpty())
+        return;
+
+    bounds.removeFromLeft(8.0f);
+
+    g.setColour(dim(highlighted ? theme::colours::text()
+                                : theme::colours::text().withAlpha(0.88f)));
+    g.setFont(juce::Font(theme::fonts::body()));
+    g.drawText(button.getButtonText(), bounds, juce::Justification::centredLeft, false);
+}
+
 void StemLabLookAndFeel::drawProgressBar(juce::Graphics& g, juce::ProgressBar& bar, int width,
                                          int height, double progress, const juce::String&)
 {
