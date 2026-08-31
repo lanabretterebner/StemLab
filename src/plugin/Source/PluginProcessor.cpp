@@ -6824,10 +6824,20 @@ void StemLabAudioProcessor::finishModelInventory(const juce::File& output, int e
 
     if (exitCode != 0 || !parsed.isObject())
     {
-        // An engine that cannot answer is worth saying out loud, because
-        // every model will otherwise read as missing and the user will be
-        // invited to re-download things they already have.
+        /*  An engine that cannot answer is worth saying out loud, because
+            every model will otherwise read as missing and the user will be
+            invited to re-download things they already have.
+
+            Said in the status area and not only inside the Models page. The
+            page is where the sentence used to live, and the one thing a
+            failed inventory guarantees is that nothing opens that page by
+            itself: the auto-show needs an inventory to find something
+            missing in. So on a fresh install where the probe fails, the
+            window that would have explained it is the window that never
+            appears, and the app looks like it simply has no opinion.
+        */
         modelInventoryBroken.store(true);
+        setStatus("The engine could not report its models - check it in Settings");
         sendChangeMessage();
         return;
     }
