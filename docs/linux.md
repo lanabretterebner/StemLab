@@ -108,21 +108,22 @@ installers pin their own build), so install one first:
 `.venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu
 torch torchaudio` for CPU, or drop the index override for CUDA.
 
-The plugin discovers the engine in this order:
+The plugin does not search for the engine. It is at
 
-1. `$STEMLAB_ENGINE`, if it points at an existing file
-2. a sibling portable runtime — `Engine/bin/python3` — searched upward from
-   the plugin binary
-3. `.venv/bin/stemlab-plugin-job` or `venv/bin/stemlab-plugin-job`, searched
-   upward from the plugin binary, the repo root, and the working directory
-4. the pointer written by `scripts/linux/install_backend.sh` (and by the Standalone
-   app) at `$XDG_CONFIG_HOME/StemLab/portable_engine_path.txt`
-5. `stemlab-plugin-job` on `$PATH`
+```text
+$XDG_DATA_HOME/StemLab/Engine/bin/python3      # ~/.local/share/… by default
+```
 
-Step 5 matters because a DAW launched from a desktop launcher does not
-necessarily inherit your shell's `PATH`. If discovery picks the wrong one, set
-it explicitly under **Settings > Choose StemLab engine**, or export
-`STEMLAB_ENGINE` before starting the host.
+which is exactly where `scripts/linux/install_backend.sh` builds it and where
+the bundle's `install.sh` moves it, and nowhere else. `$STEMLAB_ENGINE`
+overrides it with an absolute path — that is the whole of it, and the only
+thing a developer running from a checkout needs.
+
+Searching for it is what was here before: a pointer file, a sibling runtime,
+two venv layouts and `$PATH`, each of which could answer first and be wrong.
+Which one had answered was invisible, and a DAW launched from a desktop
+launcher does not inherit your shell's `PATH` anyway, so the last resort was
+the one that behaved differently depending on how the host was started.
 
 `ffmpeg` (any system package) is used to normalise compressed input. The
 installer also sets up adaptive stem splitting with the `audio-separator`
@@ -142,16 +143,22 @@ own directory:
 | The app and its Engine | `$XDG_DATA_HOME/StemLab` (`~/.local/share/…`) |
 | The VST3 | `~/.vst3/StemLab.vst3` |
 | Settings | `$XDG_CONFIG_HOME/StemLab` (`~/.config/…`) |
-| Model weights | `~/.cache/bs-roformer-infer`, `~/.cache/huggingface`, `~/.stemlab/models` |
-| Analysis, MIDI staging, compiled kernels | `~/.stemlab/analysis` |
+| Model weights | `~/.cache/bs-roformer-infer`, `~/.cache/huggingface`, `$XDG_DATA_HOME/StemLab/models` |
+| Analysis, MIDI staging, compiled kernels | `$XDG_CACHE_HOME/StemLab/analysis` |
+| Setup downloads, while a bundle is installing | `$XDG_CACHE_HOME/StemLab/setup` |
 
-Everything a person made or asked for lives under `~/Music/StemLab`; the
-application lives under `~/.local/share/StemLab` and holds nothing of theirs.
-That split is why removing the app cannot take your recordings with it - on
-Linux the bundle unpacks into the same folder captures used to be written to.
-`XDG_MUSIC_DIR` is honoured when your music folder has been moved or is
-localised. Override the job location at runtime with **Choose File Location**
-in the plugin.
+Everything a person made or asked for lives in your music folder under
+`StemLab/`; the application lives under `~/.local/share/StemLab` and holds
+nothing of theirs. That split is why removing the app cannot take your
+recordings with it - on Linux the bundle unpacks into the same folder captures
+used to be written to.
+
+Your music folder is `$XDG_MUSIC_DIR`, or what `~/.config/user-dirs.dirs` says
+it is - `~/Musik`, `~/Musique`, or wherever you moved it. StemLab never invents
+an English `~/Music`: if neither says anything, it keeps your audio in
+`$XDG_DATA_HOME/StemLab` rather than create a folder in a language you do not
+use. Override the job location at runtime with **Choose File Location** in the
+plugin.
 
 Only the finished stems are kept. A hybrid run separates with both models and
 then fuses them, and a refined run improves that result again; those working
@@ -172,10 +179,24 @@ The bundle carries both scripts next to the app:
 ~/.local/share/StemLab/uninstall.sh --dry-run # print what would go
 ```
 
+**Settings > Check for Updates...** runs `update.sh --check` and reports what
+it says. It deliberately stops there: installing an update replaces
+`StemLab.vst3`, and replacing a plug-in binary underneath a host that has it
+loaded is how the next scan finds a half-written bundle. Close the DAW and run
+the script to install.
+
 `update.sh` keeps the GPU flavor the install already has, so a `cuda` install
 does not quietly become a `cpu` one. `uninstall.sh` keeps your model weights
 unless asked, because they are gigabytes over a slow download, and keeps your
 audio unless you pass `--everything`.
+
+Both replace the install through the release's own `StemLab-Linux-setup.sh`,
+which stages everything it downloads in `$XDG_CACHE_HOME/StemLab/setup` and
+removes that directory when the install succeeds. Nothing is written into the
+folder you ran the script from. A run that fails leaves the staging directory
+on purpose, so re-running resumes instead of downloading the bundle again;
+`uninstall.sh` clears it if it is ever orphaned. Set `STEMLAB_SETUP_STAGE` to
+stage somewhere else if your cache is on a small partition.
 
 ## REAPER
 

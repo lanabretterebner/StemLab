@@ -8,7 +8,7 @@
 #     StemLab            Standalone application
 #     StemLab.vst3/      VST3 bundle (install.sh copies it to ~/.vst3)
 #     Engine/            relocatable Python runtime + ML dependencies
-#     install.sh         VST3 install + engine discovery pointer
+#     install.sh         VST3 install + Engine into ~/.local/share/StemLab
 #     README.txt
 #   dist/StemLab-<version>-Linux.tar.gz
 #
@@ -104,12 +104,12 @@ cp -r "$ARTEFACTS/VST3/StemLab.vst3" "$DIST_DIR/StemLab.vst3"
 FLAVOR_ARGS=()
 [[ "$TORCH_FLAVOR" == "auto" ]] || FLAVOR_ARGS+=("--$TORCH_FLAVOR")
 
-# --no-pointer: assembling a distributable must not rewire the build
-# machine's own engine discovery.
+# --build-only: assembling a distributable must not touch the build
+# machine's own install.
 "$REPO_ROOT/scripts/linux/install_backend.sh" \
     ${FLAVOR_ARGS[@]+"${FLAVOR_ARGS[@]}"} \
     --dest "$DIST_DIR/Engine" \
-    --no-pointer
+    --build-only
 
 RESOLVED_FLAVOR="$(cat "$DIST_DIR/Engine/.stemlab-torch-flavor" 2>/dev/null || echo unknown)"
 
@@ -117,14 +117,13 @@ RESOLVED_FLAVOR="$(cat "$DIST_DIR/Engine/.stemlab-torch-flavor" 2>/dev/null || e
 
 cat > "$DIST_DIR/install.sh" <<'INSTALLER'
 #!/usr/bin/env bash
-# Install the StemLab VST3 for the current user and point plugin discovery at
-# the bundled Engine. The Standalone app runs from this directory as-is.
+# Install the StemLab VST3 and its Engine for the current user.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-CONFIG_HOME="${XDG_CONFIG_HOME:-}"
-[[ "$CONFIG_HOME" == /* ]] || CONFIG_HOME="$HOME/.config"
+DATA_HOME="${XDG_DATA_HOME:-}"
+[[ "$DATA_HOME" == /* ]] || DATA_HOME="$HOME/.local/share"
 
 # Never delete a working install unless its replacement is actually here.
 [[ -d "$HERE/StemLab.vst3" && -d "$HERE/Engine" ]] || {
@@ -137,19 +136,54 @@ mkdir -p "$HOME/.vst3"
 rm -rf "$HOME/.vst3/StemLab.vst3"
 cp -r "$HERE/StemLab.vst3" "$HOME/.vst3/StemLab.vst3"
 
-mkdir -p "$CONFIG_HOME/StemLab"
-printf '%s\n' "$HERE/Engine/bin/python3" \
-    > "$CONFIG_HOME/StemLab/portable_engine_path.txt"
+# The Engine moves to the one location StemLab reads. It used to be left in
+# this folder and pointed at by a file in ~/.config, which meant the install
+# depended on the download folder never being moved or emptied - and that
+# whichever of several extracted copies wrote the pointer last won. There is
+# no pointer now: the app looks here and only here.
+#
+# Moved rather than copied. It is gigabytes, and a bundle that has been
+# installed has no further use for its own copy.
+INSTALL_DIR="$DATA_HOME/StemLab"
+
+# Two ways this script is reached, and they need different things.
+#
+# The setup script moves the extracted folder to $INSTALL_DIR and runs this
+# from inside it, so everything is already exactly where it belongs and the
+# only work left is the VST3. Moving anything here would mean moving it onto
+# itself - which, with the rm -rf that a real move needs, deletes the Engine.
+#
+# Someone who downloaded and extracted the tarball by hand runs this from
+# wherever they put it, and then it has to install.
+if [[ "$HERE" != "$INSTALL_DIR" ]]; then
+    mkdir -p "$INSTALL_DIR"
+
+    rm -rf "$INSTALL_DIR/Engine"
+    mv "$HERE/Engine" "$INSTALL_DIR/Engine"
+
+    # The app and the two scripts that manage it, so the extracted folder is
+    # not the only copy of the uninstaller. uninstall.sh already expects to
+    # find them here.
+    for item in StemLab uninstall.sh update.sh README.txt .stemlab-version; do
+        [[ -e "$HERE/$item" ]] && cp -r "$HERE/$item" "$INSTALL_DIR/$item"
+    done
+fi
+
+chmod +x "$INSTALL_DIR/StemLab" "$INSTALL_DIR/uninstall.sh" \
+    "$INSTALL_DIR/update.sh" 2>/dev/null || true
 
 cat <<EOF
 StemLab installed.
 
   VST3:       $HOME/.vst3/StemLab.vst3
-  Standalone: $HERE/StemLab
-  Engine:     $HERE/Engine (referenced in place - do not delete this folder)
+  Standalone: $INSTALL_DIR/StemLab
+  Engine:     $INSTALL_DIR/Engine
+  Update:     $INSTALL_DIR/update.sh
+  Uninstall:  $INSTALL_DIR/uninstall.sh
 
 Rescan plug-ins in your DAW (REAPER: Options > Preferences > Plug-ins > VST >
-Re-scan). If you move this folder later, run ./install.sh again.
+Re-scan). If you extracted this by hand somewhere else, that folder can be
+deleted now - everything in it has been installed to $INSTALL_DIR.
 EOF
 INSTALLER
 chmod +x "$DIST_DIR/install.sh"
@@ -172,13 +206,15 @@ GPU support baked into this bundle: $RESOLVED_FLAVOR
 If it does not match your GPU, separation still works on CPU - rebuild or
 re-run scripts/linux/install_backend.sh with the right flavor for full speed.
 
-1. Run ./install.sh once. It installs the VST3 to ~/.vst3 and points plugin
-   discovery at the bundled Engine.
-2. Rescan plug-ins in your DAW, or launch ./StemLab for the standalone app.
+1. Run ./install.sh once. It moves the app and its Engine into
+   ~/.local/share/StemLab and installs the VST3 to ~/.vst3.
+2. Rescan plug-ins in your DAW, or launch ~/.local/share/StemLab/StemLab for
+   the standalone app.
 
-Everything StemLab needs to run is in this folder - no Python, venv, or
-model runtime to install. Keep the folder where it is (or re-run
-./install.sh after moving it).
+Everything StemLab needs to run is in this folder - no Python, venv, or model
+runtime to install. Once install.sh has run, this folder has been emptied into
+~/.local/share/StemLab and can be deleted; update.sh and uninstall.sh are
+installed alongside the app.
 
 Model weights are not included. Each downloads the first time you use the
 model that needs it, is checked against a recorded digest before it is
@@ -221,7 +257,7 @@ if [[ $MAKE_TARBALL -eq 1 ]]; then
 fi
 
 echo
-echo "Portable build complete:"
+echo "Bundle complete:"
 echo "  $DIST_DIR"
 [[ $MAKE_TARBALL -eq 1 ]] && echo "  $DIST_DIR.tar.gz"
 du -sh "$DIST_DIR" | awk '{print "  size: " $1}'

@@ -64,6 +64,9 @@ namespace stemlab::widgets
             bool fusedNormalise = false;
             bool fusedNormaliseAvailable = false;
 
+            bool updaterAvailable = false;
+            bool updateCheckRunning = false;
+
             bool hasDiagnostics = false;
             bool abletonAvailable = false;
             juce::String version;
@@ -90,6 +93,7 @@ namespace stemlab::widgets
         std::function<void()> onForgetCorrection;
         std::function<void()> onClearAnalysisCache;
         std::function<void(bool)> onFusedNormalise;
+        std::function<void()> onCheckUpdates;
         std::function<void()> onCopyDiagnostics;
         std::function<void()> onAudioSettings;
         std::function<void()> onAbletonIntegration;
