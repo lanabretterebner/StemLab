@@ -41,7 +41,7 @@ namespace stemlab::paths
     /** Default parent for job_* directories. Overridable from the UI. */
     juce::File jobsDirectory();
 
-    /** Small machine-local settings, e.g. portable_engine_path.txt. */
+    /** Small machine-local settings, e.g. torch_compile.txt. */
     juce::File configDirectory();
 
     juce::File capturesDirectory();

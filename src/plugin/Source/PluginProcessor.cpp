@@ -6590,8 +6590,9 @@ void StemLabAudioProcessor::exportTorchCompilePreference() const
 
 juce::File StemLabAudioProcessor::torchCompilePreferenceFile()
 {
-    // Beside portable_engine_path.txt, which is the other thing here that
-    // describes the machine rather than the project.
+    // The config directory is for what describes this machine rather than
+    // the project - which is exactly what "should this machine compile"
+    // is, and why it is not saved into plugin state.
     return stemlab::paths::configDirectory().getChildFile("torch_compile.txt");
 }
 
