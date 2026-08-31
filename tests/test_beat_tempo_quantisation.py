@@ -259,3 +259,108 @@ class TestTheAnchorComesFromTheGridNotOneBeat:
         long = abs(_analyse(self._offset_track(offset, 480.0)).bar_one - offset)
 
         assert long < short
+
+
+class TestAQuietStartOrEndingDoesNotMoveTheReading:
+    """Where a detector is least sure, and what that used to cost.
+
+    A track that fades in, or ends in a reverb tail, gives the model very
+    little to lock onto at its edges. It responds by placing beats loosely,
+    or by finding beats in what is effectively silence - and those land at
+    whatever spacing the noise suggests, which is near enough the real tempo
+    to pass every interval-based filter and wrong enough to drag the average
+    down. Measured against the old estimator, on a 240 s track at 174:
+
+      20 s of beats in silence before the track      173.61
+      20 s of beats in the reverb tail after it      173.62
+      30 s of tail beats running 3% slow             173.44
+      both ends at once                              173.29
+      40 s intro with the beats jittered 3 frames    174.31
+
+    A grid does not have to reject these by recognising them. They fail to
+    sit on it, and beats that fail to sit on the grid are not what the tempo
+    is read from.
+    """
+
+    BPM = 174.0
+    SECONDS = 240.0
+
+    @classmethod
+    def _grid(cls) -> np.ndarray:
+        return np.arange(0.0, cls.SECONDS, 60.0 / cls.BPM)
+
+    @classmethod
+    def _replace(cls, window, transform):
+        """Mangle the beats inside ``window`` and keep the rest true."""
+        beats = cls._grid()
+        inside = (beats >= window[0]) & (beats < window[1])
+        return _quantise(
+            np.concatenate([transform(beats[inside]), beats[~inside]])
+        )
+
+    @staticmethod
+    def _noise(scale_frames):
+        rng = np.random.default_rng(5)
+        return lambda beats: beats + rng.normal(0.0, scale_frames / FPS, beats.size)
+
+    @pytest.mark.parametrize("seconds", [20.0, 40.0, 60.0])
+    def test_a_loosely_tracked_intro_is_not_averaged_in(self, seconds):
+        beats = self._replace((0.0, seconds), self._noise(3.0))
+
+        assert _analyse(beats).detected_bpm == pytest.approx(self.BPM, abs=0.05)
+
+    @pytest.mark.parametrize("seconds", [20.0, 40.0])
+    def test_a_loosely_tracked_ending_is_not_averaged_in(self, seconds):
+        beats = self._replace((self.SECONDS - seconds, self.SECONDS), self._noise(3.0))
+
+        assert _analyse(beats).detected_bpm == pytest.approx(self.BPM, abs=0.05)
+
+    def test_beats_found_in_the_silence_before_the_track_are_not_counted(self):
+        # Whatever the model hears in a fade-in need not be at the tempo, and
+        # here it is 3% slow - close enough to survive any interval filter.
+        period = 60.0 / self.BPM
+        beats = _quantise(
+            np.concatenate([np.arange(-20.0, 0.0, period * 1.03), self._grid()])
+        )
+
+        assert _analyse(beats).detected_bpm == pytest.approx(self.BPM, abs=0.05)
+
+    def test_beats_found_in_the_reverb_tail_are_not_counted(self):
+        period = 60.0 / self.BPM
+        beats = _quantise(
+            np.concatenate(
+                [self._grid(), np.arange(self.SECONDS, self.SECONDS + 30.0, period * 1.03)]
+            )
+        )
+
+        assert _analyse(beats).detected_bpm == pytest.approx(self.BPM, abs=0.05)
+
+    def test_both_ends_at_once(self):
+        period = 60.0 / self.BPM
+        beats = _quantise(
+            np.concatenate(
+                [
+                    np.arange(-20.0, 0.0, period * 1.03),
+                    self._grid(),
+                    np.arange(self.SECONDS, self.SECONDS + 20.0, period * 1.03),
+                ]
+            )
+        )
+        analysis = _analyse(beats)
+
+        assert analysis.detected_bpm == pytest.approx(self.BPM, abs=0.05)
+        # And the fit says so: the edges are the beats it could not explain.
+        assert analysis.grid_ratio < 0.95
+
+    @pytest.mark.parametrize(
+        "transform",
+        [
+            lambda beats: beats[::2],                       # intro heard at half time
+            lambda beats: beats[: beats.size // 2],         # intro only half tracked
+            lambda beats: beats + (60.0 / 174.0) / 4.0,     # intro locked off-phase
+        ],
+    )
+    def test_an_intro_the_model_hears_differently_is_still_harmless(self, transform):
+        beats = self._replace((0.0, 20.0), transform)
+
+        assert _analyse(beats).detected_bpm == pytest.approx(self.BPM, abs=0.05)
