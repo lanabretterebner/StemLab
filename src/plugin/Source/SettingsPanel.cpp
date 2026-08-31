@@ -20,6 +20,16 @@ namespace stemlab::widgets
             constexpr int gap = 12;
         }
 
+        /*
+         * The tab strip's order, written down once and read by both
+         * directions. Settings sits first because it is the page the gear
+         * opens; Models is somewhere you go, or somewhere a missing model
+         * sends you. Two mappings of the same order kept by hand is how an
+         * index quietly inverts.
+         */
+        constexpr int settingsTab = 0;
+        constexpr int modelsTab = 1;
+
         namespace rows
         {
             constexpr int height = 34;
@@ -489,7 +499,7 @@ namespace stemlab::widgets
         addAndMakeVisible(titleLabel);
 
         tabs.onSelected = [this](int index)
-        { showPage(index == 0 ? Page::models : Page::settings); };
+        { showPage(index == modelsTab ? Page::models : Page::settings); };
 
         addAndMakeVisible(tabs);
 
@@ -550,7 +560,7 @@ namespace stemlab::widgets
     {
         page = requested;
 
-        tabs.setSelectedIndex(page == Page::models ? 0 : 1);
+        tabs.setSelectedIndex(page == Page::models ? modelsTab : settingsTab);
 
         modelsPage.setVisible(page == Page::models);
         settingsPage->setVisible(page == Page::settings);
