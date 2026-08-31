@@ -25,6 +25,27 @@ def quantised_beats(bpm: float, seconds: float = 180.0) -> np.ndarray:
     return np.round(np.arange(0.0, seconds, period) * FPS) / FPS
 
 
+def _quantise(times: np.ndarray) -> np.ndarray:
+    """The 20 ms grid Beat This! reports every beat on."""
+    return np.unique(np.round(np.asarray(times) * FPS) / FPS)
+
+
+def _synthetic_beats(
+    bpm: float, seconds: float = 180.0, drift_bpm: float = 0.0
+) -> np.ndarray:
+    """Beats at ``bpm``, optionally ramping by ``drift_bpm`` across the track."""
+    time, beats = 0.0, []
+    while time < seconds:
+        beats.append(time)
+        time += 60.0 / (bpm + drift_bpm * (time / seconds))
+    return _quantise(np.array(beats))
+
+
+def _analyse(beats: np.ndarray):
+    # Four beats to the bar, so the meter estimate has something to read.
+    return derive_musical_time(beats, beats[::4], 0.9, model="test", device="cpu")
+
+
 def detected(bpm: float, **kwargs) -> float:
     beats = quantised_beats(bpm, **kwargs)
     # Four beats to the bar, so the meter estimate has something to read.
@@ -134,3 +155,107 @@ def test_the_cache_version_moved_with_the_tempo_change():
     from stemlab.beat_tracking import BEAT_ALGORITHM_VERSION
 
     assert BEAT_ALGORITHM_VERSION != "beat-this-1.1.0-stemlab-1"
+
+
+class TestASectionAtANearbyTempoDoesNotMoveTheReading:
+    """The failure a 174 track reads as 173.8 through.
+
+    Beat This! quantises every beat to an integer frame at 50 fps, so the
+    intervals arrive on a 20 ms grid. A 16 s intro at 170 inside a 174 track
+    shifts each of its intervals by 8 ms - under the quantisation step, and
+    far inside the tolerance _robust_intervals allows. No amount of averaging
+    or outlier rejection over intervals can separate the two tempos, because
+    one beat at a time they are the same. Over the length of the intro they
+    walk more than a whole beat apart, which is the only place the difference
+    exists to be found.
+    """
+
+    @staticmethod
+    def _two_sections(first_bpm, first_seconds, second_bpm, second_seconds):
+        time, beats = 0.0, []
+        while time < first_seconds:
+            beats.append(time)
+            time += 60.0 / first_bpm
+        while time < first_seconds + second_seconds:
+            beats.append(time)
+            time += 60.0 / second_bpm
+        return _quantise(np.array(beats))
+
+    @pytest.mark.parametrize(
+        ("intro_bpm", "intro_seconds"),
+        [(170.0, 16.0), (170.0, 24.0), (172.0, 16.0), (178.0, 12.0)],
+    )
+    def test_an_intro_at_another_tempo_is_not_averaged_in(
+        self, intro_bpm, intro_seconds
+    ):
+        beats = self._two_sections(intro_bpm, intro_seconds, 174.0, 240.0 - intro_seconds)
+        analysis = _analyse(beats)
+
+        assert analysis.detected_bpm == pytest.approx(174.0, abs=0.05)
+
+    def test_an_outro_at_another_tempo_is_not_averaged_in(self):
+        beats = self._two_sections(174.0, 200.0, 176.0, 40.0)
+
+        assert _analyse(beats).detected_bpm == pytest.approx(174.0, abs=0.05)
+
+    def test_a_track_that_really_is_off_the_round_number_stays_there(self):
+        # The other half of the same rule: nothing snaps to a tidy tempo.
+        # A grid at 174 would walk 0.28 s away from a 173.8 track by the end
+        # of four minutes, which is exactly the misalignment being fixed.
+        assert _analyse(_synthetic_beats(173.8)).detected_bpm == pytest.approx(
+            173.8, abs=0.05
+        )
+
+
+class TestTheFitReportsWhetherOneTempoHoldsTheTrack:
+    def test_a_track_cut_to_a_click_sits_at_the_quantisation_floor(self):
+        analysis = _analyse(_synthetic_beats(174.0))
+
+        # 20 ms quantised uniformly has an RMS of 20/sqrt(12) = 5.8 ms, and
+        # a grid that explains every beat cannot do better than that.
+        assert analysis.grid_rms == pytest.approx(0.0058, abs=0.002)
+        assert analysis.grid_ratio == pytest.approx(1.0, abs=0.02)
+
+    def test_a_drifting_track_says_so_rather_than_reporting_a_clean_tempo(self):
+        # No host tempo aligns a track whose tempo moves. The reading is
+        # still the best constant fit, but the fit quality is what tells the
+        # difference between "174" and "roughly 174, and it wanders".
+        analysis = _analyse(_synthetic_beats(174.0, drift_bpm=-1.0))
+
+        assert analysis.grid_rms > 0.010
+        assert analysis.grid_ratio < 0.80
+
+
+class TestTheAnchorComesFromTheGridNotOneBeat:
+    """A reported downbeat is only ever good to half a frame.
+
+    The offsets below matter: a track whose first downbeat happens to land on
+    a frame boundary hides this entirely, because then the raw downbeat is
+    exact. Real audio does not start on a 20 ms boundary, and a host placing
+    bar 1 on the reported downbeat inherits the whole rounding error - up to
+    10 ms, 441 samples at 44.1 kHz.
+    """
+
+    @staticmethod
+    def _offset_track(offset: float, seconds: float = 240.0) -> np.ndarray:
+        """A 174 BPM track whose true downbeat sits between two frames."""
+        period = 60.0 / 174.0
+        return _quantise(np.arange(0.0, seconds, period) + offset)
+
+    @pytest.mark.parametrize("offset", [0.009, 0.013, 0.017, 0.019])
+    def test_the_fitted_anchor_beats_the_reported_downbeat(self, offset):
+        beats = self._offset_track(offset)
+        analysis = _analyse(beats)
+
+        raw_error = abs(float(beats[0]) - offset)
+        fitted_error = abs(analysis.bar_one - offset)
+
+        assert fitted_error < raw_error
+        assert fitted_error * 44_100 < 50
+
+    def test_the_anchor_sharpens_as_the_track_gets_longer(self):
+        offset = 0.013
+        short = abs(_analyse(self._offset_track(offset, 60.0)).bar_one - offset)
+        long = abs(_analyse(self._offset_track(offset, 480.0)).bar_one - offset)
+
+        assert long < short
