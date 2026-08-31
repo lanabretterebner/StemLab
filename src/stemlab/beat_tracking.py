@@ -33,7 +33,10 @@ BEAT_THIS_VERSION = "1.1.0"
 # this module derives change. -2 is the tempo coming from the mean of the
 # inlier intervals rather than their median; without the bump every track
 # already analysed would keep serving the frame-quantised BPM it cached.
-BEAT_ALGORITHM_VERSION = "beat-this-1.1.0-stemlab-2"
+BEAT_ALGORITHM_VERSION = "beat-this-1.1.0-stemlab-4"
+
+# Beat This!'s frame rate, and so the grid every beat it reports lands on.
+_BEAT_FPS = 50.0
 
 
 @dataclass(frozen=True)
@@ -80,6 +83,14 @@ class BeatAnalysis:
     model: str
     model_version: str
     device: str
+    # How well one constant tempo explains the whole track: the RMS distance
+    # from every beat to the fitted grid, in seconds, and the fraction of
+    # beats that grid explains. A track produced to a click sits at the
+    # detector's own 20 ms quantisation floor (5.8 ms RMS, ratio near 1.0).
+    # A played or drifting one does not, and no single host tempo will hold
+    # alignment across it however well the tempo itself is measured.
+    grid_rms: float = 0.0
+    grid_ratio: float = 0.0
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -401,6 +412,150 @@ def _robust_intervals(beats: np.ndarray) -> tuple[np.ndarray, float, float]:
     return inliers, robust_cv, inlier_ratio
 
 
+def _sub_frame_events(events: np.ndarray, logits: np.ndarray) -> np.ndarray:
+    """Move each event off the 20 ms frame grid, using the shape of its peak.
+
+    50 fps is Beat This!'s own frame rate - the spectrogram hop it was
+    trained on - so it cannot be raised without retraining the model, and
+    every beat its postprocessor reports is an integer frame divided by it
+    (postprocessor.py: beat_time = beat_frame / self.fps). That is 20 ms of
+    quantisation, 882 samples at 44.1 kHz, on every beat.
+
+    The frames are quantised; the network's output is not. It emits a logit
+    per frame, and around a beat those form a peak whose centre lies between
+    frames when the beat does. Fitting a parabola through the peak frame and
+    its two neighbours recovers where that centre actually is.
+
+    The fit is done on the logits rather than on the probabilities they
+    become: a bump that is Gaussian in probability is exactly a parabola in
+    log-odds, so this is the domain the three-point fit is least wrong in.
+
+    A frame that is not a local maximum has no peak to interpolate - the
+    curvature term comes out flat or convex - and is left where it is, as
+    are events on the first and last frame, which have no neighbour on one
+    side.
+
+    Takes the logits as a plain array rather than a tensor: this module is
+    imported for its constants by paths that must not pay for torch, and
+    three-point interpolation is not a reason to break that.
+    """
+    values = np.asarray(logits, dtype=np.float64)
+    events = np.asarray(events, dtype=np.float64)
+
+    if values.size < 3 or events.size == 0:
+        return events
+
+    frames = np.rint(events * _BEAT_FPS).astype(int)
+    interior = (frames >= 1) & (frames <= values.size - 2)
+    refined = frames.astype(np.float64)
+
+    if np.any(interior):
+        centre = frames[interior]
+        left, middle, right = (
+            values[centre - 1],
+            values[centre],
+            values[centre + 1],
+        )
+        curvature = left - 2.0 * middle + right
+        peak = curvature < -1.0e-9
+        offset = np.zeros(centre.shape, dtype=np.float64)
+        offset[peak] = 0.5 * (left[peak] - right[peak]) / curvature[peak]
+        # A parabola through three samples cannot put its vertex outside the
+        # middle one; anything that says otherwise is noise, not a peak.
+        offset = np.clip(offset, -0.5, 0.5)
+        refined[interior] = centre + offset
+
+    return refined / _BEAT_FPS
+
+
+# Half a frame either side of a beat, plus a frame of slack for a detector
+# that is a little late on one. Wide enough to keep the beats a grid really
+# does explain, narrow enough that a grid one beat out of phase keeps none.
+_GRID_TOLERANCE = 1.5 / 50.0
+
+
+@dataclass(frozen=True)
+class _Grid:
+    """One constant tempo laid over the whole track."""
+
+    period: float
+    phase: float
+    rms: float
+    ratio: float
+
+
+def _fit_grid(beats: np.ndarray, period: float, phase: float) -> _Grid:
+    relative = beats - beats[0]
+    slot = np.round((relative - phase) / period)
+    residual = relative - (phase + period * slot)
+    inliers = np.abs(residual) <= _GRID_TOLERANCE
+
+    if int(inliers.sum()) >= 8 and np.unique(slot[inliers]).size >= 2:
+        fitted = np.polyfit(slot[inliers], relative[inliers], 1)
+        if 0.9 * period < float(fitted[0]) < 1.1 * period:
+            period, phase = float(fitted[0]), float(fitted[1])
+            slot = np.round((relative - phase) / period)
+            residual = relative - (phase + period * slot)
+            inliers = np.abs(residual) <= _GRID_TOLERANCE
+
+    kept = residual[inliers]
+    rms = float(np.sqrt(np.mean(kept**2))) if kept.size else float("inf")
+    return _Grid(period, phase, rms, float(inliers.sum() / max(beats.size, 1)))
+
+
+def _dominant_grid(beats: np.ndarray, seed: float) -> _Grid:
+    """The tempo that explains the most beats end to end.
+
+    Interval statistics cannot find this, however they are averaged. A track
+    that runs 16 s at 170 before settling at 174 shifts each of those early
+    intervals by 8 ms - less than the 20 ms Beat This! quantises to, and far
+    inside the tolerance _robust_intervals allows (18% of the period). The
+    two tempos are indistinguishable one beat at a time, so the intro is
+    averaged in and a 174 track reads 173.73. Measured: 16 s of 170 gave
+    173.73, 24 s gave 173.59, 16 s of 172 gave 173.87.
+
+    Over distance they separate completely: across a 16 s intro a 170 grid
+    and a 174 grid walk more than a whole beat apart. So the tempo is chosen
+    by how many beats a grid explains from the first to the last, and the
+    intro simply fails to be explained by the one that wins. The same
+    property handles dropped beats (a gap in the slots, which costs nothing)
+    and spurious ones (a slot that no grid explains).
+
+    The sweep is +/-3% of the interval mean, which is where a contaminated
+    seed can land while the real tempo is still in range, at a resolution of
+    0.01% - two orders below the smallest tempo difference worth reporting.
+    """
+    if beats.size < 8:
+        return _fit_grid(beats, seed, 0.0)
+
+    relative = beats - beats[0]
+    best: _Grid | None = None
+
+    for factor in np.linspace(0.97, 1.03, 601):
+        period = seed * factor
+        slot = np.round(relative / period)
+        # The phase every candidate deserves: a grid is only as good as its
+        # best alignment, so it is offered the offset most beats agree on
+        # rather than being pinned to the first one.
+        phase = float(np.median(relative - period * slot))
+        residual = relative - (phase + period * slot)
+        inliers = np.abs(residual) <= _GRID_TOLERANCE
+        count = int(inliers.sum())
+
+        if best is None or count > best.ratio * beats.size:
+            best = _Grid(period, phase, 0.0, count / beats.size)
+
+    assert best is not None
+    return _fit_grid(beats, best.period, best.phase)
+
+
+def _snap_to_grid(seconds: float, grid: _Grid, origin: float) -> float:
+    """The grid slot nearest a reported beat, in source seconds."""
+    relative = seconds - origin
+    slot = round((relative - grid.phase) / grid.period)
+    return float(origin + grid.phase + grid.period * slot)
+
+
 def _estimate_meter(beats: np.ndarray, downbeats: np.ndarray) -> tuple[int | None, float]:
     if beats.size < 3 or downbeats.size < 2:
         return None, 0.0
@@ -429,24 +584,8 @@ def derive_musical_time(
     beats = np.unique(np.asarray(beats, dtype=np.float64))
     downbeats = np.unique(np.asarray(downbeats, dtype=np.float64))
     _intervals, robust_cv, inlier_ratio = _robust_intervals(beats)
-    # The mean, not the median. Beat This! reports every beat as an integer
-    # frame index divided by 50 fps (postprocessor.py: beat_time =
-    # beat_frame / self.fps), so the intervals arrive quantised to 20 ms and
-    # a median snaps to a whole number of frames. At 174 BPM the true beat is
-    # 17.24 frames, the detector emits a mix of 17s and 18s, and the median
-    # takes the 17 that most of them are - reporting 176.47 BPM. Only tempos
-    # whose period is an exact multiple of 20 ms survived that: 120 and 100
-    # came back right while 128 read 130.43, 140 read 142.86 and 96 read
-    # 96.77. Averaging the same intervals recovers the sub-frame remainder.
-    #
-    # A least-squares fit over beat index would too, and more precisely on a
-    # clean track, but it reads tempo from the whole span: one dropped beat
-    # shifts every index after it. Measured on a 180 s track at 174 BPM with
-    # 5% of beats dropped it returned 166.20, and with 5% spurious beats
-    # 183.57, where this mean stayed within 0.62 BPM of true in both. The
-    # median still does the outlier rejection in _robust_intervals, which is
-    # where robustness belongs; this only has to average what survived it.
-    detected_bpm = 60.0 / float(np.mean(_intervals))
+    grid = _dominant_grid(beats, float(np.mean(_intervals)))
+    detected_bpm = 60.0 / grid.period
     meter, meter_confidence = _estimate_meter(beats, downbeats)
     stability = float(np.exp(-8.0 * robust_cv))
     confidence = float(
@@ -459,8 +598,19 @@ def derive_musical_time(
             1.0,
         )
     )
-    bar_one = float(downbeats[0] if downbeats.size else beats[0])
+    # The grid's own position, not one reported beat. Every beat Beat This!
+    # emits is an integer frame, so a raw downbeat is only ever accurate to
+    # half a frame - 10 ms, 441 samples at 44.1 kHz - and that is what a host
+    # would place bar 1 on. The fitted phase is the average of every beat the
+    # grid explains, so its error falls as the track gets longer: measured at
+    # 0.2 ms over 240 s rather than 10 ms. Snapped to the grid slot nearest
+    # the first downbeat, so bar 1 still lands on a downbeat.
+    bar_one = _snap_to_grid(
+        float(downbeats[0]) if downbeats.size else float(beats[0]), grid, float(beats[0])
+    )
     return BeatAnalysis(
+        grid_rms=round(grid.rms, 6),
+        grid_ratio=round(grid.ratio, 4),
         bpm=round(detected_bpm, 3),
         detected_bpm=round(detected_bpm, 3),
         half_time_bpm=round(detected_bpm * 0.5, 3),
@@ -566,15 +716,22 @@ def analyse_beats(
             beat_logits.float(), downbeat_logits.float()
         )
         beat_frames = np.clip(
-            np.rint(np.asarray(beats) * 50).astype(int), 0, beat_logits.numel() - 1
+            np.rint(np.asarray(beats) * _BEAT_FPS).astype(int),
+            0,
+            beat_logits.numel() - 1,
         )
         probabilities = torch.sigmoid(beat_logits[beat_frames]).detach().cpu().numpy()
         model_confidence = float(np.mean(probabilities)) if probabilities.size else 0.0
         if progress:
             progress(0.92, "Interpreting tempo, meter, and downbeats")
+        # Off the frame grid before anything reads them: the tempo fit, the
+        # anchor, the overlay and the MIDI export all inherit whatever
+        # resolution the beats arrive with.
+        beat_curve = beat_logits.detach().float().cpu().numpy()
+        downbeat_curve = downbeat_logits.detach().float().cpu().numpy()
         return derive_musical_time(
-            np.asarray(beats),
-            np.asarray(downbeats),
+            _sub_frame_events(np.asarray(beats), beat_curve),
+            _sub_frame_events(np.asarray(downbeats), downbeat_curve),
             model_confidence,
             model=spec.name,
             device=selected_device.type,
