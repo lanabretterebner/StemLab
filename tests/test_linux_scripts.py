@@ -31,8 +31,20 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _write(path: Path, text: str = "x") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
 def _install(home: Path, *, version: str = "0.1.7", flavor: str = "cuda") -> Path:
-    """A synthetic install, laid out the way the bundle's install.sh leaves it."""
+    """A synthetic install, as the bundle plus a run of the app leaves it.
+
+    Both halves matter. install.sh lays down the first group; the second is
+    what the Engine and the plugin write afterwards, and every one of those
+    paths is a place an uninstaller has to know about without the bundle's
+    file list mentioning it.
+    """
     app = home / ".local/share/StemLab"
 
     (app / "Engine/bin").mkdir(parents=True)
@@ -44,19 +56,39 @@ def _install(home: Path, *, version: str = "0.1.7", flavor: str = "cuda") -> Pat
     for name in ("StemLab", "install.sh", "README.txt", "uninstall.sh", "update.sh"):
         (app / name).touch()
 
+    # Written by the running app into the same folder - see paths.py's
+    # recursive_models_dir and StemLabPaths' remoteStatusDirectory.
+    _write(app / "models/recursive/UVR-BVE-4B_SN-44100-2.pth")
+    _write(app / "Ableton/status.json")
+
     config = home / ".config/StemLab"
     config.mkdir(parents=True)
     (config / "portable_engine_path.txt").write_text(f"{app}/Engine/bin/python3\n")
+    (config / "torch_compile.txt").write_text("1\n")
 
     (home / ".vst3").mkdir(parents=True)
     (home / ".vst3/StemLab.vst3").mkdir()
+
+    _write(home / ".cache/StemLab/analysis/analysis.sqlite3")
+    _write(home / ".cache/StemLab/analysis/torchinductor/kernel.so")
+    _write(home / ".cache/StemLab/analysis/stemlab_warm_roformer.json")
+
+    _write(home / ".cache/bs-roformer-infer/model.ckpt")
+    _write(home / ".cache/huggingface/hub/models--adefossez--HTDemucs-6s/blob")
+    _write(home / ".cache/torch/hub/checkpoints/5c90dfd2-34c22ccb.th")
 
     return app
 
 
 def _run(script: Path, home: Path, *args: str, env: dict[str, str] | None = None):
+    temp = home / "tmp"
+    temp.mkdir(parents=True, exist_ok=True)
+
     environment = {
         "HOME": str(home),
+        # Pinned inside the fixture: the script sweeps $TMPDIR/StemLab, and a
+        # test that reached the real /tmp would delete a running app's files.
+        "TMPDIR": str(temp),
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         **(env or {}),
     }
@@ -108,20 +140,7 @@ class TestUninstallKeepsWhatIsNotTheApps:
 
         assert _run(UNINSTALL, home, "--everything", "--yes").returncode == 0
         assert not (home / "Music/StemLab").exists()
-
-    def test_model_weights_are_kept_unless_asked_for(self, tmp_path):
-        home = tmp_path / "home"
-        _install(home)
-
-        weights = home / ".cache/bs-roformer-infer"
-        weights.mkdir(parents=True)
-        (weights / "model.ckpt").write_text("x" * 64)
-
-        assert _run(UNINSTALL, home, "--yes").returncode == 0
-        assert (weights / "model.ckpt").exists()
-
-        assert _run(UNINSTALL, home, "--models", "--yes").returncode == 0
-        assert not weights.exists()
+        assert not (home / ".local/share/StemLab").exists()
 
     def test_the_plugin_and_settings_go(self, tmp_path):
         home = tmp_path / "home"
@@ -130,6 +149,114 @@ class TestUninstallKeepsWhatIsNotTheApps:
         assert _run(UNINSTALL, home, "--yes").returncode == 0
         assert not (home / ".vst3/StemLab.vst3").exists()
         assert not (home / ".config/StemLab").exists()
+
+
+class TestUninstallTakesAllOfIt:
+    """The default is meant to leave nothing of StemLab except your audio.
+
+    Each path here has been reachable only through a flag, or through no flag
+    at all, at some point in this script's life - which is the failure this
+    class exists to catch. A location the app writes to and the uninstaller
+    does not know about is invisible: it shows up as disk that never comes
+    back.
+    """
+
+    def _remaining(self, home: Path) -> list[str]:
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+
+        return sorted(str(path.relative_to(home)) for path in home.rglob("*") if path.is_file())
+
+    def test_nothing_of_the_app_survives_the_default(self, tmp_path):
+        home = tmp_path / "home"
+        _install(home)
+
+        media = _write(home / "Music/StemLab/Recordings/take.wav", "audio")
+        foreign = _write(home / ".cache/huggingface/hub/models--someone--LLM/blob")
+        other_torch = _write(home / ".cache/torch/hub/checkpoints/resnet50.pth")
+
+        remaining = self._remaining(home)
+
+        assert remaining == sorted(
+            str(path.relative_to(home)) for path in (media, foreign, other_torch)
+        ), remaining
+
+    def test_the_engines_own_directories_go_too(self, tmp_path):
+        # models/ and Ableton/ are written into the install folder by the app
+        # rather than laid down by the bundle, so an uninstaller working from
+        # the bundle's file list alone reads them as the user's and keeps
+        # half a gigabyte of weights forever.
+        home = tmp_path / "home"
+        app = _install(home)
+
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+        assert not (app / "models").exists()
+        assert not (app / "Ableton").exists()
+
+    def test_the_analysis_cache_and_compiled_kernels_go(self, tmp_path):
+        home = tmp_path / "home"
+        _install(home)
+
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+        assert not (home / ".cache/StemLab").exists()
+
+    def test_the_old_dotfile_directory_goes(self, tmp_path):
+        # Nothing writes ~/.stemlab any more, so it is only ever on a machine
+        # that ran a version which did - which is exactly the machine whose
+        # owner is uninstalling.
+        home = tmp_path / "home"
+        _install(home)
+        _write(home / ".stemlab/analysis.sqlite3")
+
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+        assert not (home / ".stemlab").exists()
+
+    def test_temporary_files_go(self, tmp_path):
+        home = tmp_path / "home"
+        _install(home)
+        _write(home / "tmp/StemLab/Ableton/status.json")
+
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+        assert not (home / "tmp/StemLab").exists()
+
+
+class TestUninstallLeavesOtherApplicationsAlone:
+    """The shared caches, which are not StemLab's to empty."""
+
+    def test_only_our_entry_leaves_the_huggingface_cache(self, tmp_path):
+        home = tmp_path / "home"
+        _install(home)
+
+        theirs = _write(home / ".cache/huggingface/hub/models--meta--Llama/blob")
+
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+        assert theirs.exists()
+        assert not (home / ".cache/huggingface/hub/models--adefossez--HTDemucs-6s").exists()
+
+    def test_only_our_checkpoint_leaves_the_torch_hub_cache(self, tmp_path):
+        home = tmp_path / "home"
+        _install(home)
+
+        theirs = _write(home / ".cache/torch/hub/checkpoints/resnet50-0676ba61.pth")
+
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+        assert theirs.exists()
+        assert not (home / ".cache/torch/hub/checkpoints/5c90dfd2-34c22ccb.th").exists()
+
+
+class TestKeepModels:
+    def test_weights_stay_but_the_app_still_goes(self, tmp_path):
+        home = tmp_path / "home"
+        app = _install(home)
+
+        assert _run(UNINSTALL, home, "--keep-models", "--yes").returncode == 0
+
+        assert (home / ".cache/bs-roformer-infer/model.ckpt").exists()
+        assert (app / "models/recursive/UVR-BVE-4B_SN-44100-2.pth").exists()
+        assert (home / ".cache/huggingface/hub/models--adefossez--HTDemucs-6s").exists()
+
+        assert not (app / "Engine").exists()
+        assert not (home / ".vst3/StemLab.vst3").exists()
+        assert not (home / ".cache/StemLab").exists()
 
 
 class TestUninstallRefusesWhatIsNotAnInstall:
@@ -143,9 +270,7 @@ class TestUninstallRefusesWhatIsNotAnInstall:
         elsewhere.mkdir()
         (elsewhere / "thesis.txt").write_text("years of work")
 
-        result = _run(
-            UNINSTALL, home, "--yes", env={"STEMLAB_INSTALL_DIR": str(elsewhere)}
-        )
+        result = _run(UNINSTALL, home, "--yes", env={"STEMLAB_INSTALL_DIR": str(elsewhere)})
 
         assert result.returncode == 0
         assert (elsewhere / "thesis.txt").exists()
@@ -186,6 +311,51 @@ class TestUninstallRefusesWhatIsNotAnInstall:
 
         assert result.returncode == 0
         assert "not installed" in result.stdout
+
+
+@pytest.fixture(scope="module")
+def build_script() -> str:
+    return (ROOT / "scripts" / "linux" / "build.sh").read_text()
+
+
+class TestBothScriptsShipWithTheApp:
+    """A script only in the repository helps nobody uninstalling.
+
+    build.sh assembles the bundle that becomes the release tarball, so these
+    two copy lines are the whole of "shipped". Losing one is silent: the
+    bundle still builds, installs and runs, and the absence shows up only
+    when somebody goes looking for how to remove it.
+    """
+
+    @pytest.mark.parametrize("name", ["uninstall.sh", "update.sh"])
+    def test_it_is_copied_into_the_bundle(self, build_script, name):
+        assert f'cp "$REPO_ROOT/scripts/linux/{name}" "$DIST_DIR/{name}"' in build_script
+
+    @pytest.mark.parametrize("name", ["uninstall.sh", "update.sh"])
+    def test_it_is_made_executable(self, build_script, name):
+        line = next(
+            row for row in build_script.splitlines() if row.startswith("chmod +x") and name in row
+        )
+
+        assert f'"$DIST_DIR/{name}"' in line
+
+    def test_the_uninstaller_knows_the_bundle_it_will_be_removing(self):
+        # Its BUNDLE_ENTRIES is a hand-written copy of what the bundle holds,
+        # so a file added to the bundle and not to that list is left behind.
+        uninstall = UNINSTALL.read_text()
+        listed = uninstall.split("BUNDLE_ENTRIES=(")[1].split(")")[0].split()
+
+        for name in (
+            "Engine",
+            "StemLab",
+            "StemLab.vst3",
+            "install.sh",
+            "uninstall.sh",
+            "update.sh",
+            "README.txt",
+            ".stemlab-version",
+        ):
+            assert name in listed
 
 
 class TestUpdateComparesVersions:
@@ -245,9 +415,7 @@ class TestUpdateComparesVersions:
 
         assert "(rocm)" in self._check(home, "v0.1.9", shipped).stdout
 
-    def test_an_install_without_a_version_marker_reads_the_readme(
-        self, tmp_path, shipped
-    ):
+    def test_an_install_without_a_version_marker_reads_the_readme(self, tmp_path, shipped):
         # Bundles built before the marker existed, which are the ones most
         # likely to be out of date.
         home = tmp_path / "home"

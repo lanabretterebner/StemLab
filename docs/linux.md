@@ -166,16 +166,26 @@ The bundle carries both scripts next to the app:
 ~/.local/share/StemLab/update.sh              # update to the latest release
 ~/.local/share/StemLab/update.sh --check      # just say whether one is out
 
-~/.local/share/StemLab/uninstall.sh           # the app, the VST3, the settings
-~/.local/share/StemLab/uninstall.sh --models  # ... and the downloaded weights
-~/.local/share/StemLab/uninstall.sh --everything   # ... and your audio
-~/.local/share/StemLab/uninstall.sh --dry-run # print what would go
+~/.local/share/StemLab/uninstall.sh                # all of it
+~/.local/share/StemLab/uninstall.sh --keep-models  # ... but keep the weights
+~/.local/share/StemLab/uninstall.sh --everything   # ... and take your audio
+~/.local/share/StemLab/uninstall.sh --dry-run      # print what would go
 ```
 
 `update.sh` keeps the GPU flavor the install already has, so a `cuda` install
-does not quietly become a `cpu` one. `uninstall.sh` keeps your model weights
-unless asked, because they are gigabytes over a slow download, and keeps your
-audio unless you pass `--everything`.
+does not quietly become a `cpu` one.
+
+`uninstall.sh` with no arguments removes everything StemLab put on the
+machine: the standalone app, the VST3, the Engine, the settings, the model
+weights, the analysis cache and the compiled kernels. The single exception is
+your audio under `<music>/StemLab`, which a DAW project may reference by path
+- `--everything` is the only mode that takes that, and it says so first.
+
+Two of the caches are shared. `~/.cache/huggingface` and
+`~/.cache/torch/hub/checkpoints` hold every torch application's downloads, so
+only StemLab's own entries in them are removed; anything else on the machine
+keeps its models. `--keep-models` is there for a reinstall that should not
+re-download several gigabytes.
 
 ## REAPER
 
