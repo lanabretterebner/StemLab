@@ -5596,7 +5596,7 @@ bool StemLabAudioProcessor::insertSelectedStemsIntoReaper()
     struct Node
     {
         juce::String name;
-        juce::String colourStem;
+        juce::String colorStem;
         juce::File file;
         bool selected = false;
         std::vector<int> children;
@@ -5614,7 +5614,7 @@ bool StemLabAudioProcessor::insertSelectedStemsIntoReaper()
         Node node;
         node.name = baseName + " - " + stemName.substring(0, 1).toUpperCase() +
                     stemName.substring(1).toLowerCase();
-        node.colourStem = stemName;
+        node.colorStem = stemName;
         node.selected = isStemEnabled(i);
 
         for (const auto& entry : *allStems)
@@ -5641,7 +5641,7 @@ bool StemLabAudioProcessor::insertSelectedStemsIntoReaper()
     {
         Node node;
         node.name = item.label.trim().isNotEmpty() ? item.label.trim() : juce::String("Stem");
-        node.colourStem = item.rootStem;
+        node.colorStem = item.rootStem;
         node.file = item.file;
         node.selected = item.selected;
 
@@ -5686,7 +5686,7 @@ bool StemLabAudioProcessor::insertSelectedStemsIntoReaper()
 
         stemlab::reaper::StemToInsert entry;
         entry.name = node.name;
-        entry.colourStem = node.colourStem;
+        entry.colorStem = node.colorStem;
         entry.file = node.file.existsAsFile() ? node.file : juce::File();
         entry.muted = !keptChildren.empty();
         entry.folderDepth = keptChildren.empty() ? 0 : 1;
@@ -5901,9 +5901,9 @@ bool StemLabAudioProcessor::isStemEnabled(int index) const
     return stemEnabled[static_cast<size_t>(index)].load();
 }
 
-void StemLabAudioProcessor::setWaveformColourIndex(int index)
+void StemLabAudioProcessor::setWaveformColorIndex(int index)
 {
-    waveformColourIndex.store(juce::jlimit(0, waveformColourCount - 1, index));
+    waveformColorIndex.store(juce::jlimit(0, waveformColorCount - 1, index));
 
     sendChangeMessage();
 }
@@ -6018,7 +6018,7 @@ void StemLabAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     rootObject->setProperty("refinement", refinementEnabled.load());
     rootObject->setProperty("fusedStemNormalisation", fusedStemNormalisation.load());
     rootObject->setProperty("separatorEngine", separatorEngineIndex.load());
-    rootObject->setProperty("waveformColour", waveformColourIndex.load());
+    rootObject->setProperty("waveformColor", waveformColorIndex.load());
     rootObject->setProperty("waveformZoom", waveformZoom.load());
     rootObject->setProperty("gridMode", waveformGridMode.load());
     rootObject->setProperty("manualGridBpm", manualGridBpm.load());
@@ -6113,13 +6113,26 @@ void StemLabAudioProcessor::setStateInformation(const void* data, int sizeInByte
                           : manualGridBarOne.load());
     }
 
-    if (object->hasProperty("waveformColour"))
+    /*  The old spelling is still read, because it is on disk. Every project
+        saved before the rename carries "waveformColour", and a load that only
+        looked for the new key would silently reset those to the default
+        palette - a setting quietly losing its value on upgrade. New saves
+        write the new key only, so the old one ages out on its own.
+    */
+    for (const auto* key : { "waveformColor", "waveformColour" })
     {
-        setWaveformColourIndex(static_cast<int>(object->getProperty("waveformColour")));
+        if (object->hasProperty(key))
+        {
+            setWaveformColorIndex(static_cast<int>(object->getProperty(key)));
+            break;
+        }
+    }
 
+    // Restored unconditionally. The brace this sat inside made the zoom
+    // depend on a waveform palette having been saved as well, so any state
+    // without that property came back at the default zoom.
     if (object->hasProperty("waveformZoom"))
         setWaveformZoom(static_cast<double>(object->getProperty("waveformZoom")));
-    }
 
     if (object->hasProperty("editorScale"))
     {

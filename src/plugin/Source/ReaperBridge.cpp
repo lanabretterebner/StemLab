@@ -79,16 +79,16 @@ namespace
 
     // Same palette the Ableton Remote Script uses, so a user moving between
     // hosts sees the same stem identity. The values live in StemLabTheme.
-    bool stemColour (const juce::String& stem, int& r, int& g, int& b)
+    bool stemColor (const juce::String& stem, int& r, int& g, int& b)
     {
-        const auto colour = stemlab::theme::palette::stemIdentityColour (stem);
+        const auto color = stemlab::theme::palette::stemIdentityColor (stem);
 
-        if (! colour.has_value())
+        if (! color.has_value())
             return false;
 
-        r = colour->getRed();
-        g = colour->getGreen();
-        b = colour->getBlue();
+        r = color->getRed();
+        g = color->getGreen();
+        b = color->getBlue();
         return true;
     }
 }
@@ -342,7 +342,7 @@ InsertResult insertStemTracks (
         {
             int r = 0, g = 0, b = 0;
 
-            if (stemColour (stem.colourStem, r, g, b))
+            if (stemColor (stem.colorStem, r, g, b))
             {
                 api.SetMediaTrackInfo_Value (
                     track,

@@ -1204,7 +1204,7 @@ class StemLabRemote(ControlSurface):
 
     @staticmethod
     def _stem_color(name):
-        # RGB values. Live snaps these to its nearest available track colour.
+        # RGB values. Live snaps these to its nearest available track color.
         colors = {
             "vocals": 0xF15BAA,
             "drums": 0xFF9A42,

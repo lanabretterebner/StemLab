@@ -61,7 +61,7 @@ namespace stemlab::reaper
     struct StemToInsert
     {
         juce::String name;               // track/take name, already pretty
-        juce::String colourStem;         // identity-palette key ("vocals"...)
+        juce::String colorStem;         // identity-palette key ("vocals"...)
         juce::File file;                 // empty = folder track with no item
 
         /*  A stem that was split further is still inserted, so the user can

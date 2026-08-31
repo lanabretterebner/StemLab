@@ -50,7 +50,7 @@ std::vector<float> sine(double frequencyHz, double sampleRate, double seconds)
     return samples;
 }
 
-/** Mean brightness over a profile, which is what a lane's colour averages to. */
+/** Mean brightness over a profile, which is what a lane's color averages to. */
 float meanBrightness(const SpectralProfile& profile)
 {
     if (profile.isEmpty())
@@ -150,7 +150,7 @@ int main()
         assert(spectralCentroid(magnitudes.data(), 1, 100.0) == 0.0);
     }
 
-    // ------------------------------------------------------ the colour map
+    // ------------------------------------------------------ the color map
 
     {
         // Monotonic across the band, and clamped outside it.
@@ -229,7 +229,7 @@ int main()
 
         assert(!low.isEmpty() && !high.isEmpty());
 
-        // The whole point of the palette: a bass tone colours differently
+        // The whole point of the palette: a bass tone colors differently
         // from a bright one, rather than both following their x position.
         assert(meanBrightness(low) < 0.40f);
         assert(meanBrightness(high) > 0.75f);

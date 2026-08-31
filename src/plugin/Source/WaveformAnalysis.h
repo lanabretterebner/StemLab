@@ -7,11 +7,11 @@
 #include <vector>
 
 /*
-    Spectral colouring for the lane waveforms.
+    Spectral coloring for the lane waveforms.
 
     The "Spectrum" palette used to be a fixed violet-to-amber sweep across
     the lane's width: pretty, and completely unrelated to the audio - a sine
-    tone and a drum loop came out identically coloured. This computes what
+    tone and a drum loop came out identically colored. This computes what
     the palette was pretending to show, so a bass lane really does read
     violet and a hi-hat lane really does read amber.
 
@@ -27,7 +27,7 @@ namespace stemlab::waveform
 constexpr int spectrumFftOrder = 10;
 constexpr int spectrumFftSize = 1 << spectrumFftOrder;
 
-/** Frames are half-overlapped, so colour follows a transient rather than
+/** Frames are half-overlapped, so color follows a transient rather than
     smearing a window's worth of neighbouring material over it. */
 constexpr int spectrumHop = spectrumFftSize / 2;
 
@@ -35,7 +35,7 @@ constexpr int spectrumHop = spectrumFftSize / 2;
     hop stretches, which costs time resolution nobody can see anyway. */
 constexpr std::size_t spectrumMaxFrames = 30000;
 
-/** The band the colour ramp spans. Below and above this everything would
+/** The band the color ramp spans. Below and above this everything would
     pile up at one end of the hue sweep. */
 constexpr double spectrumLowHz = 60.0;
 constexpr double spectrumHighHz = 8000.0;
@@ -47,7 +47,7 @@ constexpr double bandLowCrossoverHz = 200.0;
 constexpr double bandHighCrossoverHz = 2000.0;
 
 /** One frame's low/mid/high balance, each 0..1 with the dominant band at 1
-    - shares of the loudest band, not absolute levels, because colour only
+    - shares of the loudest band, not absolute levels, because color only
     needs the ratio and painting then never has to renormalise. */
 struct BandLevels
 {
@@ -158,9 +158,9 @@ inline double spectralCentroid(const float* magnitudes, int binCount, double bin
  *
  * Energy is summed per band (bin 0 skipped, as for the centroid) and scaled
  * so the loudest band reads 1. The ratios come back through a square root:
- * colour tracks amplitude, not power, so a band 6dB down reads half as
+ * color tracks amplitude, not power, so a band 6dB down reads half as
  * strong rather than a quarter. A frame with no energy returns all zeros,
- * which the caller treats as "no opinion" rather than as a colour.
+ * which the caller treats as "no opinion" rather than as a color.
  */
 inline BandLevels bandLevelsForSpectrum(const float* magnitudes, int binCount,
                                         double binWidthHz)
@@ -190,7 +190,7 @@ inline BandLevels bandLevelsForSpectrum(const float* magnitudes, int binCount,
             static_cast<float>(std::sqrt(energy[2] / top))};
 }
 
-/** Place a centroid on the 0..1 colour ramp, logarithmically - an octave is
+/** Place a centroid on the 0..1 color ramp, logarithmically - an octave is
     an octave whether it sits at 100Hz or at 4kHz. */
 inline float brightnessForCentroid(double centroidHz)
 {
@@ -308,7 +308,7 @@ public:
     }
 
     /** The finished profile. A window running past the end of the file is
-        zero-padded rather than dropped, so the tail of a file is coloured
+        zero-padded rather than dropped, so the tail of a file is colored
         like the rest of it. */
     SpectralProfile finish()
     {
@@ -373,7 +373,7 @@ private:
     SpectralProfile profile;
 
     // Silent frames inherit both measures, same reasoning for both: a gap
-    // between two hi-hat hits must not flash a wrong colour.
+    // between two hi-hat hits must not flash a wrong color.
     float previousBrightness = 0.5f;
     BandLevels previousBands;
 };
@@ -549,7 +549,7 @@ inline PeakEnvelope analysePeaks(const float* const* channelData, int channelCou
     return envelope;
 }
 
-/** Everything a lane needs to draw one file: shape and colour. */
+/** Everything a lane needs to draw one file: shape and color. */
 struct WaveformProfile
 {
     double lengthSeconds = 0.0;
@@ -560,7 +560,7 @@ struct WaveformProfile
 };
 
 /** Brightness at a time in the file; a neutral 0.5 when there is no profile
-    yet, so an unanalysed lane draws in one calm colour rather than flashing. */
+    yet, so an unanalysed lane draws in one calm color rather than flashing. */
 inline float brightnessAt(const SpectralProfile& profile, double seconds)
 {
     if (profile.isEmpty() || !(profile.secondsPerFrame > 0.0))
@@ -576,7 +576,7 @@ inline float brightnessAt(const SpectralProfile& profile, double seconds)
 
 /** Band balance at a time in the file; the neutral default (every band at 1)
     when there is no profile yet, so an unanalysed lane draws in one calm
-    colour rather than flashing. */
+    color rather than flashing. */
 inline BandLevels bandsAt(const SpectralProfile& profile, double seconds)
 {
     if (profile.bands.empty() || !(profile.secondsPerFrame > 0.0))

@@ -11,15 +11,15 @@
     built from is no longer in the repository, so these values are the only
     record of the tokens - treat this file as the spec, not as a copy of one.
 
-    The editor deliberately contains no colour or font literals; layout
+    The editor deliberately contains no color or font literals; layout
     values are tokens apart from a few small one-off trims at their call
     sites. Restyle by changing values here and in the drawing code of
     StemLabLookAndFeel / StemLabWidgets; only re-arrangements of the
     interface itself touch the editor.
 
-        colours   Ground/surface/text, the accent and neutral ramps, and
-                  per-component colour roles.
-        palette   The cross-DAW stem identity colours shared with the
+        colors   Ground/surface/text, the accent and neutral ramps, and
+                  per-component color roles.
+        palette   The cross-DAW stem identity colors shared with the
                   Ableton Remote Script.
         fonts     Inter-based type scale (weight 500 is expressed as
                   juce::Font::bold and resolved to Inter Medium by
@@ -30,7 +30,7 @@
 
 namespace stemlab::theme
 {
-    namespace colours
+    namespace colors
     {
         // Nocturne ground and surface.
         inline juce::Colour ground() { return juce::Colour(0xff161826); }
@@ -69,7 +69,7 @@ namespace stemlab::theme
         inline juce::Colour text50() { return text().withAlpha(0.50f); }
         inline juce::Colour text45() { return text().withAlpha(0.45f); }
 
-        // Menu section headings. Deliberately above the disabled-item colour
+        // Menu section headings. Deliberately above the disabled-item color
         // (text at metrics::disabledOpacity, which is also 45%), so a heading
         // never reads as an unavailable command: 60% is 5.49:1 on surface(),
         // against 3.71:1, and 11px headings need 4.5:1 to clear WCAG AA.
@@ -142,7 +142,7 @@ namespace stemlab::theme
     namespace palette
     {
         /*
-            Cross-DAW stem identity colours: the track colours REAPER and
+            Cross-DAW stem identity colors: the track colors REAPER and
             Ableton create for inserted stems, so a user moving between hosts
             sees the same stem identity.
 
@@ -152,7 +152,7 @@ namespace stemlab::theme
             the interface accent: these belong to the user's DAW project,
             not to StemLab's theme.
         */
-        inline std::optional<juce::Colour> stemIdentityColour(const juce::String& stemName)
+        inline std::optional<juce::Colour> stemIdentityColor(const juce::String& stemName)
         {
             struct Entry
             {
@@ -178,18 +178,18 @@ namespace stemlab::theme
     namespace waveform
     {
         /*
-            User-selectable lane waveform colours.
+            User-selectable lane waveform colors.
 
             The redesign shipped with a single accent waveform, which lost
-            the one thing colour was carrying: which lane you are looking at
+            the one thing color was carrying: which lane you are looking at
             in a tall adaptive tree. Index 0 is that accent look; every
-            palette colours the whole lane at full strength - playback
+            palette colors the whole lane at full strength - playback
             position is the playhead's job, not a brightness split.
 
-            Beyond the accent and the per-stem identity colours, every
+            Beyond the accent and the per-stem identity colors, every
             palette is driven by the audio itself: Spectrum sweeps a hue
             from the spectral centroid, and RGB / 3-Band paint the DJ-
-            deck-style low/mid/high balance. The solid single-colour fills
+            deck-style low/mid/high balance. The solid single-color fills
             that used to sit here said nothing a lane name did not.
 
             The index persists in plugin state, so the order of these must
@@ -198,7 +198,7 @@ namespace stemlab::theme
         constexpr int paletteCount = 5;
 
         // The two palettes the painter has to treat specially: RGB blends
-        // one colour per bar from the band balance, 3-Band nests one bar
+        // one color per bar from the band balance, 3-Band nests one bar
         // per band.
         constexpr int paletteRgb = 3;
         constexpr int paletteThreeBand = 4;
@@ -212,20 +212,20 @@ namespace stemlab::theme
         }
 
         /**
-         * The played-portion colour of one waveform bar.
+         * The played-portion color of one waveform bar.
          *
          * @param index      selected palette
          * @param stemName   identity key ("vocals"...) for Stem Color
          * @param brightness 0..1 spectral brightness of the audio under this
          *                   bar, for Spectrum; 0.5 means "not analysed yet"
          */
-        inline juce::Colour playedColour(int index, const juce::String& stemName,
+        inline juce::Colour playedColor(int index, const juce::String& stemName,
                                          float brightness)
         {
             switch (juce::jlimit(0, paletteCount - 1, index))
             {
             case 1:
-                return palette::stemIdentityColour(stemName).value_or(colours::accent());
+                return palette::stemIdentityColor(stemName).value_or(colors::accent());
 
             case 2:
                 /*
@@ -235,19 +235,19 @@ namespace stemlab::theme
 
                     This used to be driven by the bar's position across the
                     lane, which looked like a spectrum and meant nothing: a
-                    sine tone and a drum loop came out identically coloured.
+                    sine tone and a drum loop came out identically colored.
                     The value now comes from stemlab::waveform::brightnessAt
                     over a real FFT of the file.
 
                     Saturation and value are fixed so no bar can land on an
-                    unreadable colour, whatever the audio does.
+                    unreadable color, whatever the audio does.
                 */
                 return juce::Colour::fromHSV(
                     0.72f - 0.62f * juce::jlimit(0.0f, 1.0f, brightness), 0.55f, 0.98f, 1.0f);
 
             case 0:
             default:
-                return colours::wavePlayed();
+                return colors::wavePlayed();
             }
         }
 
@@ -258,7 +258,7 @@ namespace stemlab::theme
             quieter bands - band shares of a real mix rarely pass 0.5, and
             linearly that would leave every bar a saturated primary.
         */
-        inline juce::Colour rgbColour(float low, float mid, float high)
+        inline juce::Colour rgbColor(float low, float mid, float high)
         {
             const auto lift = [](float share)
             { return std::pow(juce::jlimit(0.0f, 1.0f, share), 0.6f); };
@@ -266,11 +266,11 @@ namespace stemlab::theme
             return juce::Colour::fromFloatRGBA(lift(high), lift(mid), lift(low), 1.0f);
         }
 
-        // 3-Band's fixed band colours, rekordbox-style: blue lows, amber
+        // 3-Band's fixed band colors, rekordbox-style: blue lows, amber
         // mids, near-white highs.
-        inline juce::Colour bandLowColour() { return juce::Colour(0xff4472ff); }
-        inline juce::Colour bandMidColour() { return juce::Colour(0xffffb454); }
-        inline juce::Colour bandHighColour() { return juce::Colour(0xfff0f4ff); }
+        inline juce::Colour bandLowColor() { return juce::Colour(0xff4472ff); }
+        inline juce::Colour bandMidColor() { return juce::Colour(0xffffb454); }
+        inline juce::Colour bandHighColor() { return juce::Colour(0xfff0f4ff); }
     }
 
     namespace fonts
@@ -568,7 +568,7 @@ namespace stemlab::theme
 
             // Each number sits on a small plate of the well's own ground so
             // it keeps the contrast it was measured for whatever the audio
-            // under it is doing. On a quiet lane the plate is the colour
+            // under it is doing. On a quiet lane the plate is the color
             // already there, so nothing shows; on a loud one it is the only
             // reason the number is still legible.
             constexpr float gridLabelPlateAlpha = 0.90f;
@@ -713,21 +713,21 @@ namespace stemlab::theme
     }
 
     /*
-        colours reopened after metrics: dimming is a colour role and belongs
+        colors reopened after metrics: dimming is a color role and belongs
         beside the tokens it operates on, but it reads alpha constants that
         metrics does not declare until above.
     */
-    namespace colours
+    namespace colors
     {
-        /** The one way to dim a colour for a disabled control. A
-            full-strength colour loses 55% exactly as it always has; a colour
+        /** The one way to dim a color for a disabled control. A
+            full-strength color loses 55% exactly as it always has; a color
             that already carries alpha is floored so it stays legible, and
             capped so it still reads weaker than its live self. */
-        inline juce::Colour dimDisabled(juce::Colour colour)
+        inline juce::Colour dimDisabled(juce::Colour color)
         {
-            const auto alpha = colour.getFloatAlpha();
+            const auto alpha = color.getFloatAlpha();
 
-            return colour.withAlpha(
+            return color.withAlpha(
                 juce::jmin(alpha * metrics::disabledAlphaCeiling,
                            juce::jmax(alpha * metrics::disabledOpacity,
                                       metrics::disabledAlphaFloor)));
@@ -735,9 +735,9 @@ namespace stemlab::theme
 
         /** Paint-code sugar, so a widget can route a token through the dim
             without branching at every call. */
-        inline juce::Colour dimIfDisabled(juce::Colour colour, bool enabled)
+        inline juce::Colour dimIfDisabled(juce::Colour color, bool enabled)
         {
-            return enabled ? colour : dimDisabled(colour);
+            return enabled ? color : dimDisabled(color);
         }
     }
 }

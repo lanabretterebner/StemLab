@@ -98,14 +98,14 @@ namespace stemlab::widgets
 
             void paint(juce::Graphics& g) override
             {
-                namespace colours = theme::colours;
+                namespace colors = theme::colors;
 
                 const auto live = isEnabled();
 
                 auto bounds = getLocalBounds();
                 bounds.removeFromRight(rows::controlWidth);
 
-                g.setColour(live ? colours::text75() : colours::text45());
+                g.setColour(live ? colors::text75() : colors::text45());
                 g.setFont(juce::Font(theme::fonts::make(12.0f, false)));
                 g.drawText(caption, bounds, juce::Justification::centredLeft, true);
 
@@ -119,22 +119,22 @@ namespace stemlab::widgets
 
                     if (chosen)
                     {
-                        g.setColour(live ? colours::primaryFill()
-                                         : colours::primaryFill().withAlpha(0.4f));
+                        g.setColour(live ? colors::primaryFill()
+                                         : colors::primaryFill().withAlpha(0.4f));
                         g.fillRoundedRectangle(cell, 6.0f);
                     }
                     else if (index == hovered && live)
                     {
-                        g.setColour(colours::hoverFill());
+                        g.setColour(colors::hoverFill());
                         g.fillRoundedRectangle(cell, 6.0f);
                     }
 
-                    g.setColour(colours::outline());
+                    g.setColour(colors::outline());
                     g.drawRoundedRectangle(cell.reduced(0.5f), 6.0f, 1.0f);
 
-                    g.setColour(!live      ? colours::text45()
-                                : chosen   ? colours::primaryText()
-                                           : colours::text75());
+                    g.setColour(!live      ? colors::text45()
+                                : chosen   ? colors::primaryText()
+                                           : colors::text75());
 
                     g.setFont(juce::Font(theme::fonts::make(11.0f, chosen)));
                     g.drawText(options[index], cell.toNearestInt(),
@@ -233,7 +233,7 @@ namespace stemlab::widgets
                 auto bounds = getLocalBounds();
                 bounds.removeFromRight(rows::controlWidth);
 
-                g.setColour(isEnabled() ? theme::colours::text75() : theme::colours::text45());
+                g.setColour(isEnabled() ? theme::colors::text75() : theme::colors::text45());
                 g.setFont(juce::Font(theme::fonts::make(12.0f, false)));
                 g.drawText(caption, bounds, juce::Justification::centredLeft, true);
             }
@@ -264,7 +264,7 @@ namespace stemlab::widgets
 
             void paint(juce::Graphics& g) override
             {
-                g.setColour(theme::colours::sectionHeader());
+                g.setColour(theme::colors::sectionHeader());
                 g.setFont(juce::Font(theme::fonts::make(11.0f, true)));
                 g.drawText(text, getLocalBounds().removeFromBottom(16),
                            juce::Justification::centredLeft);
@@ -361,7 +361,7 @@ namespace stemlab::widgets
             wire(abletonIntegration, onAbletonIntegration);
 
             versionLabel.setFont(juce::Font(theme::fonts::make(11.0f, false)));
-            versionLabel.setColour(juce::Label::textColourId, theme::colours::text45());
+            versionLabel.setColour(juce::Label::textColourId, theme::colors::text45());
             versionLabel.setJustificationType(juce::Justification::centredRight);
             addAndMakeVisible(versionLabel);
         }
@@ -516,7 +516,7 @@ namespace stemlab::widgets
 
         titleLabel.setText("StemLab", juce::dontSendNotification);
         titleLabel.setFont(juce::Font(theme::fonts::make(17.0f, true)));
-        titleLabel.setColour(juce::Label::textColourId, theme::colours::text());
+        titleLabel.setColour(juce::Label::textColourId, theme::colors::text());
         addAndMakeVisible(titleLabel);
 
         tabs.onSelected = [this](int index)
@@ -592,20 +592,20 @@ namespace stemlab::widgets
 
     void SettingsPanel::paint(juce::Graphics& g)
     {
-        namespace colours = theme::colours;
+        namespace colors = theme::colors;
 
         // The scrim: dark enough that the card is unmistakably in front, not
         // so dark that the interface behind it disappears and the overlay
         // reads as a different screen.
-        g.setColour(colours::ground().withAlpha(0.82f));
+        g.setColour(colors::ground().withAlpha(0.82f));
         g.fillAll();
 
         const auto bounds = cardBounds().toFloat();
 
-        g.setColour(colours::surface());
+        g.setColour(colors::surface());
         g.fillRoundedRectangle(bounds, card::radius);
 
-        g.setColour(colours::outline());
+        g.setColour(colors::outline());
         g.drawRoundedRectangle(bounds.reduced(0.5f), card::radius, 1.0f);
     }
 

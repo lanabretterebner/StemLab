@@ -13,8 +13,8 @@
 #include "WaveformCache.h"
 
 /**
- * One lane's waveform well: rounded ground-coloured well, 2px rounded bars
- * from the real audio peaks in the selected palette's full colour, and the
+ * One lane's waveform well: rounded ground-colored well, 2px rounded bars
+ * from the real audio peaks in the selected palette's full color, and the
  * shared playhead. Clicks seek the shared transport; dragging exports the
  * stem file to any DAW or file manager.
  */
@@ -65,7 +65,7 @@ public:
 
 private:
     /** One drawn column: the shape of the audio under it, per channel, and
-        the colour that audio calls for. */
+        the color that audio calls for. */
     struct Column
     {
         float minimum[2] = {0.0f, 0.0f};
@@ -494,7 +494,7 @@ private:
     juce::PopupMenu makeMenu();
 
     void showEngineMenu();
-    void showWaveformColourMenu();
+    void showWaveformColorMenu();
     void setSeparatorEngine(int index);
     void stepSeparatorEngine(int delta);
 

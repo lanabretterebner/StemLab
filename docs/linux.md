@@ -220,7 +220,7 @@ configure. Add StemLab to any track and the buttons become:
 3. **Separate**, then audition the lanes (solo/mute per stem, A/B
    **Original | Stems**).
 4. **Insert Stems** - one new track per selected stem appears directly under
-   the source track, colour-coded, aligned with the original item, in a
+   the source track, color-coded, aligned with the original item, in a
    single undo block. **Save Stems** also works if you would rather place
    the files yourself.
 
