@@ -352,6 +352,22 @@ public:
     bool isStemEnabled(int index) const;
 
     void setWaveformColourIndex(int index);
+    /*
+        One zoom for every lane, rather than a window per waveform component.
+
+        Zooming a single lane on its own made the six lanes disagree about
+        which seconds they were showing, which is exactly what a stack of
+        lanes exists to let you compare. 1.0 is the whole file; above that
+        the window follows the playhead. It lives on the processor because
+        it has to survive an editor being closed and reopened, and because
+        the header slider and the lanes are not in the same component tree.
+    */
+    double getWaveformZoom() const noexcept { return waveformZoom.load(); }
+    void setWaveformZoom(double zoom);
+
+    static constexpr double minWaveformZoom = 1.0;
+    static constexpr double maxWaveformZoom = 16.0;
+
     int getWaveformColourIndex() const noexcept { return waveformColourIndex.load(); }
 
     static constexpr int waveformColourCount = 7;
@@ -465,6 +481,7 @@ private:
     std::atomic<bool> beatThisEnabled{false};
     std::atomic<int> sourceAnalysisMode{analysisFast};
     std::atomic<int> tempoInterpretation{tempoDetected};
+    std::atomic<double> waveformZoom{1.0};
     std::atomic<int> waveformGridMode{gridSource};
     std::atomic<double> manualGridBpm{120.0};
     std::atomic<int> manualGridNumerator{4};

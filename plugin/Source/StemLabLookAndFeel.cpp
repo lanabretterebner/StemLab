@@ -707,6 +707,117 @@ void StemLabLookAndFeel::drawTooltip(juce::Graphics& g, const juce::String& text
 
 namespace stemlab::icons
 {
+    juce::Path waveformBars(juce::Rectangle<float> b)
+    {
+        // Five vertical rounded bars at mixed heights, like a tiny waveform.
+        juce::Path p;
+
+        const float heights[] = {0.45f, 0.80f, 1.00f, 0.62f, 0.34f};
+        const float barW = b.getWidth() / 5.0f * 0.55f;
+        const float pitch = b.getWidth() / 5.0f;
+
+        for (int i = 0; i < 5; ++i)
+        {
+            const float h = b.getHeight() * heights[i];
+            const float x = b.getX() + pitch * static_cast<float>(i) + (pitch - barW) * 0.5f;
+            const float y = b.getCentreY() - h * 0.5f;
+
+            p.addRoundedRectangle(x, y, barW, h, barW * 0.5f);
+        }
+
+        return p;
+    }
+
+    juce::Path sliders(juce::Rectangle<float> b)
+    {
+        /*
+         * Three horizontal rails with a knob on each, offset left/right.
+         *
+         * This path is filled, never stroked: a rail is barely more than a
+         * pixel tall, so stroking its outline drew two touching edges plus
+         * a ring around every knob - at 16px that collapsed into a smudge.
+         */
+        juce::Path p;
+
+        const float railHeight = juce::jmax(1.3f, b.getHeight() * 0.10f);
+        const float knobRadius = juce::jmax(1.7f, b.getHeight() * 0.15f);
+
+        const float railY[] = {0.16f, 0.50f, 0.84f};
+        const float knobX[] = {0.70f, 0.30f, 0.56f};
+
+        for (int i = 0; i < 3; ++i)
+        {
+            const float y = b.getY() + b.getHeight() * railY[i];
+
+            p.addRoundedRectangle(b.getX(), y - railHeight * 0.5f, b.getWidth(), railHeight,
+                                  railHeight * 0.5f);
+
+            const float cx = juce::jlimit(b.getX() + knobRadius, b.getRight() - knobRadius,
+                                          b.getX() + b.getWidth() * knobX[i]);
+
+            p.addEllipse(cx - knobRadius, y - knobRadius, knobRadius * 2.0f, knobRadius * 2.0f);
+        }
+
+        return p;
+    }
+
+    juce::Path palette(juce::Rectangle<float> b)
+    {
+        /*
+         * Material Symbols "palette" (Apache 2.0; see docs/third-party.md):
+         * the familiar painter's palette with a thumb cup and four paint
+         * wells, scaled from its 24x24 viewBox into the requested bounds.
+         * Even-odd winding knocks the wells out of the body regardless of
+         * subpath direction.
+         */
+        static const juce::Path glyph = []
+        {
+            auto p = juce::Drawable::parseSVGPath(
+                "M12 22C6.49 22 2 17.51 2 12S6.49 2 12 2s10 4.04 10 9c0 "
+                "3.31-2.69 6-6 6h-1.77c-.28 0-.5.22-.5.5 0 "
+                ".12.05.23.13.33.41.47.64 1.06.64 1.67A2.5 2.5 0 0 1 12 "
+                "22zm-5.5-9c.83 0 1.5-.67 1.5-1.5S7.33 10 6.5 10 5 10.67 5 "
+                "11.5 5.67 13 6.5 13zm3-4C10.33 9 11 8.33 11 7.5S10.33 6 9.5 "
+                "6 8 6.67 8 7.5 8.67 9 9.5 9zm5 0c.83 0 1.5-.67 "
+                "1.5-1.5S15.33 6 14.5 6 13 6.67 13 7.5 13.67 9 14.5 9zm3 "
+                "4c.83 0 1.5-.67 1.5-1.5S18.33 10 17.5 10 16 10.67 16 "
+                "11.5s.67 1.5 1.5 1.5z");
+
+            p.setUsingNonZeroWinding(false);
+            return p;
+        }();
+
+        auto p = glyph;
+        p.applyTransform(glyph.getTransformToScaleToFit(b, true));
+        return p;
+    }
+
+    juce::Path magnifier(juce::Rectangle<float> b)
+    {
+        /*
+         * Stroked, unlike the palette beside it: a magnifier is a lens and a
+         * handle, and filling it would turn the lens into a solid dot.
+         * Drawn as an outline path so the caller can stroke it at any size.
+         */
+        const auto size = juce::jmin(b.getWidth(), b.getHeight());
+        const auto lens = size * 0.62f;
+
+        juce::Path p;
+
+        p.addEllipse(b.getX(), b.getY(), lens, lens);
+
+        // The handle leaves the lens at 45 degrees, from just outside its
+        // lower-right edge to the bottom-right corner of the bounds.
+        const auto centre = juce::Point<float>(b.getX() + lens * 0.5f, b.getY() + lens * 0.5f);
+        const auto radius = lens * 0.5f;
+        const auto diagonal = 0.70710678f;
+
+        p.startNewSubPath(centre.x + radius * diagonal, centre.y + radius * diagonal);
+        p.lineTo(b.getX() + size * 0.96f, b.getY() + size * 0.96f);
+
+        return p;
+    }
+
     juce::Path check(juce::Rectangle<float> b)
     {
         juce::Path p;

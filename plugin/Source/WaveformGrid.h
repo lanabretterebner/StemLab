@@ -11,6 +11,42 @@ constexpr int defaultLaneHeight = 58;
 
 inline int clampLaneHeight(int height) { return std::clamp(height, 42, 180); }
 
+/** The span of a file a lane draws, in seconds. */
+struct ViewWindow
+{
+    double start = 0.0;
+    double end = 0.0;
+
+    double length() const { return end - start; }
+};
+
+/**
+ * Which seconds of a file a lane shows at a given zoom.
+ *
+ * zoom 1 is the whole file. Above that the window is centred on the
+ * playhead and clamped to the file, so it stops following at either end
+ * rather than scrolling past into empty space. playheadNormalised is a
+ * fraction of the file, not seconds: lanes and the transport can disagree
+ * on length by a block or two, and every lane has to land on one window.
+ */
+inline ViewWindow visibleWindow(double totalLengthSeconds, double zoom,
+                                double playheadNormalised)
+{
+    if (!(totalLengthSeconds > 0.0))
+        return {0.0, 0.0};
+
+    const auto span = totalLengthSeconds / std::max(1.0, zoom);
+
+    if (span >= totalLengthSeconds)
+        return {0.0, totalLengthSeconds};
+
+    const auto centre = std::clamp(playheadNormalised, 0.0, 1.0) * totalLengthSeconds;
+
+    const auto start = std::clamp(centre - span * 0.5, 0.0, totalLengthSeconds - span);
+
+    return {start, start + span};
+}
+
 enum class GridLineKind
 {
     subdivision,

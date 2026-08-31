@@ -53,6 +53,9 @@ public:
                           juce::AudioThumbnailCache& thumbnailCache);
 
     void setFile(const juce::File& file);
+
+    /** Put this lane on the shared zoom window, so the stack agrees. */
+    void applySharedZoom();
     void setResizeCallback(std::function<void(int, bool)> callback);
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
@@ -129,6 +132,48 @@ private:
  * This class owns controls and layout only. Audio state and background jobs live
  * in the audio processor; separation algorithms live in the Python package.
  */
+/** Draws one vector glyph from stemlab::icons at a colour the theme owns. */
+class IconComponent final : public juce::Component
+{
+public:
+    using Painter = std::function<juce::Path(juce::Rectangle<float>)>;
+
+    IconComponent() = default;
+
+    /** ``stroked`` glyphs are drawn as outlines - a magnifier's lens and
+        handle are strokes, and filling that path collapses it to a blob. */
+    void setIcon(Painter painter, juce::Colour colourIn, bool stroked = false)
+    {
+        paint_ = std::move(painter);
+        colour = colourIn;
+        stroke = stroked;
+        repaint();
+    }
+
+    void paint(juce::Graphics& g) override
+    {
+        if (!paint_)
+            return;
+
+        const auto path = paint_(getLocalBounds().toFloat().reduced(1.5f));
+
+        g.setColour(colour);
+
+        if (stroke)
+            g.strokePath(path, juce::PathStrokeType(1.4f, juce::PathStrokeType::curved,
+                                                    juce::PathStrokeType::rounded));
+        else
+            g.fillPath(path);
+    }
+
+private:
+    Painter paint_;
+    juce::Colour colour;
+    bool stroke = false;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(IconComponent)
+};
+
 class StemLabAudioProcessorEditor final : public juce::AudioProcessorEditor,
                                           public juce::FileDragAndDropTarget,
                                           private juce::Timer,
@@ -188,6 +233,23 @@ private:
     juce::Label titleLabel;
     juce::Label subtitleLabel;
     juce::TextButton settingsButton{"Settings"};
+
+    // Header bar. Every control here drives state the processor already
+    // keeps - stem enablement, the shared zoom, the separator engine index,
+    // the waveform palette - so none of it is decorative.
+    IconComponent brandGlyph;
+    juce::TextButton selectAllButton{"Select all"};
+    juce::TextButton deselectAllButton{"Deselect all"};
+    juce::Label selectionCountLabel;
+    IconComponent zoomGlyph;
+    juce::Slider zoomSlider{juce::Slider::LinearHorizontal, juce::Slider::NoTextBox};
+    juce::Label zoomReadoutLabel;
+    juce::TextButton enginePrevButton{"<"};
+    juce::TextButton engineNextButton{">"};
+    juce::Label engineLabel;
+    IconComponent paletteGlyph;
+    IconComponent settingsGlyph;
+    juce::TextButton paletteButton;
 
     juce::TextButton captureButton{"Capture"};
     juce::TextButton importFromPcButton{"Import from PC"};

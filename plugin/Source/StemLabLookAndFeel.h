@@ -94,6 +94,19 @@ private:
 /** Vector icons drawn in-toolkit, used by the menu drawing above. */
 namespace stemlab::icons
 {
+    /** Brand glyph: five vertical rounded waveform bars. */
+    juce::Path waveformBars(juce::Rectangle<float> bounds);
+
+    /** Settings: three horizontal slider rails with offset knobs. Filled,
+        not stroked - a rail this thin outlines into a smudge. */
+    juce::Path sliders(juce::Rectangle<float> bounds);
+
+    /** Waveform colour: an artist's palette. */
+    juce::Path palette(juce::Rectangle<float> bounds);
+
+    /** Waveform zoom: a stroked magnifier, lens and handle. */
+    juce::Path magnifier(juce::Rectangle<float> bounds);
+
     /** The tick on a checked menu item, and on include checkboxes. */
     juce::Path check(juce::Rectangle<float> bounds);
 

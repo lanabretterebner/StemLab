@@ -68,5 +68,50 @@ int main()
         stemlab::host::canStartHostAudioCapture(UiMode::genericVst, false, true) ||
         stemlab::host::canStartHostAudioCapture(UiMode::ableton, false, false))
         return 1;
+
+    /*
+        The shared zoom window. Every lane computes its span from this, so a
+        lane that disagreed with its neighbours would show different seconds
+        of the same song - which is the one thing a stack of lanes exists to
+        let you compare.
+    */
+    using stemlab::waveform::visibleWindow;
+
+    // Zoom 1 is the whole file, whatever the playhead is doing.
+    const auto whole = visibleWindow(120.0, 1.0, 0.5);
+    if (whole.start != 0.0 || whole.end != 120.0)
+        return 1;
+
+    // Below 1 clamps up rather than showing more than the file.
+    const auto under = visibleWindow(120.0, 0.25, 0.5);
+    if (under.start != 0.0 || under.end != 120.0)
+        return 1;
+
+    // Zoomed, the window is centred on the playhead and keeps its span.
+    const auto middle = visibleWindow(120.0, 4.0, 0.5);
+    if (std::abs(middle.length() - 30.0) > 1.0e-9 || std::abs(middle.start - 45.0) > 1.0e-9)
+        return 1;
+
+    // At either end it stops rather than scrolling into empty space, and it
+    // does not shrink to do so.
+    const auto atStart = visibleWindow(120.0, 4.0, 0.0);
+    if (atStart.start != 0.0 || std::abs(atStart.length() - 30.0) > 1.0e-9)
+        return 1;
+
+    const auto atEnd = visibleWindow(120.0, 4.0, 1.0);
+    if (std::abs(atEnd.end - 120.0) > 1.0e-9 || std::abs(atEnd.length() - 30.0) > 1.0e-9)
+        return 1;
+
+    // A playhead outside the file is clamped, not extrapolated.
+    const auto past = visibleWindow(120.0, 4.0, 3.5);
+    if (std::abs(past.end - 120.0) > 1.0e-9)
+        return 1;
+
+    // An empty or unknown-length file yields an empty window rather than a
+    // division by zero.
+    const auto empty = visibleWindow(0.0, 4.0, 0.5);
+    if (empty.start != 0.0 || empty.end != 0.0)
+        return 1;
+
     return 0;
 }

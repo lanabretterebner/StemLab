@@ -2036,6 +2036,20 @@ void StemLabAudioProcessor::setManualGrid(double bpm, int numerator, int denomin
     sendChangeMessage();
 }
 
+void StemLabAudioProcessor::setWaveformZoom(double zoom)
+{
+    if (!std::isfinite(zoom))
+        return;
+
+    const auto clamped = juce::jlimit(minWaveformZoom, maxWaveformZoom, zoom);
+
+    if (std::abs(waveformZoom.load() - clamped) < 1.0e-6)
+        return;
+
+    waveformZoom.store(clamped);
+    sendChangeMessage();
+}
+
 StemLabGridInfo StemLabAudioProcessor::getWaveformGridInfo() const
 {
     StemLabGridInfo info;
@@ -5205,6 +5219,7 @@ void StemLabAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     rootObject->setProperty("analysisMode", sourceAnalysisMode.load());
     rootObject->setProperty("tempoInterpretation", tempoInterpretation.load());
     rootObject->setProperty("waveformGridMode", waveformGridMode.load());
+    rootObject->setProperty("waveformZoom", waveformZoom.load());
     rootObject->setProperty("manualGridBpm", manualGridBpm.load());
     rootObject->setProperty("manualGridNumerator", manualGridNumerator.load());
     rootObject->setProperty("manualGridDenominator", manualGridDenominator.load());
@@ -5326,6 +5341,9 @@ void StemLabAudioProcessor::setStateInformation(const void* data, int sizeInByte
             static_cast<int>(gridHost), static_cast<int>(gridManual),
             static_cast<int>(object->getProperty("waveformGridMode"))));
 
+    if (object->hasProperty("waveformZoom"))
+        waveformZoom.store(juce::jlimit(minWaveformZoom, maxWaveformZoom,
+                                        static_cast<double>(object->getProperty("waveformZoom"))));
     if (object->hasProperty("manualGridBpm"))
         manualGridBpm.store(
             juce::jlimit(20.0, 400.0, static_cast<double>(object->getProperty("manualGridBpm"))));

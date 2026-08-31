@@ -692,7 +692,29 @@ void StemWaveformComponent::mouseWheelMove(const juce::MouseEvent& event,
     const auto anchor = viewStart + mouseFraction * oldSpan;
     viewStart = juce::jlimit(0.0, 1.0 - newSpan, anchor - mouseFraction * newSpan);
     viewEnd = viewStart + newSpan;
+
+    // The gesture is unchanged; where it lands is not. Zooming one lane on
+    // its own left the six showing different seconds of the same song, which
+    // is the one thing a stack of lanes exists to let you compare. The wheel
+    // now moves the shared zoom, and every lane follows on the next refresh.
+    processor.setWaveformZoom(1.0 / juce::jmax(1.0e-6, newSpan));
+
     repaint();
+}
+
+void StemWaveformComponent::applySharedZoom()
+{
+    const auto length = processor.getPreviewLengthSeconds();
+    const auto position = processor.getPreviewPositionSeconds();
+    const auto playhead = length > 0.0 ? position / length : 0.0;
+
+    // The window is computed in normalised units, so the total is 1.0 and
+    // the result drops straight into viewStart/viewEnd.
+    const auto window =
+        stemlab::waveform::visibleWindow(1.0, processor.getWaveformZoom(), playhead);
+
+    viewStart = window.start;
+    viewEnd = window.end;
 }
 
 RecursiveStemRowComponent::RecursiveStemRowComponent(
@@ -969,6 +991,94 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     addAndMakeVisible(subtitleLabel);
 
     settingsButton.onClick = [this] { showSettingsMenu(); };
+    namespace tc = stemlab::theme::colours;
+
+    brandGlyph.setIcon(stemlab::icons::waveformBars, tc::accent());
+    addAndMakeVisible(brandGlyph);
+
+    zoomGlyph.setIcon(stemlab::icons::magnifier, tc::text().withAlpha(0.62f), true);
+    addAndMakeVisible(zoomGlyph);
+
+    paletteGlyph.setIcon(stemlab::icons::palette, tc::text().withAlpha(0.78f));
+    paletteGlyph.setInterceptsMouseClicks(false, false);
+    addAndMakeVisible(paletteGlyph);
+
+    settingsGlyph.setIcon(stemlab::icons::sliders, tc::text().withAlpha(0.78f));
+    settingsGlyph.setInterceptsMouseClicks(false, false);
+    addAndMakeVisible(settingsGlyph);
+
+    selectAllButton.setComponentID("ghost");
+    selectAllButton.onClick = [this]
+    {
+        for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
+            processor.setStemEnabled(i, true);
+
+        refreshFromProcessor();
+    };
+    addAndMakeVisible(selectAllButton);
+
+    deselectAllButton.setComponentID("ghost");
+    deselectAllButton.onClick = [this]
+    {
+        for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
+            processor.setStemEnabled(i, false);
+
+        refreshFromProcessor();
+    };
+    addAndMakeVisible(deselectAllButton);
+
+    selectionCountLabel.setJustificationType(juce::Justification::centredLeft);
+    selectionCountLabel.setColour(juce::Label::textColourId, tc::text().withAlpha(0.62f));
+    addAndMakeVisible(selectionCountLabel);
+
+    zoomSlider.setRange(StemLabAudioProcessor::minWaveformZoom,
+                        StemLabAudioProcessor::maxWaveformZoom, 0.01);
+    zoomSlider.setSkewFactor(0.5);
+    zoomSlider.setTooltip("Zoom every lane together. Ctrl-wheel over a lane does the same.");
+    zoomSlider.onValueChange = [this]
+    {
+        processor.setWaveformZoom(zoomSlider.getValue());
+        refreshFromProcessor();
+    };
+    addAndMakeVisible(zoomSlider);
+
+    zoomReadoutLabel.setJustificationType(juce::Justification::centredLeft);
+    zoomReadoutLabel.setColour(juce::Label::textColourId, tc::text().withAlpha(0.62f));
+    addAndMakeVisible(zoomReadoutLabel);
+
+    // Steps the separator engine the processor already keeps an index for.
+    const auto stepEngine = [this](int delta)
+    {
+        const auto count = StemLabAudioProcessor::separatorEngineCount;
+        const auto next = (processor.getSeparatorEngineIndex() + delta + count) % count;
+        processor.setSeparatorEngineIndex(next);
+        refreshFromProcessor();
+    };
+
+    enginePrevButton.setComponentID("ghost");
+    enginePrevButton.onClick = [stepEngine] { stepEngine(-1); };
+    addAndMakeVisible(enginePrevButton);
+
+    engineNextButton.setComponentID("ghost");
+    engineNextButton.onClick = [stepEngine] { stepEngine(1); };
+    addAndMakeVisible(engineNextButton);
+
+    engineLabel.setJustificationType(juce::Justification::centred);
+    engineLabel.setColour(juce::Label::textColourId, tc::text());
+    addAndMakeVisible(engineLabel);
+
+    paletteButton.setComponentID("neutral");
+    paletteButton.setTooltip("Waveform colour");
+    paletteButton.onClick = [this]
+    {
+        const auto count = StemLabAudioProcessor::waveformColourCount;
+        processor.setWaveformColourIndex((processor.getWaveformColourIndex() + 1) % count);
+        refreshFromProcessor();
+    };
+    addAndMakeVisible(paletteButton);
+
+    settingsButton.setButtonText({});
+    settingsButton.setTooltip("Settings");
     addAndMakeVisible(settingsButton);
 
     captureButton.setColour(juce::TextButton::buttonColourId, accent());
@@ -1723,13 +1833,48 @@ void StemLabAudioProcessorEditor::resized()
 
     auto header = area.removeFromTop(headerHeight);
 
-    auto titleRow = header.removeFromTop(height < 620 ? 27 : 32);
+    /*
+        One header row rather than a title over a subtitle. Laid out from both
+        ends inwards: identity on the left, the controls that act on every
+        lane on the right, and the selection count taking whatever is left in
+        the middle so it is the first thing to give way when the window
+        narrows.
+    */
+    const int rowHeight = height < 620 ? 28 : 32;
+    auto headerRow = header.removeFromTop(rowHeight);
 
-    settingsButton.setBounds(titleRow.removeFromRight(width < 620 ? 74 : 82));
+    const bool narrow = width < 760;
 
-    titleRow.removeFromRight(6);
-    titleLabel.setBounds(titleRow);
-    subtitleLabel.setBounds(header);
+    brandGlyph.setBounds(headerRow.removeFromLeft(rowHeight).reduced(4));
+    headerRow.removeFromLeft(8);
+    titleLabel.setBounds(headerRow.removeFromLeft(width < 620 ? 78 : 92));
+
+    settingsButton.setBounds(headerRow.removeFromRight(rowHeight));
+    settingsGlyph.setBounds(settingsButton.getBounds().reduced(7));
+    headerRow.removeFromRight(6);
+    paletteButton.setBounds(headerRow.removeFromRight(rowHeight));
+    paletteGlyph.setBounds(paletteButton.getBounds().reduced(7));
+    headerRow.removeFromRight(10);
+
+    // Engine picker: chevron, name, chevron.
+    engineNextButton.setBounds(headerRow.removeFromRight(20));
+    engineLabel.setBounds(headerRow.removeFromRight(narrow ? 96 : 128));
+    enginePrevButton.setBounds(headerRow.removeFromRight(20));
+    headerRow.removeFromRight(12);
+
+    zoomReadoutLabel.setBounds(headerRow.removeFromRight(34));
+    zoomSlider.setBounds(headerRow.removeFromRight(narrow ? 84 : 120));
+    headerRow.removeFromRight(4);
+    zoomGlyph.setBounds(headerRow.removeFromRight(18).withSizeKeepingCentre(15, 15));
+    headerRow.removeFromRight(12);
+
+    deselectAllButton.setBounds(headerRow.removeFromLeft(narrow ? 78 : 88));
+    selectAllButton.setBounds(headerRow.removeFromLeft(narrow ? 66 : 74));
+    headerRow.removeFromLeft(8);
+    selectionCountLabel.setBounds(headerRow);
+
+    // The subtitle's row is now the header's own breathing room.
+    subtitleLabel.setBounds(0, 0, 0, 0);
 
     area.removeFromTop(height < 620 ? 4 : 8);
 
@@ -1958,7 +2103,10 @@ void StemLabAudioProcessorEditor::timerCallback()
     for (auto& waveform : waveformComponents)
     {
         if (waveform != nullptr)
+        {
+            waveform->applySharedZoom();
             waveform->repaint();
+        }
     }
 }
 
@@ -1969,6 +2117,28 @@ void StemLabAudioProcessorEditor::changeListenerCallback(juce::ChangeBroadcaster
 
 void StemLabAudioProcessorEditor::refreshFromProcessor()
 {
+    // Header, from the processor's own state rather than from anything the
+    // header remembers itself - the wheel over a lane moves the zoom too, and
+    // the two have to agree.
+    int selectedStems = 0;
+    for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
+        selectedStems += processor.isStemEnabled(i) ? 1 : 0;
+
+    selectionCountLabel.setText(juce::String(selectedStems) + " of " +
+                                    juce::String(StemLabAudioProcessor::stemCount) + " selected",
+                                juce::dontSendNotification);
+    selectAllButton.setEnabled(selectedStems < StemLabAudioProcessor::stemCount);
+    deselectAllButton.setEnabled(selectedStems > 0);
+
+    const auto zoom = processor.getWaveformZoom();
+    if (std::abs(zoomSlider.getValue() - zoom) > 1.0e-6)
+        zoomSlider.setValue(zoom, juce::dontSendNotification);
+
+    zoomReadoutLabel.setText(juce::String(zoom, zoom < 10.0 ? 1 : 0) + juce::String::fromUTF8("\xc3\x97"),
+                             juce::dontSendNotification);
+
+    engineLabel.setText(processor.getSeparatorEngineDisplayName(), juce::dontSendNotification);
+
     const auto capturing = processor.isCapturing();
 
     const auto recordingMode = processor.getStandaloneRecordingMode();
