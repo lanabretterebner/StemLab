@@ -4621,6 +4621,32 @@ void StemLabAudioProcessorEditor::wireSettingsPage()
      * silently invert that one setting, and would invert any other the day an
      * enum is renumbered.
      */
+    /*  The accent is the one index that is not translated, because the page
+        and the theme number the same list: the swatches are drawn straight
+        from theme::accents::presets, in that order.
+    */
+    settingsPanel.onAccent = [this](int index)
+    {
+        if (index == StemLabAudioProcessor::getAccentIndex())
+            return;
+
+        StemLabAudioProcessor::setAccentIndex(index);
+
+        // The accent is in every token that derives from it, so nothing short
+        // of the whole editor is stale - including the window this was
+        // clicked in, which is drawing the swatch that now needs its ring.
+        if (auto* top = getTopLevelComponent())
+            top->repaint();
+        else
+            repaint();
+
+        refreshSettingsPage();
+
+        processor.postUiStatus("Accent: "
+                               + stemlab::theme::accents::name(
+                                   StemLabAudioProcessor::getAccentIndex()));
+    };
+
     settingsPanel.onGridMode = [this](int index)
     {
         static constexpr int modes[] = {StemLabAudioProcessor::gridHost,
@@ -4749,6 +4775,7 @@ void StemLabAudioProcessorEditor::refreshSettingsPage()
     stemlab::widgets::SettingsPanel::Settings settings;
 
     settings.standalone = processor.isStandaloneApp();
+    settings.accent = StemLabAudioProcessor::getAccentIndex();
 
     static constexpr int modes[] = {StemLabAudioProcessor::gridHost,
                                     StemLabAudioProcessor::gridSource,

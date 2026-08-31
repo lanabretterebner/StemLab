@@ -208,6 +208,135 @@ namespace stemlab::widgets
         };
 
         /** A label and one button on the right, for a row that does something. */
+        /**
+         * A label and one filled circle per accent, the chosen one ringed.
+         *
+         * Not a ChoiceRow of named pills: eight names do not fit the control
+         * column without shrinking past the point of being readable, and a
+         * color is the one setting where the swatch says more than its name
+         * anyway. The name is still there as the tooltip, for anyone reading
+         * the interface rather than looking at it.
+         */
+        class SwatchRow final : public juce::Component,
+                                public juce::TooltipClient
+        {
+        public:
+            explicit SwatchRow(juce::String captionIn) : caption(std::move(captionIn))
+            {
+                setMouseCursor(juce::MouseCursor::PointingHandCursor);
+            }
+
+            void setSelectedIndex(int index)
+            {
+                if (selected == index)
+                    return;
+
+                selected = index;
+                repaint();
+            }
+
+            std::function<void(int)> onSelected;
+
+            void paint(juce::Graphics& g) override
+            {
+                namespace colors = theme::colors;
+
+                auto bounds = getLocalBounds();
+                bounds.removeFromRight(rows::controlWidth);
+
+                g.setColour(colors::text75());
+                g.setFont(juce::Font(theme::fonts::make(12.0f, false)));
+                g.drawText(caption, bounds, juce::Justification::centredLeft, true);
+
+                for (int index = 0; index < theme::accents::count(); ++index)
+                {
+                    const auto cell = swatchBounds(index).toFloat();
+                    const auto dot = cell.withSizeKeepingCentre(diameter, diameter);
+
+                    g.setColour(theme::accents::swatch(index));
+                    g.fillEllipse(dot);
+
+                    /*  The ring is drawn outside the fill rather than over it,
+                        so the swatch a person is judging is the whole circle
+                        and not a circle with a line through its edge.
+                    */
+                    if (index == selected)
+                    {
+                        g.setColour(colors::text());
+                        g.drawEllipse(dot.expanded(3.0f), 1.5f);
+                    }
+                    else if (index == hovered)
+                    {
+                        g.setColour(colors::text50());
+                        g.drawEllipse(dot.expanded(3.0f), 1.0f);
+                    }
+                }
+            }
+
+            void mouseMove(const juce::MouseEvent& event) override
+            {
+                const auto index = indexAt(event.getPosition());
+
+                if (index == hovered)
+                    return;
+
+                hovered = index;
+                repaint();
+            }
+
+            /** The name of whichever swatch the pointer is over. */
+            juce::String getTooltip() override
+            {
+                return hovered >= 0 ? theme::accents::name(hovered) : juce::String();
+            }
+
+            void mouseExit(const juce::MouseEvent&) override
+            {
+                hovered = -1;
+                repaint();
+            }
+
+            void mouseUp(const juce::MouseEvent& event) override
+            {
+                const auto index = indexAt(event.getPosition());
+
+                if (index >= 0 && onSelected)
+                    onSelected(index);
+            }
+
+        private:
+            static constexpr float diameter = 16.0f;
+
+            int swatchWidth() const
+            {
+                return rows::controlWidth / juce::jmax(1, theme::accents::count());
+            }
+
+            /** Right-aligned, so this row ends where every other row does. */
+            juce::Rectangle<int> swatchBounds(int index) const
+            {
+                const auto width = swatchWidth();
+                const auto left = getWidth() - width * theme::accents::count();
+
+                return getLocalBounds().withX(left + index * width).withWidth(width);
+            }
+
+            int indexAt(juce::Point<int> point) const
+            {
+                for (int index = 0; index < theme::accents::count(); ++index)
+                    if (swatchBounds(index).contains(point))
+                        return index;
+
+                return -1;
+            }
+
+            juce::String caption;
+            int selected = 0;
+            int hovered = -1;
+
+            JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SwatchRow)
+        };
+
         class ActionRow final : public juce::Component
         {
         public:
@@ -294,6 +423,9 @@ namespace stemlab::widgets
                 order.push_back(&component);
             };
 
+            add(appearanceHeading);
+            add(accentRow);
+
             add(audioHeading);
             add(audioSettings);
 
@@ -317,6 +449,12 @@ namespace stemlab::widgets
             add(diagnosticsHeading);
             add(copyDiagnostics);
             add(abletonIntegration);
+
+            accentRow.onSelected = [this](int index)
+            {
+                if (onAccent)
+                    onAccent(index);
+            };
 
             gridMode.onSelected = [this](int index)
             {
@@ -373,6 +511,8 @@ namespace stemlab::widgets
             // change anything.
             audioHeading.setVisible(settings.standalone);
             audioSettings.setVisible(settings.standalone);
+
+            accentRow.setSelectedIndex(settings.accent);
 
             gridMode.setSelectedIndex(settings.gridMode);
             manualTempo.setCaption("Manual tempo (" + bpm(settings.manualBpm) + " BPM)");
@@ -456,6 +596,7 @@ namespace stemlab::widgets
             content.setSize(width, juce::jmax(y, listViewport.getHeight()));
         }
 
+        std::function<void(int)> onAccent;
         std::function<void(int)> onGridMode;
         std::function<void()> onSetManualTempo;
         std::function<void()> onAnalysisToggle;
@@ -473,6 +614,9 @@ namespace stemlab::widgets
         juce::Viewport listViewport;
         juce::Component content;
         std::vector<juce::Component*> order;
+
+        HeadingRow appearanceHeading{"Appearance"};
+        SwatchRow accentRow{"Accent color"};
 
         HeadingRow audioHeading{"Audio"};
         ActionRow audioSettings{"Audio and MIDI devices", "Open..."};
@@ -548,6 +692,9 @@ namespace stemlab::widgets
         forward(settingsPage->onCopyDiagnostics, onCopyDiagnostics);
         forward(settingsPage->onAudioSettings, onAudioSettings);
         forward(settingsPage->onAbletonIntegration, onAbletonIntegration);
+
+        settingsPage->onAccent = [this](int index)
+        { if (onAccent) onAccent(index); };
 
         settingsPage->onGridMode = [this](int index)
         { if (onGridMode) onGridMode(index); };

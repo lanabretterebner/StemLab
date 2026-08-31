@@ -3,10 +3,12 @@
 #include "ReaperBridge.h"
 #include "SourceLabel.h"
 #include "StemLabPaths.h"
+#include "StemLabTheme.h"
 #include "WaveformGrid.h"
 
 #include <algorithm>
 #include <functional>
+#include <mutex>
 #include <thread>
 
 #if JUCE_LINUX
@@ -1795,6 +1797,18 @@ StemLabAudioProcessor::StemLabAudioProcessor()
     }
 
     exportTorchCompilePreference();
+
+    /*  Once per process, not once per instance. The accent lives in the
+        theme, which every editor in this host shares, so a second plugin
+        loading would otherwise re-read the file and re-generate the ramp for
+        no reason - and would do it while the first one is painting.
+    */
+    {
+        static std::once_flag accentLoaded;
+
+        std::call_once(accentLoaded,
+                       [] { stemlab::theme::accents::setIndex(readRememberedAccent()); });
+    }
 
     if (isStandaloneApp())
     {
@@ -6627,6 +6641,54 @@ void StemLabAudioProcessor::rememberTorchCompile(bool enabled)
     // a separation does not start, so nothing here reports upwards.
     if (directory.exists() || directory.createDirectory())
         torchCompilePreferenceFile().replaceWithText(enabled ? "1" : "0");
+}
+
+juce::File StemLabAudioProcessor::accentPreferenceFile()
+{
+    return stemlab::paths::configDirectory().getChildFile("accent.txt");
+}
+
+int StemLabAudioProcessor::readRememberedAccent()
+{
+    const auto file = accentPreferenceFile();
+
+    if (!file.existsAsFile())
+        return 0;
+
+    /*  A name rather than an index, so the file survives the presets being
+        reordered or one being inserted in the middle - which an index would
+        turn into "your accent silently became a different color". An
+        unknown name falls back to the default rather than to whatever
+        happens to sit at that position.
+    */
+    const auto stored = file.loadFileAsString().trim();
+
+    for (int preset = 0; preset < stemlab::theme::accents::count(); ++preset)
+        if (stemlab::theme::accents::name(preset).equalsIgnoreCase(stored))
+            return preset;
+
+    return 0;
+}
+
+void StemLabAudioProcessor::rememberAccent(int presetIndex)
+{
+    auto directory = stemlab::paths::configDirectory();
+
+    // Best effort, for the reason the compile preference gives: failing to
+    // remember how the interface looks must not fail anything else.
+    if (directory.exists() || directory.createDirectory())
+        accentPreferenceFile().replaceWithText(stemlab::theme::accents::name(presetIndex));
+}
+
+void StemLabAudioProcessor::setAccentIndex(int presetIndex)
+{
+    stemlab::theme::accents::setIndex(presetIndex);
+    rememberAccent(stemlab::theme::accents::index());
+}
+
+int StemLabAudioProcessor::getAccentIndex()
+{
+    return stemlab::theme::accents::index();
 }
 
 void StemLabAudioProcessor::setTorchCompileEnabled(bool enabled)

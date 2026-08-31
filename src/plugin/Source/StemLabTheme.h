@@ -5,6 +5,8 @@
 #include <cmath>
 #include <optional>
 
+#include "StemLabAccent.h"
+
 /*
     Every visual decision StemLab's interface makes, in one place: the
     "Nocturne" design system, draft 1a "Lanes". The design handoff this was
@@ -39,19 +41,27 @@ namespace stemlab::theme
         inline juce::Colour text() { return juce::Colour(0xffe9e9ed); }
         inline juce::Colour divider() { return text().withAlpha(0.16f); }
 
-        // The one blurple accent, used as lines, tints, and glows.
-        inline juce::Colour accent() { return juce::Colour(0xff9184d9); }
+        /*  The accent, used as lines, tints and glows, and the ramp under
+            it (OKLCH-generated in the token sheet).
 
-        // Accent ramp (OKLCH-generated in the token sheet).
-        inline juce::Colour accent100() { return juce::Colour(0xfff5f4ff); }
-        inline juce::Colour accent200() { return juce::Colour(0xffe7e5fe); }
-        inline juce::Colour accent300() { return juce::Colour(0xffd2cefd); }
-        inline juce::Colour accent400() { return juce::Colour(0xffb5abfc); }
-        inline juce::Colour accent500() { return juce::Colour(0xff968ae0); }
-        inline juce::Colour accent600() { return juce::Colour(0xff796cbf); }
-        inline juce::Colour accent700() { return juce::Colour(0xff5d5294); }
-        inline juce::Colour accent800() { return juce::Colour(0xff423a6a); }
-        inline juce::Colour accent900() { return juce::Colour(0xff2b2741); }
+            Settable rather than literal: these ten are the only place the
+            accent hue enters the design system, so every token below - the
+            fills, the playhead, the record dot, the progress bar - follows
+            the setting without knowing it exists. The values live in
+            StemLabAccent.h, which also says how the other hues are made and
+            why the default is not one of them.
+        */
+        inline juce::Colour accent() { return accents::step(accents::Step::base); }
+
+        inline juce::Colour accent100() { return accents::step(accents::Step::s100); }
+        inline juce::Colour accent200() { return accents::step(accents::Step::s200); }
+        inline juce::Colour accent300() { return accents::step(accents::Step::s300); }
+        inline juce::Colour accent400() { return accents::step(accents::Step::s400); }
+        inline juce::Colour accent500() { return accents::step(accents::Step::s500); }
+        inline juce::Colour accent600() { return accents::step(accents::Step::s600); }
+        inline juce::Colour accent700() { return accents::step(accents::Step::s700); }
+        inline juce::Colour accent800() { return accents::step(accents::Step::s800); }
+        inline juce::Colour accent900() { return accents::step(accents::Step::s900); }
 
         // Neutral ramp.
         inline juce::Colour neutral100() { return juce::Colour(0xfff3f5fe); }

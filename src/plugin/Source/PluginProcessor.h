@@ -551,6 +551,24 @@ public:
     static juce::File torchCompilePreferenceFile();
     static bool readRememberedTorchCompile();
     static void rememberTorchCompile(bool enabled);
+
+    /*  The accent, which is how the interface looks rather than how this
+        project sounds - so it belongs to the person, not the session, and
+        is deliberately not in getStateInformation. Opening someone else's
+        project should not restyle your editor, and reopening your own on a
+        second machine should not undo the choice you made there.
+
+        Static because the accent is one process-wide value in the theme:
+        every editor in the host shares it, which is the correct behaviour
+        for a preference about the look of the application.
+    */
+    static juce::File accentPreferenceFile();
+    static int readRememberedAccent();
+    static void rememberAccent(int presetIndex);
+
+    /** Applies a preset to the theme and remembers it. */
+    static void setAccentIndex(int presetIndex);
+    static int getAccentIndex();
     bool isTorchCompileEnabled() const noexcept { return torchCompileEnabled.load(); }
     bool isCompileSupported() const noexcept { return compileSupported.load(); }
     juce::String getCompileReason() const;

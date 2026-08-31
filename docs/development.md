@@ -143,6 +143,32 @@ Nocturne widgets (checkbox, split control, scrubber, segmented control, ...)
 in `src/plugin/Source/StemLabWidgets.*`. Keep file processing and
 model-selection logic in the processor/Python layer.
 
+#### The accent
+
+`src/plugin/Source/StemLabAccent.h` holds the ten values the accent ramp is
+made of, and the eight hues it can be. Everything in the theme that carries
+the accent - the fills, the tints and glows, the playhead, the record dot,
+the progress bar - resolves to one of those ten, so nothing else has to know
+the setting exists.
+
+The other seven hues are the shipped ramp with its OKLCH hue turned, keeping
+every step's lightness and chroma. That is the reason for OKLCH rather than
+HSB: lightness there is perceptual, so the contrast ratios the token sheet
+documents hold on all eight, and chroma is reduced (never lightness) where a
+hue asks for more saturation than sRGB has. Index 0 returns the literal token
+values rather than a round trip through the conversion, so the default is
+byte-for-byte what shipped.
+
+`StemLabAccentPaletteTests` asserts all of that: the default is untouched,
+lightness survives a hue turn, the ramp still descends, and every preset
+clears 4.5:1 where the theme puts accent text on an accent fill.
+
+Chosen in **Settings > Appearance** and remembered in
+`<config>/accent.txt` by name, not index, so reordering the presets cannot
+silently change somebody's accent. It is a preference about the application
+rather than about a project, so it is not in `getStateInformation`: opening
+someone else's session does not restyle your editor.
+
 ### `src/plugin/Source/PluginProcessor.h/.cpp`
 
 Owns application state and external work:
