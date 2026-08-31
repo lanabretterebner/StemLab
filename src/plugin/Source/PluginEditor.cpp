@@ -295,6 +295,7 @@ StemLaneWaveform::DisplayState StemLaneWaveform::readDisplayState() const
     state.transportPosition = processor.getTransportPositionSeconds();
     state.transportLength = processor.getTransportLengthSeconds();
     state.palette = processor.getWaveformColorIndex();
+    state.accent = theme::accents::index();
 
     // Scalars only: this runs per lane per tick, and the full grid info
     // takes the processor's state lock to copy beat vectors nothing here
@@ -952,7 +953,7 @@ bool StemLaneWaveform::timerRefresh()
         juce::exactlyEqual(now.viewStart, lastDisplay.viewStart) &&
         juce::exactlyEqual(now.viewLength, lastDisplay.viewLength) &&
         juce::exactlyEqual(now.transportLength, lastDisplay.transportLength) &&
-        now.palette == lastDisplay.palette &&
+        now.palette == lastDisplay.palette && now.accent == lastDisplay.accent &&
         juce::exactlyEqual(now.gridBpm, lastDisplay.gridBpm) &&
         juce::exactlyEqual(now.gridBarOne, lastDisplay.gridBarOne) &&
         now.gridNumerator == lastDisplay.gridNumerator &&
@@ -4596,13 +4597,17 @@ void StemLabAudioProcessorEditor::wireSettingsPage()
         // it by keying their cached image on the accent as well.
         glowCache.clear();
 
-        // The accent is in every token that derives from it, so nothing short
-        // of the whole editor is stale - including the window this was
-        // clicked in, which is drawing the swatch that now needs its ring.
-        if (auto* top = getTopLevelComponent())
-            top->repaint();
-        else
-            repaint();
+        /*  The editor, not getTopLevelComponent(). In the Standalone those
+            are one window and either works; inside a host the top level is
+            the host's own plug-in window, and asking it to repaint is asking
+            somebody else's component to redraw ours. The editor is the
+            highest thing we own, and the settings window that was clicked in
+            is a child of it, so this covers the swatch's own ring too.
+
+            The lanes do not depend on this reaching them: their timer tick
+            now watches the accent as well, so they refresh on their own.
+        */
+        repaint();
 
         refreshSettingsPage();
 

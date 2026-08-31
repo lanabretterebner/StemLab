@@ -173,6 +173,15 @@ private:
         double gridBarOne = 0.0;
         int gridNumerator = 0;
         int palette = 0;
+
+        /*  The accent, for the same reason the palette is here: the Accent
+            palette draws with whichever accent is set, so a change to it
+            changes the picture without moving anything else in this struct.
+            Without it the tick decides nothing happened and never repaints,
+            and the cache key on columnsAccent is never even consulted.
+        */
+        int accent = 0;
+
         bool selectionActive = false;
         double selectionStart = 0.0;
         double selectionEnd = 0.0;
