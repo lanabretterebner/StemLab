@@ -117,6 +117,14 @@ class TestItInstallsForOneUserAndNeverElevates:
         assert "administrator prompt" not in SETUP
         assert "for your account only" in SETUP
 
+    def test_the_download_stages_beside_the_install_it_feeds(self):
+        # Same volume as %LOCALAPPDATA%\StemLab, so nothing crosses a disk,
+        # and it survives a reboot - which %TEMP% under Storage Sense does
+        # not, and this is the folder a half-finished multi-gigabyte download
+        # has to survive in.
+        assert 'Join-Path $env:LOCALAPPDATA "StemLab\\Setup"' in SETUP
+        assert "$Stage = $env:STEMLAB_SETUP_STAGE" in SETUP
+
 
 class TestUninstallTakesTheAppAndNothingElse:
     def test_it_removes_the_engine_it_cannot_track(self):

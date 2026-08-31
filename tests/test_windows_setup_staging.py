@@ -57,6 +57,40 @@ def _release(tmp_path: Path, *, with_sums: bool = True) -> Path:
     return downloads
 
 
+def _installer_hook(tmp_path: Path) -> Path:
+    """A stand-in for the real installer, which records how it was invoked.
+
+    A native program, and one per platform, for two reasons. The script runs
+    it as `& $env:STEMLAB_SETUP_INSTALLER $SetupPath` and then reads
+    $LASTEXITCODE, which PowerShell sets for external processes and not for
+    scripts it invokes itself - so a .ps1 stub would report no exit code at
+    all. And Windows cannot execute a shell script: pointing the hook at one
+    is what made every Windows job fail with "the specified module could not
+    be found" while the same file passed on Linux.
+    """
+    marker = tmp_path / "installer-arg.txt"
+
+    if os.name == "nt":
+        hook = tmp_path / "installer-hook.cmd"
+        # %~1 is the argument with its surrounding quotes stripped, and the
+        # redirect goes first so a trailing space cannot join the filename.
+        hook.write_text(
+            "@echo off\r\n"
+            f'> "{marker}" echo %~1\r\n'
+            "exit /b 0\r\n"
+        )
+    else:
+        hook = tmp_path / "installer-hook.sh"
+        hook.write_text(
+            "#!/usr/bin/env bash\n"
+            f'printf "%s\\n" "$1" > "{marker}"\n'
+            "exit 0\n"
+        )
+        hook.chmod(0o755)
+
+    return hook
+
+
 def _run(tmp_path: Path, *args: str, env=None):
     downloads = tmp_path / "downloads"
 
@@ -66,21 +100,19 @@ def _run(tmp_path: Path, *args: str, env=None):
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
 
-    hook = tmp_path / "installer-hook.sh"
-    hook.write_text(
-        "#!/usr/bin/env bash\n"
-        f'printf "%s\\n" "$1" > "{tmp_path / "installer-arg.txt"}"\n'
-        "exit 0\n"
+    # Inherited rather than replaced: on Windows a process handed a bare
+    # environment is missing SystemRoot and friends, and how much still works
+    # is luck rather than design.
+    environment = dict(os.environ)
+    environment.update(
+        {
+            "HOME": str(home),
+            "LOCALAPPDATA": str(home),
+            "STEMLAB_SETUP_INSTALLER": str(_installer_hook(tmp_path)),
+            "STEMLAB_SETUP_STAGE": str(tmp_path / "stage"),
+        }
     )
-    hook.chmod(0o755)
-
-    environment = {
-        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-        "HOME": str(home),
-        "LOCALAPPDATA": str(home),
-        "STEMLAB_SETUP_INSTALLER": str(hook),
-        **(env or {}),
-    }
+    environment.update(env or {})
 
     return subprocess.run(
         [PWSH, "-NoProfile", "-File", str(downloads / SETUP.name), *args],
@@ -100,22 +132,14 @@ class TestNothingIsWrittenWhereTheUserPutTheInstaller:
         assert result.returncode == 0, result.stdout + result.stderr
         assert list((tmp_path / "cwd").iterdir()) == []
 
-    def test_the_download_goes_to_the_staging_directory(self, tmp_path):
+    def test_the_staging_directory_is_gone_afterwards(self, tmp_path):
         _release(tmp_path)
-        stage = tmp_path / "elsewhere"
+        stage = tmp_path / "stage"
 
-        result = _run(tmp_path, env={"STEMLAB_SETUP_STAGE": str(stage)})
+        result = _run(tmp_path)
 
         assert result.returncode == 0, result.stdout + result.stderr
-        # Named in the run, and gone by the end of it.
         assert not stage.exists()
-
-    def test_the_staging_directory_defaults_under_local_appdata(self, tmp_path):
-        _release(tmp_path)
-
-        result = _run(tmp_path, env={"STEMLAB_SETUP_STAGE": ""})
-
-        assert result.returncode == 0, result.stdout + result.stderr
 
     def test_a_relative_staging_override_is_refused(self, tmp_path):
         _release(tmp_path)
@@ -127,11 +151,11 @@ class TestNothingIsWrittenWhereTheUserPutTheInstaller:
 
     def test_an_unfinished_download_blocks_a_second_run(self, tmp_path):
         _release(tmp_path)
-        stage = tmp_path / "elsewhere"
+        stage = tmp_path / "stage"
         stage.mkdir()
         (stage / f"{SETUP_EXE}.download").write_bytes(b"half an installer")
 
-        result = _run(tmp_path, env={"STEMLAB_SETUP_STAGE": str(stage)})
+        result = _run(tmp_path)
 
         assert result.returncode != 0
         assert "unfinished download" in result.stdout
