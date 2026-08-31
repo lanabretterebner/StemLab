@@ -594,10 +594,33 @@ namespace stemlab::widgets
         g.setColour(dimmed(theme::colors::scrubTrack()));
         g.fillRoundedRectangle(track, transport::scrubRadius);
 
-        auto fill = track.withWidth(track.getWidth() * static_cast<float>(position));
+        const auto diameter = static_cast<float>(
+            isMouseOverOrDragging() && isEnabled() ? transport::scrubKnobHover
+                                                   : transport::scrubKnob);
 
+        /*  The handle's centre, inset by its own radius at each end so the
+            dot stays inside the bar at both extremes instead of half hanging
+            off it.
+
+            This is a drawing inset only: applySeek still maps the pointer
+            across the full width, snap and all, because that mapping is what
+            makes the last pixel mean the end of the source and it is not
+            worth re-deriving to move a dot. The two agree exactly at the
+            centre and diverge by at most one radius at the ends, where the
+            handle is pinned anyway.
+        */
+        const auto radius = diameter * 0.5f;
+        const auto travel = juce::jmax(0.0f, track.getWidth() - diameter);
+        const auto knobX = radius + travel * static_cast<float>(position);
+
+        // Filled to the handle's centre rather than to the raw position, so
+        // the bar ends where the dot is instead of a hair short of it.
         g.setColour(dimmed(theme::colors::scrubFill()));
-        g.fillRoundedRectangle(fill, transport::scrubRadius);
+        g.fillRoundedRectangle(track.withWidth(knobX), transport::scrubRadius);
+
+        g.setColour(dimmed(theme::colors::scrubKnob()));
+        g.fillEllipse(juce::Rectangle<float>(diameter, diameter)
+                          .withCentre({knobX, track.getCentreY()}));
     }
 
     void Scrubber::applySeek(const juce::MouseEvent& event)
