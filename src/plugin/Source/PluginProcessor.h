@@ -116,6 +116,14 @@ struct StemLabLaneMonitorFlags
  * the remaining public methods from the message thread. Expensive separation is
  * always delegated to a child Python process.
  */
+/** One stretch of a track that a single constant tempo explains. */
+struct StemLabTempoSegment
+{
+    double start = 0.0;
+    double end = 0.0;
+    double bpm = 0.0;
+};
+
 class StemLabAudioProcessor final : public juce::AudioProcessor,
                                     public juce::ChangeBroadcaster,
                                     public juce::AudioSource,
@@ -275,6 +283,14 @@ public:
     {
         analysisAccurate = 0,
         analysisFast = 1
+    };
+
+    enum TempoAnalysisMode
+    {
+        // One tempo for the whole track, which is what a host's tempo
+        // field takes. Dynamic reports each stretch that holds its own.
+        tempoStatic = 0,
+        tempoDynamic = 1
     };
 
     enum TempoInterpretation
@@ -466,6 +482,10 @@ public:
     juce::String getSourceKey() const;
     double getSourceBpm() const noexcept { return sourceBpm.load(); }
     double getDetectedSourceBpm() const noexcept { return sourceDetectedBpm.load(); }
+    /** False when the beats do not sit on one constant grid: a played or
+        drifting track. The tempo is still the best single answer, but a host
+        set to it will not stay aligned to the end of the track. */
+    bool isSourceTempoSteady() const noexcept { return sourceTempoSteady.load(); }
     double getHalfTimeSourceBpm() const noexcept { return sourceHalfBpm.load(); }
     double getDoubleTimeSourceBpm() const noexcept { return sourceDoubleBpm.load(); }
     double getSourceBarOne() const noexcept { return sourceBarOne.load(); }
@@ -475,6 +495,18 @@ public:
     bool isBeatThisEnabled() const noexcept { return beatThisEnabled.load(); }
     void setSourceAnalysisMode(int mode);
     int getSourceAnalysisMode() const noexcept { return sourceAnalysisMode.load(); }
+    void setTempoAnalysisMode(int mode);
+    int getTempoAnalysisMode() const noexcept { return tempoAnalysisMode.load(); }
+    /** Each stretch of the source one constant tempo explains, in order. */
+    std::vector<StemLabTempoSegment> getSourceTempoSegments() const;
+
+    /** Whether Set Host Tempo has everything it needs: a REAPER project, a
+        source item it can still reach, an analysis to read a tempo from, and
+        a REAPER new enough to expose the tempo calls. */
+    bool canSetHostTempo() const;
+    /** Puts the analysed tempo into the project, and the source item onto a
+        timebase that will not follow it. Returns what to tell the user. */
+    juce::String setHostTempo();
     void setTempoInterpretation(int interpretation);
     int getTempoInterpretation() const noexcept { return tempoInterpretation.load(); }
     bool saveSourceCorrection(double bpm, const juce::String& key, int numerator, int denominator,
@@ -983,10 +1015,13 @@ private:
     std::atomic<double> sourceBarOne{0.0};
     std::atomic<int> sourceMeterNumerator{4};
     std::atomic<int> sourceMeterDenominator{4};
+    std::atomic<bool> sourceTempoSteady{true};
     std::atomic<bool> sourceAnalysisCorrected{false};
     std::atomic<bool> sourceAnalysisRunning{false};
     std::atomic<bool> beatThisEnabled{false};
     std::atomic<int> sourceAnalysisMode{analysisFast};
+    std::atomic<int> tempoAnalysisMode{tempoStatic};
+    std::vector<StemLabTempoSegment> sourceTempoSegments;
     std::atomic<int> tempoInterpretation{tempoDetected};
     std::atomic<int> waveformGridMode{gridSource};
     std::atomic<double> manualGridBpm{120.0};

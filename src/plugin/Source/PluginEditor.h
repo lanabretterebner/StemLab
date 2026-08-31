@@ -453,6 +453,10 @@ private:
     /** Ask for the beat grid's tempo, and switch to the manual grid on OK. */
     void promptForManualTempo();
 
+    /** Puts the analysed tempo into the host, and the source item on a
+        timebase that will not follow it. */
+    void setHostTempo();
+
     /** update.sh, as the bundle's install.sh leaves it beside the app. */
     static juce::File updaterScript();
     /** Runs it with --check, off the message thread. */
@@ -626,6 +630,8 @@ private:
     // Source strip.
     juce::Label fileNameLabel;
     juce::Label fileMetaLabel;
+    juce::TextButton hostTempoButton;
+    juce::TextButton analyseButton;
     juce::TextButton captureButton;
     stemlab::widgets::RecordButton recordSystemButton{"Record PC"};
     stemlab::widgets::RecordButton recordInputButton{"Record In"};

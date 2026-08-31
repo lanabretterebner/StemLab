@@ -134,6 +134,13 @@ class SourceAnalysis:
     meter_numerator: int | None
     meter_denominator: int
     bar_one: float
+    # False when the beats do not sit on one constant grid - a played or
+    # drifting track. The tempo is still the best single answer, but setting
+    # a host to it will not hold alignment across the whole track.
+    tempo_is_steady: bool
+    # Each stretch one constant tempo explains, in order. One entry is a
+    # track that holds a single tempo; more than one names where each holds.
+    tempo_segments: tuple[dict[str, float], ...]
     source_hash: str
     analysis_mode: str
     beat_model: str
@@ -635,6 +642,15 @@ def analyse_source(
         meter_numerator=meter_numerator,
         meter_denominator=meter_denominator,
         bar_one=round(bar_one, 6),
+        tempo_is_steady=beat.tempo_is_steady,
+        tempo_segments=tuple(
+            {
+                "start": round(segment.start, 6),
+                "end": round(segment.end, 6),
+                "bpm": segment.bpm,
+            }
+            for segment in beat.tempo_segments
+        ),
         source_hash=source_hash,
         analysis_mode=mode,
         beat_model=beat.model,

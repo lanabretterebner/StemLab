@@ -2036,6 +2036,18 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     fileMetaLabel.setColour(juce::Label::textColourId, theme::colors::text50());
     panelContent.addAndMakeVisible(fileMetaLabel);
 
+    hostTempoButton.onClick = [this] { setHostTempo(); };
+    panelContent.addChildComponent(hostTempoButton);
+
+    analyseButton.onClick = [this]
+    {
+        // Stop what is running; otherwise start, which is what switching the
+        // setting on does for a source that has not been analysed yet.
+        processor.setBeatThisEnabled(!processor.isSourceAnalysisRunning());
+        refreshFromProcessor();
+    };
+    panelContent.addChildComponent(analyseButton);
+
     captureButton.setComponentID("accent-outline");
 
     if (processor.isStandaloneApp())
@@ -2825,6 +2837,34 @@ void StemLabAudioProcessorEditor::layoutPanel()
         strip.removeFromRight(source::gap);
 
         fileNameLabel.setBounds(strip.removeFromTop(strip.getHeight() / 2));
+
+        /*  Both buttons take from the right, and the meta text keeps
+            whatever is left. Taking from the left would push the text along
+            as the label changed - "Set host tempo" and "Set host tempo
+            (dynamic)" are different widths - and a line that moves when a
+            setting changes reads as a glitch. The label elides, so it gives
+            way to them rather than running underneath.
+        */
+        const auto buttonWidth = [](const juce::TextButton& button)
+        {
+            return juce::jlimit(
+                72, 200,
+                juce::roundToInt(juce::GlyphArrangement::getStringWidth(
+                    juce::Font(theme::fonts::meta()), button.getButtonText()))
+                    + 28);
+        };
+
+        for (auto* button : {&hostTempoButton, &analyseButton})
+        {
+            if (!button->isVisible())
+                continue;
+
+            const auto width = buttonWidth(*button);
+            button->setBounds(strip.removeFromRight(width).withSizeKeepingCentre(
+                width, theme::metrics::buttons::height));
+            strip.removeFromRight(source::gap);
+        }
+
         fileMetaLabel.setBounds(strip);
     }
 
@@ -3813,24 +3853,38 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
                 parts.add(analysis);
         }
 
-        if (!processor.isStandaloneApp())
-        {
-            parts.add("beat " + juce::String(processor.getCaptureStartPpq(), 3));
-
-            switch (processor.getHostIntegration())
-            {
-            case StemLabAudioProcessor::hostIntegrationReaper:
-                parts.add("from selected item");
-                break;
-            case StemLabAudioProcessor::hostIntegrationAbletonLive:
-                parts.add("from Live");
-                break;
-            default:
-                break;
-            }
-        }
-
         fileMeta = parts.joinIntoString(" · ");
+
+        /*  In a host, and only there: the standalone has no tempo to set.
+            Dynamic says so on the button, because the two do visibly
+            different things - one number against a row of markers - and
+            finding that out afterwards is the wrong time.
+        */
+        const auto dynamic =
+            processor.getTempoAnalysisMode() == StemLabAudioProcessor::tempoDynamic
+            && processor.getSourceTempoSegments().size() > 1;
+
+        hostTempoButton.setButtonText(dynamic ? "Set host tempo (dynamic)"
+                                              : "Set host tempo");
+        hostTempoButton.setVisible(!processor.isStandaloneApp());
+
+        // Out of the settings window and onto the line it describes: it acts
+        // on this source, and it is the one control there anybody reaches for
+        // repeatedly.
+        /*  isSourceAnalysisRunning, not isBeatThisEnabled. The second is the
+            setting - analysis is switched on for this source - and it stays
+            true once the analysis has finished, which is why the old row read
+            "Stop" forever after the first run. The first is the job.
+        */
+        const auto analysing = processor.isSourceAnalysisRunning();
+
+        analyseButton.setButtonText(analysing ? "Stop" : "Analyse");
+        analyseButton.setVisible(true);
+        analyseButton.setEnabled(analysing || !processor.isEngineRunning());
+        // Greyed rather than hidden without an analysis: the button is where
+        // the tempo goes, and hiding it would leave no sign that it is.
+        hostTempoButton.setEnabled(processor.canSetHostTempo());
+        resized();
     }
     else
     {
@@ -4731,6 +4785,13 @@ void StemLabAudioProcessorEditor::wireSettingsPage()
         refreshFromProcessor();
     };
 
+    settingsPanel.onTempoMode = [this](int index)
+    {
+        processor.setTempoAnalysisMode(index == 1 ? StemLabAudioProcessor::tempoDynamic
+                                                  : StemLabAudioProcessor::tempoStatic);
+        refreshSettingsPage();
+    };
+
     settingsPanel.onCheckUpdates = [this] { checkForUpdates(); };
 
     settingsPanel.onCopyDiagnostics = [this]
@@ -4778,7 +4839,7 @@ void StemLabAudioProcessorEditor::refreshSettingsPage()
     settings.hostTempoAvailable = !processor.isStandaloneApp();
     settings.manualBpm = processor.getManualGridBpm();
 
-    settings.analysisRunning = processor.isBeatThisEnabled();
+    settings.analysisRunning = processor.isSourceAnalysisRunning();
     settings.analysisToggleEnabled =
         !processor.isEngineRunning() || processor.isBeatThisEnabled();
 
@@ -4796,6 +4857,27 @@ void StemLabAudioProcessorEditor::refreshSettingsPage()
     settings.halfBpm = processor.getHalfTimeSourceBpm();
     settings.doubleBpm = processor.getDoubleTimeSourceBpm();
     settings.tempoAvailable = settings.detectedBpm > 0.0;
+    settings.tempoSteady = processor.isSourceTempoSteady();
+    settings.tempoMode = processor.getTempoAnalysisMode();
+
+    // Dynamic names what the track actually does; static keeps the single
+    // reading a host tempo field takes, even when the track wanders.
+    if (settings.tempoMode == StemLabAudioProcessor::tempoDynamic)
+    {
+        const auto sections = processor.getSourceTempoSegments();
+
+        if (sections.size() > 1)
+        {
+            juce::StringArray parts;
+
+            for (const auto& section : sections)
+                parts.add(juce::String(section.bpm, 1).trimCharactersAtEnd("0.") + " from " +
+                          formatSeconds(section.start));
+
+            settings.tempoSections =
+                juce::String(sections.size()) + " sections: " + parts.joinIntoString(", ");
+        }
+    }
     settings.canForgetCorrection = processor.getSourceBpm() > 0.0;
 
     settings.fusedNormalise = processor.isFusedStemNormalisation();
@@ -4829,6 +4911,14 @@ void StemLabAudioProcessorEditor::refreshSettingsPage()
 juce::File StemLabAudioProcessorEditor::updaterScript()
 {
     return stemlab::paths::userDataDirectory().getChildFile("update.sh");
+}
+
+void StemLabAudioProcessorEditor::setHostTempo()
+{
+    // The processor does the work and says what happened; this only relays
+    // it, so the host-specific parts stay on the side that owns the bridge.
+    processor.postUiStatus(processor.setHostTempo());
+    refreshFromProcessor();
 }
 
 void StemLabAudioProcessorEditor::checkForUpdates()

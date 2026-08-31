@@ -98,6 +98,20 @@ namespace stemlab::reaper
         bool (*SetMediaItemInfo_Value) (
             MediaItem*, const char*, double) = nullptr;
 
+        /*  Project tempo. Optional, like the peak builder: an older REAPER
+            without them simply cannot be told a tempo, and Set Host Tempo
+            reports that rather than failing the whole bridge.
+
+            SetTempoTimeSigMarker with ptidx -1 inserts; timepos or
+            measurepos/beatpos, whichever is not -1, places it. Passing
+            bpm 0 and both time signature fields 0 deletes.
+        */
+        bool (*SetCurrentBPM) (ReaProject*, double, bool) = nullptr;
+        bool (*SetTempoTimeSigMarker) (
+            ReaProject*, int, double, int, double, double, int, int, bool) = nullptr;
+        int (*CountTempoTimeSigMarkers) (ReaProject*) = nullptr;
+        bool (*DeleteTempoTimeSigMarker) (ReaProject*, int) = nullptr;
+
         // Housekeeping ----------------------------------------------------
         void (*Undo_BeginBlock2) (ReaProject*) = nullptr;
         void (*Undo_EndBlock2) (ReaProject*, const char*, int) = nullptr;

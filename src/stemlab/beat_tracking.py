@@ -33,7 +33,7 @@ BEAT_THIS_VERSION = "1.1.0"
 # this module derives change. -2 is the tempo coming from the mean of the
 # inlier intervals rather than their median; without the bump every track
 # already analysed would keep serving the frame-quantised BPM it cached.
-BEAT_ALGORITHM_VERSION = "beat-this-1.1.0-stemlab-4"
+BEAT_ALGORITHM_VERSION = "beat-this-1.1.0-stemlab-5"
 
 # Beat This!'s frame rate, and so the grid every beat it reports lands on.
 _BEAT_FPS = 50.0
@@ -91,6 +91,24 @@ class BeatAnalysis:
     # alignment across it however well the tempo itself is measured.
     grid_rms: float = 0.0
     grid_ratio: float = 0.0
+    # Every stretch one constant tempo explains, in order. One entry means
+    # the track holds a single tempo; more than one means it does not, and
+    # names where each holds.
+    tempo_segments: tuple[TempoSegment, ...] = ()
+
+    @property
+    def tempo_is_steady(self) -> bool:
+        """Whether one tempo holds the track well enough to set a host to it.
+
+        The thresholds are the detector's own floor and a little slack. A
+        track cut to a click sits at 5.8 ms RMS - 20 ms quantisation over
+        sqrt(12) - with the grid explaining every beat; 12 ms is twice that,
+        which nothing steady reaches. The 0.80 ratio is what separates a few
+        loose beats at a fade-in from a tempo that moves: a track ramping
+        1 BPM across its length explains 0.55 of its beats and no constant
+        tempo will align it, however precisely the tempo is measured.
+        """
+        return self.grid_rms <= 0.012 and self.grid_ratio >= 0.80
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -556,6 +574,175 @@ def _snap_to_grid(seconds: float, grid: _Grid, origin: float) -> float:
     return float(origin + grid.phase + grid.period * slot)
 
 
+@dataclass(frozen=True)
+class TempoSegment:
+    """A stretch of the track that one constant tempo does explain."""
+
+    start: float
+    end: float
+    bpm: float
+    beats: int
+
+
+# A tempo has to hold for this many beats before it is a section rather than
+# a stumble. Two bars of four.
+_MIN_SEGMENT_BEATS = 8
+
+# Local period estimates disagree by more than this, and the track changed
+# tempo rather than the detector wobbling. 1.2% is four times the spread a
+# clean track shows at 174 BPM, where 20 ms quantisation over an 8-beat
+# window is 0.3%.
+_SEGMENT_THRESHOLD = 0.012
+
+# Shorter than this and it is the window crossing a change, not a section
+# of music. Four seconds is under two bars at any tempo StemLab reports.
+_MIN_SEGMENT_SECONDS = 4.0
+
+# How much of a piece its own tempo has to explain before the piece is
+# believed. A real section sits near 1.0; a window straddling a change,
+# or one thrown by missing beats, does not come close.
+_SEGMENT_MIN_RATIO = 0.85
+
+
+def _seed_period(beats: np.ndarray) -> float | None:
+    """A starting period the grid sweep can reach the real one from.
+
+    The mean of the raw intervals will not do. A dropped beat leaves an
+    interval of two, and 5% of them drags the mean 5% long - past the edge
+    of the +/-3% the sweep looks in, so the true period is never tried and a
+    174 track seeds at 171.5. _robust_intervals throws those out first,
+    which is the whole reason it exists.
+    """
+    try:
+        intervals, _, _ = _robust_intervals(beats)
+    except RuntimeError:
+        return None
+
+    return float(np.mean(intervals))
+
+
+def _absorb_straddles(pieces: list[TempoSegment]) -> list[TempoSegment]:
+    """Fold pieces too short to be a section into the neighbour they match."""
+    if len(pieces) < 3:
+        return pieces
+
+    kept: list[TempoSegment] = []
+    for index, piece in enumerate(pieces):
+        short = piece.end - piece.start < _MIN_SEGMENT_SECONDS
+        interior = 0 < index < len(pieces) - 1
+        if short and interior and kept:
+            following = pieces[index + 1]
+            nearer_previous = abs(piece.bpm - kept[-1].bpm) <= abs(piece.bpm - following.bpm)
+            if nearer_previous:
+                kept[-1] = TempoSegment(
+                    kept[-1].start, piece.end, kept[-1].bpm, kept[-1].beats + piece.beats
+                )
+                continue
+            pieces[index + 1] = TempoSegment(
+                piece.start, following.end, following.bpm, following.beats + piece.beats
+            )
+            continue
+        kept.append(piece)
+
+    return kept
+
+
+def _tempo_segments(beats: np.ndarray) -> tuple[TempoSegment, ...]:
+    """Split the track where one constant tempo stops explaining it.
+
+    Local period over a sliding window of eight beats, cut where that moves
+    by more than the quantisation noise can account for, then each piece
+    measured properly with the same grid fit the whole track gets. Pieces
+    whose tempos agree are merged back, so a track that never changes comes
+    out as one segment rather than as noise-driven confetti.
+
+    Eight beats because a window has to be long enough that 20 ms of
+    quantisation on each end is small against the period it measures - at
+    174 BPM eight beats is 2.8 s, and 20 ms across that is 0.7% - and short
+    enough to place a change within a bar or two.
+    """
+    if beats.size < 2 * _MIN_SEGMENT_BEATS:
+        return ()
+
+    window = _MIN_SEGMENT_BEATS
+    seed_interval = _seed_period(beats)
+    if seed_interval is None:
+        return ()
+
+    seed = _dominant_grid(beats, seed_interval).period
+
+    # Span over the number of beats the span actually holds, not over the
+    # number of entries in it. A dropped beat makes eight entries cover nine
+    # beats, and dividing by eight then reports a tempo 12% slow - enough to
+    # cut a false boundary at every drop. Measured before this: a constant
+    # 174 track with 5% of its beats missing came out as eleven segments
+    # ranging from 152 to 174.
+    span = beats[window:] - beats[:-window]
+    covered = np.maximum(np.rint(span / seed), 1.0)
+    local = span / covered
+
+    # Where the local period steps, rather than where it is merely noisy.
+    reference = float(np.median(local))
+    boundaries = [0]
+    for index in range(1, local.size):
+        if abs(local[index] - reference) / max(reference, 1e-9) > _SEGMENT_THRESHOLD:
+            if index - boundaries[-1] >= _MIN_SEGMENT_BEATS:
+                boundaries.append(index)
+                reference = float(np.median(local[index : index + window]))
+    boundaries.append(beats.size)
+
+    pieces: list[TempoSegment] = []
+    for first, last in zip(boundaries, boundaries[1:], strict=False):
+        span = beats[first:last]
+        if span.size < _MIN_SEGMENT_BEATS:
+            continue
+        piece_seed = _seed_period(span)
+        if piece_seed is None:
+            continue
+        grid = _dominant_grid(span, piece_seed)
+        # A piece is only a section if one tempo explains it. Where the
+        # sliding window crosses a change it reports something in between,
+        # and where beats are missing it can misjudge how many a span holds -
+        # both produce a piece no grid fits. Those are folded into a
+        # neighbour rather than reported as tempo the track never plays.
+        if grid.ratio < _SEGMENT_MIN_RATIO:
+            continue
+        pieces.append(
+            TempoSegment(
+                start=float(span[0]),
+                end=float(span[-1]),
+                bpm=round(60.0 / grid.period, 3),
+                beats=int(span.size),
+            )
+        )
+
+    # The window straddles a tempo change for as long as it takes to cross
+    # it, and reports something in between the whole way. That is an artefact
+    # of the window, not a section of the track, so a piece too short to be
+    # music is folded into whichever neighbour it is closer to in tempo.
+    pieces = _absorb_straddles(pieces)
+
+    # A track that never changes tempo must come out as one segment, not as
+    # however many the local window happened to cut it into.
+    merged: list[TempoSegment] = []
+    for piece in pieces:
+        if merged and abs(piece.bpm - merged[-1].bpm) / max(merged[-1].bpm, 1e-9) <= 0.005:
+            previous = merged[-1]
+            total = previous.beats + piece.beats
+            merged[-1] = TempoSegment(
+                start=previous.start,
+                end=piece.end,
+                bpm=round(
+                    (previous.bpm * previous.beats + piece.bpm * piece.beats) / total, 3
+                ),
+                beats=total,
+            )
+        else:
+            merged.append(piece)
+
+    return tuple(merged)
+
+
 def _estimate_meter(beats: np.ndarray, downbeats: np.ndarray) -> tuple[int | None, float]:
     if beats.size < 3 or downbeats.size < 2:
         return None, 0.0
@@ -609,6 +796,7 @@ def derive_musical_time(
         float(downbeats[0]) if downbeats.size else float(beats[0]), grid, float(beats[0])
     )
     return BeatAnalysis(
+        tempo_segments=_tempo_segments(beats),
         grid_rms=round(grid.rms, 6),
         grid_ratio=round(grid.ratio, 4),
         bpm=round(detected_bpm, 3),
