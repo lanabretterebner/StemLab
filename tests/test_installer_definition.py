@@ -22,6 +22,50 @@ PATHS_CPP = (ROOT / "src" / "plugin" / "Source" / "StemLabPaths.cpp").read_text(
 PER_USER_VST3 = r"{localappdata}\Programs\Common\VST3\StemLab.vst3"
 
 
+class TestTheCompilerRulesThatAreInvisibleUntilItRuns:
+    """Two ways to write a StemLab.iss that reads fine and will not compile.
+
+    There is no Windows machine in CI, so ISCC only ever runs during a release
+    - which makes a compile error cost a whole release cycle to find. Both of
+    these cost one.
+    """
+
+    def test_no_line_outside_the_preamble_starts_with_a_hash(self):
+        # The preprocessor reads any line whose first non-whitespace character
+        # is "#" as a directive, so a Pascal string continued as
+        #
+        #     #13#10 +
+        #
+        # aborts the compile with "Unknown preprocessor directive" before the
+        # Pascal is ever parsed. Continuation lines start with "+" instead.
+        lines = ISS.splitlines()
+        first_section = next(
+            index for index, line in enumerate(lines) if line.startswith("[")
+        )
+
+        offenders = [
+            f"{index + 1}: {line.strip()}"
+            for index, line in enumerate(lines[first_section:], start=first_section)
+            if line.lstrip().startswith("#")
+        ]
+
+        assert offenders == []
+
+    def test_the_code_section_has_no_brace_comments(self):
+        # An Inno constant inside one closes it at its own brace: a comment
+        # saying "it sits inside {app}" ends at "{app}" and leaves the rest of
+        # the sentence as code. Line comments cannot do that.
+        code = ISS.partition("[Code]")[2]
+
+        offenders = [
+            line.strip()
+            for line in code.splitlines()
+            if line.lstrip().startswith("{")
+        ]
+
+        assert offenders == []
+
+
 def test_flavor_variants_share_one_uninstall_identity():
     # cpu/cuda/xpu installers are variants of one installed product: the
     # flavor may name the setup file, never the uninstall identity.
