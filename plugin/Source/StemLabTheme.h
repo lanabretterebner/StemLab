@@ -118,12 +118,38 @@ namespace stemlab::theme
         // The accent doubles as the arm/recording indicator.
         inline juce::Colour recordDot() { return accent(); }
 
-        // Stem lanes.
-        inline juce::Colour laneWell() { return ground(); }
+        /*
+            Stem lanes.
+
+            The well is deliberately darker than the ground rather than equal
+            to it: the lane is a recess cut into the panel, and the waveform
+            palette is drawn against it. This is the value the level-mapped
+            spectrum ramp was tuned against, kept unchanged so that ramp
+            still reads the way it was designed to.
+        */
+        inline juce::Colour laneWell() { return juce::Colour(0xff0c0f14); }
+
+        /*
+            Grid rules are a ruler behind the audio, not a thing to read, so
+            they are held near the well: neutral700 measures 2.9:1 on it,
+            where a step lighter reaches 4.5:1 and starts competing with the
+            waveform it is meant to sit behind.
+        */
+        inline juce::Colour gridLine() { return neutral700(); }
+        inline juce::Colour laneCentreLine() { return neutral800(); }
+
         inline juce::Colour wavePlayed() { return accent(); }
         inline juce::Colour waveMuted() { return neutral800(); }
         inline juce::Colour playhead() { return accent(); }
         inline juce::Colour playheadGlow() { return accent().withAlpha(0.35f); }
+
+        /*  Transcribed notes over a lane's audio. The text colour, not the
+            accent: the accent is the playhead, and notes lying under it must
+            not be mistaken for it - which they would be now that both are the
+            same amber. Translucent so the waveform stays readable through
+            them; the notes describe the audio, they do not replace it. */
+        inline juce::Colour midiOverlay() { return text().withAlpha(0.55f); }
+        inline juce::Colour midiOverlayEdge() { return text().withAlpha(0.42f); }
         inline juce::Colour selectionFill() { return accent().withAlpha(0.20f); }
         inline juce::Colour selectionEdge() { return accent().withAlpha(0.90f); }
 
