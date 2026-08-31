@@ -320,8 +320,14 @@ private:
     stemlab::widgets::IncludeCheckbox include;
     juce::Label nameLabel;
     std::unique_ptr<StemLaneWaveform> waveform;
-    juce::TextButton soloButton{"S"};
-    juce::TextButton muteButton{"M"};
+    /*  Auditions this lane through the shared preview player. Solo and Mute
+        stood here; they needed a stem mix this backend does not have, and
+        removing them left no way to hear a single stem at all. */
+    std::unique_ptr<stemlab::widgets::IconButton> lanePlayButton;
+
+    /** Whether the shared preview player is currently holding this lane. */
+    bool isPreviewingThisLane() const;
+
     std::unique_ptr<stemlab::widgets::IconButton> dragButton;
 
     /** Only present once this lane has been converted, and it carries the
@@ -431,6 +437,8 @@ private:
     /** Show the job output folder in the desktop's file manager. */
     void revealJobFolder();
     void showSettingsMenu();
+    void chooseEngineExecutable();
+    void showAnalysisCorrectionDialog();
     void showStandaloneAudioSettings();
 
     /** Ask for the beat grid's tempo, and switch to the manual grid on OK. */

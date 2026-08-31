@@ -41,6 +41,14 @@ namespace stemlab::widgets
 
         void paintButton(juce::Graphics&, bool highlighted, bool down) override;
 
+        /** Swap the glyph in place, for a control whose shape reports state -
+            a transport button showing play or pause. */
+        void setIcon(PathFactory factory)
+        {
+            makePath = std::move(factory);
+            repaint();
+        }
+
     private:
         PathFactory makePath;
         float iconSize;

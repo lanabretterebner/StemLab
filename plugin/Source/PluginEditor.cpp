@@ -1232,11 +1232,35 @@ StemLaneComponent::StemLaneComponent(StemLabAudioProcessor& processorIn, int ste
     addAndMakeVisible(*waveform);
 
     /*
-        No Solo or Mute. They act on a stem mix, and this backend auditions
-        one stem at a time through a preview transport - there is nothing for
-        them to act on. Drawn disabled they would be two dead controls on
-        every lane, so they are absent.
+        Solo and Mute stood here. They act on a stem mix, which this backend
+        does not have - it auditions one stem at a time through a shared
+        preview player. Removing them left no way to hear a single lane, so
+        the control that does exist takes their place.
     */
+    lanePlayButton = std::make_unique<widgets::IconButton>(
+        "lane-play", [](juce::Rectangle<float> b) { return stemlab::icons::play(b); },
+        static_cast<float>(theme::metrics::lanes::layersIcon), false,
+        theme::metrics::lanes::smRadius, false);
+
+    lanePlayButton->setTooltip("Audition this stem");
+
+    lanePlayButton->onClick = [this]
+    {
+        // Pressing the lane that is already playing pauses it, rather than
+        // restarting the same audio from the top.
+        if (isPreviewingThisLane())
+            processor.transportTogglePlay();
+        else if (isChildLane())
+            processor.playRecursiveStem(childId);
+        else
+            processor.playCompletedStem(stemIndex);
+
+        if (refreshEditor)
+            refreshEditor();
+    };
+
+    addAndMakeVisible(*lanePlayButton);
+
 
     /*
      * The stem's own drag handle. Dragging the waveform used to carry the
@@ -1474,6 +1498,12 @@ void StemLaneComponent::mouseWheelMove(const juce::MouseEvent& event,
     Component::mouseWheelMove(event, wheel);
 }
 
+bool StemLaneComponent::isPreviewingThisLane() const
+{
+    return isChildLane() ? processor.getPreviewRecursiveId() == childId
+                         : processor.getPreviewStemIndex() == stemIndex;
+}
+
 void StemLaneComponent::updateHover()
 {
     /*
@@ -1545,17 +1575,18 @@ void StemLaneComponent::refresh()
     const bool included = isChildLane() ? processor.isRecursiveStemEnabled(childId)
                                         : processor.isStemEnabled(stemIndex);
 
-    constexpr bool soloed = false;
-    constexpr bool muted = false;
-
     include.setToggleState(included, juce::dontSendNotification);
     include.setEnabled(laneLive);
 
-    soloButton.setEnabled(ready);
-    soloButton.setToggleState(soloed, juce::dontSendNotification);
+    // The play control shows what pressing it will do, so the lane that is
+    // sounding is the one showing pause.
+    const bool sounding = isPreviewingThisLane() && processor.isTransportPlaying();
 
-    muteButton.setEnabled(ready);
-    muteButton.setToggleState(muted, juce::dontSendNotification);
+    lanePlayButton->setEnabled(ready);
+    lanePlayButton->setIcon(sounding
+                                ? [](juce::Rectangle<float> b) { return stemlab::icons::pause(b); }
+                                : [](juce::Rectangle<float> b) { return stemlab::icons::play(b); });
+    lanePlayButton->setTooltip(sounding ? "Pause" : "Audition this stem");
 
     /*
      * Always offered on a ready lane, both kinds. It used to be hidden when
@@ -1655,13 +1686,10 @@ void StemLaneComponent::resized()
 
     auto controls = row.removeFromRight(lanes::controlsColumn);
 
-    // Controls sit vertically centred: S, M, layers.
+    // Controls sit vertically centred: play, then the lane menu.
     auto centred = controls.withSizeKeepingCentre(controls.getWidth(), lanes::smButton);
 
-    soloButton.setBounds(centred.removeFromLeft(lanes::smButton));
-    centred.removeFromLeft(lanes::smGap);
-
-    muteButton.setBounds(centred.removeFromLeft(lanes::smButton));
+    lanePlayButton->setBounds(centred.removeFromLeft(lanes::smButton));
     centred.removeFromLeft(lanes::smGap);
 
     menuButton->setBounds(centred.removeFromLeft(lanes::smButton));
@@ -4525,10 +4553,178 @@ void StemLabAudioProcessorEditor::showWaveformColourMenu()
 
 void StemLabAudioProcessorEditor::showSettingsMenu()
 {
-    // Kept as the entry point the gear button calls, but it opens the window
-    // rather than a menu now: everything the menu held is a page in it, and a
-    // setting you can see beats one you have to go looking for.
-    showSettingsMenu();
+    juce::PopupMenu menu;
+
+    if (processor.isStandaloneApp())
+    {
+        menu.addSectionHeader("Audio");
+        menu.addItem(1, "Audio/MIDI Settings...");
+        menu.addSeparator();
+    }
+
+    menu.addSectionHeader("Display");
+
+    juce::PopupMenu waveformMenu;
+
+    const juce::StringArray colourNames{
+        "Spectrum (Volume)", "Violet", "Cyan", "Emerald", "Amber", "Pink", "Ice"};
+
+    for (int i = 0; i < colourNames.size(); ++i)
+    {
+        waveformMenu.addItem(100 + i, colourNames[i], true,
+                             processor.getWaveformColourIndex() == i);
+    }
+
+    menu.addSubMenu("Waveform Color", waveformMenu);
+
+    menu.addSeparator();
+
+    menu.addSectionHeader("Beat This! analysis");
+
+    menu.addItem(324, "Run Beat This! analysis", !processor.isEngineRunning(),
+                 processor.isBeatThisEnabled());
+
+    juce::PopupMenu analysisModeMenu;
+    analysisModeMenu.addItem(300, "Accurate (final0)", !processor.isEngineRunning(),
+                             processor.getSourceAnalysisMode() ==
+                                 StemLabAudioProcessor::analysisAccurate);
+    analysisModeMenu.addItem(301, "Fast (small0)", !processor.isEngineRunning(),
+                             processor.getSourceAnalysisMode() ==
+                                 StemLabAudioProcessor::analysisFast);
+    menu.addSubMenu("Analysis Mode", analysisModeMenu);
+
+    const auto tempoLabel = [](const juce::String& name, double bpm)
+    {
+        return bpm > 0.0 ? name + " (" + juce::String(bpm, 1) + " BPM)" : name;
+    };
+    juce::PopupMenu tempoMenu;
+    tempoMenu.addItem(310, tempoLabel("Half-time", processor.getHalfTimeSourceBpm()), true,
+                      processor.getTempoInterpretation() == StemLabAudioProcessor::tempoHalf);
+    tempoMenu.addItem(311, tempoLabel("Detected", processor.getDetectedSourceBpm()), true,
+                      processor.getTempoInterpretation() == StemLabAudioProcessor::tempoDetected);
+    tempoMenu.addItem(312, tempoLabel("Double-time", processor.getDoubleTimeSourceBpm()), true,
+                      processor.getTempoInterpretation() == StemLabAudioProcessor::tempoDouble);
+    menu.addSubMenu("Tempo Interpretation", tempoMenu,
+                    processor.getCaptureFile().existsAsFile());
+    menu.addItem(321, "Correct Analysis...",
+                 processor.getCaptureFile().existsAsFile() && !processor.isEngineRunning());
+    menu.addItem(322, "Forget Local Correction",
+                 processor.getCaptureFile().existsAsFile() && !processor.isEngineRunning());
+    menu.addItem(323, "Clear Analysis Cache", !processor.isEngineRunning());
+    menu.addItem(325, "Analysis Details...", processor.getCaptureFile().existsAsFile());
+
+    menu.addSeparator();
+
+    menu.addSectionHeader("Separator");
+
+    juce::PopupMenu separatorMenu;
+
+    const juce::StringArray separatorNames{"BS-RoFormer", "Demucs (htdemucs_6s)",
+                                           "Hybrid (RoFormer + Demucs)"};
+
+    for (int i = 0; i < separatorNames.size(); ++i)
+    {
+        separatorMenu.addItem(200 + i, separatorNames[i], !processor.isEngineRunning(),
+                              processor.getSeparatorEngineIndex() == i);
+    }
+
+    menu.addSubMenu("Separation Engine", separatorMenu);
+
+    menu.addSeparator();
+
+    menu.addSectionHeader("FI-STEM engine");
+
+    menu.addItem(2, "Choose engine executable...");
+
+    menu.addItem(3, "Auto-detect engine");
+
+    menu.addSeparator();
+
+    menu.addItem(4, "Copy diagnostics to clipboard", processor.hasEngineLog());
+
+    if (processor.isStandaloneApp())
+    {
+        menu.addSeparator();
+        menu.addSectionHeader("Ableton Live");
+        menu.addItem(5, "Install / Repair Ableton Integration...");
+    }
+
+    auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
+
+    menu.showMenuAsync(
+        juce::PopupMenu::Options().withTargetComponent(settingsButton.get()),
+        [safeThis](int result)
+        {
+            if (safeThis == nullptr)
+                return;
+
+            if (result == 1)
+            {
+                safeThis->showStandaloneAudioSettings();
+            }
+            else if (result == 2)
+            {
+                safeThis->chooseEngineExecutable();
+            }
+            else if (result == 3)
+            {
+                safeThis->processor.resetEngineCommandToAutoDiscover();
+            }
+            else if (result == 4)
+            {
+                juce::SystemClipboard ::copyTextToClipboard(safeThis->processor.getEngineLog());
+
+                safeThis->processor.postUiStatus("Diagnostics copied to clipboard");
+            }
+            else if (result == 5)
+            {
+                safeThis->launchAbletonSetup();
+            }
+            else if (result >= 100 && result < 100 + StemLabAudioProcessor ::waveformColourCount)
+            {
+                safeThis->processor.setWaveformColourIndex(result - 100);
+            }
+            else if (result >= 200 && result < 200 + StemLabAudioProcessor ::separatorEngineCount)
+            {
+                safeThis->processor.setSeparatorEngineIndex(result - 200);
+
+                safeThis->processor.postUiStatus(
+                    "Separator: " + safeThis->processor.getSeparatorEngineDisplayName());
+            }
+            else if (result == 300 || result == 301)
+            {
+                safeThis->processor.setSourceAnalysisMode(result - 300);
+            }
+            else if (result >= 310 && result <= 312)
+            {
+                safeThis->processor.setTempoInterpretation(result - 310);
+            }
+            else if (result == 321)
+            {
+                safeThis->showAnalysisCorrectionDialog();
+            }
+            else if (result == 322)
+            {
+                safeThis->processor.forgetSourceCorrection();
+            }
+            else if (result == 324)
+            {
+                safeThis->processor.setBeatThisEnabled(!safeThis->processor.isBeatThisEnabled());
+                safeThis->refreshFromProcessor();
+            }
+            else if (result == 325)
+            {
+                juce::AlertWindow::showMessageBoxAsync(
+                    juce::MessageBoxIconType::InfoIcon, "Source Analysis",
+                    safeThis->processor.getSourceAnalysisDetails(), "OK", safeThis);
+            }
+            else if (result == 323)
+            {
+                safeThis->processor.clearAnalysisCache();
+            }
+
+            safeThis->refreshFromProcessor();
+        });
 }
 
 namespace
@@ -4722,4 +4918,75 @@ void StemLabAudioProcessorEditor::showStandaloneAudioSettings()
 #endif
 
     processor.postUiStatus("Standalone audio settings are unavailable");
+}
+
+void StemLabAudioProcessorEditor::chooseEngineExecutable()
+{
+    auto start = juce::File(processor.getEngineCommand());
+
+    if (!start.exists())
+    {
+        start = juce::File::getSpecialLocation(juce::File::userHomeDirectory);
+    }
+
+    fileChooser =
+        std::make_unique<juce::FileChooser>("Choose stemlab-plugin-job executable", start, "*.exe");
+
+    fileChooser->launchAsync(juce::FileBrowserComponent::openMode |
+                                 juce::FileBrowserComponent::canSelectFiles,
+                             [this](const juce::FileChooser& chooser)
+                             {
+                                 const auto result = chooser.getResult();
+
+                                 if (result.existsAsFile())
+                                 {
+                                     processor.setEngineCommand(result.getFullPathName());
+
+                                     processor.postUiStatus("Engine path updated");
+
+                                     refreshFromProcessor();
+                                 }
+                             });
+}
+
+void StemLabAudioProcessorEditor::showAnalysisCorrectionDialog()
+{
+    auto window = std::make_shared<juce::AlertWindow>(
+        "Correct Source Analysis", "Corrections are stored locally for this exact source file.",
+        juce::MessageBoxIconType::NoIcon, this);
+
+    window->addTextEditor("bpm", juce::String(processor.getSourceBpm(), 3), "BPM");
+    window->addTextEditor("key", processor.getSourceKey(), "Key");
+    window->addTextEditor("numerator", juce::String(processor.getSourceMeterNumerator()),
+                          "Meter numerator");
+    window->addTextEditor("denominator", juce::String(processor.getSourceMeterDenominator()),
+                          "Meter denominator");
+    window->addTextEditor("barOne", juce::String(processor.getSourceBarOne(), 4),
+                          "Bar one (seconds)");
+    window->addButton("Save", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    window->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+
+    auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
+
+    window->enterModalState(
+        true,
+        juce::ModalCallbackFunction::create(
+            [safeThis, window](int result)
+            {
+                if (result != 1 || safeThis == nullptr)
+                    return;
+                const auto bpm = window->getTextEditorContents("bpm").getDoubleValue();
+                const auto key = window->getTextEditorContents("key").trim();
+                const auto numerator = window->getTextEditorContents("numerator").getIntValue();
+                const auto denominator =
+                    window->getTextEditorContents("denominator").getIntValue();
+                const auto barOne = window->getTextEditorContents("barOne").getDoubleValue();
+                if (bpm < 20.0 || bpm > 400.0 || numerator < 1 || denominator < 1 || barOne < 0.0)
+                {
+                    safeThis->processor.postUiStatus("Analysis correction values are invalid");
+                    return;
+                }
+                safeThis->processor.saveSourceCorrection(bpm, key, numerator, denominator, barOne);
+            }),
+        false);
 }
