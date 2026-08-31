@@ -514,12 +514,13 @@ jobs:
           @(
             "StemLab $version - VST3 and Standalone for Windows, without the Engine.",
             "",
-            "This archive holds the binaries only. StemLab cannot separate",
-            "anything until a Python Engine is installed and discoverable - if",
-            "you do not already have one, run the installer instead of using",
+            "This archive holds the binaries only. StemLab does not search for",
+            "its Engine: it runs %LOCALAPPDATA%\StemLab\Engine\python.exe and",
+            "nothing else, unless STEMLAB_ENGINE names another interpreter. If",
+            "you do not already have that, run the installer instead of using",
             "this archive.",
             "",
-            "  StemLab.vst3   copy to C:\Program Files\Common Files\VST3\",
+            "  StemLab.vst3   copy to %LOCALAPPDATA%\Programs\Common\VST3\",
             "  StemLab.exe    the standalone application"
           ) | Set-Content -Path (Join-Path $payload "README.txt") -Encoding UTF8
 
