@@ -638,7 +638,6 @@ private:
     stemlab::widgets::PlayCircleButton playButton;
     juce::Label timeLabel;
     stemlab::widgets::Scrubber scrubber;
-    stemlab::widgets::SegmentedControl abControl{"Original", "Stems"};
     bool sawSuccessfulJob = false;
 
     // Keeps transient status messages visible for a few seconds after a

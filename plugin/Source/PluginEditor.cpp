@@ -1810,14 +1810,14 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
                     windowComponent->setBackgroundColour(theme::colours::ground());
 
                     windowComponent->setUsingNativeTitleBar(true);
-                    windowComponent->setName("StemLab");
+                    windowComponent->setName("FI-STEM");
                 }
             });
     }
 
     // ------------------------------------------------------------- header
 
-    titleLabel.setText("StemLab", juce::dontSendNotification);
+    titleLabel.setText("FI-STEM", juce::dontSendNotification);
     titleLabel.setFont(
         juce::Font(theme::fonts::title()).withExtraKerningFactor(theme::fonts::titleKerning));
     titleLabel.setColour(juce::Label::textColourId, theme::colours::text());
@@ -2153,13 +2153,12 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     };
     panelContent.addAndMakeVisible(scrubber);
 
-    abControl.setSelectedIndex(0);
-    abControl.onSelected = [this](int index)
-    {
-        juce::ignoreUnused(index);
-        refreshFromProcessor();
-    };
-    panelContent.addAndMakeVisible(abControl);
+    /*
+        No Original/Stems switch. It chooses what the transport monitors, and
+        this backend auditions one stem at a time through a preview player -
+        there is no stem mix to switch to, so there is no second position for
+        the control to take.
+    */
 
     // -------------------------------------------------------------- footer
 
@@ -2847,9 +2846,6 @@ void StemLabAudioProcessorEditor::layoutPanel()
         timeLabel.setBounds(transportRow.removeFromLeft(transport::timeWidth));
         transportRow.removeFromLeft(transport::gap);
 
-        abControl.setBounds(transportRow.removeFromRight(transport::abWidth)
-                                .withSizeKeepingCentre(transport::abWidth,
-                                                       transport::abHeight));
         transportRow.removeFromRight(transport::gap);
 
         scrubber.setBounds(transportRow);
@@ -3863,9 +3859,6 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     scrubber.setEnabled(transportLength > 0.0 && !capturing && !engineRunning);
     scrubber.setPosition(transportLength > 0.0 ? transportPosition / transportLength : 0.0);
 
-    abControl.setEnabled(jobDone && !engineRunning && !capturing);
-    abControl.setSelectedIndex(
-        0);
 
     // --------------------------------------------------------------- lanes
 

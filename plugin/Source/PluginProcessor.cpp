@@ -2039,10 +2039,33 @@ void StemLabAudioProcessor::setManualGrid(double bpm, int numerator, int denomin
 
 void StemLabAudioProcessor::transportTogglePlay()
 {
-    if (isStandalonePlaying())
-        stopStandalonePlayback();
-    else
-        toggleStandalonePlayback();
+    /*
+        There is one preview player here, and it holds either the source
+        (previewStemIndex -1) or one stem. The transport drives that player,
+        so it toggles whatever is loaded rather than always reaching for the
+        source - forcing the source would throw away the stem you had just
+        auditioned every time you pressed play.
+    */
+    if (previewTransport.isPlaying())
+    {
+        previewTransport.stop();
+        setStatus(previewStemIndex.load() < 0 ? "Source paused" : "Stem paused");
+        sendChangeMessage();
+        return;
+    }
+
+    if (previewStemIndex.load() >= 0 && previewTransport.getLengthInSeconds() > 0.0)
+    {
+        if (previewTransport.getCurrentPosition() >= previewTransport.getLengthInSeconds() - 0.01)
+            previewTransport.setPosition(0.0);
+
+        previewTransport.start();
+        setStatus("Playing stem");
+        sendChangeMessage();
+        return;
+    }
+
+    toggleStandalonePlayback();
 }
 
 void StemLabAudioProcessor::transportSeekNormalised(double normalisedPosition)

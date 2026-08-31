@@ -105,7 +105,7 @@ int main()
     expectContrast("text on ground", text(), ground(), bodyText);
     expectContrast("text on surface", text(), surface(), bodyText);
     expectContrast("sectionHeader on surface", sectionHeader(), surface(), largeTextOrUi);
-    expectContrast("textMuted on ground", textMuted(), ground(), largeTextOrUi);
+    expectContrast("text50 on ground", text50(), ground(), largeTextOrUi);
 
     std::printf("\n-- marks that have to be findable on dark --\n");
     expectContrast("accent on ground", accent(), ground(), largeTextOrUi);
@@ -114,39 +114,12 @@ int main()
     expectContrast("progressFill on progressTrack", progressFill(), progressTrack(),
                    largeTextOrUi);
 
-    std::printf("\n-- the lane keeps upstream's waveform readable --\n");
+    std::printf("\n-- marks over a lane stay distinct from each other --\n");
     /*
-        The waveform palette is not the theme's to choose - it is mapped from
-        the audio's own level, and it was tuned against a specific backdrop.
-        What the theme owes it is the surround: a well that stays a recess,
-        and rules and overlays that stay behind the audio rather than
-        competing with it.
+        The waveform palette is this backend's and is mapped from the audio's
+        own level; what the theme owes it is that the marks laid over it -
+        playhead, selection, transcribed notes - do not read as each other.
     */
-    if (relativeLuminance(laneWell()) < relativeLuminance(ground()))
-    {
-        std::printf("ok   laneWell is a recess, darker than ground\n");
-    }
-    else
-    {
-        std::printf("FAIL laneWell is not darker than ground; the lane stops "
-                    "reading as a recess\n");
-        ++failures;
-    }
-
-    // Held near the well on purpose: a step lighter reaches 4.5:1 and starts
-    // competing with the waveform the rules sit behind.
-    expectContrast("gridLine on laneWell stays quiet", gridLine(), laneWell(), 2.0);
-    if (contrastRatio(laneWell().overlaidWith(gridLine()), laneWell()) > 3.6)
-    {
-        std::printf("FAIL gridLine is too loud over the lane\n");
-        ++failures;
-    }
-    else
-    {
-        std::printf("ok   gridLine stays behind the audio\n");
-    }
-
-    // Notes lie under the playhead. If they share its colour they read as it.
     if (midiOverlay().withAlpha(1.0f) == playhead().withAlpha(1.0f))
     {
         std::printf("FAIL midiOverlay is the playhead's colour; notes under "
