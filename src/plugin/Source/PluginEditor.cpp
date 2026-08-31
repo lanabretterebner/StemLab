@@ -2734,10 +2734,9 @@ void StemLabAudioProcessorEditor::layoutPanel()
 
     auto inner = panelBounds.reduced(panel::padX, panel::padY);
 
-    // Header, right to left: the settings icon, the waveform palette, the
-    // model selector, the zoom group, and the lane selection group. The
-    // brand glyph and title take the left, and the title absorbs whatever
-    // is left over between them.
+    // Header, right to left: the settings icon, the model selector, the zoom
+    // group, and the lane selection group. The brand glyph and title take the
+    // left, and the title absorbs whatever is left over between them.
     auto headerRow = inner.removeFromTop(header::settingsButton);
 
     settingsButton->setBounds(headerRow.removeFromRight(header::settingsButton));
