@@ -2300,6 +2300,7 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
         sourceHash.clear();
         sourceAnalysisDevice.clear();
         sourceBeatModel.clear();
+        sourceTempoSegments.clear();
         sourceKeyCandidates.clear();
         sourceBeats.clear();
         sourceDownbeats.clear();
@@ -6253,6 +6254,7 @@ bool StemLabAudioProcessor::startSourceAnalysis(const juce::File& source,
         sourceHash.clear();
         sourceAnalysisDevice.clear();
         sourceBeatModel.clear();
+        sourceTempoSegments.clear();
         sourceKeyCandidates.clear();
         sourceBeats.clear();
         sourceDownbeats.clear();
@@ -6368,6 +6370,8 @@ void StemLabAudioProcessor::finishSourceAnalysis(const juce::File& source, const
     double barOne = 0.0;
     int numerator = 4;
     int denominator = 4;
+    bool tempoSteady = true;
+    std::vector<StemLabTempoSegment> tempoSegments;
     bool corrected = false;
     juce::String hash;
     juce::String analysisDevice;
@@ -6394,6 +6398,27 @@ void StemLabAudioProcessor::finishSourceAnalysis(const juce::File& source, const
             barOne = static_cast<double>(object->getProperty("bar_one"));
             numerator = juce::jmax(1, static_cast<int>(object->getProperty("meter_numerator")));
             denominator = juce::jmax(1, static_cast<int>(object->getProperty("meter_denominator")));
+            // Absent in analyses cached by an older engine, and a track whose
+            // tempo could not be checked is better called steady than quietly
+            // flagged as drifting.
+            const auto steadyValue = object->getProperty("tempo_is_steady");
+            tempoSteady = steadyValue.isVoid() || steadyValue.isUndefined()
+                              ? true
+                              : static_cast<bool>(steadyValue);
+            if (auto* segmentArray = object->getProperty("tempo_segments").getArray())
+            {
+                for (const auto& entry : *segmentArray)
+                {
+                    if (auto* segment = entry.getDynamicObject())
+                    {
+                        tempoSegments.push_back(
+                            {static_cast<double>(segment->getProperty("start")),
+                             static_cast<double>(segment->getProperty("end")),
+                             static_cast<double>(segment->getProperty("bpm"))});
+                    }
+                }
+            }
+
             corrected = static_cast<bool>(object->getProperty("corrected"));
             hash = object->getProperty("source_hash").toString();
             analysisDevice = object->getProperty("device").toString();
@@ -6429,6 +6454,7 @@ void StemLabAudioProcessor::finishSourceAnalysis(const juce::File& source, const
         sourceHash = hash;
         sourceAnalysisDevice = analysisDevice;
         sourceBeatModel = beatModel;
+        sourceTempoSegments = std::move(tempoSegments);
         sourceKeyCandidates = std::move(keyCandidates);
         sourceBeats = std::move(beats);
         sourceDownbeats = std::move(downbeats);
@@ -6439,6 +6465,7 @@ void StemLabAudioProcessor::finishSourceAnalysis(const juce::File& source, const
     sourceBarOne.store(barOne);
     sourceMeterNumerator.store(numerator);
     sourceMeterDenominator.store(denominator);
+    sourceTempoSteady.store(tempoSteady);
     sourceAnalysisCorrected.store(corrected);
 
     if (corrected)
@@ -6558,6 +6585,19 @@ void StemLabAudioProcessor::setBeatThisEnabled(bool enabled)
         startSourceAnalysis(source);
     }
     sendChangeMessage();
+}
+
+void StemLabAudioProcessor::setTempoAnalysisMode(int mode)
+{
+    tempoAnalysisMode.store(juce::jlimit(static_cast<int>(tempoStatic),
+                                         static_cast<int>(tempoDynamic), mode));
+}
+
+std::vector<StemLabTempoSegment> StemLabAudioProcessor::getSourceTempoSegments() const
+{
+    // Written and read on the message thread, like sourceBeats and
+    // sourceKeyCandidates beside it, so no lock of its own.
+    return sourceTempoSegments;
 }
 
 void StemLabAudioProcessor::setSourceAnalysisMode(int mode)

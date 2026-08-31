@@ -85,6 +85,15 @@ namespace stemlab::widgets
                 repaint();
             }
 
+            void setCaption(juce::String text)
+            {
+                if (caption == text)
+                    return;
+
+                caption = std::move(text);
+                repaint();
+            }
+
             void setOptionLabels(const juce::StringArray& labels)
             {
                 if (options == labels)
@@ -437,6 +446,7 @@ namespace stemlab::widgets
             add(analysisHeading);
             add(analysisToggle);
             add(analysisQuality);
+            add(tempoMode);
             add(tempoReading);
             add(forgetCorrection);
             add(clearCache);
@@ -473,6 +483,12 @@ namespace stemlab::widgets
             {
                 if (onAnalysisQuality)
                     onAnalysisQuality(index);
+            };
+
+            tempoMode.onSelected = [this](int index)
+            {
+                if (onTempoMode)
+                    onTempoMode(index);
             };
 
             tempoReading.onSelected = [this](int index)
@@ -531,6 +547,12 @@ namespace stemlab::widgets
 
             analysisQuality.setSelectedIndex(settings.analysisQuality);
 
+            // Static reads one tempo for the whole track, which is what a
+            // host's tempo field takes. Dynamic names each stretch that holds
+            // its own - the same analysis either way, so switching costs
+            // nothing and never re-runs it.
+            tempoMode.setSelectedIndex(settings.tempoMode);
+
             // The three readings carry the tempo each would give, so the
             // choice is made against numbers rather than against words.
             tempoReading.setOptionLabels(
@@ -542,6 +564,17 @@ namespace stemlab::widgets
 
             tempoReading.setSelectedIndex(settings.tempoInterpretation);
             tempoReading.setEnabled(settings.tempoAvailable);
+
+            // A reading is only worth a host's tempo field if one tempo holds
+            // the whole track. When it does not, the number is still the best
+            // single answer and saying so is the useful thing - the grid will
+            // walk away from a played or drifting track however it is set.
+            tempoReading.setCaption(
+                settings.tempoSections.isNotEmpty()
+                    ? "Tempo reading (" + settings.tempoSections + ")"
+                    : (settings.tempoAvailable && !settings.tempoSteady
+                           ? "Tempo reading (varies across the track)"
+                           : "Tempo reading"));
 
             forgetCorrection.setEnabled(settings.canForgetCorrection);
             forgetCorrection.action().setEnabled(settings.canForgetCorrection);
@@ -610,6 +643,7 @@ namespace stemlab::widgets
         std::function<void()> onSetManualTempo;
         std::function<void()> onAnalysisToggle;
         std::function<void(int)> onAnalysisQuality;
+        std::function<void(int)> onTempoMode;
         std::function<void(int)> onTempoInterpretation;
         std::function<void()> onForgetCorrection;
         std::function<void()> onClearAnalysisCache;
@@ -645,6 +679,7 @@ namespace stemlab::widgets
         HeadingRow analysisHeading{"Source analysis"};
         ActionRow analysisToggle{"Key and BPM analysis", "Analyse"};
         ChoiceRow analysisQuality{"Analysis quality", {"Fast", "Accurate"}};
+        ChoiceRow tempoMode{"Tempo analysis", {"Static", "Dynamic"}};
         ChoiceRow tempoReading{"Tempo reading", {"Half", "As detected", "Double"}};
         ActionRow forgetCorrection{"Saved correction for this source", "Forget"};
         ActionRow clearCache{"Analysis cache", "Clear"};
@@ -705,6 +740,9 @@ namespace stemlab::widgets
         forward(settingsPage->onAnalysisToggle, onAnalysisToggle);
         forward(settingsPage->onForgetCorrection, onForgetCorrection);
         forward(settingsPage->onClearAnalysisCache, onClearAnalysisCache);
+        settingsPage->onTempoMode = [this](int index)
+        { if (onTempoMode) onTempoMode(index); };
+
         forward(settingsPage->onCheckUpdates, onCheckUpdates);
         forward(settingsPage->onCopyDiagnostics, onCopyDiagnostics);
         forward(settingsPage->onAudioSettings, onAudioSettings);

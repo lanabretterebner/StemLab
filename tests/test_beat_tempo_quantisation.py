@@ -434,3 +434,80 @@ class TestBeatsComeOffTheFrameGrid:
 
         assert _sub_frame_events(np.array([]), np.zeros(10)).size == 0
         assert _sub_frame_events(np.array([0.0]), np.zeros(1)).size == 1
+
+
+class TestDynamicTempoNamesEachSectionThatHoldsItsOwn:
+    """Splitting a track where one tempo stops explaining it.
+
+    Two things make this harder than watching the local period: a dropped
+    beat makes a window of eight entries cover nine beats, and the window
+    reports something in between for as long as it takes to cross a change.
+    Both invent tempo the track never plays. Measured before they were
+    handled, a constant 174 track with 5% of its beats missing came out as
+    eleven segments between 152 and 174.
+    """
+
+    @staticmethod
+    def _sections(*pairs) -> np.ndarray:
+        time, beats = 0.0, []
+        for bpm, seconds in pairs:
+            stop = time + seconds
+            while time < stop:
+                beats.append(time)
+                time += 60.0 / bpm
+        return _quantise(np.array(beats))
+
+    def test_a_track_that_never_changes_is_one_section(self):
+        assert len(_analyse(_synthetic_beats(174.0)).tempo_segments) == 1
+
+    def test_dropped_beats_do_not_invent_sections(self):
+        rng = np.random.default_rng(4)
+        beats = _synthetic_beats(174.0)
+        thinned = beats[rng.random(beats.size) > 0.05]
+
+        segments = _analyse(thinned).tempo_segments
+
+        assert len(segments) == 1
+        assert segments[0].bpm == pytest.approx(174.0, abs=0.1)
+
+    def test_a_change_is_found_where_it_happens(self):
+        segments = _analyse(self._sections((128.0, 120.0), (132.0, 120.0))).tempo_segments
+
+        assert len(segments) == 2
+        assert segments[0].bpm == pytest.approx(128.0, abs=0.05)
+        assert segments[1].bpm == pytest.approx(132.0, abs=0.05)
+        assert segments[1].start == pytest.approx(120.0, abs=3.0)
+
+    def test_a_change_and_back_again(self):
+        segments = _analyse(
+            self._sections((140.0, 80.0), (150.0, 80.0), (140.0, 80.0))
+        ).tempo_segments
+
+        assert [round(segment.bpm) for segment in segments] == [140, 150, 140]
+
+    def test_an_intro_at_a_different_tempo_is_named_not_averaged(self):
+        # The same track the static reading has to report as 174: dynamic
+        # says where the 160 was instead of hiding it.
+        beats = self._sections((160.0, 20.0), (174.0, 220.0))
+        analysis = _analyse(beats)
+
+        assert [round(segment.bpm) for segment in analysis.tempo_segments] == [160, 174]
+        assert analysis.detected_bpm == pytest.approx(174.0, abs=0.05)
+
+    def test_a_half_time_intro_is_the_same_grid_and_stays_one_section(self):
+        # 87 is exactly half of 174, so those beats land on the 174 grid -
+        # every other slot - and it aligns with them. That is one tempo at
+        # two rates, not two tempos, and calling it a change would put a
+        # tempo marker where nothing changes.
+        analysis = _analyse(self._sections((87.0, 16.0), (174.0, 224.0)))
+
+        assert len(analysis.tempo_segments) == 1
+        assert analysis.tempo_segments[0].bpm == pytest.approx(174.0, abs=0.05)
+
+    def test_a_track_no_constant_tempo_explains_claims_no_sections(self):
+        # A tempo that ramps has no stretch a constant grid fits, and
+        # inventing sections for it would be worse than reporting none.
+        analysis = _analyse(_synthetic_beats(174.0, drift_bpm=-1.0))
+
+        assert analysis.tempo_segments == ()
+        assert analysis.tempo_is_steady is False

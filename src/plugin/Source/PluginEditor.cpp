@@ -4731,6 +4731,13 @@ void StemLabAudioProcessorEditor::wireSettingsPage()
         refreshFromProcessor();
     };
 
+    settingsPanel.onTempoMode = [this](int index)
+    {
+        processor.setTempoAnalysisMode(index == 1 ? StemLabAudioProcessor::tempoDynamic
+                                                  : StemLabAudioProcessor::tempoStatic);
+        refreshSettingsPage();
+    };
+
     settingsPanel.onCheckUpdates = [this] { checkForUpdates(); };
 
     settingsPanel.onCopyDiagnostics = [this]
@@ -4796,6 +4803,27 @@ void StemLabAudioProcessorEditor::refreshSettingsPage()
     settings.halfBpm = processor.getHalfTimeSourceBpm();
     settings.doubleBpm = processor.getDoubleTimeSourceBpm();
     settings.tempoAvailable = settings.detectedBpm > 0.0;
+    settings.tempoSteady = processor.isSourceTempoSteady();
+    settings.tempoMode = processor.getTempoAnalysisMode();
+
+    // Dynamic names what the track actually does; static keeps the single
+    // reading a host tempo field takes, even when the track wanders.
+    if (settings.tempoMode == StemLabAudioProcessor::tempoDynamic)
+    {
+        const auto sections = processor.getSourceTempoSegments();
+
+        if (sections.size() > 1)
+        {
+            juce::StringArray parts;
+
+            for (const auto& section : sections)
+                parts.add(juce::String(section.bpm, 1).trimCharactersAtEnd("0.") + " from " +
+                          formatSeconds(section.start));
+
+            settings.tempoSections =
+                juce::String(sections.size()) + " sections: " + parts.joinIntoString(", ");
+        }
+    }
     settings.canForgetCorrection = processor.getSourceBpm() > 0.0;
 
     settings.fusedNormalise = processor.isFusedStemNormalisation();

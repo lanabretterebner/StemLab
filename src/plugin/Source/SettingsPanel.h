@@ -56,9 +56,12 @@ namespace stemlab::widgets
             bool analysisRunning = false;
             bool analysisToggleEnabled = true;
             int analysisQuality = 0;
+            int tempoMode = 0;
+            juce::String tempoSections;
 
             int tempoInterpretation = 0;
             bool tempoAvailable = false;
+            bool tempoSteady = true;
             double halfBpm = 0.0;
             double detectedBpm = 0.0;
             double doubleBpm = 0.0;
@@ -94,6 +97,7 @@ namespace stemlab::widgets
         std::function<void()> onSetManualTempo;
         std::function<void()> onAnalysisToggle;
         std::function<void(int)> onAnalysisQuality;
+        std::function<void(int)> onTempoMode;
         std::function<void(int)> onTempoInterpretation;
         std::function<void()> onForgetCorrection;
         std::function<void()> onClearAnalysisCache;
