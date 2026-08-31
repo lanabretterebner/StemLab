@@ -1935,15 +1935,6 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     engineNextButton->onClick = [this] { stepSeparatorEngine(1); };
     panelContent.addAndMakeVisible(*engineNextButton);
 
-    paletteButton = std::make_unique<widgets::IconButton>(
-        "waveform-color", [](juce::Rectangle<float> b) { return stemlab::icons::palette(b); },
-        static_cast<float>(theme::metrics::header::paletteIcon), false,
-        theme::metrics::header::settingsRadius, true, true);
-
-    paletteButton->setTooltip("Waveform color");
-    paletteButton->onClick = [this] { showWaveformColorMenu(); };
-    panelContent.addAndMakeVisible(*paletteButton);
-
     settingsButton = std::make_unique<widgets::IconButton>(
         "settings", [](juce::Rectangle<float> b) { return stemlab::icons::sliders(b); },
         static_cast<float>(theme::metrics::header::settingsIcon), false,
@@ -2722,12 +2713,6 @@ void StemLabAudioProcessorEditor::layoutPanel()
     auto headerRow = inner.removeFromTop(header::settingsButton);
 
     settingsButton->setBounds(headerRow.removeFromRight(header::settingsButton));
-
-    headerRow.removeFromRight(header::groupGap);
-
-    paletteButton->setBounds(
-        headerRow.removeFromRight(header::paletteButton)
-            .withSizeKeepingCentre(header::paletteButton, header::paletteButton));
 
     headerRow.removeFromRight(header::groupGap);
 
@@ -4562,52 +4547,22 @@ void StemLabAudioProcessorEditor::showEngineMenu()
                        });
 }
 
-void StemLabAudioProcessorEditor::showWaveformColorMenu()
-{
-    static_assert(StemLabAudioProcessor::waveformColorCount == theme::waveform::paletteCount,
-                  "The persisted waveform-color range and the palette must stay in step");
-
-    auto menu = makeMenu();
-
-    // The menu's order and spelling are the design's: Spectrum, RGB,
-    // 3-Band, Stem Color, Nocturne. Persisted indices stay put; only the
-    // listing order differs from them.
-    static constexpr int menuPalettes[] = {2, 3, 4, 1, 0};
-
-    for (const int palette : menuPalettes)
-    {
-        menu.addItem(palette + 1, theme::waveform::paletteName(palette), true,
-                     processor.getWaveformColorIndex() == palette);
-    }
-
-    auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
-
-    // Parented to panelContent for the reasons given in showRootLayersMenu.
-    menu.showMenuAsync(juce::PopupMenu::Options()
-                           .withTargetComponent(paletteButton.get())
-                           .withParentComponent(&panelContent),
-                       [safeThis](int result)
-                       {
-                           if (safeThis == nullptr || result == 0)
-                               return;
-
-                           const int palette = result - 1;
-
-                           safeThis->processor.setWaveformColorIndex(palette);
-
-                           safeThis->processor.postUiStatus(
-                               "Waveform color: " + theme::waveform::paletteName(palette));
-
-                           safeThis->refreshFromProcessor();
-                       });
-}
-
 void StemLabAudioProcessorEditor::showSettingsMenu()
 {
     // Kept as the entry point the gear button calls, but it opens the window
     // rather than a menu now: everything the menu held is a page in it, and a
     // setting you can see beats one you have to go looking for.
     showSettingsPanel(stemlab::widgets::SettingsPanel::Page::settings);
+}
+
+namespace
+{
+    /*  The settings page's palette order mapped onto the theme's indices.
+        The page lists Spectrum first because it is the default; the theme
+        numbers them in the order they were added, with the accent look at 0.
+        One table, read in both directions, so the two cannot drift apart.
+    */
+    constexpr int waveformPalettePages[] = {2, 3, 4, 1, 0};
 }
 
 void StemLabAudioProcessorEditor::wireSettingsPage()
@@ -4645,6 +4600,30 @@ void StemLabAudioProcessorEditor::wireSettingsPage()
         processor.postUiStatus("Accent: "
                                + stemlab::theme::accents::name(
                                    StemLabAudioProcessor::getAccentIndex()));
+    };
+
+    /*  Translated, like every other index here. The page lists the palettes
+        in the order the header menu used - Spectrum first, because it is the
+        default - and the theme numbers them in the order they were added.
+    */
+    settingsPanel.onWaveformPalette = [this](int index)
+    {
+        static_assert(StemLabAudioProcessor::waveformColorCount
+                          == theme::waveform::paletteCount,
+                      "The remembered waveform-palette range and the theme's "
+                      "list must stay in step");
+
+        if (!juce::isPositiveAndBelow(index,
+                                      juce::numElementsInArray(waveformPalettePages)))
+            return;
+
+        const auto palette = waveformPalettePages[index];
+
+        processor.setWaveformColorIndex(palette);
+
+        processor.postUiStatus("Waveform: " + theme::waveform::paletteName(palette));
+
+        refreshFromProcessor();
     };
 
     settingsPanel.onGridMode = [this](int index)
@@ -4776,6 +4755,9 @@ void StemLabAudioProcessorEditor::refreshSettingsPage()
 
     settings.standalone = processor.isStandaloneApp();
     settings.accent = StemLabAudioProcessor::getAccentIndex();
+
+    settings.waveformPalette =
+        pageIndexOf(waveformPalettePages, processor.getWaveformColorIndex());
 
     static constexpr int modes[] = {StemLabAudioProcessor::gridHost,
                                     StemLabAudioProcessor::gridSource,
