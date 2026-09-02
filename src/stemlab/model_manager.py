@@ -29,9 +29,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -44,6 +46,7 @@ from .runtime import (
     JobCancelled,
     child_process_env,
     configure_utf8_stdio,
+    drain_cr_lf_stream,
 )
 
 ProgressCallback = Callable[[float, str], None]
@@ -494,7 +497,11 @@ def caches() -> tuple[ManagedCache, ...]:
     # a size and a Clear for every row, and it can honestly offer neither.
     candidates = (
         (COMPILE_CACHE_ID, "Compiled kernels", _locatable_inductor_cache_dir(), ""),
-        ("huggingface", "HuggingFace hub", _huggingface_cache(), ""),
+        # The hub directory, not HF_HOME above it. HF_HOME also holds the
+        # login token and any datasets, and this row offers a Clear: pointing
+        # it at the parent made "clear the model cache" sign the user out and
+        # ignored HF_HUB_CACHE where it was set.
+        ("huggingface", "HuggingFace hub", _huggingface_hub_cache(), ""),
         ("torch-hub", "Torch hub", _torch_hub_checkpoints(), ""),
         (
             "bs-roformer",
@@ -542,6 +549,12 @@ def _directory_bytes(path: Path) -> int:
     total = 0
     for entry in path.rglob("*"):
         try:
+            # Symlinks are skipped rather than followed. A HuggingFace cache
+            # is one blob store plus a snapshot tree of links into it, so
+            # following them counted every model twice - and a link pointing
+            # outside the tree would have counted bytes this row cannot free.
+            if entry.is_symlink():
+                continue
             if entry.is_file():
                 total += entry.stat().st_size
         except OSError:
@@ -668,6 +681,15 @@ def _run_child(
     the only thing the user needs to see and an exact percentage from three
     different bar formats is not worth the fragility.
 
+    "Activity" has to mean carriage returns as well as newlines. A tqdm bar
+    redraws one line with CR and emits no newline until the transfer ends, so
+    reading the pipe by line reported nothing and, far worse, checked the
+    cancel sentinel nothing at all: a Cancel during the seven hundred
+    megabytes of RoFormer weights was not seen until the download had already
+    finished. The pipe is therefore drained on a daemon thread through
+    runtime's CR/LF splitter and this loop polls the queue, so the cancel
+    check runs ten times a second whatever the child chooses to print.
+
     The last few lines are kept even so. They are not shown while the transfer
     is healthy - a progress bar redrawn a thousand times is noise - but when
     the child dies they are the only account of why, and an exit code on its
@@ -691,31 +713,92 @@ def _run_child(
         list(command),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        # Buffered, like run_progress_process: the splitter reads a byte at a
+        # time, and a BufferedReader serves those from whatever the pipe
+        # already holds instead of one read(2) per byte.
+        bufsize=-1,
         env=environment,
     )
+    assert process.stdout is not None
 
     fraction = start
     tail: deque[str] = deque(maxlen=5)
+    segments: queue.Queue[bytes | None] = queue.Queue()
+
+    def read_output() -> None:
+        try:
+            drain_cr_lf_stream(process.stdout, segments.put)
+        finally:
+            # The sentinel is what tells the loop the pipe closed, so it is
+            # posted even if the read raised.
+            segments.put(None)
+
+    reader = threading.Thread(
+        target=read_output, name="StemLab model download output", daemon=True
+    )
+    reader.start()
+
     try:
-        assert process.stdout is not None
-        for raw in process.stdout:
+        reader_finished = False
+
+        while not reader_finished or process.poll() is None:
             if cancellation is not None and cancellation.requested:
+                # Terminate, then kill: the plugin gives this process about a
+                # second and a half before it kills it outright, and a
+                # download left running past that point has nobody attached
+                # to it and no way to be stopped.
                 process.terminate()
+                try:
+                    process.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    try:
+                        process.wait(timeout=2.0)
+                    except subprocess.TimeoutExpired:
+                        # A child that has not been reaped even after SIGKILL
+                        # is still a cancel. Letting TimeoutExpired out here
+                        # would reach the CLI's handler as a failure and print
+                        # STEMLAB_ERROR with exit 1 instead of the cancel the
+                        # user asked for.
+                        pass
                 raise JobCancelled("Model download cancelled")
 
-            text = raw.decode("utf-8", errors="replace").rstrip()
+            try:
+                segment = segments.get(timeout=0.10)
+            except queue.Empty:
+                continue
+
+            if segment is None:
+                reader_finished = True
+                continue
+
+            text = segment.decode("utf-8", errors="replace").rstrip()
             if not text:
                 continue
 
             tail.append(text)
 
-            # Creep towards the end of the span on every line the child
+            # Creep towards the end of the span on every fragment the child
             # emits, never reaching it: the span closes when the child does.
-            fraction = min(end - 0.01, fraction + (end - start) * 0.02)
+            # The step is a fraction of what is left rather than of the whole
+            # span, so a bar redrawing ten times a second slows down as it
+            # approaches the end instead of pinning there within seconds.
+            fraction = min(end - 0.01, fraction + (end - fraction) * 0.02)
             if progress:
                 progress(fraction, label)
     finally:
-        process.stdout.close() if process.stdout else None
+        # Nothing in here may raise: this block runs while JobCancelled (or a
+        # progress callback's own error) is in flight, and an exception raised
+        # from a finally replaces the one being propagated - a cancel would
+        # reach the CLI as TimeoutExpired and be reported as a failure.
+        if process.poll() is None:
+            process.kill()
+            try:
+                process.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                pass
+        reader.join(timeout=1.0)
+        process.stdout.close()
         process.wait()
 
     if process.returncode != 0:
@@ -789,6 +872,15 @@ def download(
 
     elif model_id in RECURSIVE_FILENAMES:
         directory = _recursive_model_dir()
+
+        if directory is None:
+            # No STEMLAB_RECURSIVE_MODEL_DIR and no nameable home - see _home.
+            # Saying so beats an AttributeError on None from the mkdir below.
+            raise RuntimeError(
+                f"There is nowhere to put {model.label} on this machine: "
+                "set STEMLAB_RECURSIVE_MODEL_DIR to a writable directory"
+            )
+
         directory.mkdir(parents=True, exist_ok=True)
 
         # audio-separator downloads inside load_model, in-process. Doing it in
@@ -948,8 +1040,18 @@ def delete_model(model_id: str) -> int:
     if path is None:
         return 0
 
+    # Where the bytes actually are. A HuggingFace snapshot entry is a symlink
+    # into the shared blob store, so unlinking it alone reclaims nothing while
+    # reporting the blob's size - which stat, following the link, gives us -
+    # as freed. Once its snapshot entry is gone nothing reaches the blob, so
+    # the two are removed together.
+    blob = path.resolve() if path.is_symlink() else None
+
     freed = path.stat().st_size
     path.unlink()
+
+    if blob is not None and blob.is_file():
+        blob.unlink()
 
     # Beat This! records a verification sidecar beside the checkpoint so a
     # re-hash can be skipped; leaving it behind would describe a file that no

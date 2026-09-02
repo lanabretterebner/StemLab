@@ -82,7 +82,12 @@ def load_audio(
         # above the output Nyquist and so entirely unwanted: resample_poly
         # leaves it at -14.2 dBFS, soxr at -67.5. VHQ costs nothing here - it
         # came out faster than resample_poly on a four-minute stereo track.
-        audio = soxr.resample(audio, sr, target_sr, quality="VHQ").astype(np.float32)
+        # copy=False: soxr hands back float32 for float32 input, so the plain
+        # astype was duplicating a whole track's samples to change nothing.
+        # The cast stays as the guarantee this function's contract makes.
+        audio = soxr.resample(audio, sr, target_sr, quality="VHQ").astype(
+            np.float32, copy=False
+        )
         sr = target_sr
 
     return np.ascontiguousarray(audio.T), sr

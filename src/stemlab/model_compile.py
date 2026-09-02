@@ -29,7 +29,7 @@ from typing import Callable
 
 from .compile_support import compile_requested, compile_support_status, inductor_cache_dir
 from .device import pick_best_device, resolve_torch_device
-from .pretrained import build_roformer_command
+from .pretrained import DEFAULT_MODEL, build_roformer_command
 from .runtime import CancellationToken, run_progress_process
 
 ProgressCallback = Callable[[float, str], None]
@@ -175,7 +175,7 @@ def warm_up(
 
         # Literally the separation's own builder, so there is no chance of
         # warming a graph the real job will not reuse.
-        command = build_roformer_command(staging, output, resolved, _warm_up_model_name())
+        command = build_roformer_command(staging, output, resolved, DEFAULT_MODEL)
 
         lines: list[str] = []
 
@@ -185,10 +185,13 @@ def warm_up(
         # The child's own separation percentage is the honest signal here: the
         # compile happens inside its first pass, so its progress is the warm
         # -up's progress, mapped into what is left after preparing the audio.
+        # run_progress_process reports 0 to 100, not 0 to 1: read as a
+        # fraction the bar reached the end of the span at the child's first
+        # percent and sat there for the whole compile.
         return_code = run_progress_process(
             command,
             log,
-            lambda fraction: report(0.05 + 0.95 * fraction, "Compiling kernels"),
+            lambda percent: report(0.05 + 0.95 * (percent / 100.0), "Compiling kernels"),
             log_progress_lines=False,
             cancellation=cancellation,
         )
@@ -201,10 +204,3 @@ def warm_up(
     report(1.0, "Kernels cached")
 
     return elapsed
-
-
-def _warm_up_model_name() -> str:
-    """The model the warm-up separates with, matching what jobs use."""
-    from .pretrained import DEFAULT_MODEL
-
-    return DEFAULT_MODEL

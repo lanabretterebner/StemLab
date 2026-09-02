@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -13,7 +12,7 @@ from pathlib import Path
 import mido
 import numpy as np
 
-from .analysis_cache import cleanup_stale_midi_drag_files, managed_analysis_dir
+from .analysis_cache import cleanup_stale_midi_drag_files, managed_analysis_dir, source_identity
 from .runtime import configure_utf8_stdio
 
 # librosa is imported inside the transcription functions so that cache-hit
@@ -406,11 +405,14 @@ def transcribe_stem(
 
 
 def _file_hash(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while chunk := handle.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
+    """The digest a stem is identified by, wherever it is identified.
+
+    Deliberately not a second SHA-256 loop of its own. This has to agree with
+    the analysis cache's idea of the same file - the sidecar written here is
+    matched against a hash the analysis produced - so there is one streaming
+    implementation and this names it for the callers below.
+    """
+    return source_identity(path)
 
 
 def metadata_path_for(midi_path: str | Path) -> Path:
@@ -665,7 +667,22 @@ def build_ableton_midi_payload(
 
 
 def main() -> None:
-    """CLI entry used by the JUCE MIDI worker."""
+    """CLI entry used by the JUCE MIDI worker.
+
+    The reporting wrapper lives here rather than under ``__main__``, because
+    the plugin reaches this through the ``stemlab-midi-job`` console script on
+    venv and development installs. That calls this function directly, so a
+    wrapper under ``__main__`` never ran and a failed conversion reached the
+    user as a bare exit code with no reason attached.
+    """
+    try:
+        _main()
+    except Exception as exc:
+        print(f"STEMLAB_ERROR MIDI conversion failed: {exc}", flush=True)
+        raise
+
+
+def _main() -> None:
     configure_utf8_stdio()
     parser = argparse.ArgumentParser(description="Convert one separated StemLab stem to MIDI.")
     parser.add_argument("--input", required=True)
@@ -690,8 +707,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as exc:
-        print(f"STEMLAB_ERROR MIDI conversion failed: {exc}", flush=True)
-        raise
+    main()

@@ -328,7 +328,16 @@ def arm_torch_compile(
         cache_dir.mkdir(parents=True, exist_ok=True)
         # Inductor reads this once, on first use; setting it before any
         # compilation is what makes kernels outlive this subprocess.
-        os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", str(cache_dir))
+        #
+        # Assigned rather than setdefault'ed. The warm-up assigns it, so an
+        # inherited TORCHINDUCTOR_CACHE_DIR used to send the warm-up and the
+        # real separation to two different caches: the warm-up filled ours,
+        # the job that was supposed to benefit compiled from cold into the
+        # inherited one, and the model manager went on reporting "Compiled".
+        # Somewhere else to put the kernels is asked for through
+        # STEMLAB_TORCH_COMPILE_CACHE, which inductor_cache_dir honours, and
+        # which both processes then agree on.
+        os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(cache_dir)
     except OSError as exc:
         emit(
             f"Could not prepare the compile cache at {cache_dir} ({_one_line(exc)}); compiling anyway."

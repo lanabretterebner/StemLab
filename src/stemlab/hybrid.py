@@ -10,9 +10,14 @@ from pathlib import Path
 from typing import Callable
 
 import numpy as np
-from scipy.signal import istft, stft
 
 from .audio import STEM_NAMES, find_stem_file, load_audio, peak_normalize, save_audio
+
+# scipy is imported inside the transform below rather than here. scipy.fft
+# costs tenths of a second to import, and this module is on the import path
+# of every plugin-launched job - including the ones that never fuse anything:
+# a single-engine separation, a --no-refine run, the model manager. Fusion
+# itself pays it once, minutes into a job, where it disappears.
 
 # RoFormer preference when the two models disagree strongly. Agreement tends
 # toward an even 50/50 fusion. These are intentionally conservative rather
@@ -25,6 +30,129 @@ ROFORMER_PREFERENCE = {
     "piano": 0.60,
     "other": 0.55,
 }
+
+
+# The analysis window by length. A run asks for two at most: the full 2048,
+# and whatever a block shorter than that clamps to. Written from two threads
+# without a lock, which is safe because both would store the same window.
+_WINDOWS: dict[int, np.ndarray] = {}
+
+
+def _analysis_window(nperseg: int) -> np.ndarray:
+    """The periodic Hann window of ``nperseg`` points.
+
+    ``np.hanning`` is the symmetric window; dropping the last point of the
+    next size up is the periodic one, which is what an overlap-added STFT
+    needs. It is the same window scipy would build - identical in float32 at
+    every length this asks for - so the transforms below stay comparable
+    with the scipy pair they replaced.
+    """
+    window = _WINDOWS.get(nperseg)
+
+    if window is None:
+        window = np.hanning(nperseg + 1)[:-1].astype(np.float32)
+        _WINDOWS[nperseg] = window
+
+    return window
+
+
+def _forward_stft(audio: np.ndarray, nperseg: int, noverlap: int) -> np.ndarray:
+    """Transform ``[..., samples]`` to ``[..., frames, bins]``.
+
+    This is what ``scipy.signal.stft(boundary="zeros", padded=True)`` does,
+    written out, because how it does it costs more than the transform. It
+    casts its window to complex before applying it, so every frame is built
+    as a complex array twice the size of the real one it is immediately
+    reduced to; and it returns the bins before the frames, which leaves the
+    inverse transform reading down a strided axis. Together those were about
+    half of the time a fused stem took.
+
+    The frequency axis is last here for that reason. The fusion is elementwise
+    and does not care which way round the two axes are, and both transforms
+    then run along contiguous rows.
+    """
+    from scipy.fft import rfft
+
+    nstep = nperseg - noverlap
+    window = _analysis_window(nperseg)
+
+    # boundary="zeros": half a window of silence at each end, so the samples
+    # at the edges are covered by as many frames as those in the middle and
+    # the inverse can restore them at full level.
+    half = nperseg // 2
+    padded = np.pad(audio, [(0, 0)] * (audio.ndim - 1) + [(half, half)])
+
+    # padded=True: enough further zeros for a whole number of frames, so no
+    # tail is dropped. The inverse takes them back off.
+    tail = (-(padded.shape[-1] - nperseg) % nstep) % nperseg
+
+    if tail:
+        padded = np.pad(padded, [(0, 0)] * (padded.ndim - 1) + [(0, tail)])
+
+    frames = np.lib.stride_tricks.sliding_window_view(padded, nperseg, axis=-1)[
+        ..., ::nstep, :
+    ]
+
+    # scipy's 1/sum(window) scaling, kept rather than dropped as a constant
+    # that would cancel: the fusion adds a fixed epsilon to magnitudes, so
+    # the level this reports decides what that epsilon is worth.
+    return rfft(frames * window, n=nperseg, axis=-1) * np.float32(1.0 / window.sum())
+
+
+def _inverse_stft(spectra: np.ndarray, nperseg: int, noverlap: int) -> np.ndarray:
+    """Overlap-add ``[..., frames, bins]`` back to ``[..., samples]``.
+
+    The inverse of _forward_stft, and of ``scipy.signal.istft(boundary=True)``:
+    each frame is windowed a second time, the frames are added back at their
+    hop, and the sum is divided by the overlap-added squared window so that
+    the double windowing cancels.
+
+    The overlap-add runs one hop phase at a time rather than one frame at a
+    time. Frames a whole number of hops apart never overlap within a phase,
+    so a thousand of them are added in a single numpy operation; scipy's own
+    loop body runs once per frame, and at 512 samples of hop there are more
+    than thirteen hundred frames in every sixteen-second chunk.
+    """
+    from scipy.fft import irfft
+
+    nstep = nperseg - noverlap
+    window = _analysis_window(nperseg)
+
+    frames = irfft(spectra, n=nperseg, axis=-1) * (window * np.float32(window.sum()))
+    squared = window * window
+
+    # A frame is cut into whole hops so the phases line up. The last hop is
+    # zero-filled where the window is not a whole number of hops long.
+    phases = -(-nperseg // nstep)
+    padding = phases * nstep - nperseg
+
+    if padding:
+        frames = np.pad(frames, [(0, 0)] * (frames.ndim - 1) + [(0, padding)])
+        squared = np.pad(squared, (0, padding))
+
+    count = frames.shape[-2]
+    blocks = np.zeros(frames.shape[:-2] + (count + phases - 1, nstep), dtype=np.float32)
+    weights = np.zeros((count + phases - 1, nstep), dtype=np.float32)
+
+    frames = frames.reshape(frames.shape[:-1] + (phases, nstep))
+    squared = squared.reshape(phases, nstep)
+
+    for phase in range(phases):
+        blocks[..., phase : phase + count, :] += frames[..., phase, :]
+        weights[phase : phase + count, :] += squared[phase]
+
+    length = nperseg + (count - 1) * nstep
+    audio = blocks.reshape(blocks.shape[:-2] + (-1,))[..., :length]
+    envelope = weights.reshape(-1)[:length]
+
+    # Off with the half-window of boundary padding at each end.
+    half = nperseg // 2
+    audio = audio[..., half : length - half]
+    envelope = envelope[half : length - half]
+
+    # Where the windows sum to nothing there is nothing to recover, and
+    # dividing would only amplify rounding noise. scipy's floor, kept.
+    return audio / np.where(envelope > 1e-10, envelope, np.float32(1.0))
 
 
 def _pad_to_length(audio: np.ndarray, length: int) -> np.ndarray:
@@ -51,16 +179,14 @@ def _fuse_channels(
 ) -> np.ndarray:
     """Fuse matching ``[channels, samples]`` blocks in one batched transform.
 
-    scipy's stft/istft operate along the last axis, so every channel goes
-    through a single call; the fusion math itself is elementwise and is
-    bit-identical to transforming each channel on its own.
+    The transforms operate along the last axis, so every channel goes through
+    a single call; the fusion math itself is elementwise and is bit-identical
+    to transforming each channel on its own.
     """
-    if roformer.size == 0:
-        return roformer.astype(np.float32, copy=True)
-
-    # scipy shrinks nperseg to the signal length but leaves noverlap alone,
-    # so a block shorter than the overlap raises "noverlap must be less than
-    # nperseg". Clamp both to what this block can actually support.
+    # A frame cannot be longer than the block it analyses, and the overlap
+    # cannot reach the whole frame. Clamp both to what this block supports:
+    # a sub-frame remainder is analysed with a smaller frame rather than
+    # refused.
     frames = int(roformer.shape[-1])
     nperseg = min(n_fft, frames)
     noverlap = min(n_fft - hop, nperseg - 1)
@@ -71,23 +197,8 @@ def _fuse_channels(
         blended = roformer_preference * roformer + (1.0 - roformer_preference) * demucs
         return blended.astype(np.float32, copy=False)
 
-    _, _, zr = stft(
-        roformer,
-        nperseg=nperseg,
-        noverlap=noverlap,
-        window="hann",
-        boundary="zeros",
-        padded=True,
-    )
-
-    _, _, zd = stft(
-        demucs,
-        nperseg=nperseg,
-        noverlap=noverlap,
-        window="hann",
-        boundary="zeros",
-        padded=True,
-    )
+    zr = _forward_stft(roformer, nperseg, noverlap)
+    zd = _forward_stft(demucs, nperseg, noverlap)
 
     mag_r = np.abs(zr)
     mag_d = np.abs(zd)
@@ -117,14 +228,7 @@ def _fuse_channels(
     mixed_magnitude = np.abs(mixed_complex)
     fused = mixed_complex * (target_magnitude / (mixed_magnitude + eps))
 
-    _, audio = istft(
-        fused,
-        nperseg=nperseg,
-        noverlap=noverlap,
-        window="hann",
-        input_onesided=True,
-        boundary=True,
-    )
+    audio = _inverse_stft(fused, nperseg, noverlap)
 
     return np.asarray(
         audio[..., :frames],
@@ -218,23 +322,14 @@ def fuse_stem_pair(
         chunk - overlap,
     )
 
-    # A trailing chunk shorter than one analysis frame cannot be transformed
-    # (scipy shrinks nperseg to the block but keeps noverlap, then refuses).
-    # Pulling such a tail back into the previous chunk keeps every block
-    # transformable; the overlap weighting below already handles the extra
-    # overlap that creates.
-    minimum_chunk = 4096
-
-    starts = []
-
+    # No special case for a short trailing chunk. There used to be one - a
+    # tail under one analysis frame was pulled back into a full-length final
+    # chunk - because scipy shrank nperseg to the block and then refused the
+    # unchanged noverlap. _fuse_channels clamps both to what the block can
+    # support, so any tail length transforms on its own, and the pull-back
+    # could only ever fire below about 11 kHz anyway: above it the previous
+    # chunk already reaches past the end of the track and the loop stops.
     for start in range(0, length, step):
-        if start > 0 and length - start < minimum_chunk:
-            starts.append(max(0, length - chunk))
-            break
-
-        starts.append(start)
-
-    for start in starts:
         end = min(
             length,
             start + chunk,
@@ -246,15 +341,10 @@ def fuse_stem_pair(
             stem,
         )
 
+        # _fuse_channels returns exactly as many samples as it was given, at
+        # every length including the sub-frame ones, so the block below lines
+        # up with the slice it is added into without padding or trimming.
         local_length = end - start
-
-        if fused.shape[1] < local_length:
-            fused = _pad_to_length(
-                fused,
-                local_length,
-            )
-        else:
-            fused = fused[:, :local_length]
 
         envelope = np.ones(
             local_length,

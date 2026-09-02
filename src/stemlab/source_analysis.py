@@ -468,12 +468,6 @@ def analyse_key(
     return _analyse_key_sources(sources, cache=None, cancellation=token)
 
 
-def estimate_key(audio: np.ndarray, sample_rate: int) -> tuple[str | None, float]:
-    """Compatibility wrapper for callers that only need the leading key."""
-    result = analyse_key(audio, sample_rate)
-    return result.key, result.confidence
-
-
 def _load_signal(path: Path) -> tuple[np.ndarray, int]:
     import librosa
 
@@ -482,13 +476,10 @@ def _load_signal(path: Path) -> tuple[np.ndarray, int]:
 
 
 def _beat_from_cache(payload: dict[str, Any]) -> BeatAnalysis:
-    return BeatAnalysis(
-        **{
-            **payload,
-            "beats": tuple(payload.get("beats", ())),
-            "downbeats": tuple(payload.get("downbeats", ())),
-        }
-    )
+    # beat_tracking owns the shape, so it owns the way back: rebuilding it
+    # here re-tupled the beats but left the tempo segments as the dicts
+    # asdict wrote, and the caller below reads segment.start off them.
+    return BeatAnalysis.from_dict(payload)
 
 
 def _key_from_cache(payload: dict[str, Any]) -> KeyAnalysis:
@@ -654,7 +645,27 @@ def write_analysis(path: str | Path, analysis: SourceAnalysis) -> Path:
 
 
 def main() -> None:
-    """CLI entry used by JUCE's source-analysis worker."""
+    """CLI entry used by JUCE's source-analysis worker.
+
+    The reporting wrapper lives here rather than under ``__main__``. On a venv
+    or development install the plugin launches the console script
+    ``stemlab-source-analysis``, which calls this function directly and never
+    executes the ``__main__`` block - so a failed analysis printed no
+    STEMLAB_ERROR line for the plugin to show a reason from, and a cancel
+    exited 1 with a traceback instead of being recognised as a cancel.
+    plugin_job and recursive_job wrap in the same place for the same reason.
+    """
+    try:
+        _main()
+    except JobCancelled:
+        print("STEMLAB_CANCELLED Source analysis cancelled", flush=True)
+        raise SystemExit(130) from None
+    except Exception as exc:
+        print(f"STEMLAB_ERROR Source analysis failed: {exc}", flush=True)
+        raise
+
+
+def _main() -> None:
     configure_utf8_stdio()
     parser = argparse.ArgumentParser(
         description="Analyze source tempo, beats, meter, and key.",
@@ -701,11 +712,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except JobCancelled:
-        print("STEMLAB_CANCELLED Source analysis cancelled", flush=True)
-        raise SystemExit(130) from None
-    except Exception as exc:
-        print(f"STEMLAB_ERROR Source analysis failed: {exc}", flush=True)
-        raise
+    main()

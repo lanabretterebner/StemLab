@@ -418,11 +418,25 @@ def separate(
 
         return on_progress, on_download, tracker.stage_eta
 
-    if engine == ENGINE_ROFORMER:
-        on_progress, on_download, on_eta = make_model_stage("model", "BS-RoFormer", "BS-RoFormer")
+    def run_model_stage(
+        backend: type[RoFormerBackend] | type[DemucsBackend],
+        model_name: str,
+        band_key: str,
+        step_name: str,
+        display: str,
+        destination: Path,
+    ) -> None:
+        """Run one model backend over its band of the plan.
 
-        RoFormerBackend(
-            model=model,
+        The four places a model runs - each single-engine run, and the two
+        halves of hybrid - differ only in these six values. The seven
+        callback arguments below were written out identically in all four,
+        which is four places to keep in step whenever a backend gains one.
+        """
+        on_progress, on_download, on_eta = make_model_stage(band_key, step_name, display)
+
+        backend(
+            model=model_name,
             device=device,
             log_callback=log,
             progress_callback=on_progress,
@@ -431,7 +445,12 @@ def separate(
             cancellation=cancellation,
         ).separate(
             input_path=input_path,
-            output_dir=baseline_dir,
+            output_dir=destination,
+        )
+
+    if engine == ENGINE_ROFORMER:
+        run_model_stage(
+            RoFormerBackend, model, "model", "BS-RoFormer", "BS-RoFormer", baseline_dir
         )
 
         if not refine:
@@ -440,19 +459,8 @@ def separate(
             announce_folder(baseline_dir)
 
     elif engine == ENGINE_DEMUCS:
-        on_progress, on_download, on_eta = make_model_stage("model", "Demucs", "Demucs")
-
-        DemucsBackend(
-            model=demucs_model,
-            device=device,
-            log_callback=log,
-            progress_callback=on_progress,
-            eta_callback=on_eta,
-            download_callback=on_download,
-            cancellation=cancellation,
-        ).separate(
-            input_path=input_path,
-            output_dir=baseline_dir,
+        run_model_stage(
+            DemucsBackend, demucs_model, "model", "Demucs", "Demucs", baseline_dir
         )
 
         if not refine:
@@ -462,36 +470,22 @@ def separate(
         roformer_dir = output_dir / "engines" / "roformer"
         demucs_dir = output_dir / "engines" / "demucs"
 
-        on_progress, on_download, on_eta = make_model_stage(
-            "roformer", "BS-RoFormer", "Hybrid 1/2: BS-RoFormer")
-
-        RoFormerBackend(
-            model=model,
-            device=device,
-            log_callback=log,
-            progress_callback=on_progress,
-            eta_callback=on_eta,
-            download_callback=on_download,
-            cancellation=cancellation,
-        ).separate(
-            input_path=input_path,
-            output_dir=roformer_dir,
+        run_model_stage(
+            RoFormerBackend,
+            model,
+            "roformer",
+            "BS-RoFormer",
+            "Hybrid 1/2: BS-RoFormer",
+            roformer_dir,
         )
 
-        on_progress, on_download, on_eta = make_model_stage(
-            "demucs", "Demucs", "Hybrid 2/2: Demucs")
-
-        DemucsBackend(
-            model=demucs_model,
-            device=device,
-            log_callback=log,
-            progress_callback=on_progress,
-            eta_callback=on_eta,
-            download_callback=on_download,
-            cancellation=cancellation,
-        ).separate(
-            input_path=input_path,
-            output_dir=demucs_dir,
+        run_model_stage(
+            DemucsBackend,
+            demucs_model,
+            "demucs",
+            "Demucs",
+            "Hybrid 2/2: Demucs",
+            demucs_dir,
         )
 
         fusion_lo, fusion_hi = bands["fusion"]

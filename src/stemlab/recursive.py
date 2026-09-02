@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterable
@@ -672,7 +673,7 @@ def split_lead_group(
         progress(4.0, f"Adaptive analysis estimates about {target_count} sources")
 
     current = input_path
-    peeled: list[tuple[Path, float]] = []
+    peeled: list[Path] = []
     pass_count = max(1, target_count - 1)
     first_split = None
 
@@ -703,9 +704,17 @@ def split_lead_group(
             or fg_assessment.energy_ratio < 0.045
             or bed_assessment.energy_ratio < 0.08
         ):
+            if pass_index > 0:
+                # Nothing will read this pass again, and it is two
+                # full-length float32 WAVs: on a six-minute stem that is
+                # about 250 MB left in the job folder for the life of the
+                # job. The first pass is the exception - the fallback below
+                # falls back onto exactly those two files.
+                shutil.rmtree(pass_dir, ignore_errors=True)
+
             break
 
-        peeled.append((split.foreground, split.confidence))
+        peeled.append(split.foreground)
         current = split.backing
 
         if bed_assessment.estimated_source_count <= 1:
@@ -715,11 +724,16 @@ def split_lead_group(
         # Always return a useful two-way attempt when the user explicitly asks
         # for lead separation, even when the adaptive loop is conservative.
         assert first_split is not None
-        peeled = [(first_split.foreground, first_split.confidence)]
+        peeled = [first_split.foreground]
         current = first_split.backing
 
+    # No confidence is carried from the split itself: _with_adaptive_metadata
+    # below re-scores every child against the parent and replaces whatever
+    # was set here, for all four of the recursive operations. Threading the
+    # DSP's own number this far only made it look as though one of them was
+    # treated differently.
     children: list[RecursiveChild] = []
-    for index, (path, confidence) in enumerate(peeled, start=1):
+    for index, path in enumerate(peeled, start=1):
         label = "Lead / Foreground" if index == 1 else f"Foreground Layer {index}"
         children.append(
             RecursiveChild(
@@ -727,7 +741,6 @@ def split_lead_group(
                 label,
                 path,
                 category="instrument.lead",
-                confidence=confidence,
             )
         )
 

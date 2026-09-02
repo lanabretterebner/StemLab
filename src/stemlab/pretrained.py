@@ -87,7 +87,18 @@ def _canonicalise_output_names(
     """Rename "{track}_{instrument}.wav" outputs to plain "{instrument}.wav"."""
     prefix = f"{track_prefix}_"
 
-    for path in sorted(output_dir.glob(f"{prefix}*")):
+    if not output_dir.is_dir():
+        return
+
+    # The prefix is compared in Python rather than handed to glob. A track
+    # name goes into a glob pattern verbatim, and brackets in it - "Song [2024
+    # Remix]" - read there as a character class, so the pattern matched none of
+    # that track's own stems and every one of them kept its "{track}_{stem}"
+    # name. Nothing escapes the name on the way in, so nothing can.
+    for path in sorted(output_dir.iterdir()):
+        if not path.name.startswith(prefix):
+            continue
+
         if not path.is_file() or path.suffix.lower() not in {".wav", ".flac"}:
             continue
 
