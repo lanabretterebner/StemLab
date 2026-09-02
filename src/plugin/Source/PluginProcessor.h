@@ -87,6 +87,21 @@ struct StemLabGridInfo
     std::vector<double> downbeats;
 };
 
+/**
+ * The analysed beat positions, shared rather than copied.
+ *
+ * Every lane reads these on every UI tick to rule its grid, and a long
+ * track carries thousands of beats - so the lanes take a pointer to one
+ * immutable snapshot and the revision beside it decides whether anything
+ * changed. A new analysis publishes a new snapshot; nothing ever mutates
+ * one that has been handed out.
+ */
+struct StemLabBeatSnapshot
+{
+    std::vector<double> beats;
+    std::vector<double> downbeats;
+};
+
 struct StemLabSelectionRange
 {
     double start = 0.0;
@@ -635,6 +650,21 @@ public:
     double getManualGridBpm() const noexcept { return manualGridBpm.load(); }
     StemLabGridInfo getWaveformGridInfo() const;
 
+    /** The analysed beats, as a pointer the lanes can hold cheaply. Never
+        null; empty when nothing has been analysed. */
+    std::shared_ptr<const StemLabBeatSnapshot> getBeatSnapshot() const;
+
+    /** Bumped whenever getBeatSnapshot starts answering with a different
+        snapshot, so a lane can tell "changed" from "same" without looking
+        inside it. */
+    int getBeatSnapshotRevision() const noexcept { return beatSnapshotRevision.load(); }
+
+    /** Whether the lanes should rule from the analysed beats rather than
+        from a constant tempo: the source grid, with beats behind it. This
+        is also what makes a dynamic-tempo track rule correctly - the beats
+        carry the changes, so nothing has to know the tempo moved. */
+    bool isRulingFromDetectedBeats() const;
+
     /** getWaveformGridInfo without the beat vectors: every field it fills
         is backed by an atomic, so the per-lane per-tick display read pays
         no lock and no vector copies. */
@@ -652,8 +682,12 @@ public:
     void setLoopQuantizeMode(int mode) noexcept;
     int getLoopQuantizeMode() const noexcept { return loopQuantizeMode.load(); }
 
-    /** The rule a swept loop snaps to: the same one the lanes paint. */
-    stemlab::quantize::Grid getLoopQuantizeGrid() const;
+    /** The rule a swept loop snaps to: the same one the lanes paint.
+
+        The returned Grid holds spans into the snapshot passed in, so that
+        snapshot has to outlive it - pass the one you are already holding. */
+    stemlab::quantize::Grid
+    getLoopQuantizeGrid(const std::shared_ptr<const StemLabBeatSnapshot>& snapshot) const;
 
     /** False when there is no grid to snap to, whatever the setting says -
         the grid switched off, or a source with no tempo behind it. */
@@ -1029,6 +1063,15 @@ private:
     std::vector<StemLabKeyCandidate> sourceKeyCandidates;
     std::vector<double> sourceBeats;
     std::vector<double> sourceDownbeats;
+
+    // The published copy of the two above, and its revision. Replaced whole
+    // under stateLock; read as a pointer copy.
+    std::shared_ptr<const StemLabBeatSnapshot> beatSnapshot;
+    std::atomic<int> beatSnapshotRevision{0};
+
+    /** Rebuilds beatSnapshot from sourceBeats/sourceDownbeats. Call with
+        stateLock already held, whenever either changes. */
+    void publishBeatSnapshot();
     std::atomic<double> sourceBpm{-1.0};
     std::atomic<double> sourceDetectedBpm{-1.0};
     std::atomic<double> sourceHalfBpm{-1.0};

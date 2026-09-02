@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <span>
+#include <utility>
 #include <vector>
 
 namespace stemlab::waveform
@@ -81,7 +83,15 @@ struct GridLine
 {
     double seconds = 0.0;
     GridLineKind kind = GridLineKind::beat;
+
+    /** 1-based, and counting backwards before bar one rather than wrapping.
+        Filled for bars and beats; 0 on a subdivision. */
     int barNumber = 0;
+
+    /** 0-based position of this beat inside its bar, so a label can read
+        "bar.beat". 0 on a bar line (which is beat one) and on a
+        subdivision. */
+    int beatInBar = 0;
 };
 
 struct GridRequest
@@ -94,8 +104,14 @@ struct GridRequest
     int denominator = 4;
     double barOne = 0.0;
     bool useDetectedBeats = false;
-    std::vector<double> beats;
-    std::vector<double> downbeats;
+
+    /*  Spans, not vectors: a lane builds one of these on every paint and a
+        long track carries thousands of beats. The caller owns the storage
+        and must outlive the call - in the editor that is the snapshot the
+        lane is already holding a pointer to.
+    */
+    std::span<const double> beats;
+    std::span<const double> downbeats;
 };
 
 inline double timeToPixel(double seconds, double visibleStart, double visibleEnd, int pixelWidth)
@@ -110,7 +126,7 @@ inline double pixelToTime(double pixel, double visibleStart, double visibleEnd, 
     return visibleStart + pixel / width * (visibleEnd - visibleStart);
 }
 
-inline bool nearAny(const std::vector<double>& sortedValues, double target, double tolerance)
+inline bool nearAny(std::span<const double> sortedValues, double target, double tolerance)
 {
     const auto found = std::lower_bound(sortedValues.begin(), sortedValues.end(), target - tolerance);
     return found != sortedValues.end() && std::abs(*found - target) <= tolerance;
@@ -131,48 +147,102 @@ inline std::vector<GridLine> makeGridLines(const GridRequest& request)
 
     if (request.useDetectedBeats && !request.beats.empty())
     {
-        if (request.downbeats.empty())
-        {
-            for (size_t index = 0; index < request.beats.size(); index += numerator)
-            {
-                const auto seconds = request.beats[index];
-                if (seconds >= request.visibleStart && seconds <= request.visibleEnd)
-                    lines.push_back(
-                        {seconds, GridLineKind::bar, static_cast<int>(index / numerator) + 1});
-            }
-        }
-        else
-        {
-            auto downbeat = std::lower_bound(request.downbeats.begin(), request.downbeats.end(),
-                                             request.visibleStart);
-            while (downbeat != request.downbeats.end() && *downbeat <= request.visibleEnd)
-            {
-                lines.push_back(
-                    {*downbeat, GridLineKind::bar,
-                     static_cast<int>(std::distance(request.downbeats.begin(), downbeat)) + 1});
-                ++downbeat;
-            }
-        }
+        /*
+         * Ruled from the beats themselves, which is what makes a track whose
+         * tempo moves rule correctly: the spacing between lines is whatever
+         * the analysis measured there, so nothing here has to know that the
+         * tempo changed, or where.
+         *
+         * beatDuration above is still used, but only as a zoom threshold -
+         * how much room a beat has on screen - never as a position.
+         */
+        const auto haveDownbeats = !request.downbeats.empty();
 
-        auto beat = std::lower_bound(request.beats.begin(), request.beats.end(),
-                                     request.visibleStart - beatDuration);
-        while (beat != request.beats.end() && *beat <= request.visibleEnd)
+        /*  Which bar a beat belongs to, and where it sits inside it.
+
+            With downbeats, the bar is the last one at or before the beat and
+            the position is how many beats have passed since it - so a bar of
+            an odd length, or a meter the analysis read differently from the
+            setting, still numbers its own beats. Without them the meter is
+            all there is to go on.
+        */
+        const auto numbering = [&](size_t beatIndex) -> std::pair<int, int>
         {
+            if (!haveDownbeats)
+            {
+                const auto index = static_cast<long long>(beatIndex);
+                const auto bar = index / numerator;
+                return {static_cast<int>(bar) + 1, static_cast<int>(index % numerator)};
+            }
+
+            const auto seconds = request.beats[beatIndex];
+
+            const auto after = std::upper_bound(request.downbeats.begin(),
+                                                request.downbeats.end(), seconds + 1.0e-6);
+
+            if (after == request.downbeats.begin())
+            {
+                // Before the first downbeat: count backwards from it, so the
+                // pickup beats belong to bar 0, -1 ... rather than to bar 1.
+                const auto firstDownbeatIndex = static_cast<long long>(std::distance(
+                    request.beats.begin(),
+                    std::lower_bound(request.beats.begin(), request.beats.end(),
+                                     request.downbeats.front() - 1.0e-6)));
+
+                const auto offset = firstDownbeatIndex - static_cast<long long>(beatIndex);
+                const auto barsBack = (offset + numerator - 1) / numerator;
+
+                return {static_cast<int>(1 - barsBack),
+                        static_cast<int>(((numerator - offset % numerator) % numerator))};
+            }
+
+            const auto barIndex = std::distance(request.downbeats.begin(), after) - 1;
+
+            const auto barStart = static_cast<long long>(std::distance(
+                request.beats.begin(),
+                std::lower_bound(request.beats.begin(), request.beats.end(),
+                                 request.downbeats[static_cast<size_t>(barIndex)] - 1.0e-6)));
+
+            return {static_cast<int>(barIndex) + 1,
+                    static_cast<int>(static_cast<long long>(beatIndex) - barStart)};
+        };
+
+        auto first = std::lower_bound(request.beats.begin(), request.beats.end(),
+                                      request.visibleStart - beatDuration);
+
+        for (auto beat = first; beat != request.beats.end() && *beat <= request.visibleEnd; ++beat)
+        {
+            const auto index = static_cast<size_t>(std::distance(request.beats.begin(), beat));
             const auto current = *beat;
+
+            const auto [barNumber, beatInBar] = numbering(index);
+
+            const bool isBar = haveDownbeats ? nearAny(request.downbeats, current, 0.04)
+                                             : beatInBar == 0;
+
+            if (current >= request.visibleStart && current <= request.visibleEnd)
+            {
+                if (isBar)
+                    lines.push_back({current, GridLineKind::bar, barNumber, 0});
+                else if (pixelsPerBeat >= 9.0)
+                    lines.push_back({current, GridLineKind::beat, barNumber, beatInBar});
+            }
+
             const auto next = std::next(beat);
-            if (pixelsPerBeat >= 9.0 && !nearAny(request.downbeats, current, 0.04))
-                lines.push_back({current, GridLineKind::beat, 0});
+
             if (subdivisions > 1 && next != request.beats.end())
             {
+                // Split the real interval to the next beat, not a nominal
+                // one: on a track that drifts the two are not the same.
                 const auto interval = *next - current;
+
                 for (int division = 1; division < subdivisions; ++division)
                 {
                     const auto value = current + interval * division / subdivisions;
                     if (value >= request.visibleStart && value <= request.visibleEnd)
-                        lines.push_back({value, GridLineKind::subdivision, 0});
+                        lines.push_back({value, GridLineKind::subdivision, 0, 0});
                 }
             }
-            ++beat;
         }
     }
     else
@@ -188,17 +258,16 @@ inline std::vector<GridLine> makeGridLines(const GridRequest& request)
             const auto seconds = request.barOne + static_cast<double>(beatIndex) * beatDuration;
             if (seconds < request.visibleStart || seconds > request.visibleEnd)
                 continue;
-            const bool isBar = ((beatIndex % numerator) + numerator) % numerator == 0;
-            if (isBar)
-            {
-                const auto barIndex = static_cast<int>(std::floor(
-                    static_cast<double>(beatIndex) / static_cast<double>(numerator)));
-                lines.push_back({seconds, GridLineKind::bar, barIndex >= 0 ? barIndex + 1 : 0});
-            }
+            const int withinBar = static_cast<int>(((beatIndex % numerator) + numerator)
+                                                    % numerator);
+
+            const auto barIndex = static_cast<int>(std::floor(
+                static_cast<double>(beatIndex) / static_cast<double>(numerator)));
+
+            if (withinBar == 0)
+                lines.push_back({seconds, GridLineKind::bar, barIndex + 1, 0});
             else if (pixelsPerBeat >= 9.0)
-            {
-                lines.push_back({seconds, GridLineKind::beat, 0});
-            }
+                lines.push_back({seconds, GridLineKind::beat, barIndex + 1, withinBar});
 
             if (subdivisions > 1)
             {
@@ -206,7 +275,7 @@ inline std::vector<GridLine> makeGridLines(const GridRequest& request)
                 {
                     const auto value = seconds + beatDuration * division / subdivisions;
                     if (value >= request.visibleStart && value <= request.visibleEnd)
-                        lines.push_back({value, GridLineKind::subdivision, 0});
+                        lines.push_back({value, GridLineKind::subdivision, 0, 0});
                 }
             }
         }

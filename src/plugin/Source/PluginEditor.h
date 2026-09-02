@@ -187,6 +187,16 @@ private:
         double gridBpm = 0.0;
         double gridBarOne = 0.0;
         int gridNumerator = 0;
+        int gridDenominator = 4;
+
+        /*  The analysed beats, held as a pointer so a tick costs a refcount
+            rather than a copy of every beat in the track. beatRevision is
+            what the change test reads: the vectors behind the pointer are
+            immutable, so a new revision is the only way they can differ.
+        */
+        bool useDetectedBeats = false;
+        int beatRevision = 0;
+        std::shared_ptr<const StemLabBeatSnapshot> beats;
         int palette = 0;
 
         /*  The accent, for the same reason the palette is here: the Accent

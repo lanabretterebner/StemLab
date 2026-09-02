@@ -301,6 +301,12 @@ StemLaneWaveform::DisplayState StemLaneWaveform::readDisplayState() const
     state.gridBpm = grid.bpm;
     state.gridBarOne = grid.barOne;
     state.gridNumerator = grid.numerator;
+    state.gridDenominator = grid.denominator;
+
+    // A pointer and a number, not the beats themselves - see DisplayState.
+    state.useDetectedBeats = processor.isRulingFromDetectedBeats();
+    state.beatRevision = processor.getBeatSnapshotRevision();
+    state.beats = processor.getBeatSnapshot();
 
     state.midiNoteCount = processor.getMidiNoteCount(selectionId);
 
@@ -630,7 +636,6 @@ void StemLaneWaveform::paint(juce::Graphics& g)
 
     {
         const auto gridBpm = lastDisplay.gridBpm;
-        const auto gridBarOne = lastDisplay.gridBarOne;
 
         if (gridBpm > 0.0)
         {
@@ -639,11 +644,41 @@ void StemLaneWaveform::paint(juce::Graphics& g)
 
             if (secondsPerBeat > 0.0 && secondsPerBeat * beatsPerBar * 3.0 < length)
             {
+                /*
+                 * The lines themselves come from makeGridLines, which is
+                 * also what the loop-quantise snap measures against - one
+                 * definition of where a beat is, so a snapped loop lands on
+                 * a line the lane actually drew.
+                 *
+                 * With an analysed source it rules from the detected beats,
+                 * which is what makes a track whose tempo moves rule
+                 * correctly: the spacing is whatever was measured there, so
+                 * nothing here needs to know the tempo changed. Everywhere
+                 * else it walks a constant tempo from bar one, as before.
+                 */
+                stemlab::waveform::GridRequest request;
+
+                request.visibleStart = snappedStart;
+                request.visibleEnd = snappedStart + viewLength;
+                request.pixelWidth = juce::jmax(1, static_cast<int>(inner.getWidth()));
+                request.bpm = gridBpm;
+                request.numerator = beatsPerBar;
+                request.denominator = juce::jmax(1, lastDisplay.gridDenominator);
+                request.barOne = lastDisplay.gridBarOne;
+                request.useDetectedBeats = lastDisplay.useDetectedBeats;
+
+                if (lastDisplay.useDetectedBeats && lastDisplay.beats != nullptr)
+                {
+                    // Spans over the snapshot this lane is holding, which
+                    // outlives the call by construction.
+                    request.beats = lastDisplay.beats->beats;
+                    request.downbeats = lastDisplay.beats->downbeats;
+                }
+
+                const auto lines = stemlab::waveform::makeGridLines(request);
+
                 const auto pixelsPerSecond =
                     static_cast<double>(inner.getWidth()) / viewLength;
-
-                // Thin out beat lines that would be closer than a few pixels.
-                const bool drawBeats = secondsPerBeat * pixelsPerSecond >= 7.0;
 
                 const auto secondsPerBar = secondsPerBeat * beatsPerBar;
 
@@ -664,57 +699,41 @@ void StemLaneWaveform::paint(juce::Graphics& g)
                 // Beats get their own bar.beat labels once they are far
                 // enough apart to carry one.
                 const bool labelBeats =
-                    drawBeats && secondsPerBeat * pixelsPerSecond >= lanes::gridLabelMinSpacing;
+                    secondsPerBeat * pixelsPerSecond >= lanes::gridLabelMinSpacing;
 
-                /*
-                 * Start at the first beat in view rather than at bar one: at
-                 * 64x on a long track that is thousands of iterations that
-                 * would each be computed only to be discarded.
-                 */
-                int beatIndex = static_cast<int>(
-                    std::floor((snappedStart - gridBarOne) / secondsPerBeat));
-
-                for (double t = gridBarOne + beatIndex * secondsPerBeat;
-                     t <= snappedStart + viewLength && t < length;
-                     t += secondsPerBeat, ++beatIndex)
+                for (const auto& line : lines)
                 {
-                    if (t < 0.0)
-                        continue;
+                    const auto bar = line.kind == stemlab::waveform::GridLineKind::bar;
 
-                    // beatIndex is negative before bar one, and % keeps that
-                    // sign in C++; fold it back before testing for a bar.
-                    const int withinBar =
-                        ((beatIndex % beatsPerBar) + beatsPerBar) % beatsPerBar;
+                    const auto subdivision =
+                        line.kind == stemlab::waveform::GridLineKind::subdivision;
 
-                    const bool bar = withinBar == 0;
-
-                    if (!bar && !drawBeats)
-                        continue;
-
-                    const auto x = secondsToX(t);
+                    const auto x = secondsToX(line.seconds);
 
                     if (x < inner.getX() || x > inner.getRight())
                         continue;
 
-                    g.setColour(theme::colors::text().withAlpha(bar ? 0.22f : 0.10f));
+                    /*  Three weights, not two: subdivisions only appear once
+                        a beat is wide enough to hold them, and at this alpha
+                        they read as a ruler inside the beat rather than as
+                        more beats.
+                    */
+                    g.setColour(theme::colors::text().withAlpha(
+                        bar ? 0.22f : (subdivision ? 0.05f : 0.10f)));
                     g.fillRect(x, inner.getY(), bar ? 1.4f : 1.0f, inner.getHeight());
+
+                    if (subdivision)
+                        continue;
 
                     if (!bar && !labelBeats)
                         continue;
 
-                    // Bar one is bar 1, not bar 0, and bars before it count
-                    // backwards rather than wrapping to a huge number.
-                    const int barNumber =
-                        static_cast<int>(std::floor(static_cast<double>(beatIndex) /
-                                                    static_cast<double>(beatsPerBar))) +
-                        1;
-
-                    if (bar && barNumber % barLabelStep != 0 && barLabelStep > 1)
+                    if (bar && barLabelStep > 1 && line.barNumber % barLabelStep != 0)
                         continue;
 
-                    const auto text = bar ? juce::String(barNumber)
-                                          : juce::String(barNumber) + "." +
-                                                juce::String(withinBar + 1);
+                    const auto text = bar ? juce::String(line.barNumber)
+                                          : juce::String(line.barNumber) + "." +
+                                                juce::String(line.beatInBar + 1);
 
                     const auto label = juce::Rectangle<float>(
                         x + 2.0f, inner.getY(), lanes::gridLabelWidth, lanes::gridLabelHeight);
@@ -984,6 +1003,9 @@ bool StemLaneWaveform::timerRefresh()
         juce::exactlyEqual(now.gridBpm, lastDisplay.gridBpm) &&
         juce::exactlyEqual(now.gridBarOne, lastDisplay.gridBarOne) &&
         now.gridNumerator == lastDisplay.gridNumerator &&
+        now.gridDenominator == lastDisplay.gridDenominator &&
+        now.useDetectedBeats == lastDisplay.useDetectedBeats &&
+        now.beatRevision == lastDisplay.beatRevision &&
         now.selectionActive == lastDisplay.selectionActive &&
         juce::exactlyEqual(now.selectionStart, lastDisplay.selectionStart) &&
         juce::exactlyEqual(now.selectionEnd, lastDisplay.selectionEnd);
@@ -4978,10 +5000,15 @@ void StemLabAudioProcessorEditor::refreshSettingsPage()
 
     /*  Whether a grid exists at all, not whether snapping is switched on:
         the row has to stay live at Off, or there would be no way back to a
-        resolution once it was turned off.
+        resolution once it was turned off. Detected beats count as a grid
+        even with no constant tempo behind them.
     */
-    settings.loopQuantizeAvailable =
-        processor.getLoopQuantizeGrid().secondsPerBeat > 0.0;
+    {
+        const auto snapshot = processor.getBeatSnapshot();
+        const auto grid = processor.getLoopQuantizeGrid(snapshot);
+
+        settings.loopQuantizeAvailable = grid.secondsPerBeat > 0.0 || grid.rulingFromBeats();
+    }
 
     settings.hostTempoAvailable = !processor.isStandaloneApp();
     settings.manualBpm = processor.getManualGridBpm();

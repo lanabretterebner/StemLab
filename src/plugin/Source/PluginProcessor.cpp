@@ -2303,6 +2303,7 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
         sourceKeyCandidates.clear();
         sourceBeats.clear();
         sourceDownbeats.clear();
+        publishBeatSnapshot();
     }
 
     // The source file is known now; queue its waveform analysis rather
@@ -6258,6 +6259,7 @@ bool StemLabAudioProcessor::startSourceAnalysis(const juce::File& source)
         sourceKeyCandidates.clear();
         sourceBeats.clear();
         sourceDownbeats.clear();
+        publishBeatSnapshot();
     }
 
     auto command = makePythonModuleCommand("stemlab.source_analysis");
@@ -6445,6 +6447,7 @@ void StemLabAudioProcessor::finishSourceAnalysis(const juce::File& source, const
         sourceKeyCandidates = std::move(keyCandidates);
         sourceBeats = std::move(beats);
         sourceDownbeats = std::move(downbeats);
+        publishBeatSnapshot();
     }
     sourceDetectedBpm.store(detectedBpm > 0.0 ? detectedBpm : -1.0);
     sourceHalfBpm.store(halfBpm > 0.0 ? halfBpm : -1.0);
@@ -7444,6 +7447,43 @@ StemLabGridInfo StemLabAudioProcessor::getWaveformGridScalars() const
     return info;
 }
 
+void StemLabAudioProcessor::publishBeatSnapshot()
+{
+    // stateLock is already held by every caller: this runs inside the same
+    // scope that just changed sourceBeats, so a reader can never see the
+    // vectors and the snapshot disagree.
+    auto next = std::make_shared<StemLabBeatSnapshot>();
+
+    next->beats = sourceBeats;
+    next->downbeats = sourceDownbeats;
+
+    beatSnapshot = std::move(next);
+    beatSnapshotRevision.fetch_add(1);
+}
+
+std::shared_ptr<const StemLabBeatSnapshot> StemLabAudioProcessor::getBeatSnapshot() const
+{
+    const juce::ScopedLock lock(stateLock);
+
+    // Never null, so every caller can dereference without a guard. The
+    // empty one is shared by every call before the first analysis lands.
+    if (beatSnapshot == nullptr)
+    {
+        static const auto empty = std::make_shared<const StemLabBeatSnapshot>();
+        return empty;
+    }
+
+    return beatSnapshot;
+}
+
+bool StemLabAudioProcessor::isRulingFromDetectedBeats() const
+{
+    if (getWaveformGridMode() != gridSource)
+        return false;
+
+    return !getBeatSnapshot()->beats.empty();
+}
+
 StemLabGridInfo StemLabAudioProcessor::getWaveformGridInfo() const
 {
     auto info = getWaveformGridScalars();
@@ -7491,11 +7531,9 @@ void StemLabAudioProcessor::setLoopQuantizeMode(int mode) noexcept
     sendChangeMessage();
 }
 
-stemlab::quantize::Grid StemLabAudioProcessor::getLoopQuantizeGrid() const
+stemlab::quantize::Grid StemLabAudioProcessor::getLoopQuantizeGrid(
+    const std::shared_ptr<const StemLabBeatSnapshot>& snapshot) const
 {
-    // Scalars, not getWaveformGridInfo: the beat vectors are not what the
-    // lanes rule with, and copying them here would take the state lock on
-    // every drag tick for nothing.
     const auto grid = getWaveformGridScalars();
 
     stemlab::quantize::Grid out;
@@ -7504,13 +7542,30 @@ stemlab::quantize::Grid StemLabAudioProcessor::getLoopQuantizeGrid() const
     out.secondsPerBeat = grid.bpm > 0.0 ? 60.0 / grid.bpm : 0.0;
     out.beatsPerBar = grid.numerator;
 
+    /*  The spans point into the caller's snapshot, which is why it is passed
+        in rather than fetched here: the returned Grid must not outlive the
+        pointer keeping those beats alive.
+
+        Same source as the lanes rule from, deliberately - a loop snapped to
+        a line the lane did not draw would sit visibly off its own grid.
+    */
+    if (snapshot != nullptr && getWaveformGridMode() == gridSource)
+    {
+        out.useDetectedBeats = true;
+        out.beats = snapshot->beats;
+        out.downbeats = snapshot->downbeats;
+    }
+
     return out;
 }
 
 bool StemLabAudioProcessor::canQuantizeLoops() const
 {
+    const auto snapshot = getBeatSnapshot();
+
     return stemlab::quantize::canQuantize(
-        getLoopQuantizeGrid(), static_cast<stemlab::quantize::Resolution>(loopQuantizeMode.load()));
+        getLoopQuantizeGrid(snapshot),
+        static_cast<stemlab::quantize::Resolution>(loopQuantizeMode.load()));
 }
 
 stemlab::quantize::Range
@@ -7523,8 +7578,11 @@ StemLabAudioProcessor::quantizeLoopRange(stemlab::quantize::Range range) const
         read by the loop tick), so the transport is the clock the snapped
         edges have to be true in.
     */
+    // Held for the whole call: the Grid's spans point into it.
+    const auto snapshot = getBeatSnapshot();
+
     return stemlab::quantize::snapRange(
-        range, getTransportLengthSeconds(), getLoopQuantizeGrid(),
+        range, getTransportLengthSeconds(), getLoopQuantizeGrid(snapshot),
         static_cast<stemlab::quantize::Resolution>(loopQuantizeMode.load()));
 }
 
