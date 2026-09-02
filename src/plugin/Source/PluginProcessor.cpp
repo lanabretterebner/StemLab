@@ -1737,17 +1737,11 @@ public:
 private:
     void fail(const juce::String& message)
     {
+        // Only this thread's own result is platform-specific; the flags, the
+        // log line and the failure status are word for word what the Linux
+        // loopback thread publishes, so they live on the processor.
         successful.store(false);
-        owner.capturing.store(false);
-        owner.standaloneRecordingMode.store(StemLabAudioProcessor::recordingNone);
-
-        owner.appendEngineLog("System audio recording: " + message + "\n");
-
-        // Published as a failure, not as news: the footer colours the line by
-        // this severity, and a recording that never started reading the
-        // output is exactly what the red state is for.
-        owner.setStatus("System audio recording failed - " + message,
-                        StemLabAudioProcessor::statusFailure);
+        owner.reportSystemCaptureFailure(message);
     }
 
     StemLabAudioProcessor& owner;
@@ -3468,6 +3462,21 @@ void StemLabAudioProcessor::beginSystemCaptureSource(const juce::File& recording
     engineCompletedSuccessfully.store(false);
     engineProgress.store(0.0);
 }
+
+#if JUCE_WINDOWS || JUCE_LINUX
+void StemLabAudioProcessor::reportSystemCaptureFailure(const juce::String& message)
+{
+    capturing.store(false);
+    standaloneRecordingMode.store(recordingNone);
+
+    appendEngineLog("System audio recording: " + message + "\n");
+
+    // Published as a failure, not as news: the footer colours the line by
+    // this severity, and a recording that never started reading the
+    // output is exactly what the red state is for.
+    setStatus("System audio recording failed - " + message, statusFailure);
+}
+#endif
 
 bool StemLabAudioProcessor::startSystemAudioRecording()
 {

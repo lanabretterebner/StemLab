@@ -474,19 +474,14 @@ bool StemLabSystemLoopbackThread::openWriter (
 
 void StemLabSystemLoopbackThread::fail (const juce::String& message)
 {
+    /*  Only this thread's own result is platform-specific. The rest of a
+        failed take - the capture flags, the engine-log line and the failure
+        status the footer colours red - is word for word what the Windows
+        loopback thread publishes, so it lives on the processor and neither
+        platform can drift away from the other.
+    */
     successful.store (false);
-    owner.capturing.store (false);
-    owner.standaloneRecordingMode.store (
-        StemLabAudioProcessor::recordingNone);
-
-    owner.appendEngineLog (
-        "System audio recording: "
-        + message
-        + "\n");
-
-    owner.setStatus (
-        "System audio recording failed - "
-        + message);
+    owner.reportSystemCaptureFailure (message);
 }
 
 #endif

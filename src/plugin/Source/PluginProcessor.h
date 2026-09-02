@@ -1006,6 +1006,16 @@ private:
         source, job and diagnostics may be thrown away. */
     void beginSystemCaptureSource(const juce::File& recordingFile);
 
+#if JUCE_WINDOWS || JUCE_LINUX
+    /** The teardown a failed system-loopback take shares between platforms:
+        the capture flags the UI reads, the engine-log line and the failure
+        status. Called by both loopback threads from their own fail(), so
+        the Windows and Linux paths cannot drift apart on what a failed
+        recording leaves behind - which is how the Linux copy came to
+        publish its failure as ordinary news. */
+    void reportSystemCaptureFailure(const juce::String& message);
+#endif
+
     /** The stem file itself, or the playback loop's regions rendered to WAV. */
     juce::File exportLoopedRegions(const juce::File& source, const juce::File& destination);
 
