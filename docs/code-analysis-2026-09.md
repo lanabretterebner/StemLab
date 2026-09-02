@@ -33,15 +33,23 @@ Environment: this CPU-only container, Python 3.11, numpy 2.4, scipy
 was not built here; claims about JUCE internals were checked against the
 JUCE 9.0.0 sources where the verifier could fetch them.
 
+The analysis snapshot is commit `ba8cad8`, the merge of PR #125, and
+every line number in both documents refers to it. PR #126 ("Rule the
+lane grid from the detected beats") merged while the analysis ran. Its
+changes were re-checked against the findings afterwards: one finding is
+superseded (marked as such below and in the inventory), the rest still
+hold on `main`, and its new code was not reviewed.
+
 | | Raw | Distinct issues |
 |---|---:|---:|
-| Confirmed | 174 (12 high, 37 medium, 125 low) | 153 |
+| Confirmed | 172 (12 high, 35 medium, 125 low) | 152 |
 | Plausible | 63 | 57 |
 | Refuted | 21 | 21 |
+| Superseded by PR #126 | 2 | 1 |
 
-Of the confirmed issues, 73 are code growth, 56 are bugs, 18 are
+Of the confirmed issues, 72 are code growth, 56 are bugs, 18 are
 performance and 10 are overhead. 88 have a trivial fix (a line or two),
-65 a small one (one function), and 4 a medium one.
+64 a small one (one function), and 4 a medium one.
 
 ## 1. Bugs to fix first
 
@@ -265,12 +273,14 @@ s each (X5-3).
 
 Dead code, all confirmed by repository-wide grep:
 
-- The beat-grid API in `WaveformGrid.h` (`makeGridLines` and its
-  helpers, about 150 lines) is used only by its test; the editor draws
-  its grid with its own loop and different rules. The same holds for
-  three `HostIntegrationPolicy` text helpers and the beat vectors in
-  `StemLabGridInfo` (C8-1, X2-1). `analysePeaks`/`analyseMono` duplicate
-  the shipping peak reduction and are test-only (C8-2).
+- Three `HostIntegrationPolicy` text helpers have no production caller
+  and already disagree with the button copy the editor hardcodes (C8-4).
+  `analysePeaks`/`analyseMono` duplicate the shipping peak reduction and
+  are test-only, so the reduction that ships is the one without a test
+  (C8-2). At the snapshot the beat-grid API in `WaveformGrid.h` was in
+  the same position (C8-1, X2-1); PR #126 now draws the lane grid
+  through it, so that finding is superseded and nothing there should be
+  removed.
 - Nineteen processor members and functions, the lane-height map and
   lock, and `readyStemRevision` (X2-2, C4-6); settings plumbing that is
   filled but never read, and thirteen callbacks declared twice and
@@ -338,4 +348,6 @@ probe stays stdlib-only).
 Windows-only code (the WASAPI capture thread, the PowerShell scripts)
 was read but not run. No C++ build or DAW session was available, so the
 plugin findings rest on reading the code and the JUCE sources rather
-than on reproduction. Timings are from a four-core CPU container.
+than on reproduction. Timings are from a four-core CPU container. The
+code PR #126 added after the snapshot, `LoopQuantize.h` with its tests
+and the detected-beat grid path, has not been reviewed.

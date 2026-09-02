@@ -2,14 +2,17 @@
 
 Companion to [code-analysis-2026-09.md](code-analysis-2026-09.md), which explains the method and the proposed fixes. This file is the complete list, generated from the review data, one row per distinct issue. Where several review units reported the same location, the row carries every ID.
 
+Line numbers refer to the analysis base commit `ba8cad8` (the merge of PR #125). PR #126 merged while the analysis ran; it shifts lines in `PluginEditor.cpp`, `PluginProcessor.cpp` and `WaveformGrid.h`, and its new code (`LoopQuantize.h` and its tests) was not reviewed.
+
 | | Raw findings | Distinct issues |
 |---|---:|---:|
-| Confirmed | 174 | 153 |
+| Confirmed | 172 | 152 |
 | Plausible | 63 | 57 |
 | Refuted | 21 | 21 |
+| Superseded | 2 | 1 |
 | Total | 258 | 231 |
 
-Verdicts: **Confirmed** means the verifier re-derived the mechanism from the code (and reproduced it where a script could). **Plausible** means the mechanism is real but the impact is marginal, or it could not be fully confirmed without a build or a DAW. **Refuted** rows are kept so the same idea is not re-raised; the reason is in the last column. Severity is the verifier's, not the reporter's. Fix size: trivial (a line or two), small (one function), medium (one module), large.
+Verdicts: **Confirmed** means the verifier re-derived the mechanism from the code (and reproduced it where a script could). **Plausible** means the mechanism is real but the impact is marginal, or it could not be fully confirmed without a build or a DAW. **Refuted** rows are kept so the same idea is not re-raised; the reason is in the last column. **Superseded** rows were true at the base commit and were made moot by a change merged during the analysis. Severity is the verifier's, not the reporter's. Fix size: trivial (a line or two), small (one function), medium (one module), large.
 
 
 ## Confirmed
@@ -84,7 +87,6 @@ Verdicts: **Confirmed** means the verifier re-derived the mechanism from the cod
 | C12-1 | high | bug | `src/plugin/Source/LinuxSystemCapture.cpp:420` | Linux system capture reports success without ever opening a writer, so the stop path reloads the old source as a 'System audio recording' | trivial |
 | C10-2, C10-3, X4-8 | medium | bug | `src/plugin/Source/SettingsPanel.cpp:454` | Credits column height is measured at the stale (zero -> 120px floor) content width and never re-measured | small |
 | C11-2 | medium | overhead | `.github/workflows/release.yml:472` | Each of the three Windows release legs rebuilds the LTO plugin and reruns ctest | small |
-| C8-1, X2-1 | medium | code-growth | `src/plugin/Source/WaveformGrid.h:119` | Beat-grid line API in WaveformGrid.h is dead: editor draws its grid with its own inline loop | small |
 | C8-2 | medium | code-growth | `src/plugin/Source/WaveformAnalysis.h:496` | analysePeaks duplicates the peak reduction in WaveformCache::analyse and is test-only, so the shipping reduction is untested | small |
 | C10-10 | low | code-growth | `src/plugin/Source/SettingsPanel.cpp:851` | SettingsPanel::mouseUp override and setInterceptsMouseClicks(true,true) are JUCE defaults, each annotated as doing something else | trivial |
 | C10-4 | low | bug | `src/plugin/Source/SettingsPanel.cpp:377` | ActionRow caption does not repaint on enablement change | trivial |
@@ -334,6 +336,12 @@ Verdicts: **Confirmed** means the verifier re-derived the mechanism from the cod
 | X1-8 | `src/plugin/Source/PluginProcessor.cpp:3691` | launchSeparationAndExport/transportTogglePlay gate on `capturing` rather than isCapturing() (masked by editor enablement) | The processor-level gates do use raw `capturing` (3691, 2341, 2801) while isCapturing() adds isSystemCaptureStopPending(), so the model layer is inconsistent with the header comment. But the scenario is not reachable: the only callers are the editor... |
 | X4-9 | `src/plugin/Source/ModelManagerPanel.cpp:546` | ModelManagerPanel::setActivity's extra activityBar.repaint() and drawProgressBar's DropShadow are negligible | The repaint is a no-op while the bar is hidden (Component::internalRepaintUnchecked checks flags.visibleFlag), so it only fires while a model job runs. Model jobs stream through handleEngineOutputLine (StemLabUtilityThread kind modelMaintenance,... |
 
+## Superseded during the analysis
+
+| ID | Location | Claim at base commit | What changed |
+|---|---|---|---|
+| C8-1, X2-1 | `src/plugin/Source/WaveformGrid.h:119` | Beat-grid line API in WaveformGrid.h is dead: editor draws its grid with its own inline loop | Superseded after the analysis snapshot: PR #126 (merged 2026-09-02, after base commit ba8cad8) routes the lane grid through makeGridLines/GridRequest and feeds it the detected beats, so the beat-grid API and the StemLabGridInfo beat vectors are now live. The three HostIntegrationPolicy text helpers named here remain unused (see C8-4). |
+
 ## Coverage
 
 Twenty-seven review units. Each unit's files were read in full by one reviewer and every finding was then handed to an independent verifier with instructions to refute it.
@@ -350,10 +358,10 @@ Twenty-seven review units. Each unit's files were read in full by one reviewer a
 | P8 | Python refinement & regression harness | 11 | 10 | 1 | 0 |
 | P9 | Ableton Live remote script | 12 | 8 | 3 | 1 |
 | P10 | Setup, build and installer scripts | 12 | 8 | 3 | 1 |
-| X2 | Cross-cutting: dead code and duplication across the repository | 10 | 7 | 3 | 0 |
+| X2 | Cross-cutting: dead code and duplication across the repository | 10 | 6 | 3 | 0 |
 | X3 | Cross-cutting: Python child-process startup and repeated work | 9 | 5 | 4 | 0 |
 | X5 | Cross-cutting: test suite and CI/release bloat | 11 | 10 | 1 | 0 |
-| C8 | Waveform helpers and header-only components | 6 | 6 | 0 | 0 |
+| C8 | Waveform helpers and header-only components | 6 | 5 | 0 | 0 |
 | C9 | Widgets and LookAndFeel | 6 | 5 | 1 | 0 |
 | C10 | Theme, accent and settings panel | 10 | 8 | 2 | 0 |
 | C11 | Model manager panel, paths, CMake and CI | 10 | 7 | 2 | 1 |
