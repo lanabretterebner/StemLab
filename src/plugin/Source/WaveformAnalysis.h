@@ -128,8 +128,11 @@ inline void forwardFft(std::vector<std::complex<float>>& data)
  * Energy-weighted mean frequency of one magnitude spectrum, in Hz.
  *
  * Bin 0 is skipped: DC offset is not a pitch, and a file with any offset at
- * all would otherwise drag every centroid toward zero. Returns 0 for a frame
- * with no energy, which the caller treats as "no opinion" rather than "bass".
+ * all would otherwise drag every centroid toward zero. Skipping it is not by
+ * itself enough on a windowed transform - part of the offset lands in bin 1
+ * as well - so MonoSpectrumScanner cancels that leak before calling here.
+ * Returns 0 for a frame with no energy, which the caller treats as "no
+ * opinion" rather than "bass".
  */
 inline double spectralCentroid(const float* magnitudes, int binCount, double binWidthHz)
 {
@@ -220,7 +223,8 @@ inline float brightnessForCentroid(double centroidHz)
  *
  * Silent frames inherit the previous frame's brightness rather than
  * collapsing to an arbitrary value: a gap between two hi-hat hits should not
- * flash violet in the middle of an otherwise bright lane.
+ * flash violet in the middle of an otherwise bright lane. A frame that is
+ * nothing but a DC offset is one of those gaps, and is read as one.
  */
 class MonoSpectrumScanner
 {
@@ -324,26 +328,65 @@ public:
 private:
     static constexpr std::size_t windowSize = static_cast<std::size_t>(spectrumFftSize);
 
+    /** Peak-to-peak below this - about -100dBFS - is a gap rather than
+        audio, and carries no color anyone could see. */
+    static constexpr float silenceAmplitude = 1.0e-5f;
+
     void analyseWindow()
     {
+        auto lowest = pending[0];
+        auto highest = pending[0];
+
         for (std::size_t i = 0; i < windowSize; ++i)
+        {
+            lowest = std::min(lowest, pending[i]);
+            highest = std::max(highest, pending[i]);
+
             frame[i] = {pending[i] * window[i], 0.0f};
+        }
 
         forwardFft(frame);
+
+        /*  Take the offset out of the spectrum, not just out of bin 0.
+
+            A periodic Hann window spreads a constant across exactly three
+            bins: half its weight into bin 0, and a quarter of it, negated,
+            into each of bins +-1. Skipping bin 0 therefore removes only half
+            of a DC offset - the other half sits in bin 1 at 43Hz, where it
+            reads as deep bass and drags the frame's centroid to the bottom
+            of the ramp. Folding half of bin 0 back into bin 1 cancels that
+            leak exactly, and costs a frame with real content nothing beyond
+            the offset it does carry.
+        */
+        frame[1] += 0.5f * frame[0];
+        frame[0] = {0.0f, 0.0f};
 
         for (std::size_t bin = 0; bin < magnitudes.size(); ++bin)
             magnitudes[bin] = std::abs(frame[bin]);
 
+        /*  A window whose samples never move is a gap whatever offset it
+            sits at, and after the fold above all that is left of it is the
+            transform's own round-off. Asking that for a color would answer
+            with noise, so silence is settled here rather than by the energy
+            test inside the two helpers, which at this scale only ever
+            catches an exactly zero frame.
+        */
+        const auto silent = (highest - lowest) <= silenceAmplitude;
+
         const auto centroid =
-            spectralCentroid(magnitudes.data(), static_cast<int>(magnitudes.size()), binWidth);
+            silent ? 0.0
+                   : spectralCentroid(magnitudes.data(),
+                                      static_cast<int>(magnitudes.size()), binWidth);
 
         if (centroid > 0.0)
             previousBrightness = brightnessForCentroid(centroid);
 
         profile.brightness.push_back(previousBrightness);
 
-        const auto bands = bandLevelsForSpectrum(magnitudes.data(),
-                                                 static_cast<int>(magnitudes.size()), binWidth);
+        const auto bands =
+            silent ? BandLevels{0.0f, 0.0f, 0.0f}
+                   : bandLevelsForSpectrum(magnitudes.data(),
+                                           static_cast<int>(magnitudes.size()), binWidth);
 
         if (bands.low > 0.0f || bands.mid > 0.0f || bands.high > 0.0f)
             previousBands = bands;

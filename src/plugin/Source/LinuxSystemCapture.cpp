@@ -31,10 +31,6 @@ namespace
                 "libpulse-simple.so.0",
                 RTLD_NOW | RTLD_LOCAL);
 
-            pulseHandle = dlopen (
-                "libpulse.so.0",
-                RTLD_NOW | RTLD_LOCAL);
-
             if (simpleHandle == nullptr)
                 return;
 
@@ -50,21 +46,21 @@ namespace
                 reinterpret_cast<decltype (paSimpleFree)> (
                     dlsym (simpleHandle, "pa_simple_free"));
 
-            if (pulseHandle != nullptr)
-            {
-                paStrerror =
-                    reinterpret_cast<decltype (paStrerror)> (
-                        dlsym (pulseHandle, "pa_strerror"));
-            }
+            /*  pa_strerror lives in libpulse rather than libpulse-simple,
+                but libpulse-simple names libpulse in its DT_NEEDED list and
+                dlsym searches a handle's whole dependency tree. So the
+                library already open resolves it, and a second dlopen of
+                libpulse.so.0 would buy nothing but another handle to close.
+            */
+            paStrerror =
+                reinterpret_cast<decltype (paStrerror)> (
+                    dlsym (simpleHandle, "pa_strerror"));
         }
 
         ~PulseClient()
         {
             if (simpleHandle != nullptr)
                 dlclose (simpleHandle);
-
-            if (pulseHandle != nullptr)
-                dlclose (pulseHandle);
         }
 
         bool isUsable() const noexcept
@@ -108,7 +104,6 @@ namespace
         const char* (*paStrerror) (int error) = nullptr;
 
         void* simpleHandle = nullptr;
-        void* pulseHandle = nullptr;
 
         JUCE_DECLARE_NON_COPYABLE (PulseClient)
     };
@@ -417,7 +412,13 @@ void StemLabSystemLoopbackThread::run()
 
     writer.reset();
 
-    if (! captureFailed)
+    /*  The writer opens on the first captured chunk, so a stop that lands
+        before one arrived wrote no file at all. Reporting success there had
+        the stop path relabel the source that was already loaded as a
+        "System audio recording" - a recording that never happened claiming a
+        take that is not it. No chunk, no success.
+    */
+    if (! captureFailed && sawFirstChunk)
         successful.store (true);
 }
 

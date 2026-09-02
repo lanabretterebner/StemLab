@@ -2,7 +2,7 @@
 
 #include <JuceHeader.h>
 
-/** Tracks files in FI-STEM's currently active external stem drag. */
+/** Tracks files in StemLab's currently active external stem drag. */
 class StemLabSelfFileDragGuard final
 {
 public:
