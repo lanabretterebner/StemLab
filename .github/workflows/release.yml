@@ -402,13 +402,23 @@ jobs:
         # No rocm. PyTorch publishes no Windows wheel for it - the rocm index
         # carries Linux wheels only - so an AMD Windows bundle cannot be
         # built, rather than being merely undesirable.
+        #
+        # The Python suite is flavor-independent - it never touches the torch
+        # build the leg installed - so exactly one leg runs it and the other
+        # two pass -SkipTests to setup_dev.ps1: their runs would be identical
+        # to the first and prove nothing it did not. cpu is the leg that keeps
+        # them, as it is already the leg that packages the flavor-independent
+        # plugin archive below.
         include:
           - flavor: cpu
             index: https://download.pytorch.org/whl/cpu
+            skip_tests: ""
           - flavor: cuda
             index: https://download.pytorch.org/whl/cu128
+            skip_tests: "-SkipTests"
           - flavor: xpu
             index: https://download.pytorch.org/whl/xpu
+            skip_tests: "-SkipTests"
 
     steps:
       - uses: actions/checkout@v4
@@ -487,14 +497,15 @@ jobs:
 
       # This installs the dependency set the released Engine is made of: the
       # portable builder assembles the Engine by copying this venv's
-      # site-packages. It runs the Python test suite as its last step.
-      - name: Install dependencies and run the tests
+      # site-packages. On the one leg whose matrix entry leaves skip_tests
+      # empty it also runs the Python test suite as its last step.
+      - name: Install dependencies${{ matrix.skip_tests == '' && ' and run the tests' || '' }}
         shell: pwsh
         env:
           PIP_CONSTRAINT: torch-constraints.txt
         # -SkipTorchInstall: the flavor torch installed above must survive;
         # setup_dev would otherwise replace it with its default backend build.
-        run: .\scripts\win\setup_dev.ps1 -SkipTorchInstall
+        run: .\scripts\win\setup_dev.ps1 -SkipTorchInstall ${{ matrix.skip_tests }}
 
       # The venv is what the Engine is copied from, so a substitution here
       # ships a broken bundle. Checking beats trusting the constraint, and
@@ -533,10 +544,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Remove-Item windows-plugin-artefacts.tar
 
-      # -SkipTests because the Python step above already ran them against this
-      # exact tree; -SkipPluginBuild because the binaries and the C++ tests
-      # came from the windows-plugin job. The script assembles the portable
-      # payload (Engine, ffmpeg, Ableton bridge) and compiles the installer.
+      # -SkipTests because the suite is flavor-independent and the cpu leg
+      # already ran it against this exact tree - the other two legs skip it
+      # above and do not need it here either; -SkipPluginBuild because the
+      # binaries and the C++ tests came from the windows-plugin job. The
+      # script assembles the portable payload (Engine, ffmpeg, Ableton
+      # bridge) and compiles the installer.
       # The installer names itself for the torch build it finds in the
       # payload, so the asset name comes from the bundle rather than from
       # this label.

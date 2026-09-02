@@ -4,7 +4,6 @@ function Get-StemLabBackendConfiguration([string]$Backend) {
             return @{
                 Name = "nvidia"
                 Label = "NVIDIA CUDA"
-                Suffix = "NVIDIA"
                 Python = "3.11"
                 DefaultEnvironment = ".venv"
                 TorchIndex = "https://download.pytorch.org/whl/cu128"
@@ -14,7 +13,6 @@ function Get-StemLabBackendConfiguration([string]$Backend) {
             return @{
                 Name = "cpu"
                 Label = "CPU"
-                Suffix = "CPU"
                 Python = "3.11"
                 DefaultEnvironment = ".venv"
                 TorchIndex = "https://download.pytorch.org/whl/cpu"
@@ -24,7 +22,6 @@ function Get-StemLabBackendConfiguration([string]$Backend) {
             return @{
                 Name = "amd"
                 Label = "AMD ROCm (experimental)"
-                Suffix = "AMD-Experimental"
                 Python = "3.12"
                 DefaultEnvironment = ".venv-amd"
             }

@@ -6,7 +6,12 @@ param(
     # per flavor, including xpu, which the backend list does not cover - and
     # constrains pip through PIP_CONSTRAINT. This switch leaves that torch
     # alone instead of replacing it with the backend's pinned build.
-    [switch]$SkipTorchInstall
+    [switch]$SkipTorchInstall,
+    # The Python suite does not depend on the torch flavor, so a caller that
+    # runs this script once per flavor - the release workflow does, three
+    # times - only needs the tests on one of them. Same switch name and shape
+    # as build_portable_windows.ps1 so both scripts are driven the same way.
+    [switch]$SkipTests
 )
 
 $ErrorActionPreference = "Stop"
@@ -74,9 +79,11 @@ else {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-Write-Host "Running the unit tests..."
-& $Python -m pytest -q $RepoRoot
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if (-not $SkipTests) {
+    Write-Host "Running the unit tests..."
+    & $Python -m pytest -q $RepoRoot
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
 
 $MainJob = Join-Path $Environment "Scripts\stemlab-plugin-job.exe"
 $RecursiveJob = Join-Path $Environment "Scripts\stemlab-recursive-job.exe"
