@@ -53,11 +53,8 @@ namespace stemlab::widgets
             int gridMode = 0;
             int loopQuantize = 0;
             bool loopQuantizeAvailable = false;
-            bool hostTempoAvailable = false;
             double manualBpm = 120.0;
 
-            bool analysisRunning = false;
-            bool analysisToggleEnabled = true;
             int analysisQuality = 0;
             int tempoMode = 0;
             juce::String tempoSections;
@@ -98,7 +95,6 @@ namespace stemlab::widgets
         std::function<void(int)> onGridMode;
         std::function<void(int)> onLoopQuantize;
         std::function<void()> onSetManualTempo;
-        std::function<void()> onAnalysisToggle;
         std::function<void(int)> onAnalysisQuality;
         std::function<void(int)> onTempoMode;
         std::function<void(int)> onTempoInterpretation;

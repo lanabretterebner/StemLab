@@ -123,13 +123,8 @@ namespace stemlab::icons
     /** Separation model: a four-point spark. */
     juce::Path sparkle(juce::Rectangle<float> bounds);
 
-    /** Waveform color: an artist's palette. */
-
     /** Waveform zoom: a stroked magnifier, lens and handle. */
     juce::Path magnifier(juce::Rectangle<float> bounds);
-
-    /** Per-stem split: stacked layers (diamond top + two arcs below). */
-    juce::Path layers(juce::Rectangle<float> bounds);
 
     /** Per-lane actions: three dots, the usual "more actions" affordance. */
     juce::Path kebab(juce::Rectangle<float> bounds);

@@ -981,29 +981,4 @@ namespace stemlab::icons
 
         return p;
     }
-
-    juce::Path layers(juce::Rectangle<float> b)
-    {
-        // Diamond on top, two arcs (shallow chevrons) stacked below.
-        juce::Path p;
-
-        const float cx = b.getCentreX();
-        const float topH = b.getHeight() * 0.42f;
-
-        p.startNewSubPath(cx, b.getY());
-        p.lineTo(b.getRight(), b.getY() + topH * 0.5f);
-        p.lineTo(cx, b.getY() + topH);
-        p.lineTo(b.getX(), b.getY() + topH * 0.5f);
-        p.closeSubPath();
-
-        for (int i = 0; i < 2; ++i)
-        {
-            const float y = b.getY() + b.getHeight() * (0.62f + 0.20f * static_cast<float>(i));
-            p.startNewSubPath(b.getX(), y);
-            p.lineTo(cx, y + b.getHeight() * 0.16f);
-            p.lineTo(b.getRight(), y);
-        }
-
-        return p;
-    }
 }

@@ -5042,12 +5042,6 @@ void StemLabAudioProcessorEditor::wireSettingsPage()
 
     settingsPanel.onSetManualTempo = [this] { promptForManualTempo(); };
 
-    settingsPanel.onAnalysisToggle = [this]
-    {
-        processor.setBeatThisEnabled(!processor.isBeatThisEnabled());
-        refreshFromProcessor();
-    };
-
     settingsPanel.onAnalysisQuality = [this](int index)
     {
         // The one that does not line up: 0 is Accurate in the processor.
@@ -5149,12 +5143,7 @@ void StemLabAudioProcessorEditor::refreshSettingsPage()
         settings.loopQuantizeAvailable = grid.secondsPerBeat > 0.0 || grid.rulingFromBeats();
     }
 
-    settings.hostTempoAvailable = !processor.isStandaloneApp();
     settings.manualBpm = processor.getManualGridBpm();
-
-    settings.analysisRunning = processor.isSourceAnalysisRunning();
-    settings.analysisToggleEnabled =
-        !processor.isEngineRunning() || processor.isBeatThisEnabled();
 
     settings.analysisQuality =
         processor.getSourceAnalysisMode() == StemLabAudioProcessor::analysisAccurate ? 1 : 0;
