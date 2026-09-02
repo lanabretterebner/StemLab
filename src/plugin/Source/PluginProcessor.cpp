@@ -2303,6 +2303,7 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
         sourceKeyCandidates.clear();
         sourceBeats.clear();
         sourceDownbeats.clear();
+        publishBeatSnapshot();
     }
 
     // The source file is known now; queue its waveform analysis rather
@@ -6078,6 +6079,7 @@ void StemLabAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     rootObject->setProperty("separatorEngine", separatorEngineIndex.load());
     rootObject->setProperty("waveformZoom", waveformZoom.load());
     rootObject->setProperty("gridMode", waveformGridMode.load());
+    rootObject->setProperty("loopQuantize", loopQuantizeMode.load());
     rootObject->setProperty("manualGridBpm", manualGridBpm.load());
     rootObject->setProperty("manualGridNumerator", manualGridNumerator.load());
     rootObject->setProperty("manualGridDenominator", manualGridDenominator.load());
@@ -6153,6 +6155,9 @@ void StemLabAudioProcessor::setStateInformation(const void* data, int sizeInByte
 
     if (object->hasProperty("gridMode"))
         setWaveformGridMode(static_cast<int>(object->getProperty("gridMode")));
+
+    if (object->hasProperty("loopQuantize"))
+        setLoopQuantizeMode(static_cast<int>(object->getProperty("loopQuantize")));
 
     if (object->hasProperty("manualGridBpm"))
     {
@@ -6254,6 +6259,7 @@ bool StemLabAudioProcessor::startSourceAnalysis(const juce::File& source)
         sourceKeyCandidates.clear();
         sourceBeats.clear();
         sourceDownbeats.clear();
+        publishBeatSnapshot();
     }
 
     auto command = makePythonModuleCommand("stemlab.source_analysis");
@@ -6441,6 +6447,7 @@ void StemLabAudioProcessor::finishSourceAnalysis(const juce::File& source, const
         sourceKeyCandidates = std::move(keyCandidates);
         sourceBeats = std::move(beats);
         sourceDownbeats = std::move(downbeats);
+        publishBeatSnapshot();
     }
     sourceDetectedBpm.store(detectedBpm > 0.0 ? detectedBpm : -1.0);
     sourceHalfBpm.store(halfBpm > 0.0 ? halfBpm : -1.0);
@@ -7440,6 +7447,43 @@ StemLabGridInfo StemLabAudioProcessor::getWaveformGridScalars() const
     return info;
 }
 
+void StemLabAudioProcessor::publishBeatSnapshot()
+{
+    // stateLock is already held by every caller: this runs inside the same
+    // scope that just changed sourceBeats, so a reader can never see the
+    // vectors and the snapshot disagree.
+    auto next = std::make_shared<StemLabBeatSnapshot>();
+
+    next->beats = sourceBeats;
+    next->downbeats = sourceDownbeats;
+
+    beatSnapshot = std::move(next);
+    beatSnapshotRevision.fetch_add(1);
+}
+
+std::shared_ptr<const StemLabBeatSnapshot> StemLabAudioProcessor::getBeatSnapshot() const
+{
+    const juce::ScopedLock lock(stateLock);
+
+    // Never null, so every caller can dereference without a guard. The
+    // empty one is shared by every call before the first analysis lands.
+    if (beatSnapshot == nullptr)
+    {
+        static const auto empty = std::make_shared<const StemLabBeatSnapshot>();
+        return empty;
+    }
+
+    return beatSnapshot;
+}
+
+bool StemLabAudioProcessor::isRulingFromDetectedBeats() const
+{
+    if (getWaveformGridMode() != gridSource)
+        return false;
+
+    return !getBeatSnapshot()->beats.empty();
+}
+
 StemLabGridInfo StemLabAudioProcessor::getWaveformGridInfo() const
 {
     auto info = getWaveformGridScalars();
@@ -7476,12 +7520,90 @@ StemLabSelectionRange StemLabAudioProcessor::getStemSelectionRange(const juce::S
     return found != stemSelections.end() ? found->second : StemLabSelectionRange{};
 }
 
+void StemLabAudioProcessor::setLoopQuantizeMode(int mode) noexcept
+{
+    loopQuantizeMode.store(
+        juce::jlimit(static_cast<int>(quantizeOff), static_cast<int>(quantizeBar), mode));
+
+    // Ranges already swept stay where they are. Snapping them under the user
+    // would move loops they placed deliberately, and the setting is about
+    // the next sweep, not a re-cut of the last one.
+    sendChangeMessage();
+}
+
+stemlab::quantize::Grid StemLabAudioProcessor::getLoopQuantizeGrid(
+    const std::shared_ptr<const StemLabBeatSnapshot>& snapshot) const
+{
+    const auto grid = getWaveformGridScalars();
+
+    stemlab::quantize::Grid out;
+
+    out.barOne = grid.barOne;
+    out.secondsPerBeat = grid.bpm > 0.0 ? 60.0 / grid.bpm : 0.0;
+    out.beatsPerBar = grid.numerator;
+
+    /*  The spans point into the caller's snapshot, which is why it is passed
+        in rather than fetched here: the returned Grid must not outlive the
+        pointer keeping those beats alive.
+
+        Same source as the lanes rule from, deliberately - a loop snapped to
+        a line the lane did not draw would sit visibly off its own grid.
+    */
+    if (snapshot != nullptr && getWaveformGridMode() == gridSource)
+    {
+        out.useDetectedBeats = true;
+        out.beats = snapshot->beats;
+        out.downbeats = snapshot->downbeats;
+    }
+
+    return out;
+}
+
+bool StemLabAudioProcessor::canQuantizeLoops() const
+{
+    const auto snapshot = getBeatSnapshot();
+
+    return stemlab::quantize::canQuantize(
+        getLoopQuantizeGrid(snapshot),
+        static_cast<stemlab::quantize::Resolution>(loopQuantizeMode.load()));
+}
+
+stemlab::quantize::Range
+StemLabAudioProcessor::quantizeLoopRange(stemlab::quantize::Range range) const
+{
+    /*  The transport's length, not the lane's file length, is what these
+        fractions are converted through. A lane normalises its sweep against
+        the file it drew, and the two can disagree by a block or two - but
+        the loop is consumed against the transport (loopRegionsNormalised is
+        read by the loop tick), so the transport is the clock the snapped
+        edges have to be true in.
+    */
+    // Held for the whole call: the Grid's spans point into it.
+    const auto snapshot = getBeatSnapshot();
+
+    return stemlab::quantize::snapRange(
+        range, getTransportLengthSeconds(), getLoopQuantizeGrid(snapshot),
+        static_cast<stemlab::quantize::Resolution>(loopQuantizeMode.load()));
+}
+
 void StemLabAudioProcessor::setStemSelectionRange(const juce::String& id, double start, double end)
 {
     start = juce::jlimit(0.0, 1.0, start);
     end = juce::jlimit(0.0, 1.0, end);
     if (end < start)
         std::swap(start, end);
+
+    /*  Snapped here rather than only in the lane that swept it, so the stored
+        range is the quantised one whatever put it there. The lane snaps its
+        own live preview through the same call; snapping is idempotent, so
+        arriving already-snapped costs nothing and changes nothing.
+    */
+    {
+        const auto snapped = quantizeLoopRange({start, end});
+
+        start = juce::jlimit(0.0, 1.0, snapped.start);
+        end = juce::jlimit(0.0, 1.0, snapped.end);
+    }
 
     StemLabSelectionRange range;
     range.start = start;

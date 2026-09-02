@@ -179,6 +179,13 @@ if (BUILD_TESTING)
     stemlab_enable_test_assertions(StemLabLoopRegionsTests)
     add_test(NAME StemLabLoopRegionsTests COMMAND StemLabLoopRegionsTests)
 
+    add_executable(StemLabLoopQuantizeTests
+        Tests/LoopQuantizeTests.cpp Source/LoopQuantize.h)
+    target_include_directories(StemLabLoopQuantizeTests PRIVATE Source)
+    target_compile_features(StemLabLoopQuantizeTests PRIVATE cxx_std_20)
+    stemlab_enable_test_assertions(StemLabLoopQuantizeTests)
+    add_test(NAME StemLabLoopQuantizeTests COMMAND StemLabLoopQuantizeTests)
+
     # How a track name and a take/clip name become one source label, which
     # names the window's source strip and every exported stem.
     add_executable(StemLabSourceLabelTests
