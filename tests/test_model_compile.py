@@ -29,6 +29,20 @@ def compiling_on(monkeypatch):
     monkeypatch.setenv("STEMLAB_TORCH_COMPILE", "1")
 
 
+@pytest.fixture
+def short_warm_up(monkeypatch):
+    """Shorten the warm-up audio for the tests that do not depend on its length.
+
+    _write_warm_up_audio synthesises every sample in a Python loop, so the
+    shipped 25 s costs the better part of a second per call - and eight tests
+    below write that file to prove things that hold at any length. A second of
+    it exercises the same code and leaves the constant itself to the one test
+    that is about the length (test_it_is_long_enough_to_cross_a_chunk_boundary,
+    deliberately not given this fixture).
+    """
+    monkeypatch.setattr(model_compile, "WARM_UP_SECONDS", 1)
+
+
 class TestItRefusesPolitelyWhenItCannotHelp:
     def test_a_model_nothing_compiles_is_not_an_error(self, compiling_on):
         # Demucs and the adaptive models are not patched by compile_support,
@@ -103,7 +117,7 @@ class TestAutoDeviceResolution:
 
 
 class TestWarmUpAudio:
-    def test_it_writes_the_rate_and_shape_the_model_requires(self, tmp_path):
+    def test_it_writes_the_rate_and_shape_the_model_requires(self, tmp_path, short_warm_up):
         path = tmp_path / "warm.wav"
         model_compile._write_warm_up_audio(path)
 
@@ -117,7 +131,7 @@ class TestWarmUpAudio:
                 model_compile.WARM_UP_RATE * model_compile.WARM_UP_SECONDS
             )
 
-    def test_it_is_not_silence(self, tmp_path):
+    def test_it_is_not_silence(self, tmp_path, short_warm_up):
         # A separator fed digital black can take an early exit, and a graph
         # that was never traced is one the real job still has to compile.
         path = tmp_path / "warm.wav"
@@ -151,7 +165,9 @@ class TestItDrivesTheSameCommandASeparationDoes:
         monkeypatch.setattr(model_compile, "compile_support_status", lambda _d: (True, "ok"))
         return captured
 
-    def test_the_argv_is_the_separation_path_verbatim(self, compiling_on, monkeypatch):
+    def test_the_argv_is_the_separation_path_verbatim(
+        self, compiling_on, short_warm_up, monkeypatch
+    ):
         from stemlab.pretrained import DEFAULT_MODEL, build_roformer_command
 
         captured = self._capture(monkeypatch)
@@ -168,14 +184,14 @@ class TestItDrivesTheSameCommandASeparationDoes:
         assert command == build_roformer_command(staging, store, "cpu", DEFAULT_MODEL)
         assert staging != store
 
-    def test_the_child_is_told_to_compile(self, compiling_on, monkeypatch):
+    def test_the_child_is_told_to_compile(self, compiling_on, short_warm_up, monkeypatch):
         captured = self._capture(monkeypatch)
         model_compile.warm_up("roformer")
 
         assert captured["env"]["STEMLAB_TORCH_COMPILE"] == "1"
 
     def test_kernels_land_where_the_separation_will_read_them(
-        self, compiling_on, monkeypatch
+        self, compiling_on, short_warm_up, monkeypatch
     ):
         # The single line that decides whether warming was worth doing.
         from stemlab.compile_support import inductor_cache_dir
@@ -185,7 +201,9 @@ class TestItDrivesTheSameCommandASeparationDoes:
 
         assert captured["env"]["TORCHINDUCTOR_CACHE_DIR"] == str(inductor_cache_dir())
 
-    def test_the_warm_up_audio_exists_when_the_child_runs(self, compiling_on, monkeypatch):
+    def test_the_warm_up_audio_exists_when_the_child_runs(
+        self, compiling_on, short_warm_up, monkeypatch
+    ):
         captured = self._capture(monkeypatch)
 
         def fake_run(command, log, progress, **kwargs):
@@ -200,7 +218,9 @@ class TestItDrivesTheSameCommandASeparationDoes:
         # one file has to be there.
         assert len(captured["wavs"]) == 1
 
-    def test_a_failing_child_raises_with_what_it_said(self, compiling_on, monkeypatch):
+    def test_a_failing_child_raises_with_what_it_said(
+        self, compiling_on, short_warm_up, monkeypatch
+    ):
         self._capture(monkeypatch)
 
         def failing(command, log, progress, **kwargs):
@@ -215,7 +235,9 @@ class TestItDrivesTheSameCommandASeparationDoes:
         assert not isinstance(caught.value, model_compile.WarmUpUnavailable)
         assert "something went wrong in the child" in str(caught.value)
 
-    def test_it_reports_progress_and_returns_elapsed_seconds(self, compiling_on, monkeypatch):
+    def test_it_reports_progress_and_returns_elapsed_seconds(
+        self, compiling_on, short_warm_up, monkeypatch
+    ):
         self._capture(monkeypatch)
         seen: list[tuple[float, str]] = []
 

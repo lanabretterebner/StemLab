@@ -9,12 +9,9 @@ import pytest
 from stemlab import device
 from stemlab.pipeline import resolve_device
 
-
-@pytest.fixture(autouse=True)
-def _isolated_probe_cache(tmp_path, monkeypatch):
-    # Every test gets a private cache directory so probe answers can never
-    # leak between tests or into the developer's real per-user cache.
-    monkeypatch.setenv("STEMLAB_ANALYSIS_HOME", str(tmp_path / "analysis"))
+# The probe cache these tests write lives under STEMLAB_ANALYSIS_HOME, which
+# conftest.py already points at a private directory for every test - a second
+# autouse fixture here only redirected what was redirected already.
 
 
 def _install_fake_torch(monkeypatch, *, cuda_available, xpu_available=False):

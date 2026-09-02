@@ -19,25 +19,51 @@ from stemlab.beat_tracking import _robust_intervals, derive_musical_time
 FPS = 50.0
 
 
-def quantised_beats(bpm: float, seconds: float = 180.0) -> np.ndarray:
-    """Beats at ``bpm``, snapped to the frame grid Beat This! reports on."""
-    period = 60.0 / bpm
-    return np.round(np.arange(0.0, seconds, period) * FPS) / FPS
-
-
 def _quantise(times: np.ndarray) -> np.ndarray:
     """The 20 ms grid Beat This! reports every beat on."""
     return np.unique(np.round(np.asarray(times) * FPS) / FPS)
 
 
-def _synthetic_beats(
-    bpm: float, seconds: float = 180.0, drift_bpm: float = 0.0
+def _beat_times(
+    bpm: float, seconds: float = 180.0, *, offset: float = 0.0, drift_bpm: float = 0.0
 ) -> np.ndarray:
-    """Beats at ``bpm``, optionally ramping by ``drift_bpm`` across the track."""
+    """The true beat times of a synthetic track, before the frame grid.
+
+    ``offset`` slides the whole track off the frame boundaries, which real
+    audio does not sit on; ``drift_bpm`` ramps the tempo across it. One
+    generator, because the five that had grown here were each this one with a
+    term added or left out, and a reader had to diff them to see which.
+    """
+    if drift_bpm:
+        time, beats = 0.0, []
+        while time < seconds:
+            beats.append(time)
+            time += 60.0 / (bpm + drift_bpm * (time / seconds))
+        times = np.array(beats)
+    else:
+        # Multiplied out rather than added up, so a track whose length is a
+        # whole number of periods ends where the arithmetic says it does and
+        # not one accumulated rounding step further on.
+        times = np.arange(0.0, seconds, 60.0 / bpm)
+
+    return times + offset
+
+
+def _beats(
+    bpm: float, seconds: float = 180.0, *, offset: float = 0.0, drift_bpm: float = 0.0
+) -> np.ndarray:
+    """``_beat_times`` as Beat This! would report it: on the frame grid."""
+    return _quantise(_beat_times(bpm, seconds, offset=offset, drift_bpm=drift_bpm))
+
+
+def _sections(*pairs: tuple[float, float]) -> np.ndarray:
+    """Beats through a run of ``(bpm, seconds)`` sections, on the frame grid."""
     time, beats = 0.0, []
-    while time < seconds:
-        beats.append(time)
-        time += 60.0 / (bpm + drift_bpm * (time / seconds))
+    for bpm, seconds in pairs:
+        stop = time + seconds
+        while time < stop:
+            beats.append(time)
+            time += 60.0 / bpm
     return _quantise(np.array(beats))
 
 
@@ -47,12 +73,7 @@ def _analyse(beats: np.ndarray):
 
 
 def detected(bpm: float, **kwargs) -> float:
-    beats = quantised_beats(bpm, **kwargs)
-    # Four beats to the bar, so the meter estimate has something to read.
-    analysis = derive_musical_time(
-        beats, beats[::4], 0.9, model="test", device="cpu"
-    )
-    return analysis.detected_bpm
+    return _analyse(_beats(bpm, **kwargs)).detected_bpm
 
 
 @pytest.mark.parametrize(
@@ -77,14 +98,14 @@ def test_the_median_really_does_get_174_wrong():
     an accident of the arithmetic and starts failing - but only if the
     median genuinely disagrees here, which is what this proves.
     """
-    intervals, _, _ = _robust_intervals(quantised_beats(174.0))
+    intervals, _, _ = _robust_intervals(_beats(174.0))
 
     assert 60.0 / float(np.median(intervals)) == pytest.approx(176.47, abs=0.05)
     assert 60.0 / float(np.mean(intervals)) == pytest.approx(174.0, abs=0.05)
 
 
 def test_half_and_double_time_follow_the_corrected_tempo():
-    beats = quantised_beats(174.0)
+    beats = _beats(174.0)
     analysis = derive_musical_time(beats, beats[::4], 0.9, model="t", device="cpu")
 
     assert analysis.bpm == pytest.approx(174.0, abs=0.5)
@@ -97,13 +118,13 @@ def test_half_and_double_time_follow_the_corrected_tempo():
 
 def _with_dropped_beats(bpm: float, fraction: float, seed: int) -> np.ndarray:
     rng = np.random.default_rng(seed)
-    beats = quantised_beats(bpm)
+    beats = _beats(bpm)
     return beats[rng.random(beats.size) > fraction]
 
 
 def _with_spurious_beats(bpm: float, fraction: float, seed: int) -> np.ndarray:
     rng = np.random.default_rng(seed)
-    beats = quantised_beats(bpm)
+    beats = _beats(bpm)
     extra = rng.uniform(0.0, float(beats[-1]), int(beats.size * fraction))
     return np.unique(np.round(np.concatenate([beats, extra]) * FPS) / FPS)
 
@@ -170,17 +191,6 @@ class TestASectionAtANearbyTempoDoesNotMoveTheReading:
     exists to be found.
     """
 
-    @staticmethod
-    def _two_sections(first_bpm, first_seconds, second_bpm, second_seconds):
-        time, beats = 0.0, []
-        while time < first_seconds:
-            beats.append(time)
-            time += 60.0 / first_bpm
-        while time < first_seconds + second_seconds:
-            beats.append(time)
-            time += 60.0 / second_bpm
-        return _quantise(np.array(beats))
-
     @pytest.mark.parametrize(
         ("intro_bpm", "intro_seconds"),
         [(170.0, 16.0), (170.0, 24.0), (172.0, 16.0), (178.0, 12.0)],
@@ -188,13 +198,13 @@ class TestASectionAtANearbyTempoDoesNotMoveTheReading:
     def test_an_intro_at_another_tempo_is_not_averaged_in(
         self, intro_bpm, intro_seconds
     ):
-        beats = self._two_sections(intro_bpm, intro_seconds, 174.0, 240.0 - intro_seconds)
+        beats = _sections((intro_bpm, intro_seconds), (174.0, 240.0 - intro_seconds))
         analysis = _analyse(beats)
 
         assert analysis.detected_bpm == pytest.approx(174.0, abs=0.05)
 
     def test_an_outro_at_another_tempo_is_not_averaged_in(self):
-        beats = self._two_sections(174.0, 200.0, 176.0, 40.0)
+        beats = _sections((174.0, 200.0), (176.0, 40.0))
 
         assert _analyse(beats).detected_bpm == pytest.approx(174.0, abs=0.05)
 
@@ -202,14 +212,14 @@ class TestASectionAtANearbyTempoDoesNotMoveTheReading:
         # The other half of the same rule: nothing snaps to a tidy tempo.
         # A grid at 174 would walk 0.28 s away from a 173.8 track by the end
         # of four minutes, which is exactly the misalignment being fixed.
-        assert _analyse(_synthetic_beats(173.8)).detected_bpm == pytest.approx(
+        assert _analyse(_beats(173.8)).detected_bpm == pytest.approx(
             173.8, abs=0.05
         )
 
 
 class TestTheFitReportsWhetherOneTempoHoldsTheTrack:
     def test_a_track_cut_to_a_click_sits_at_the_quantisation_floor(self):
-        analysis = _analyse(_synthetic_beats(174.0))
+        analysis = _analyse(_beats(174.0))
 
         # 20 ms quantised uniformly has an RMS of 20/sqrt(12) = 5.8 ms, and
         # a grid that explains every beat cannot do better than that.
@@ -220,7 +230,7 @@ class TestTheFitReportsWhetherOneTempoHoldsTheTrack:
         # No host tempo aligns a track whose tempo moves. The reading is
         # still the best constant fit, but the fit quality is what tells the
         # difference between "174" and "roughly 174, and it wanders".
-        analysis = _analyse(_synthetic_beats(174.0, drift_bpm=-1.0))
+        analysis = _analyse(_beats(174.0, drift_bpm=-1.0))
 
         assert analysis.grid_rms > 0.010
         assert analysis.grid_ratio < 0.80
@@ -236,15 +246,9 @@ class TestTheAnchorComesFromTheGridNotOneBeat:
     10 ms, 441 samples at 44.1 kHz.
     """
 
-    @staticmethod
-    def _offset_track(offset: float, seconds: float = 240.0) -> np.ndarray:
-        """A 174 BPM track whose true downbeat sits between two frames."""
-        period = 60.0 / 174.0
-        return _quantise(np.arange(0.0, seconds, period) + offset)
-
     @pytest.mark.parametrize("offset", [0.009, 0.013, 0.017, 0.019])
     def test_the_fitted_anchor_beats_the_reported_downbeat(self, offset):
-        beats = self._offset_track(offset)
+        beats = _beats(174.0, 240.0, offset=offset)
         analysis = _analyse(beats)
 
         raw_error = abs(float(beats[0]) - offset)
@@ -272,8 +276,8 @@ class TestTheAnchorComesFromTheGridNotOneBeat:
         length, and a longer track is never the worse for it.
         """
         offset = 0.013
-        short = abs(_analyse(self._offset_track(offset, 60.0)).bar_one - offset)
-        long = abs(_analyse(self._offset_track(offset, 480.0)).bar_one - offset)
+        short = abs(_analyse(_beats(174.0, 60.0, offset=offset)).bar_one - offset)
+        long = abs(_analyse(_beats(174.0, 480.0, offset=offset)).bar_one - offset)
 
         assert long <= short
         assert short * 1000.0 < 0.5
@@ -303,13 +307,9 @@ class TestARoundTempoIsReportedRound:
     by the drift budget rather than open-ended.
     """
 
-    @staticmethod
-    def _track(bpm: float, seconds: float) -> np.ndarray:
-        return _quantise(np.arange(0.0, seconds, 60.0 / bpm))
-
     @pytest.mark.parametrize("seconds", [120.0, 240.0, 300.0])
     def test_a_hundredth_off_is_reported_round(self, seconds):
-        analysis = _analyse(self._track(173.99, seconds))
+        analysis = _analyse(_beats(173.99, seconds))
 
         assert analysis.bpm == 174.0
         assert analysis.detected_bpm == 174.0
@@ -318,7 +318,7 @@ class TestARoundTempoIsReportedRound:
         assert analysis.double_time_bpm == 348.0
 
     def test_the_segments_agree_with_the_headline(self):
-        segments = _analyse(self._track(173.99, 240.0)).tempo_segments
+        segments = _analyse(_beats(173.99, 240.0)).tempo_segments
 
         assert segments
         assert all(segment.bpm == 174.0 for segment in segments)
@@ -330,11 +330,11 @@ class TestARoundTempoIsReportedRound:
         they arrive on, and at that point the fit is no longer guessing: the
         reading is reported as it was measured.
         """
-        assert _analyse(self._track(173.99, 480.0)).bpm == pytest.approx(173.99, abs=0.002)
+        assert _analyse(_beats(173.99, 480.0)).bpm == pytest.approx(173.99, abs=0.002)
 
     @pytest.mark.parametrize("bpm", [173.5, 173.4, 174.6, 90.25, 127.3])
     def test_a_tempo_that_is_not_round_is_left_alone(self, bpm):
-        assert _analyse(self._track(bpm, 240.0)).bpm == pytest.approx(bpm, abs=0.01)
+        assert _analyse(_beats(bpm, 240.0)).bpm == pytest.approx(bpm, abs=0.01)
 
     def test_the_drawn_grid_lands_on_the_beats(self):
         """What the overlay does with the answer: bar one plus a period.
@@ -378,7 +378,10 @@ class TestAQuietStartOrEndingDoesNotMoveTheReading:
 
     @classmethod
     def _grid(cls) -> np.ndarray:
-        return np.arange(0.0, cls.SECONDS, 60.0 / cls.BPM)
+        # Unquantised: the transforms below mangle the true times and the
+        # result is put on the frame grid once, at the end, the way the model
+        # would have reported whatever it heard.
+        return _beat_times(cls.BPM, cls.SECONDS)
 
     @classmethod
     def _replace(cls, window, transform):
@@ -538,22 +541,12 @@ class TestDynamicTempoNamesEachSectionThatHoldsItsOwn:
     eleven segments between 152 and 174.
     """
 
-    @staticmethod
-    def _sections(*pairs) -> np.ndarray:
-        time, beats = 0.0, []
-        for bpm, seconds in pairs:
-            stop = time + seconds
-            while time < stop:
-                beats.append(time)
-                time += 60.0 / bpm
-        return _quantise(np.array(beats))
-
     def test_a_track_that_never_changes_is_one_section(self):
-        assert len(_analyse(_synthetic_beats(174.0)).tempo_segments) == 1
+        assert len(_analyse(_beats(174.0)).tempo_segments) == 1
 
     def test_dropped_beats_do_not_invent_sections(self):
         rng = np.random.default_rng(4)
-        beats = _synthetic_beats(174.0)
+        beats = _beats(174.0)
         thinned = beats[rng.random(beats.size) > 0.05]
 
         segments = _analyse(thinned).tempo_segments
@@ -562,7 +555,7 @@ class TestDynamicTempoNamesEachSectionThatHoldsItsOwn:
         assert segments[0].bpm == pytest.approx(174.0, abs=0.1)
 
     def test_a_change_is_found_where_it_happens(self):
-        segments = _analyse(self._sections((128.0, 120.0), (132.0, 120.0))).tempo_segments
+        segments = _analyse(_sections((128.0, 120.0), (132.0, 120.0))).tempo_segments
 
         assert len(segments) == 2
         assert segments[0].bpm == pytest.approx(128.0, abs=0.05)
@@ -571,7 +564,7 @@ class TestDynamicTempoNamesEachSectionThatHoldsItsOwn:
 
     def test_a_change_and_back_again(self):
         segments = _analyse(
-            self._sections((140.0, 80.0), (150.0, 80.0), (140.0, 80.0))
+            _sections((140.0, 80.0), (150.0, 80.0), (140.0, 80.0))
         ).tempo_segments
 
         assert [round(segment.bpm) for segment in segments] == [140, 150, 140]
@@ -579,7 +572,7 @@ class TestDynamicTempoNamesEachSectionThatHoldsItsOwn:
     def test_an_intro_at_a_different_tempo_is_named_not_averaged(self):
         # The same track the static reading has to report as 174: dynamic
         # says where the 160 was instead of hiding it.
-        beats = self._sections((160.0, 20.0), (174.0, 220.0))
+        beats = _sections((160.0, 20.0), (174.0, 220.0))
         analysis = _analyse(beats)
 
         assert [round(segment.bpm) for segment in analysis.tempo_segments] == [160, 174]
@@ -590,7 +583,7 @@ class TestDynamicTempoNamesEachSectionThatHoldsItsOwn:
         # every other slot - and it aligns with them. That is one tempo at
         # two rates, not two tempos, and calling it a change would put a
         # tempo marker where nothing changes.
-        analysis = _analyse(self._sections((87.0, 16.0), (174.0, 224.0)))
+        analysis = _analyse(_sections((87.0, 16.0), (174.0, 224.0)))
 
         assert len(analysis.tempo_segments) == 1
         assert analysis.tempo_segments[0].bpm == pytest.approx(174.0, abs=0.05)
@@ -598,7 +591,7 @@ class TestDynamicTempoNamesEachSectionThatHoldsItsOwn:
     def test_a_track_no_constant_tempo_explains_claims_no_sections(self):
         # A tempo that ramps has no stretch a constant grid fits, and
         # inventing sections for it would be worse than reporting none.
-        analysis = _analyse(_synthetic_beats(174.0, drift_bpm=-1.0))
+        analysis = _analyse(_beats(174.0, drift_bpm=-1.0))
 
         assert analysis.tempo_segments == ()
         assert analysis.tempo_is_steady is False

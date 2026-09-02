@@ -223,8 +223,6 @@ Pure helpers behind the lanes: `WaveformGrid.h` (beat-grid math),
 | `pretrained.py` | BS-RoFormer process adapter |
 | `bs_roformer_cli.py` | Relocatable launcher for `bs-roformer-infer` |
 | `bs_roformer_download_cli.py` | The same launcher for `bs-roformer-download` |
-| `console_entry.py` | Runs an installed console script without pip's baked-in path |
-| `bs_roformer_download_cli.py` | Relocatable launcher for `bs-roformer-download` |
 | `console_entry.py` | Calls an installed console script without pip's launcher |
 | `demucs_backend.py` | Demucs process adapter and output normalization |
 | `hybrid.py` | Spectral fusion of model estimates |
@@ -235,7 +233,8 @@ Pure helpers behind the lanes: `WaveformGrid.h` (beat-grid math),
 | `plugin_job.py` | JUCE command arguments, progress files, Ableton manifest |
 | `recursive_job.py` | JUCE command bridge for adaptive stem jobs |
 | `runtime.py` | Child-process output, progress/ETA, and cancel watchdog |
-| `analysis_cache.py` | Local SQLite analysis/MIDI cache and corrections |
+| `paths.py` | The two directories the Engine owns: analysis cache, recursive weights |
+| `analysis_cache.py` | Local SQLite cache of source-analysis results (beats, key) |
 | `beat_tracking.py` | Offline Beat This! inference and beat interpretation |
 | `source_analysis.py` | Optional source key/BPM analysis |
 | `midi.py` | Stem-specific transcription and MIDI output |

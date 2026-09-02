@@ -41,9 +41,23 @@ def serve(body: bytes):
             pass
 
     server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    # serve_forever polls every 0.5 s by default and shutdown() blocks until
+    # that loop next wakes, so every server here used to cost half a second of
+    # the suite waiting for nothing. The interval only decides how often an
+    # idle loop looks at the stop flag.
+    threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+    ).start()
     host, port = server.server_address
-    return f"http://{host}:{port}/model.ckpt", server.shutdown
+
+    def shutdown() -> None:
+        server.shutdown()
+        # shutdown() stops the loop but leaves the listening socket open, and
+        # a test file that starts one server per test would hold every one of
+        # them until the interpreter exits.
+        server.server_close()
+
+    return f"http://{host}:{port}/model.ckpt", shutdown
 
 
 @pytest.fixture

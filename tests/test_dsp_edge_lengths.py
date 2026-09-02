@@ -15,7 +15,7 @@ import soundfile as sf
 from stemlab.audio import STEM_NAMES
 from stemlab.adaptive.analysis import analyse_audio
 from stemlab.adaptive.foreground import split_foreground
-from stemlab.hybrid import fuse_stem_folders
+from stemlab.hybrid import fuse_stem_folders, fuse_stem_pair
 from stemlab.recursive import _json_safe_float
 from stemlab.refinement.events import detect_kick_events
 
@@ -31,18 +31,17 @@ def write_tone(path: Path, frames: int, channels: int = 2) -> Path:
     return path
 
 
-# hop is chunk - overlap; a remainder in 1..1536 frames used to crash.
-TAIL_CRASHING_LENGTHS = [
-    1,
-    1000,
-    1536,
-    508150,  # 11.52 s: one full 12 s chunk plus a 1000-frame tail
-]
-
-
 class TestHybridFusion:
     def test_short_tail_chunks_fuse(self, tmp_path: Path):
-        for frames in (1000, 1536, 508150):
+        # 1000 and 1536 are the sub-frame remainders that used to raise, where
+        # nperseg is clamped to the block; 5000 is the first length past a full
+        # analysis frame, so it is the one that runs the transform at its
+        # unclamped 2048/512 size. A 508150-frame case stood here too, named
+        # for a chunk boundary it does not cross - the chunk is 16 s and that
+        # is 11.5 - so it spent seconds proving what 5000 frames prove. The
+        # boundary itself is covered below, at a chunk length a test can
+        # afford.
+        for frames in (1000, 1536, 5000):
             roformer = tmp_path / f"roformer_{frames}"
             demucs = tmp_path / f"demucs_{frames}"
             out = tmp_path / f"out_{frames}"
@@ -59,6 +58,36 @@ class TestHybridFusion:
 
             fused, _ = sf.read(str(out / "vocals.wav"), always_2d=True)
             assert fused.shape[0] == frames
+
+    def test_a_short_final_chunk_is_fused_and_stitched_back(self, tmp_path: Path):
+        """The tail chunk: shorter than the rest, and crossfaded into place.
+
+        fuse_stem_pair walks the track in ``chunk_seconds`` windows and
+        overlap-adds them, so the last window is almost always short. At the
+        shipped 16 s chunk, reaching a second window needs a track no edge-case
+        test can afford to fuse - but the chunk length is a parameter, so the
+        schedule runs here at 0.1 s: three windows and a 2944-frame remainder.
+
+        Two identical inputs fuse to themselves, so whatever the overlap-add
+        did to the tail shows up as a difference from the source.
+        """
+        frames = 10_000
+        roformer = write_tone(tmp_path / "roformer" / "vocals.wav", frames)
+        demucs = write_tone(tmp_path / "demucs" / "vocals.wav", frames)
+
+        fused, _ = fuse_stem_pair(
+            roformer,
+            demucs,
+            tmp_path / "out.wav",
+            "vocals",
+            chunk_seconds=0.1,
+            overlap_seconds=0.02,
+        )
+
+        source, _ = sf.read(str(roformer), always_2d=True)
+
+        assert fused.shape == (2, frames)
+        assert np.max(np.abs(fused - source.T)) < 1e-3
 
     def test_single_frame_input(self, tmp_path: Path):
         roformer = tmp_path / "roformer"
