@@ -33,7 +33,16 @@ TEMPO_REPLY_PROTOCOL = "stemlab-ableton-tempo-reply"
 TEMPO_MIN = 20.0
 TEMPO_MAX = 999.0
 
-FI_STEM_DEVICE_TOKENS = ("stemlab", "fistem", "stemlab")
+# "fistem" is what this product used to be called: a Set saved against those
+# builds still carries the device under the old name, and the track it sits on
+# is still the track the stems belong under.
+FI_STEM_DEVICE_TOKENS = ("stemlab", "fistem")
+
+# How long the in-flight import guard below believes in a chain that has not
+# reported back. A chain is a handful of scheduled callbacks per stem, so this
+# is far past any real import; it exists so a chain Live never resumed cannot
+# refuse every later import for the rest of the session.
+IMPORT_STALE_SECONDS = 60.0
 
 
 def _normalise_midi_notes(items):
@@ -62,8 +71,18 @@ class StemLabRemote(ControlSurface):
     """Invisible Ableton integration for the StemLab VST3.
 
     The script owns no MIDI controls and requires no MIDI ports. Its only job
-    is to receive completed StemLab manifests over localhost and perform the
-    Live Object Model operations that a VST3 cannot perform itself.
+    is to receive requests over localhost and perform the Live Object Model
+    operations that a VST3 cannot perform itself. There are four, each one a
+    UDP datagram from the plugin answered by a small JSON file it reads back:
+
+      * ``stemlab_get_clip`` - which audio file the selected Arrangement clip
+        plays, so Separate can work on what Live is already showing.
+      * ``stemlab_ready`` - import the finished stems as Arrangement tracks
+        under the source track.
+      * ``stemlab_midi_ready`` - turn a transcribed stem into one editable
+        Arrangement MIDI clip.
+      * ``stemlab_set_tempo`` - put the analysed tempo into the Set, Warp off
+        first so the audio it was measured from still plays at its own rate.
     """
 
     def __init__(self, c_instance):
@@ -71,15 +90,18 @@ class StemLabRemote(ControlSurface):
 
         self._stemlab_running = True
         self._socket = None
-        self._listener_thread = None
-        self._last_manifest = None
-        self._last_midi_manifest = None
 
-        # Tracks recent Use Live Clip requests so the modern + legacy
-        # compatibility messages do not trigger duplicate work.
-        # 0.9.5 referenced this dictionary without creating it, causing every
-        # clip request to raise AttributeError in the UDP listener thread.
-        self._recent_clip_requests = {}
+        # The manifest whose import chain currently owns the Set, and when it
+        # took it. Live's Object Model is mutated one small step per UI tick,
+        # so an import is a chain of scheduled callbacks rather than one call:
+        # a second chain started while the first is running inserts its tracks
+        # at indices the first is still moving, and both end up writing the
+        # same ack file. Created here rather than where it is first assigned:
+        # a member only the listener thread creates raises AttributeError on
+        # the first message that reads it, which is how 0.9.5 broke every clip
+        # request.
+        self._import_in_flight = None
+        self._import_started = 0.0
 
         self.log_message("StemLabRemote: initializing")
 
@@ -137,7 +159,6 @@ class StemLabRemote(ControlSurface):
             name="StemLabRemoteUDP",
         )
         thread.daemon = True
-        self._listener_thread = thread
         thread.start()
 
         self.log_message("StemLabRemote: listening on %s:%d" % (HOST, PORT))
@@ -160,10 +181,6 @@ class StemLabRemote(ControlSurface):
                 self.log_message("StemLabRemote: UDP message error:\n%s" % traceback.format_exc())
 
     def _handle_udp_message(self, text):
-        if text == "stemlab_toggle_transport":
-            self.schedule_message(1, self._toggle_transport)
-            return
-
         if text.startswith("stemlab_midi_ready "):
             encoded_path = text[len("stemlab_midi_ready ") :].strip()
 
@@ -176,7 +193,6 @@ class StemLabRemote(ControlSurface):
                 self.log_message("StemLabRemote: invalid MIDI manifest path: %s" % exc)
                 return
 
-            self._last_midi_manifest = manifest_path
             self.schedule_message(
                 1,
                 lambda path=manifest_path: self._import_midi_on_live_thread(path),
@@ -194,8 +210,6 @@ class StemLabRemote(ControlSurface):
             except Exception as exc:
                 self.log_message("StemLabRemote: invalid manifest path: %s" % exc)
                 return
-
-            self._last_manifest = manifest_path
 
             # Live's Song/Track API must only be touched on Live's main thread.
             self.schedule_message(
@@ -237,55 +251,29 @@ class StemLabRemote(ControlSurface):
             parts = payload.split(" ", 1)
 
             request_id = parts[0].strip() if parts else ""
-            reply_path = ""
 
-            if len(parts) > 1 and parts[1].strip():
-                try:
-                    reply_path = bytes.fromhex(parts[1].strip()).decode(
-                        "utf-8",
-                        errors="strict",
-                    )
-                except Exception as exc:
-                    self.log_message("StemLabRemote: invalid clip reply path: %s" % exc)
-                    return
+            # Both halves are required, as in the tempo request above. The
+            # plugin names the file it will read the answer from, and there is
+            # no longer a second, path-less request to keep compatible with:
+            # the 0.9.3 fallback that one existed for went with the legacy
+            # layers, which is also why no request needs de-duplicating here.
+            if not request_id or len(parts) < 2 or not parts[1].strip():
+                self.log_message("StemLabRemote: malformed clip request")
+                return
 
-            if request_id:
-                now = time.time()
-                previous = self._recent_clip_requests.get(request_id)
-
-                # The VST deliberately sends a legacy fallback immediately
-                # after the modern request. If this Remote Script already saw
-                # the modern request with an explicit reply path, ignore the
-                # duplicate fallback. Old Remote Scripts do not have this
-                # dedupe and simply answer the second compatible request.
-                if (
-                    previous
-                    and previous.get("reply_path")
-                    and not reply_path
-                    and now - previous.get("time", 0.0) < 1.0
-                ):
-                    return
-
-                self._recent_clip_requests[request_id] = {
-                    "time": now,
-                    "reply_path": reply_path,
-                }
-
-                self.schedule_message(
-                    1,
-                    lambda rid=request_id, rp=reply_path: self._reply_with_source_clip(rid, rp),
+            try:
+                reply_path = bytes.fromhex(parts[1].strip()).decode(
+                    "utf-8",
+                    errors="strict",
                 )
+            except Exception as exc:
+                self.log_message("StemLabRemote: invalid clip reply path: %s" % exc)
+                return
 
-    def _toggle_transport(self):
-        """Toggle Live on its main thread; VST3 has no reliable write API for this."""
-        try:
-            song = self.song()
-            if song.is_playing:
-                song.stop_playing()
-            else:
-                song.start_playing()
-        except Exception:
-            self.log_message("StemLabRemote: transport toggle failed:\n%s" % traceback.format_exc())
+            self.schedule_message(
+                1,
+                lambda rid=request_id, rp=reply_path: self._reply_with_source_clip(rid, rp),
+            )
 
     # ------------------------------------------------------------------
     # Tempo
@@ -389,12 +377,21 @@ class StemLabRemote(ControlSurface):
                 except Exception:
                     pass
 
-            self._write_tempo_reply(
-                request_id=request_id,
-                success=False,
-                message=str(exc),
-                reply_path=reply_path,
-            )
+            # Guarded, unlike the write on the success path: this is the
+            # branch that already has something to report, and a reply that
+            # cannot be written must not take the log line saying what
+            # actually went wrong down with it.
+            try:
+                self._write_tempo_reply(
+                    request_id=request_id,
+                    success=False,
+                    message=str(exc),
+                    reply_path=reply_path,
+                )
+            except Exception:
+                self.log_message(
+                    "StemLabRemote: could not write the tempo reply:\n%s" % traceback.format_exc()
+                )
 
             self.log_message("StemLabRemote: set tempo failed:\n%s" % traceback.format_exc())
 
@@ -478,23 +475,18 @@ class StemLabRemote(ControlSurface):
         message="",
         reply_path="",
     ):
-        if reply_path:
-            reply_path = os.path.abspath(str(reply_path))
-            folder = os.path.dirname(reply_path)
+        # The plugin puts the path it will watch into the request itself and
+        # reads no other file, so an empty one is not a case to fall back for:
+        # there is nowhere an answer would ever be read from.
+        if not reply_path:
+            self.log_message("StemLabRemote: tempo request carried no reply path")
+            return
 
-            if folder and not os.path.isdir(folder):
-                os.makedirs(folder)
-        else:
-            folder = os.path.join(
-                self._documents_folder(),
-                "StemLab",
-                "Ableton",
-            )
+        reply_path = os.path.abspath(str(reply_path))
+        folder = os.path.dirname(reply_path)
 
-            if not os.path.isdir(folder):
-                os.makedirs(folder)
-
-            reply_path = os.path.join(folder, "stemlab_tempo_reply.json")
+        if folder and not os.path.isdir(folder):
+            os.makedirs(folder)
 
         self._atomic_write_json(
             reply_path,
@@ -514,7 +506,7 @@ class StemLabRemote(ControlSurface):
     # Source clip lookup
     # ------------------------------------------------------------------
 
-    def _reply_with_source_clip(self, request_id, reply_path=""):
+    def _reply_with_source_clip(self, request_id, reply_path):
         try:
             song = self.song()
             source_track, clip = self._resolve_selected_audio_clip(song)
@@ -560,16 +552,59 @@ class StemLabRemote(ControlSurface):
         except Exception as exc:
             message = str(exc)
 
-            self._write_clip_reply(
-                request_id=request_id,
-                success=False,
-                message=message,
-                reply_path=reply_path,
-            )
+            # Guarded for the reason the tempo reply is: if the reply cannot
+            # be written the log line below is the only account of why.
+            try:
+                self._write_clip_reply(
+                    request_id=request_id,
+                    success=False,
+                    message=message,
+                    reply_path=reply_path,
+                )
+            except Exception:
+                self.log_message(
+                    "StemLabRemote: could not write the clip reply:\n%s" % traceback.format_exc()
+                )
 
             self.log_message(
                 "StemLabRemote: source clip lookup failed:\n%s" % traceback.format_exc()
             )
+
+    @staticmethod
+    def _pick_arrangement_clip(song, clips, detail_clip=None):
+        """Choose one Arrangement clip out of several, for both resolvers.
+
+        The same order of preference wherever the question is asked: the clip
+        the user has open in Detail, then whichever clip Live's playhead is
+        inside, then a lone clip. None when none of those answers, because
+        what that means differs - one caller still has a fallback to try and
+        the other has to tell the user which click it is waiting for.
+        """
+        if detail_clip is not None:
+            for clip in clips:
+                try:
+                    if clip == detail_clip:
+                        return clip
+                except Exception:
+                    pass
+
+        try:
+            song_time = float(song.current_song_time)
+        except Exception:
+            song_time = -1.0
+
+        if song_time >= 0.0:
+            for clip in clips:
+                try:
+                    if float(clip.start_time) <= song_time < float(clip.end_time):
+                        return clip
+                except Exception:
+                    pass
+
+        if len(clips) == 1:
+            return clips[0]
+
+        return None
 
     def _resolve_selected_audio_clip(self, song):
         # Fast path: use the clip Live already has selected/open in Detail.
@@ -615,22 +650,12 @@ class StemLabRemote(ControlSurface):
             except Exception:
                 clips = []
 
-            if clips:
-                try:
-                    song_time = float(song.current_song_time)
-                except Exception:
-                    song_time = -1.0
+            # No detail clip handed on: it was tried above, and one that got
+            # this far has no audio file behind it to separate.
+            clip = self._pick_arrangement_clip(song, clips)
 
-                if song_time >= 0.0:
-                    for clip in clips:
-                        try:
-                            if float(clip.start_time) <= song_time < float(clip.end_time):
-                                return selected_track, clip
-                        except Exception:
-                            pass
-
-                if len(clips) == 1:
-                    return selected_track, clips[0]
+            if clip is not None:
+                return selected_track, clip
 
         # Compatibility fallback only.
         _index, source_track = self._resolve_source_track(song)
@@ -649,38 +674,15 @@ class StemLabRemote(ControlSurface):
         if not clips:
             raise RuntimeError("No Arrangement audio clips were found on the StemLab track")
 
-        # Best case: the user has clicked the desired Arrangement clip and it
-        # is the current Detail clip.
         try:
             detail_clip = song.view.detail_clip
         except Exception:
             detail_clip = None
 
-        if detail_clip is not None:
-            for clip in clips:
-                try:
-                    if clip == detail_clip:
-                        return clip
-                except Exception:
-                    pass
+        clip = self._pick_arrangement_clip(song, clips, detail_clip)
 
-        # Second choice: whichever clip is currently underneath Live's
-        # Arrangement playhead.
-        try:
-            song_time = float(song.current_song_time)
-        except Exception:
-            song_time = -1.0
-
-        if song_time >= 0.0:
-            for clip in clips:
-                try:
-                    if float(clip.start_time) <= song_time < float(clip.end_time):
-                        return clip
-                except Exception:
-                    pass
-
-        if len(clips) == 1:
-            return clips[0]
+        if clip is not None:
+            return clip
 
         raise RuntimeError(
             "Multiple clips are on this track. Click the clip you want "
@@ -698,28 +700,17 @@ class StemLabRemote(ControlSurface):
         message="",
         reply_path="",
     ):
-        if reply_path:
-            reply_path = os.path.abspath(str(reply_path))
-            folder = os.path.dirname(reply_path)
+        # As with the tempo reply: the plugin names the file it watches, and
+        # a clip reply is read from nowhere else.
+        if not reply_path:
+            self.log_message("StemLabRemote: clip request carried no reply path")
+            return
 
-            if folder and not os.path.isdir(folder):
-                os.makedirs(folder)
-        else:
-            documents = self._documents_folder()
+        reply_path = os.path.abspath(str(reply_path))
+        folder = os.path.dirname(reply_path)
 
-            folder = os.path.join(
-                documents,
-                "StemLab",
-                "Ableton",
-            )
-
-            if not os.path.isdir(folder):
-                os.makedirs(folder)
-
-            reply_path = os.path.join(
-                folder,
-                "stemlab_clip_reply.json",
-            )
+        if folder and not os.path.isdir(folder):
+            os.makedirs(folder)
 
         payload = {
             "protocol": "stemlab-clip-source",
@@ -886,6 +877,22 @@ class StemLabRemote(ControlSurface):
         except Exception:
             pass
 
+    @staticmethod
+    def _import_job_dir(manifest_path):
+        """The folder holding the one ack file an import of this manifest writes.
+
+        _write_ack names the ack after the folder rather than after the
+        manifest, so this is the identity that decides whether two requests
+        are answered by the same file - and therefore whether one of them can
+        be left to the other.
+        """
+        try:
+            return os.path.normcase(
+                os.path.dirname(os.path.abspath(str(manifest_path))),
+            )
+        except Exception:
+            return str(manifest_path)
+
     def _import_manifest_on_live_thread(self, manifest_path):
         """Validate once, then mutate Live one small step per UI tick.
 
@@ -893,7 +900,53 @@ class StemLabRemote(ControlSurface):
         Creating every track and clip in one callback can make the operation
         brittle. 0.9.4 deliberately yields between track creation, clip
         creation, and clip-property updates.
+
+        Which is exactly why only one of these may run at a time: between two
+        of those yields there is nothing stopping a second Send Stems from
+        starting its own chain, and the two would then insert tracks at
+        indices the other has already moved.
         """
+        if (
+            self._import_in_flight is not None
+            and time.time() - self._import_started < IMPORT_STALE_SECONDS
+        ):
+            running_job = self._import_job_dir(self._import_in_flight)
+
+            if self._import_job_dir(manifest_path) == running_job:
+                # The same job, which is the impatient Retry Import click and
+                # the common case. Compared by folder rather than by manifest
+                # name because one job directory holds two of them - Send
+                # Stems writes stemlab_ableton_selected_manifest.json while
+                # Retry falls back to stemlab_ableton_manifest.json - and the
+                # single ack file both would be answered by is named after the
+                # folder, not after either manifest. So the chain in progress
+                # writes exactly the ack this request re-armed the wait for,
+                # and refusing it here would put a failure into that same file
+                # for the plugin to read before the success lands - a wrong
+                # "import failed", and a retry that then does duplicate the
+                # tracks this guard exists to keep single.
+                self.log_message(
+                    "StemLabRemote: this job is already importing, ignoring the repeat request"
+                )
+            else:
+                # A different job: nothing the running chain writes will land
+                # in this manifest's folder, so answer where the plugin is
+                # watching rather than leaving it to time out with no reason.
+                self._write_ack(
+                    manifest_path=manifest_path,
+                    success=False,
+                    imported=0,
+                    message=(
+                        "Another StemLab import is still running. Wait for it "
+                        "to finish, then press Retry Import."
+                    ),
+                )
+
+            return
+
+        self._import_in_flight = manifest_path
+        self._import_started = time.time()
+
         try:
             manifest = self._load_json(manifest_path)
 
@@ -1091,6 +1144,10 @@ class StemLabRemote(ControlSurface):
             )
 
     def _finish_import_success(self, state):
+        # Every path out of the chain hands the Set back, so the next Send
+        # Stems is not refused by a guard nobody is holding any more.
+        self._import_in_flight = None
+
         imported = int(state["imported"])
         source_name = str(state["source_name"])
         start_beat = float(state["start_beat"])
@@ -1134,6 +1191,8 @@ class StemLabRemote(ControlSurface):
         state,
         message,
     ):
+        self._import_in_flight = None
+
         self._write_ack(
             manifest_path=state["manifest_path"],
             success=False,
@@ -1167,6 +1226,8 @@ class StemLabRemote(ControlSurface):
         imported,
         message,
     ):
+        self._import_in_flight = None
+
         self._write_ack(
             manifest_path=manifest_path,
             success=False,
@@ -1354,13 +1415,14 @@ class StemLabRemote(ControlSurface):
 
     def _write_status(self, active, message):
         try:
-            documents = os.path.join(
-                os.path.expanduser("~"),
-                "Documents",
-            )
-
+            # Through the same helper the plugin's own answer comes from.
+            # This file is the only sign the VST3 has that the script is
+            # installed and loaded, and it looks for it under the Documents
+            # folder Windows reports - which stopped being
+            # %USERPROFILE%\Documents the moment OneDrive's Known Folder Move
+            # redirected it.
             status_dir = os.path.join(
-                documents,
+                self._documents_folder(),
                 "StemLab",
                 "Ableton",
             )
@@ -1392,12 +1454,32 @@ class StemLabRemote(ControlSurface):
 
     @staticmethod
     def _documents_folder():
-        # OneDrive commonly redirects Documents. Prefer the actual environment
-        # path when present, otherwise retain the normal Windows fallback.
-        user_profile = os.environ.get(
-            "USERPROFILE",
-            os.path.expanduser("~"),
-        )
+        """The Documents folder Windows reports, rather than a guess at it.
+
+        The plugin resolves its half through JUCE, which asks the shell for
+        CSIDL_PERSONAL, so this side has to ask the same question to land in
+        the same place: under OneDrive's Known Folder Move that answer is
+        %OneDrive%\\Documents, and with OneDrive merely installed it is still
+        %USERPROFILE%\\Documents even though an %OneDrive%\\Documents usually
+        exists beside it to be mistaken for the redirect.
+        """
+        if os.name == "nt":
+            try:
+                import ctypes
+
+                # MAX_PATH, which is what SHGetSpecialFolderPathW writes into.
+                buffer = ctypes.create_unicode_buffer(260)
+
+                # CSIDL_PERSONAL, do not create: the same call with the same
+                # arguments as JUCE's getSpecialLocation makes on the plugin
+                # side, so neither can drift away from the other.
+                if ctypes.windll.shell32.SHGetSpecialFolderPathW(None, buffer, 5, False):
+                    if buffer.value:
+                        return buffer.value
+            except Exception:
+                # A shell that will not answer leaves the guess below, which
+                # is still better than nothing to write the heartbeat into.
+                pass
 
         one_drive = os.environ.get("OneDriveCommercial") or os.environ.get("OneDrive")
 
@@ -1411,7 +1493,7 @@ class StemLabRemote(ControlSurface):
                 return redirected
 
         return os.path.join(
-            user_profile,
+            os.environ.get("USERPROFILE", os.path.expanduser("~")),
             "Documents",
         )
 
