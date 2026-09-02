@@ -63,10 +63,14 @@ def si_sdr(estimate: np.ndarray, reference: np.ndarray) -> float:
     output gain is not making a separation error, and a plain SNR would score
     it as one.
     """
-    est = as_channels_first(estimate).reshape(-1)
-    ref = as_channels_first(reference).reshape(-1)
-    length = min(est.size, ref.size)
-    est, ref = est[:length], ref[:length]
+    # Trim to the shared span per channel and only then flatten. Flattening
+    # first concatenates the channels end to end, so a length difference
+    # offsets every channel after the first against its counterpart: two
+    # identical stereo takes a few samples apart in length then score like a
+    # broken separation rather than like a perfect match.
+    est, ref, _ = _common_length(as_channels_first(estimate), as_channels_first(reference))
+    est = est.reshape(-1)
+    ref = ref.reshape(-1)
 
     ref_energy = float(np.dot(ref, ref))
 
@@ -95,10 +99,10 @@ def si_sdr(estimate: np.ndarray, reference: np.ndarray) -> float:
 
 def correlation(estimate: np.ndarray, reference: np.ndarray) -> float:
     """Pearson correlation over all channels, the primary agreement gate."""
-    est = as_channels_first(estimate).reshape(-1)
-    ref = as_channels_first(reference).reshape(-1)
-    length = min(est.size, ref.size)
-    est, ref = est[:length], ref[:length]
+    # Per-channel trimming before the flatten, for the reason si_sdr gives.
+    est, ref, _ = _common_length(as_channels_first(estimate), as_channels_first(reference))
+    est = est.reshape(-1)
+    ref = ref.reshape(-1)
 
     est = est - est.mean()
     ref = ref - ref.mean()
@@ -206,6 +210,8 @@ class StemMetrics:
     samples_dropped: int
     has_nan: bool
     has_inf: bool
+    reference_has_nan: bool
+    reference_has_inf: bool
     candidate_silent: bool
     reference_silent: bool
     failures: list[str] = field(default_factory=list)
@@ -236,22 +242,30 @@ def compare_stem(
 
     has_nan = bool(np.isnan(cand).any())
     has_inf = bool(np.isinf(cand).any())
+    reference_has_nan = bool(np.isnan(ref).any())
+    reference_has_inf = bool(np.isinf(ref).any())
 
     # Metrics on poisoned samples are meaningless, so score the finite part and
-    # let the NaN/Inf flags carry the failure.
+    # let the NaN/Inf flags carry the failure. The reference gets exactly the
+    # same treatment, because a NaN on that side is the more dangerous one: it
+    # propagates into every metric, and each gate below is written as '<',
+    # where a NaN compares False and passes. A poisoned reference would
+    # otherwise be reported only as a lag - best_lag takes the argmax of an
+    # all-NaN correlation and blames an STFT centring difference for it.
     scored = np.nan_to_num(cand_trimmed, nan=0.0, posinf=0.0, neginf=0.0)
+    scored_reference = np.nan_to_num(ref_trimmed, nan=0.0, posinf=0.0, neginf=0.0)
 
     peak_candidate = float(np.abs(scored).max(initial=0.0))
-    peak_reference = float(np.abs(ref_trimmed).max(initial=0.0))
+    peak_reference = float(np.abs(scored_reference).max(initial=0.0))
     rms_candidate = float(np.sqrt(np.mean(scored**2))) if scored.size else 0.0
-    rms_reference = float(np.sqrt(np.mean(ref_trimmed**2))) if ref_trimmed.size else 0.0
+    rms_reference = float(np.sqrt(np.mean(scored_reference**2))) if scored_reference.size else 0.0
 
     metrics = StemMetrics(
         stem=stem,
-        correlation=correlation(scored, ref_trimmed),
-        si_sdr_db=si_sdr(scored, ref_trimmed),
-        log_spectral_distance_db=log_spectral_distance(scored, ref_trimmed, sample_rate),
-        lag_samples=best_lag(scored, ref_trimmed),
+        correlation=correlation(scored, scored_reference),
+        si_sdr_db=si_sdr(scored, scored_reference),
+        log_spectral_distance_db=log_spectral_distance(scored, scored_reference, sample_rate),
+        lag_samples=best_lag(scored, scored_reference),
         peak_candidate=peak_candidate,
         peak_reference=peak_reference,
         rms_candidate=rms_candidate,
@@ -260,6 +274,8 @@ def compare_stem(
         samples_dropped=int(dropped),
         has_nan=has_nan,
         has_inf=has_inf,
+        reference_has_nan=reference_has_nan,
+        reference_has_inf=reference_has_inf,
         candidate_silent=peak_candidate <= SILENCE_PEAK,
         reference_silent=peak_reference <= SILENCE_PEAK,
     )
@@ -269,6 +285,15 @@ def compare_stem(
 
     if has_inf:
         metrics.failures.append("candidate contains Inf")
+
+    # A poisoned reference invalidates the comparison rather than the
+    # candidate, so it is named separately instead of being folded into the
+    # candidate's message.
+    if reference_has_nan:
+        metrics.failures.append("reference contains NaN")
+
+    if reference_has_inf:
+        metrics.failures.append("reference contains Inf")
 
     # Checked before correlation because a dead stem correlates as 0.0 and the
     # generic message would bury the far more specific diagnosis.

@@ -9,8 +9,11 @@ test set - pass --truth as well. Agreement alone cannot tell "the candidate is
 wrong" from "the candidate is different and better", and separation quality
 measured against the truth can.
 
-    python -m stemlab.regression.compare --reference ref/ --candidate cand/
-    python -m stemlab.regression.compare --reference ref/ --candidate cand/ \\
+Run it through the package: `regression/__main__.py` calls `main` below, and
+naming this module on the command line instead would import it twice.
+
+    python -m stemlab.regression --reference ref/ --candidate cand/
+    python -m stemlab.regression --reference ref/ --candidate cand/ \\
         --truth corpus/stems --json report.json
 """
 
@@ -19,7 +22,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -35,6 +37,29 @@ def _format_db(value: float) -> str:
     if math.isinf(value):
         return "inf" if value > 0 else "-inf"
     return f"{value:.2f}"
+
+
+def _json_safe(value: object) -> object:
+    """Replace the non-finite floats JSON cannot spell.
+
+    A stem identical to its reference scores an SI-SDR of +inf and a dead one
+    -inf, so this is the ordinary case rather than a corner of it, and
+    json.dumps spells both as the bare tokens Infinity/-Infinity. Python's own
+    loader accepts those; jq, JavaScript and every strict parser reject the
+    whole file. Writing them as the words the terminal table already prints
+    keeps the sign, which a null would throw away - "the stem was perfect" and
+    "the stem was dead" must not read the same.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return _format_db(value)
+
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+
+    return value
 
 
 def discover_stems(directory: Path) -> dict[str, Path]:
@@ -207,7 +232,7 @@ def render(report: ComparisonReport) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="stemlab.regression.compare",
+        prog="stemlab.regression",
         description="Compare candidate stems against reference stems.",
     )
     parser.add_argument("--reference", required=True, type=Path, help="known-good stem directory")
@@ -237,10 +262,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)
-        args.json.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
+        # allow_nan=False turns anything _json_safe missed into an error here
+        # rather than into a report no strict parser can read.
+        payload = json.dumps(_json_safe(report.to_dict()), indent=2, allow_nan=False)
+        args.json.write_text(payload, encoding="utf-8")
 
     return 0 if report.passed else 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())

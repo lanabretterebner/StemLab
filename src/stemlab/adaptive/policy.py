@@ -28,11 +28,12 @@ def should_offer_split(
     if assessment.estimated_source_count < 2:
         return False
 
-    # The first implementation has a real recursive path for vocal groups.
-    # Other categories are kept metadata-ready for the upcoming lead backend.
+    # Only the categories a recursive split can actually be routed to:
+    # run_recursive sends "vocal." to split_vocals and "instrument." to
+    # split_lead_group, and offering a split that the router would refuse
+    # would put a button in the tree that fails when it is pressed.
     return category in {
         "vocal.group",
         "vocal.harmony_group",
-        "vocal.lead_group",
         "instrument.bed",
     }

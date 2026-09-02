@@ -57,17 +57,20 @@ def detect_kick_events(
     # Short RMS-ish low-frequency energy envelope. The O(N) running mean
     # equals a normalized ``ones(win)/win`` boxcar in "same" mode:
     # ``mode="constant"``/``cval=0`` reproduces the zero padding and the
-    # window is centred identically. Summing runs in float64 because the
-    # moving-sum accumulator would drift in float32 across a whole song.
+    # window is centred identically. A moving sum would drift in float32
+    # across a whole song, and it does not have to: scipy copies every line
+    # into a double buffer whatever dtype it was handed, and narrows only on
+    # the store.
     win = max(8, int(sr * 0.008))
 
-    # A float32 destination is safe here: scipy accumulates in the input's
-    # dtype and narrows only on the store, so this holds the float64 sum
-    # cast down, not a float32 running sum. Nothing else refers to the
-    # buffer, so the envelope finishes in place on top of it.
+    # So a float32 square and a float32 destination are both safe - what is
+    # rounded is each individual square, never the running total - while
+    # squaring into float64 first only allocated a full-length temporary at
+    # twice the width of the stem. Nothing else refers to the buffer, so the
+    # envelope finishes in place on top of it.
     energy = np.empty(low.shape, dtype=np.float32)
     uniform_filter1d(
-        np.square(low, dtype=np.float64),
+        np.square(low),
         size=win,
         mode="constant",
         cval=0.0,
