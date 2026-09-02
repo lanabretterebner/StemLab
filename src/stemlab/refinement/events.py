@@ -5,8 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.ndimage import uniform_filter1d
-from scipy.signal import butter, find_peaks, sosfiltfilt
+
+# scipy is imported inside the two functions below rather than here. Detection
+# reaches scipy.signal, whose import costs roughly 0.75 s, and this module is
+# pulled in at job startup through refinement.kick and refinement.pipeline even
+# when no refinement runs at all - a --no-refine job, a single-engine
+# separation, the model manager. The first detection pays it, minutes in.
 
 
 @dataclass(frozen=True)
@@ -24,6 +28,8 @@ def _mono(audio: np.ndarray) -> np.ndarray:
 
 
 def _lowpass(x: np.ndarray, sr: int, hz: float = 180.0) -> np.ndarray:
+    from scipy.signal import butter, sosfiltfilt
+
     sos = butter(
         4,
         min(hz / (sr / 2.0), 0.99),
@@ -44,6 +50,9 @@ def detect_kick_events(
     This is intentionally signal-processing-first, not ML. It gives us event
     locations for the adaptive cancellation experiment and is easy to inspect.
     """
+    from scipy.ndimage import uniform_filter1d
+    from scipy.signal import find_peaks
+
     x = _mono(drums)
 
     # sosfiltfilt needs more samples than its edge padding, and the envelope

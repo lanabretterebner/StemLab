@@ -7,7 +7,12 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
-from scipy import ndimage, signal
+
+# scipy is imported inside _mask_channel rather than here. scipy.signal costs
+# roughly 0.75 s to import and nothing else in this module needs it, so an
+# eager import would tax every caller of the adaptive package - recursive.py
+# imports split_foreground at module scope - for a split that most jobs never
+# ask for. The first masked block pays it.
 
 _EPS = 1.0e-8
 
@@ -22,6 +27,8 @@ class ForegroundSplit:
 
 
 def _mask_channel(mid: np.ndarray, side: np.ndarray | None) -> np.ndarray:
+    from scipy import ndimage, signal
+
     # scipy reduces nperseg to the signal length for short input but keeps
     # noverlap, then rejects the call. Clamp both so a short block (or a
     # short file) is analysed with a smaller frame instead of raising.

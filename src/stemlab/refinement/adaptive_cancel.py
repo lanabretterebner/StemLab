@@ -5,8 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from scipy import signal
-from scipy.ndimage import uniform_filter1d
+
+# scipy is imported inside the helpers below rather than here. scipy.signal
+# costs roughly 0.75 s to import, and this module sits on the import path of
+# every plugin-launched job through refinement.kick - including the jobs that
+# never cancel a single event: a --no-refine run, a single-engine separation,
+# the model manager. Refinement itself pays the import once, minutes into a
+# job, where it disappears.
 
 
 @dataclass
@@ -42,6 +47,8 @@ def _best_alignment(
     sr: int,
     max_ms: float,
 ) -> int:
+    from scipy import signal
+
     r = _mono(reference)
     y = _mono(target)
 
@@ -85,6 +92,8 @@ def _frame_parameters(length: int, cfg: CancelConfig) -> tuple[int, int]:
 
 
 def _stft_multichannel(x: np.ndarray, sr: int, cfg: CancelConfig) -> np.ndarray:
+    from scipy import signal
+
     nperseg, noverlap = _frame_parameters(x.shape[-1], cfg)
 
     specs = []
@@ -109,6 +118,8 @@ def _istft_multichannel(
     cfg: CancelConfig,
     length: int,
 ):
+    from scipy import signal
+
     nperseg, noverlap = _frame_parameters(length, cfg)
 
     channels = []
@@ -138,6 +149,8 @@ def _smooth_frequency(h: np.ndarray, bins: int) -> np.ndarray:
     edges. Filtering runs in float64 - the running-sum filter would drift
     in float32 - and the result keeps ``h``'s complex dtype.
     """
+    from scipy.ndimage import uniform_filter1d
+
     if bins <= 1:
         return h
 
