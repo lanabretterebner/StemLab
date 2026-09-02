@@ -13,9 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 import pytest
-import soundfile as sf
 
 import stemlab.pipeline as pipeline
 from stemlab.audio import STEM_NAMES
@@ -26,32 +24,6 @@ READY_PREFIX = "STEMLAB_STEM_READY "
 # Logged once refinement is skipped, so every line before it was published
 # by a working stage rather than by the end-of-job backstop.
 REFINE_OFF = "Refinement disabled; baseline stems are final output."
-
-
-def _write_stems(folder, sr=22050, seconds=0.25):
-    folder.mkdir(parents=True, exist_ok=True)
-    samples = int(sr * seconds)
-    tone = 0.1 * np.sin(np.linspace(0.0, 40.0, samples, dtype=np.float64))
-    for stem in STEM_NAMES:
-        sf.write(folder / f"{stem}.wav", np.stack([tone, tone], axis=1), sr)
-
-
-class _FakeBackend:
-    """Stands in for both model backends: writes a full stem folder."""
-
-    def __init__(self, **kwargs):
-        self.progress_callback = kwargs.get("progress_callback")
-
-    def separate(self, input_path, output_dir):
-        if self.progress_callback:
-            self.progress_callback(100.0)
-        _write_stems(output_dir)
-
-
-@pytest.fixture()
-def fake_backends(monkeypatch):
-    monkeypatch.setattr(pipeline, "RoFormerBackend", _FakeBackend)
-    monkeypatch.setattr(pipeline, "DemucsBackend", _FakeBackend)
 
 
 class _Wire:
@@ -83,23 +55,33 @@ class _Wire:
         )
 
 
-def _run(tmp_path, engine, refine) -> _Wire:
-    source = tmp_path / "input.wav"
-    _write_stems(tmp_path / "srcdir")
-    (tmp_path / "srcdir" / "vocals.wav").replace(source)
+@pytest.fixture()
+def run_job(tmp_path, fake_backends, write_stems):
+    """Run one separation over a short source and hand back the parsed wire.
 
-    wire = _Wire()
+    The fake backends and the source file come with it, so each test below
+    names only what it varies: the engine, and whether refinement runs.
+    """
 
-    separate(
-        input_path=source,
-        output_dir=tmp_path / "out",
-        engine=engine,
-        refine=refine,
-        device="cpu",
-        log_callback=wire,
-    )
+    def run(engine: str, refine: bool) -> _Wire:
+        source = tmp_path / "input.wav"
+        write_stems(tmp_path / "srcdir")
+        (tmp_path / "srcdir" / "vocals.wav").replace(source)
 
-    return wire
+        wire = _Wire()
+
+        separate(
+            input_path=source,
+            output_dir=tmp_path / "out",
+            engine=engine,
+            refine=refine,
+            device="cpu",
+            log_callback=wire,
+        )
+
+        return wire
+
+    return run
 
 
 def _assert_wire_is_well_formed(wire: _Wire) -> None:
@@ -114,7 +96,7 @@ def _assert_wire_is_well_formed(wire: _Wire) -> None:
 
 @pytest.mark.parametrize("engine", ENGINE_CHOICES)
 def test_refinement_announces_each_stem_once_from_the_refined_folder(
-    tmp_path, fake_backends, engine, monkeypatch
+    tmp_path, run_job, engine, monkeypatch
 ):
     # The working folders are kept for this one so the check below is not
     # vacuous: it has to be possible to announce a baseline path in order for
@@ -122,7 +104,7 @@ def test_refinement_announces_each_stem_once_from_the_refined_folder(
     # normally removes them, which the next test covers.
     monkeypatch.setenv("STEMLAB_KEEP_INTERMEDIATES", "1")
 
-    wire = _run(tmp_path, engine, refine=True)
+    wire = run_job(engine, refine=True)
 
     _assert_wire_is_well_formed(wire)
 
@@ -141,12 +123,12 @@ def test_refinement_announces_each_stem_once_from_the_refined_folder(
 
 
 @pytest.mark.parametrize("engine", ENGINE_CHOICES)
-def test_a_finished_job_leaves_only_the_final_stems(tmp_path, fake_backends, engine):
+def test_a_finished_job_leaves_only_the_final_stems(tmp_path, run_job, engine):
     # Every announced path has to still be there when the job ends: the
     # working folders are removed on the way out, and an announcement naming
     # one of them would leave the plugin pointing at a file that no longer
     # exists.
-    wire = _run(tmp_path, engine, refine=True)
+    wire = run_job(engine, refine=True)
 
     for stem, path, _existed in wire.ready:
         assert path.is_file(), f"{stem} was announced at a path that is now gone: {path}"
@@ -155,8 +137,8 @@ def test_a_finished_job_leaves_only_the_final_stems(tmp_path, fake_backends, eng
     assert not (tmp_path / "out" / "engines").exists()
 
 
-def test_refinement_announces_the_untouched_copies_first(tmp_path, fake_backends):
-    wire = _run(tmp_path, "roformer", refine=True)
+def test_refinement_announces_the_untouched_copies_first(run_job):
+    wire = run_job("roformer", refine=True)
 
     # Refinement writes in STEM_NAMES order, and vocals/drums are the two
     # stems it copies rather than processes: the plugin gets a playable
@@ -165,8 +147,8 @@ def test_refinement_announces_the_untouched_copies_first(tmp_path, fake_backends
     assert wire.stems == list(STEM_NAMES)
 
 
-def test_hybrid_without_refinement_announces_from_fusion(tmp_path, fake_backends):
-    wire = _run(tmp_path, "hybrid", refine=False)
+def test_hybrid_without_refinement_announces_from_fusion(tmp_path, run_job):
+    wire = run_job("hybrid", refine=False)
 
     _assert_wire_is_well_formed(wire)
 
@@ -184,9 +166,9 @@ def test_hybrid_without_refinement_announces_from_fusion(tmp_path, fake_backends
 
 @pytest.mark.parametrize("engine", ("roformer", "demucs"))
 def test_single_model_without_refinement_announces_after_separation(
-    tmp_path, fake_backends, engine
+    tmp_path, run_job, engine
 ):
-    wire = _run(tmp_path, engine, refine=False)
+    wire = run_job(engine, refine=False)
 
     _assert_wire_is_well_formed(wire)
 
@@ -201,9 +183,7 @@ def test_single_model_without_refinement_announces_after_separation(
 
 
 @pytest.mark.parametrize("name", ("piano\nvocals.wav", "piano\x00.wav"))
-def test_a_path_holding_a_control_character_is_skipped(
-    tmp_path, fake_backends, monkeypatch, name
-):
+def test_a_path_holding_a_control_character_is_skipped(run_job, monkeypatch, name):
     resolve = pipeline.find_stem_file
 
     def poisoned(folder, stem):
@@ -216,7 +196,7 @@ def test_a_path_holding_a_control_character_is_skipped(
 
     monkeypatch.setattr(pipeline, "find_stem_file", poisoned)
 
-    wire = _run(tmp_path, "roformer", refine=False)
+    wire = run_job("roformer", refine=False)
 
     # A newline would split one announcement into two lines, the second of
     # which reads as a valid announcement of a different stem; a null byte

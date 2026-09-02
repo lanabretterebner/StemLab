@@ -12,6 +12,7 @@ It is still available as a setting, off by default.
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 
 import numpy as np
@@ -29,8 +30,17 @@ def write(path, audio, rate=44100):
 
 
 def loud_pair(tmp_path, name, peak):
-    """A matching roformer/demucs pair whose fusion lands near ``peak``."""
-    rng = np.random.default_rng(abs(hash(name)) % 2**32)
+    """A matching roformer/demucs pair whose fusion lands near ``peak``.
+
+    The seed is a digest of the name rather than ``hash(name)``: string
+    hashing is salted per interpreter run, so the "deterministic" fixture
+    audio was in fact different audio on every run, and a marginal failure
+    could never be reproduced from the failing run's output. Every test that
+    uses this fixture asserts a peak to a tolerance, so a marginal failure is
+    exactly the kind available here.
+    """
+    seed = int.from_bytes(hashlib.sha256(name.encode("utf-8")).digest()[:4], "big")
+    rng = np.random.default_rng(seed)
     audio = rng.normal(0.0, 0.2, (2, 44100)).astype(np.float32)
     audio *= peak / max(float(np.max(np.abs(audio))), 1e-9)
     a = write(tmp_path / f"{name}_r.wav", audio)

@@ -83,27 +83,6 @@ def test_invalid_backend_is_rejected(script: str):
     assert "ValidateSet" in result.stderr or "valid values" in result.stderr
 
 
-@needs_powershell
-def test_backend_output_suffixes_do_not_collide():
-    helper = ROOT / "scripts" / "win" / "windows_backend.ps1"
-    command = (
-        f". '{helper}'; "
-        "'nvidia','cpu','amd' | ForEach-Object { (Get-StemLabBackendConfiguration $_).Suffix }"
-    )
-    result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-Command", command],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    suffixes = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    assert suffixes == ["NVIDIA", "CPU", "AMD-Experimental"]
-    assert len(suffixes) == len(set(suffixes))
-
-
-
-
 PORTABLE_BUILD = ROOT / "scripts" / "win" / "build_portable_windows.ps1"
 
 

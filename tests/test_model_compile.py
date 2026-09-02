@@ -250,6 +250,40 @@ class TestItDrivesTheSameCommandASeparationDoes:
         assert seen[-1][0] == 1.0
         assert all(0.0 <= fraction <= 1.0 for fraction, _ in seen)
 
+    def test_the_childs_percent_is_a_percent_not_a_fraction(
+        self, compiling_on, short_warm_up, monkeypatch
+    ):
+        """The regression: run_progress_process reports 0 to 100, not 0 to 1.
+
+        Divided by nothing, the child's first percent already exceeded the
+        whole span and the clamp in ``report`` pinned the bar at 100% - so
+        the minutes of compiling this exists to spend were displayed as
+        finished, with no error anywhere. Half way through the child is
+        0.05 + 0.95 * 0.5 of the warm-up, the first sliver belonging to
+        preparing the audio.
+
+        The test drives the callback rather than the child, because it is the
+        callback that carries the arithmetic; the previous test only ever
+        passes it a value that happens to read the same either way.
+        """
+        self._capture(monkeypatch)
+        seen: list[tuple[float, str]] = []
+
+        def half_way(command, log, progress, **kwargs):
+            progress(50.0)
+            return 0
+
+        monkeypatch.setattr(model_compile, "run_progress_process", half_way)
+
+        model_compile.warm_up(
+            "roformer", progress=lambda fraction, stage: seen.append((fraction, stage))
+        )
+
+        compiling = [fraction for fraction, stage in seen if stage == "Compiling kernels"]
+
+        assert compiling == [pytest.approx(0.525)]
+        assert compiling[0] < 1.0
+
 
 class TestTheManagerTreatsUnavailableAsAState:
     def test_compile_model_reports_it_as_unavailable_not_a_failure(

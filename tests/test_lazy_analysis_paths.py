@@ -15,7 +15,7 @@ import soundfile as sf
 
 import stemlab.source_analysis as source_analysis_module
 from stemlab.analysis_cache import AnalysisCache
-from stemlab.beat_tracking import BeatAnalysis
+from stemlab.beat_tracking import BeatAnalysis, TempoSegment
 
 _SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 
@@ -26,6 +26,16 @@ def _managed_analysis_home(tmp_path, monkeypatch):
 
 
 def _fake_beat_analysis(*_args, **_kwargs) -> BeatAnalysis:
+    """A real analysis in miniature - segments included.
+
+    The segment is what makes the cache-hit test below mean anything. The
+    cache stores what ``to_dict`` wrote, which flattens every TempoSegment to
+    a plain dict and then round-trips it through JSON; a fake without any
+    segments left that reconstruction untested, so a cache hit that handed
+    ``analyse_source`` dicts where it reads ``segment.start`` passed CI while
+    the second analysis of any real track (sixteen beats is enough to produce
+    a segment) died on it.
+    """
     return BeatAnalysis(
         bpm=120.0,
         detected_bpm=120.0,
@@ -40,6 +50,7 @@ def _fake_beat_analysis(*_args, **_kwargs) -> BeatAnalysis:
         model="small0",
         model_version="test-fixture",
         device="cpu",
+        tempo_segments=(TempoSegment(start=0.0, end=7.5, bpm=120.0, beats=16),),
     )
 
 
@@ -85,6 +96,10 @@ def test_fully_cached_analysis_never_decodes_audio(tmp_path, monkeypatch):
     monkeypatch.setattr(source_analysis_module, "_load_signal", refuse_decode)
     second = source_analysis_module.analyse_source(source, cache=cache)
     assert second == first
+
+    # And the cache hit rebuilt the tempo segments instead of handing the
+    # stored dicts straight back: reading one is what used to crash here.
+    assert second.tempo_segments == ({"start": 0.0, "end": 7.5, "bpm": 120.0},)
 
 
 def test_mix_key_evidence_survives_stem_hash_change(tmp_path, monkeypatch):

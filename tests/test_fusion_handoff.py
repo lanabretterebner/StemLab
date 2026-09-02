@@ -156,25 +156,19 @@ def test_fusion_pins_no_fused_audio_of_its_own(tmp_path, monkeypatch, material):
     assert _count_live(refs) == 0
 
 
-def test_handoff_carries_only_the_stems_refinement_decodes(tmp_path, monkeypatch, material):
+def test_handoff_carries_only_the_stems_refinement_decodes(
+    tmp_path, monkeypatch, material, fake_backends
+):
     """A hybrid job hands over the reused stems and drops the rest.
 
     ``vocals`` is the one that never repaid its keep: refinement byte-copies
     it and never asks for its audio, so it used to sit in memory for the
     whole stage having been read by nobody.
     """
-
-    class _FakeBackend:
-        def __init__(self, **kwargs):
-            self.progress_callback = kwargs.get("progress_callback")
-
-        def separate(self, input_path, output_dir):
-            _write_material(Path(output_dir))
-            if self.progress_callback:
-                self.progress_callback(100.0)
-
-    monkeypatch.setattr(pipeline, "RoFormerBackend", _FakeBackend)
-    monkeypatch.setattr(pipeline, "DemucsBackend", _FakeBackend)
+    # The shared fake writes plain tones; this job needs the kick-bleed
+    # material, because a refinement that cancels nothing would let a broken
+    # handoff pass.
+    fake_backends.write_output = _write_material
 
     refs = _live_fused_arrays(monkeypatch)
     handed_to_refinement: list[set[str]] = []
@@ -202,16 +196,10 @@ def test_handoff_carries_only_the_stems_refinement_decodes(tmp_path, monkeypatch
     assert _count_live(refs) == 0
 
 
-def test_a_run_without_refinement_keeps_no_fused_stem_at_all(tmp_path, monkeypatch, material):
-    class _FakeBackend:
-        def __init__(self, **kwargs):
-            pass
-
-        def separate(self, input_path, output_dir):
-            _write_material(Path(output_dir))
-
-    monkeypatch.setattr(pipeline, "RoFormerBackend", _FakeBackend)
-    monkeypatch.setattr(pipeline, "DemucsBackend", _FakeBackend)
+def test_a_run_without_refinement_keeps_no_fused_stem_at_all(
+    tmp_path, monkeypatch, material, fake_backends
+):
+    fake_backends.write_output = _write_material
 
     refs = _live_fused_arrays(monkeypatch)
 
