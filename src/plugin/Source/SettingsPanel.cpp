@@ -55,6 +55,25 @@ namespace stemlab::widgets
         {
             return value > 0.0 ? juce::String(value, 1) : juce::String();
         }
+
+        /*
+         * Every row's caption is drawn the same way: the label fills what
+         * the control column leaves, and greys when the row cannot be
+         * operated. Written once because three copies of the same four
+         * lines is how one row ends up a shade or a pixel away from the
+         * other two.
+         */
+        void paintCaption(juce::Graphics& g, const juce::Component& row,
+                          const juce::String& caption)
+        {
+            auto bounds = row.getLocalBounds();
+            bounds.removeFromRight(rows::controlWidth);
+
+            g.setColour(row.isEnabled() ? theme::colors::text75()
+                                        : theme::colors::text45());
+            g.setFont(juce::Font(theme::fonts::make(12.0f, false)));
+            g.drawText(caption, bounds, juce::Justification::centredLeft, true);
+        }
     }
 
     // ------------------------------------------------------------- choice row
@@ -114,12 +133,7 @@ namespace stemlab::widgets
 
                 const auto live = isEnabled();
 
-                auto bounds = getLocalBounds();
-                bounds.removeFromRight(rows::controlWidth);
-
-                g.setColour(live ? colors::text75() : colors::text45());
-                g.setFont(juce::Font(theme::fonts::make(12.0f, false)));
-                g.drawText(caption, bounds, juce::Justification::centredLeft, true);
+                paintCaption(g, *this, caption);
 
                 for (int index = 0; index < options.size(); ++index)
                 {
@@ -219,7 +233,6 @@ namespace stemlab::widgets
             JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ChoiceRow)
         };
 
-        /** A label and one button on the right, for a row that does something. */
         /**
          * A label and one filled circle per accent, the chosen one ringed.
          *
@@ -253,12 +266,7 @@ namespace stemlab::widgets
             {
                 namespace colors = theme::colors;
 
-                auto bounds = getLocalBounds();
-                bounds.removeFromRight(rows::controlWidth);
-
-                g.setColour(colors::text75());
-                g.setFont(juce::Font(theme::fonts::make(12.0f, false)));
-                g.drawText(caption, bounds, juce::Justification::centredLeft, true);
+                paintCaption(g, *this, caption);
 
                 for (int index = 0; index < theme::accents::count(); ++index)
                 {
@@ -349,6 +357,7 @@ namespace stemlab::widgets
             JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SwatchRow)
         };
 
+        /** A label and one button on the right, for a row that does something. */
         class ActionRow final : public juce::Component
         {
         public:
@@ -369,15 +378,15 @@ namespace stemlab::widgets
                 repaint();
             }
 
-            void paint(juce::Graphics& g) override
-            {
-                auto bounds = getLocalBounds();
-                bounds.removeFromRight(rows::controlWidth);
+            void paint(juce::Graphics& g) override { paintCaption(g, *this, caption); }
 
-                g.setColour(isEnabled() ? theme::colors::text75() : theme::colors::text45());
-                g.setFont(juce::Font(theme::fonts::make(12.0f, false)));
-                g.drawText(caption, bounds, juce::Justification::centredLeft, true);
-            }
+            /*  The caption greys with the row, so it has to be redrawn when
+                the row is enabled or disabled. Without this a row switched
+                off mid-session - Copy while there is no engine log, Check
+                while an update check runs - kept a live-looking label above
+                a dead button until something else forced a repaint.
+            */
+            void enablementChanged() override { repaint(); }
 
             void resized() override
             {
@@ -446,12 +455,35 @@ namespace stemlab::widgets
             addAndMakeVisible(listViewport);
         }
 
-        void setVersion(const juce::String& text) { version = text; repaint(); }
+        /*  Guarded like every other setter on this page: the editor pushes
+            the whole settings snapshot on every UI tick, and an
+            unconditional repaint re-measured all seven paragraphs twenty
+            times a second for as long as the page was open.
+        */
+        void setVersion(const juce::String& text)
+        {
+            if (version == text)
+                return;
+
+            version = text;
+            repaint();
+        }
 
         void resized() override
         {
             listViewport.setBounds(getLocalBounds());
-            content.setSize(juce::jmax(0, listViewport.getWidth() - 12), contentHeight());
+
+            /*  The height is measured at the width the column is about to
+                get, not at the width it still has. Reading the width off
+                the column itself measured the prose against a component
+                that had not been sized yet - zero on the first pass, so
+                bodyWidth's 120px floor - which wrapped every paragraph far
+                narrower than it draws and left a tail of empty scroll
+                below the last line for the lifetime of the panel.
+            */
+            const auto width = juce::jmax(0, listViewport.getWidth() - 12);
+
+            content.setSize(width, contentHeight(width));
         }
 
         void paint(juce::Graphics&) override {}
@@ -500,26 +532,30 @@ namespace stemlab::widgets
         static constexpr int headingHeight = 22;
         static constexpr int paragraphGap = 14;
 
-        int bodyWidth() const { return juce::jmax(120, content.getWidth() - 4); }
+        /*  The wrapping width, taken from the column rather than from the
+            component that owns it: measuring and drawing have to agree, and
+            only the column knows which width it was given.
+        */
+        static int bodyWidth(int columnWidth) { return juce::jmax(120, columnWidth - 4); }
 
         /** The wrapped height of one entry's prose, measured not guessed. */
-        int bodyHeight(const char* text) const
+        static int bodyHeight(const char* text, int columnWidth)
         {
             juce::AttributedString wrapped;
             wrapped.append(text, juce::Font(theme::fonts::make(12.0f, false)));
 
             juce::TextLayout layout;
-            layout.createLayout(wrapped, static_cast<float>(bodyWidth()));
+            layout.createLayout(wrapped, static_cast<float>(bodyWidth(columnWidth)));
 
             return juce::roundToInt(layout.getHeight());
         }
 
-        int contentHeight() const
+        static int contentHeight(int columnWidth)
         {
             auto total = 0;
 
             for (const auto& entry : entries)
-                total += headingHeight + bodyHeight(entry.body) + paragraphGap;
+                total += headingHeight + bodyHeight(entry.body, columnWidth) + paragraphGap;
 
             return total + 40;
         }
@@ -553,7 +589,7 @@ namespace stemlab::widgets
                 wrapped.append(entry.body, juce::Font(theme::fonts::make(12.0f, false)),
                                theme::colors::text75());
 
-                const auto height = bodyHeight(entry.body);
+                const auto height = bodyHeight(entry.body, column.getWidth());
 
                 wrapped.draw(g, area.removeFromTop(height).toFloat());
                 area.removeFromTop(paragraphGap);
@@ -577,7 +613,13 @@ namespace stemlab::widgets
     class SettingsPanel::Preferences final : public juce::Component
     {
     public:
-        Preferences()
+        /*  The page calls the panel's own callbacks rather than declaring a
+            second set for the shell to relay into. The two sets had to be
+            kept in step by hand - fourteen declarations, fourteen forwarding
+            lambdas - and a page callback the shell forgot to forward is a
+            control that silently does nothing.
+        */
+        explicit Preferences(SettingsPanel& ownerIn) : owner(ownerIn)
         {
             listViewport.setViewedComponent(&content, false);
             listViewport.setScrollBarsShown(true, false);
@@ -619,50 +661,50 @@ namespace stemlab::widgets
 
             accentRow.onSelected = [this](int index)
             {
-                if (onAccent)
-                    onAccent(index);
+                if (owner.onAccent)
+                    owner.onAccent(index);
             };
 
             waveformPalette.onSelected = [this](int index)
             {
-                if (onWaveformPalette)
-                    onWaveformPalette(index);
+                if (owner.onWaveformPalette)
+                    owner.onWaveformPalette(index);
             };
 
             gridMode.onSelected = [this](int index)
             {
-                if (onGridMode)
-                    onGridMode(index);
+                if (owner.onGridMode)
+                    owner.onGridMode(index);
             };
 
             loopQuantize.onSelected = [this](int index)
             {
-                if (onLoopQuantize)
-                    onLoopQuantize(index);
+                if (owner.onLoopQuantize)
+                    owner.onLoopQuantize(index);
             };
 
             analysisQuality.onSelected = [this](int index)
             {
-                if (onAnalysisQuality)
-                    onAnalysisQuality(index);
+                if (owner.onAnalysisQuality)
+                    owner.onAnalysisQuality(index);
             };
 
             tempoMode.onSelected = [this](int index)
             {
-                if (onTempoMode)
-                    onTempoMode(index);
+                if (owner.onTempoMode)
+                    owner.onTempoMode(index);
             };
 
             tempoReading.onSelected = [this](int index)
             {
-                if (onTempoInterpretation)
-                    onTempoInterpretation(index);
+                if (owner.onTempoInterpretation)
+                    owner.onTempoInterpretation(index);
             };
 
             fusedNormalise.onSelected = [this](int index)
             {
-                if (onFusedNormalise)
-                    onFusedNormalise(index == 1);
+                if (owner.onFusedNormalise)
+                    owner.onFusedNormalise(index == 1);
             };
 
             auto wire = [](ActionRow& row, std::function<void()>& callback)
@@ -674,12 +716,12 @@ namespace stemlab::widgets
                 };
             };
 
-            wire(audioSettings, onAudioSettings);
-            wire(manualTempo, onSetManualTempo);
-            wire(clearCache, onClearAnalysisCache);
-            wire(checkUpdates, onCheckUpdates);
-            wire(copyDiagnostics, onCopyDiagnostics);
-            wire(abletonIntegration, onAbletonIntegration);
+            wire(audioSettings, owner.onAudioSettings);
+            wire(manualTempo, owner.onSetManualTempo);
+            wire(clearCache, owner.onClearAnalysisCache);
+            wire(checkUpdates, owner.onCheckUpdates);
+            wire(copyDiagnostics, owner.onCopyDiagnostics);
+            wire(abletonIntegration, owner.onAbletonIntegration);
 
             versionLabel.setFont(juce::Font(theme::fonts::make(11.0f, false)));
             versionLabel.setColour(juce::Label::textColourId, theme::colors::text45());
@@ -801,22 +843,9 @@ namespace stemlab::widgets
             content.setSize(width, juce::jmax(y, listViewport.getHeight()));
         }
 
-        std::function<void(int)> onAccent;
-        std::function<void(int)> onWaveformPalette;
-        std::function<void(int)> onGridMode;
-        std::function<void(int)> onLoopQuantize;
-        std::function<void()> onSetManualTempo;
-        std::function<void(int)> onAnalysisQuality;
-        std::function<void(int)> onTempoMode;
-        std::function<void(int)> onTempoInterpretation;
-        std::function<void()> onClearAnalysisCache;
-        std::function<void(bool)> onFusedNormalise;
-        std::function<void()> onCheckUpdates;
-        std::function<void()> onCopyDiagnostics;
-        std::function<void()> onAudioSettings;
-        std::function<void()> onAbletonIntegration;
-
     private:
+        SettingsPanel& owner;
+
         juce::Viewport listViewport;
         juce::Component content;
         std::vector<juce::Component*> order;
@@ -872,10 +901,13 @@ namespace stemlab::widgets
     {
         setWantsKeyboardFocus(true);
 
-        // Opaque would be wrong: the scrim is deliberately translucent so the
-        // panel stays visible behind it and the overlay reads as covering the
-        // interface rather than replacing it.
-        setInterceptsMouseClicks(true, true);
+        /*  The scrim needs no mouse setup of its own: a component covering
+            the panel already hit-tests every click inside it, and a click
+            that lands on the scrim stops at a mouseUp that does nothing.
+            Both of those are what juce::Component does by default, so
+            saying them again here only invites the reader to believe they
+            were switched on for some reason.
+        */
 
         titleLabel.setText("StemLab", juce::dontSendNotification);
         titleLabel.setFont(juce::Font(theme::fonts::make(17.0f, true)));
@@ -899,45 +931,12 @@ namespace stemlab::widgets
 
         addAndMakeVisible(closeButton);
 
-        settingsPage = std::make_unique<Preferences>();
+        settingsPage = std::make_unique<Preferences>(*this);
         creditsPage = std::make_unique<Credits>();
 
         addChildComponent(modelsPage);
         addChildComponent(*settingsPage);
         addChildComponent(*creditsPage);
-
-        auto forward = [](std::function<void()>& from, std::function<void()>& to)
-        { from = [&to] { if (to) to(); }; };
-
-        forward(settingsPage->onSetManualTempo, onSetManualTempo);
-        forward(settingsPage->onClearAnalysisCache, onClearAnalysisCache);
-        settingsPage->onTempoMode = [this](int index)
-        { if (onTempoMode) onTempoMode(index); };
-
-        forward(settingsPage->onCheckUpdates, onCheckUpdates);
-        forward(settingsPage->onCopyDiagnostics, onCopyDiagnostics);
-        forward(settingsPage->onAudioSettings, onAudioSettings);
-        forward(settingsPage->onAbletonIntegration, onAbletonIntegration);
-
-        settingsPage->onAccent = [this](int index)
-        { if (onAccent) onAccent(index); };
-
-        settingsPage->onWaveformPalette = [this](int index)
-        { if (onWaveformPalette) onWaveformPalette(index); };
-
-        settingsPage->onGridMode = [this](int index)
-        { if (onGridMode) onGridMode(index); };
-        settingsPage->onLoopQuantize = [this](int index)
-        { if (onLoopQuantize) onLoopQuantize(index); };
-
-        settingsPage->onAnalysisQuality = [this](int index)
-        { if (onAnalysisQuality) onAnalysisQuality(index); };
-
-        settingsPage->onTempoInterpretation = [this](int index)
-        { if (onTempoInterpretation) onTempoInterpretation(index); };
-
-        settingsPage->onFusedNormalise = [this](bool on)
-        { if (onFusedNormalise) onFusedNormalise(on); };
 
         showPage(Page::settings);
     }

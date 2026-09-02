@@ -115,9 +115,6 @@ namespace stemlab::widgets
         /** Escape closes, matching every other dismissable surface. */
         bool keyPressed(const juce::KeyPress&) override;
 
-        /** The scrim eats clicks so the panel behind cannot be operated. */
-        void mouseUp(const juce::MouseEvent&) override {}
-
     private:
         /** The settings page: rows of controls, no popups anywhere. */
         class Preferences;
