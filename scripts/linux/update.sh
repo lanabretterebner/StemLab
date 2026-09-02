@@ -129,9 +129,30 @@ latest_tag() {
 
     # The /releases/latest page redirects to the tag, so the final URL is the
     # answer. Cheaper than the API, and it needs neither a token nor jq.
+    #
+    # Both downloaders are handled, as they are for the setup script below.
+    # This used to be curl-only, so a host with wget and no curl was told it
+    # could not reach github.com - which is a different problem with a
+    # different answer, and sends the user off checking a connection that
+    # works. wget prints the redirect chain with -S; the last Location it
+    # reports is the same final URL curl follows to.
     local url
-    url="$(curl -sIL -o /dev/null -w '%{url_effective}' \
-        "https://github.com/$REPO/releases/latest" 2>/dev/null)" || return 1
+    if command -v curl >/dev/null 2>&1; then
+        url="$(curl -sIL -o /dev/null -w '%{url_effective}' \
+            "https://github.com/$REPO/releases/latest" 2>/dev/null)" || return 1
+    elif command -v wget >/dev/null 2>&1; then
+        # Not -q: that suppresses the -S headers this reads. wget reports the
+        # response on stderr, so the whole lot is folded into the pipe. The
+        # URL is taken as the first token of the line because wget echoes
+        # each hop a second time as "Location: <url> [following]".
+        url="$(wget -S --spider \
+            "https://github.com/$REPO/releases/latest" 2>&1 \
+            | tr -d '\r' \
+            | sed -n 's/^[[:space:]]*Location:[[:space:]]*\([^[:space:]]*\).*/\1/p' \
+            | tail -1)" || return 1
+    else
+        return 1
+    fi
 
     [[ "$url" == */releases/tag/* ]] || return 1
 

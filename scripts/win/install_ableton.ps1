@@ -160,6 +160,24 @@ if ($VstSource) {
     Write-Host "Installing StemLab.vst3..."
     New-Item -ItemType Directory -Path (Split-Path $VstDestination -Parent) -Force | Out-Null
     Remove-Item -LiteralPath $VstDestination -Recurse -Force -ErrorAction SilentlyContinue
+
+    # The removal above is SilentlyContinue, so it has to be checked rather
+    # than assumed: a bundle another host still has loaded, or an Explorer
+    # window sitting inside it, survives it. Copy-Item into a directory that
+    # still exists puts the new bundle INSIDE the old one, as
+    # StemLab.vst3\StemLab.vst3\Contents\..., and the verification at the end
+    # of this script then finds the OLD module in its usual place and reports
+    # success - so the user is told the install worked and goes on running
+    # the plug-in they already had.
+    if (Test-Path -LiteralPath $VstDestination) {
+        throw @"
+Could not replace the installed plug-in:
+  $VstDestination
+Something still has it open - a DAW with StemLab loaded, or a window open
+inside the bundle. Close it and run this again.
+"@
+    }
+
     Copy-Item -LiteralPath $VstSource -Destination $VstDestination -Recurse -Force
 }
 else {

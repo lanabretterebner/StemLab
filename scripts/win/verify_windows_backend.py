@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import argparse
-import datetime as dt
 import platform
-from pathlib import Path
 from typing import Any
 
 
@@ -56,25 +54,14 @@ def print_report(details: dict[str, str]) -> None:
         print(f"GPU: {details['GPU']}")
 
 
-def write_metadata(path: Path, details: dict[str, str]) -> None:
-    timestamp = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-    lines = [f"{key}: {value}" for key, value in details.items()]
-    lines.append(f"Build timestamp (UTC): {timestamp}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--backend", choices=tuple(BACKEND_LABELS), required=True)
-    parser.add_argument("--metadata-file", type=Path)
     args = parser.parse_args()
 
     import torch
 
-    details = inspect_backend(args.backend, torch)
-    print_report(details)
-    if args.metadata_file:
-        write_metadata(args.metadata_file, details)
+    print_report(inspect_backend(args.backend, torch))
     return 0
 
 

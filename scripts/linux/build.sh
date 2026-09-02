@@ -144,7 +144,15 @@ cp -r "$HERE/StemLab.vst3" "$HOME/.vst3/StemLab.vst3"
 #
 # Moved rather than copied. It is gigabytes, and a bundle that has been
 # installed has no further use for its own copy.
-INSTALL_DIR="$DATA_HOME/StemLab"
+#
+# STEMLAB_INSTALL_DIR is read here for the same reason the setup script reads
+# it: that script moves the extracted folder to whatever the variable names
+# and then runs this one from inside it. With the location hardcoded, $HERE
+# and $INSTALL_DIR disagree on every custom install - so this script moves the
+# Engine out of the install the user asked for and over the top of the default
+# one, deleting whatever was there. Under the sudo path it does not even get
+# that far: the move runs as the invoking user and fails outright.
+INSTALL_DIR="${STEMLAB_INSTALL_DIR:-$DATA_HOME/StemLab}"
 
 # Two ways this script is reached, and they need different things.
 #
@@ -225,21 +233,14 @@ ffmpeg from your distribution is used for MP3/OGG/AIFF input:
   sudo apt install ffmpeg    (or your distribution's equivalent)
 EOF
 
-# ---------------------------------------------------------------- 5. verify
+# There is no verification step of our own here any more. install_backend.sh
+# ends by importing stemlab, stemlab.recursive, torch, torchaudio and soxr in
+# this very Engine and comparing the torch and torchaudio versions, and
+# nothing between that call and this line touches the Engine - so a check here
+# could only re-prove a subset of what has already been proved, an interpreter
+# startup later.
 
-echo "Verifying the bundled Engine..."
-
-PYTHONNOUSERSITE=1 "$DIST_DIR/Engine/bin/python3" -s - <<'PYCHECK'
-import stemlab
-import stemlab.recursive
-import torch
-
-print(f"  stemlab {stemlab.__name__}: ok")
-print(f"  recursive splitting available: {stemlab.recursive.Separator is not None}")
-print(f"  torch {torch.__version__}")
-PYCHECK
-
-# ---------------------------------------------------------------- 6. tarball
+# --------------------------------------------------------------- 5. tarball
 
 DIST_NAME="StemLab-$VERSION-Linux-$RESOLVED_FLAVOR"
 FINAL_DIR="$REPO_ROOT/dist/$DIST_NAME"

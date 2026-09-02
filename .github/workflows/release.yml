@@ -130,8 +130,13 @@ jobs:
           path: .portable-cache
           key: juce-9.0.0-${{ runner.os }}
 
+      # --no-tests: this job exists to produce the shipping binaries. Building
+      # the CTest targets alongside them costs a second link of the whole
+      # plugin under LTO - StemLabHostCaptureTests links it - for a suite
+      # nothing in this workflow ever runs. ci.yml builds and runs them on
+      # every push, in a Debug build where they are cheap.
       - name: Build the plugin
-        run: ./scripts/linux/build_plugin.sh
+        run: ./scripts/linux/build_plugin.sh --no-tests
 
       # tar first: upload-artifact stores plain zip entries, which lose the
       # execute bits the binaries need and that a .vst3 bundle relies on
@@ -156,8 +161,11 @@ jobs:
     timeout-minutes: 120
 
     strategy:
-      # One flavor failing must not cancel the other three: a rocm wheel
-      # server having a bad day should still leave a cpu bundle to ship.
+      # One flavor failing must not cancel the other three. It does not make a
+      # partial release - the publish job needs every leg and is skipped when
+      # any of them fails - but the three that worked are kept as workflow
+      # artifacts, so a rocm wheel server having a bad day costs a re-run of
+      # that one leg rather than of all four.
       fail-fast: false
       matrix:
         flavor: [cpu, cuda, rocm, xpu]
@@ -178,17 +186,19 @@ jobs:
                       "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}"
           df -h /
 
-      # pigz: build.sh compresses the bundle with every core when it is
-      # present, and these payloads reach 15GB.
-      - name: Install build dependencies
+      # pigz alone. This leg passes --skip-plugin-build, so it never invokes a
+      # compiler and never reaches for a JUCE header: the toolchain and the
+      # X11, ALSA and PulseAudio development packages that used to be listed
+      # here belong to the linux-plugin job, which is where the compiling
+      # happens. Should pip need to build an sdist for the Engine, the runner
+      # image already carries a C toolchain.
+      #
+      # pigz is not on the image: build.sh compresses the bundle with every
+      # core when it is present, and these payloads reach 15GB.
+      - name: Install pigz for the bundle compression
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake pkg-config pigz \
-            libasound2-dev libjack-jackd2-dev \
-            libx11-dev libxext-dev libxi-dev libxrandr-dev libxinerama-dev \
-            libxcursor-dev libxcomposite-dev libxrender-dev \
-            libfreetype-dev libfontconfig1-dev libgl1-mesa-dev libpulse-dev
+          sudo apt-get install -y --no-install-recommends pigz
 
       - uses: actions/download-artifact@v4
         with:
@@ -333,14 +343,60 @@ jobs:
           # Already gzipped. Re-compressing costs minutes and saves nothing.
           compression-level: 0
 
+  # The Windows twin of linux-plugin above, and for the same reason: the VST3
+  # and Standalone binaries do not vary with the torch flavor, so compiling
+  # them once here saves three legs each spending an identical Release build,
+  # an identical ctest run and an identical JUCE download.
+  windows-plugin:
+    name: Windows plugin
+    runs-on: windows-latest
+    needs: metadata
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # scripts/win/build_plugin.ps1 downloads JUCE into here on a cold run.
+      - name: Cache JUCE
+        uses: actions/cache@v4
+        with:
+          path: .portable-cache
+          key: juce-9.0.0-${{ runner.os }}
+
+      # This is also where the C++ tests run: build_plugin.ps1 ends with
+      # ctest, so the suite runs once for the release rather than once per
+      # flavor. It is the only place in a release that runs them at all, so a
+      # failure here has to stop the release - which it does, because every
+      # Windows leg needs this job.
+      - name: Build the plugin and run the C++ tests
+        shell: pwsh
+        run: .\scripts\win\build_plugin.ps1
+
+      # One tar rather than the tree itself, as on Linux: it keeps this
+      # inter-job plumbing to a single file the publish job can drop by name,
+      # and a .vst3 bundle survives the artifact's zip transport intact.
+      - name: Pack the plugin artefacts
+        shell: pwsh
+        run: |
+          tar -C src/plugin/build/StemLabPlugin_artefacts -cf windows-plugin-artefacts.tar Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-plugin-artefacts
+          path: windows-plugin-artefacts.tar
+          if-no-files-found: error
+
   windows:
     name: Windows (${{ matrix.flavor }})
     runs-on: windows-latest
-    needs: metadata
+    needs: [metadata, windows-plugin]
     timeout-minutes: 180
 
     strategy:
-      # As on Linux: one flavor failing should still leave the others to ship.
+      # As on Linux: one flavor failing must not cancel the others, so a
+      # re-run only has to redo the leg that failed. Publishing still waits
+      # for all three.
       fail-fast: false
       matrix:
         # No rocm. PyTorch publishes no Windows wheel for it - the rocm index
@@ -462,14 +518,31 @@ jobs:
           "@
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      # -SkipTests because the step above already ran them against this exact
-      # tree. The script builds the plugin, assembles the portable payload
-      # (Engine, ffmpeg, Ableton bridge) and compiles the installer. The
-      # installer names itself for the torch build it finds in the payload,
-      # so the asset name comes from the bundle rather than from this label.
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-plugin-artefacts
+
+      # Recreates exactly what a local build_plugin.ps1 run leaves behind, so
+      # the -SkipPluginBuild path below finds the binaries where it looks for
+      # them and its own Assert-File checks still mean something.
+      - name: Unpack the prebuilt plugin
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path src\plugin\build\StemLabPlugin_artefacts -Force | Out-Null
+          tar -C src/plugin/build/StemLabPlugin_artefacts -xf windows-plugin-artefacts.tar
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item windows-plugin-artefacts.tar
+
+      # -SkipTests because the Python step above already ran them against this
+      # exact tree; -SkipPluginBuild because the binaries and the C++ tests
+      # came from the windows-plugin job. The script assembles the portable
+      # payload (Engine, ffmpeg, Ableton bridge) and compiles the installer.
+      # The installer names itself for the torch build it finds in the
+      # payload, so the asset name comes from the bundle rather than from
+      # this label.
       - name: Build the portable payload and the installer
         shell: pwsh
-        run: .\scripts\win\build_installer_windows.ps1 -SkipTests
+        run: .\scripts\win\build_installer_windows.ps1 -SkipTests -SkipPluginBuild
 
       # The one-step setup script ships beside the installers, tied to this
       # release so it can download the other assets itself: on a real
@@ -566,11 +639,11 @@ jobs:
           merge-multiple: true
 
       # The unfiltered download above also brings the plugin binaries the
-      # linux-plugin job handed to the flavor legs. That tar is plumbing
-      # between jobs, not an asset - the released plugin-only archive is
-      # packaged (with README and LICENSE) by the cpu leg.
-      - name: Drop the inter-job plugin tar
-        run: rm assets/plugin-artefacts.tar
+      # linux-plugin and windows-plugin jobs handed to the flavor legs. Those
+      # tars are plumbing between jobs, not assets - the released plugin-only
+      # archives are packaged (with README and LICENSE) by the two cpu legs.
+      - name: Drop the inter-job plugin tars
+        run: rm assets/plugin-artefacts.tar assets/windows-plugin-artefacts.tar
 
       - name: Checksum every asset
         working-directory: assets
