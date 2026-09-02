@@ -422,8 +422,12 @@ public:
      */
     bool isBackgroundWorkRunning() const noexcept
     {
+        // isModelJobRunning too: a download or a compile narrates on the same
+        // line and can run for minutes, and without it the footer handed the
+        // line back to the finished job's summary and spun the idle/done
+        // indicator over the top of a model still being fetched.
         return isEngineRunning() || isSourceAnalysisRunning() || isMidiConversionRunning() ||
-               isCapturing() || isAwaitingAbletonSourceClip() ||
+               isCapturing() || isAwaitingAbletonSourceClip() || isModelJobRunning() ||
                abletonBridgeWaitStartMs.load() > 0.0;
     }
 
@@ -505,8 +509,6 @@ public:
 
     /** Compact key/BPM text for the currently loaded original source. */
     juce::String getSourceAnalysisText() const;
-    juce::String getSourceAnalysisDetails() const;
-    juce::String getSourceKey() const;
     double getSourceBpm() const noexcept { return sourceBpm.load(); }
     double getDetectedSourceBpm() const noexcept { return sourceDetectedBpm.load(); }
     /** False when the beats do not sit on one constant grid: a played or
@@ -524,7 +526,8 @@ public:
     int getSourceAnalysisMode() const noexcept { return sourceAnalysisMode.load(); }
     void setTempoAnalysisMode(int mode);
     int getTempoAnalysisMode() const noexcept { return tempoAnalysisMode.load(); }
-    /** Each stretch of the source one constant tempo explains, in order. */
+    /** Each stretch of the source one constant tempo explains, in order.
+        Copied under stateLock: the analysis worker replaces the vector. */
     std::vector<StemLabTempoSegment> getSourceTempoSegments() const;
 
     /** Whether Set BPM has everything it needs: an analysis to read a tempo
@@ -675,9 +678,6 @@ public:
         re-FFT every stem; the editor borrows it by reference. */
     StemLabWaveformCache& getWaveformCache() noexcept { return waveformProfiles; }
 
-    int getWaveformLaneHeight(const juce::String& id) const;
-    void setWaveformLaneHeight(const juce::String& id, int height);
-
     /** One highlighted time range per stem. Dragging a waveform sets it. */
     void setLoopQuantizeMode(int mode) noexcept;
     int getLoopQuantizeMode() const noexcept { return loopQuantizeMode.load(); }
@@ -760,10 +760,6 @@ public:
      * after announcing some of its stems.
      */
     juce::File getReadyStemFile(int index) const;
-
-    /** Changes whenever an announcement lands or the record is reset, so a
-        reader can tell one snapshot of the lanes from the next. */
-    int getReadyStemRevision() const;
 
     /** Override or query the executable used for the main Python worker. */
     juce::String getEngineCommand() const;
@@ -909,7 +905,24 @@ private:
     /** False when the manifest was unusable - the caller must not then
         announce the split as complete over the reason this published. */
     bool finishRecursiveJob(const juce::File& manifestFile);
+
+    /** Drop every node under one parent, for a launcher that is about to
+        delete the files behind them. */
+    void forgetRecursiveChildren(const juce::String& parentId);
+
     void clearRecursiveResults();
+
+    /** The engine clock every launcher starts from: the bar, the elapsed
+        and ETA state behind it, and any cancel a previous job left set. */
+    void resetJobClock(double initialProgress);
+
+    /** Take the analysis slot for a new job, without the message thread
+        waiting out the outgoing run's cancel grace. */
+    void retireAnalysisThread();
+
+    /** Whether an analysis may start now: none running, and no separation
+        whose progress, ETA and cancel state one would reset. */
+    bool canStartSourceAnalysis() const;
 
     /** Launch the source-analysis worker. Returns false when no command
         could be built or the thread refused to start. */
@@ -917,10 +930,10 @@ private:
 
     void finishSourceAnalysis(const juce::File& source, const juce::File& result, int exitCode);
 
-    /** Shared by download, compile and removal: they differ only in argv. */
     /** Publish the compile preference where child processes will read it. */
     void exportTorchCompilePreference() const;
 
+    /** Shared by download, compile and removal: they differ only in argv. */
     bool launchModelJob(const juce::StringArray& arguments, const juce::String& label);
     void finishModelInventory(const juce::File& output, int exitCode);
     void finishModelJob(const juce::String& label, int exitCode);
@@ -935,7 +948,11 @@ private:
                               const juce::String& resultId);
     bool loadMidiInfo(const juce::String& id, const juce::File& midiFile);
     bool renderMidiAudition(juce::AudioBuffer<float>& buffer, int startSample, int numSamples);
-    void reserveMidiAuditionEvents();
+
+    /** Give the audition synthesiser the playback rate and make sure its
+        event buffer is big enough. Called from both prepareToPlay overloads,
+        because either wrapper can be the one that renders an audition. */
+    void prepareMidiAudition(double sampleRate);
 
     /*  The half of stopSystemAudioRecording() that may only run once the
         loopback thread has actually left run(): its last act is to destroy
@@ -949,8 +966,12 @@ private:
     /** True while a stopped loopback thread is still flushing to disk. */
     bool isSystemCaptureStopPending() const noexcept;
 
-    /** Which lane a highlighted range applies to, in Lanes terms. */
-    juce::String getCurrentPreviewSelectionId() const;
+    /** Close a threaded-writer capture down: unpublish the writer, wait out
+        any in-flight write, destroy it, and disarm the recording mode.
+        Shared by Record In and Capture Host, which differ only in where
+        their samples came from. */
+    void finishThreadedCapture();
+
     void rebuildLoopRegions();
     void applyPreviewLoopTick();
 
@@ -1032,7 +1053,6 @@ private:
     std::atomic<double> inputDurationSeconds{0.0};
 
     double currentSampleRate = 44100.0;
-    int currentInputChannels = 2;
 
     // Rate of the WAV a system-capture thread is writing. Atomic because the
     // capture thread stores it while the editor timer reads it through
@@ -1085,6 +1105,16 @@ private:
     std::atomic<int> sourceAnalysisMode{analysisFast};
     std::atomic<int> tempoAnalysisMode{tempoStatic};
     std::vector<StemLabTempoSegment> sourceTempoSegments;
+
+    /** getSourceTempoSegments' count, without copying the segments. */
+    size_t getSourceTempoSegmentCount() const;
+
+    /*  Which run owns the analysis slot. Delayed callbacks armed against a
+        running analysis - the Beat This! off-switch's kill timer - capture
+        this and do nothing if the slot has moved on, so switching the
+        analysis off and straight back on cannot kill the new run.
+    */
+    std::atomic<int> analysisThreadGeneration{0};
     std::atomic<int> tempoInterpretation{tempoDetected};
     std::atomic<int> waveformGridMode{gridSource};
 
@@ -1095,9 +1125,6 @@ private:
     std::atomic<int> manualGridNumerator{4};
     std::atomic<int> manualGridDenominator{4};
     std::atomic<double> manualGridBarOne{0.0};
-
-    mutable juce::CriticalSection laneHeightLock;
-    std::unordered_map<std::string, int> waveformLaneHeights;
 
     mutable juce::CriticalSection midiInfoLock;
     std::unordered_map<std::string, StemLabMidiInfo> midiInfos;
@@ -1163,8 +1190,6 @@ private:
     };
 
     CaptureStopTimer captureStopTimer{*this};
-
-    std::atomic<bool> abletonBridgeActive{false};
 
     juce::String status{"Ready"};
     StatusSeverity statusSeverity = statusInfo;
@@ -1256,10 +1281,6 @@ private:
     double engineEtaSeconds = -1.0;
     double engineEtaUpdateMs = 0.0;
 
-    // Stage most recently read from stemlab_progress.txt; the poll only
-    // publishes a stage the file actually changed (see the poll).
-    juce::String lastPolledFileStage;
-
     void storeEngineEta(double seconds) noexcept;
     void resetEngineEta() noexcept;
 
@@ -1298,8 +1319,8 @@ private:
 
     /**
      * Per-stem STEMLAB_STEM_READY announcements from the separation that is
-     * still running: the file the engine finished writing, the job those
-     * files belong to, and a revision that changes with every slot.
+     * still running: the file the engine finished writing, and the job those
+     * files belong to.
      *
      * Guarded by stemFileCacheLock above rather than by a lock of its own.
      * That lock already answers "which file is this stem right now", has
@@ -1316,7 +1337,6 @@ private:
      */
     std::array<juce::File, stemCount> readyStemFile;
     juce::File readyStemJob;
-    int readyStemRevision = 0;
 
     static juce::File matchStemFile(const juce::Array<juce::File>& candidates,
                                     const juce::String& stem);

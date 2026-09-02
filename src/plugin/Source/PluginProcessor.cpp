@@ -494,10 +494,6 @@ struct Utf8LineBuffer
 };
 
 /**
- * Matches python, pythonw, python3 and versioned names such as python3.11, on
- * either platform, without also matching neighbours like python-config.
- */
-/**
  * The console script a pip install lays down for one worker module.
  *
  * Only the interpreter form can be handed a module name. A pip install
@@ -525,6 +521,10 @@ juce::String consoleScriptFor(const juce::String& moduleName)
     return {};
 }
 
+/**
+ * Matches python, pythonw, python3 and versioned names such as python3.11, on
+ * either platform, without also matching neighbours like python-config.
+ */
 bool looksLikePythonInterpreter(const juce::File& file)
 {
     const auto name = file.getFileNameWithoutExtension().toLowerCase();
@@ -558,6 +558,39 @@ bool isSelfContainedEngineRuntime(const juce::File& file)
 #endif
 }
 
+/**
+ * The interpreter form of one worker command: the engine, then -m and the
+ * module name.
+ *
+ * Empty when the configured engine is not a Python interpreter at all, which
+ * is the caller's cue to fall back to the console-script form a pip install
+ * lays down. Both launchers used to spell this out for themselves, and the
+ * -s rule below is not something two copies may ever disagree about.
+ */
+juce::StringArray interpreterModuleCommand(const juce::String& commandName,
+                                           const juce::String& moduleName)
+{
+    const juce::File commandFile(commandName);
+
+    if (!looksLikePythonInterpreter(commandFile))
+        return {};
+
+    juce::StringArray command;
+    command.add(commandName);
+
+    // For the self-contained Engine, -s keeps the user's ~/.local
+    // site-packages from shadowing the Engine's own dependencies. A system
+    // or venv interpreter must NOT get it: a user-site
+    // "pip install --user -e ." setup depends on user site.
+    if (isSelfContainedEngineRuntime(commandFile))
+        command.add("-s");
+
+    command.add("-m");
+    command.add(moduleName);
+
+    return command;
+}
+
 juce::String utf8ToHex(const juce::String& text)
 {
     const auto utf8 = text.toUTF8();
@@ -587,17 +620,6 @@ struct CoTaskMemWaveFormatDeleter
     {
         if (value != nullptr)
             CoTaskMemFree(value);
-    }
-};
-
-struct EventHandle
-{
-    HANDLE value = nullptr;
-
-    ~EventHandle()
-    {
-        if (value != nullptr)
-            CloseHandle(value);
     }
 };
 
@@ -690,6 +712,17 @@ void stopJobProcess(juce::CriticalSection& processLock,
 
     if (process->isRunning())
         process->kill();
+}
+
+/*  Whether the child of a reader thread is still alive, asked under the same
+    lock that guards its lifetime. All three reader threads want exactly this
+    and each used to carry its own copy.
+*/
+bool childIsRunning(juce::CriticalSection& processLock,
+                    const std::unique_ptr<juce::ChildProcess>& process)
+{
+    const juce::ScopedLock lock(processLock);
+    return process != nullptr && process->isRunning();
 }
 } // namespace
 
@@ -919,11 +952,7 @@ public:
     }
 
 private:
-    bool isChildRunning()
-    {
-        const juce::ScopedLock lock(processLock);
-        return process != nullptr && process->isRunning();
-    }
+    bool isChildRunning() { return childIsRunning(processLock, process); }
 
     StemLabAudioProcessor& owner;
     juce::StringArray command;
@@ -1089,11 +1118,7 @@ public:
     }
 
 private:
-    bool isChildRunning()
-    {
-        const juce::ScopedLock lock(processLock);
-        return process != nullptr && process->isRunning();
-    }
+    bool isChildRunning() { return childIsRunning(processLock, process); }
 
     StemLabAudioProcessor& owner;
     juce::StringArray command;
@@ -1172,27 +1197,13 @@ public:
     /** Sentinel-then-kill; safe from any thread, including while run() reads. */
     void stopChildProcess(int graceMilliseconds)
     {
-        const juce::ScopedLock lock(processLock);
-
-        if (process == nullptr || !process->isRunning())
-            return;
-
-        if (cancelFile.getFullPathName().isNotEmpty())
-            cancelFile.replaceWithText("cancel\n");
-
-        for (int waited = 0; waited < graceMilliseconds && process->isRunning(); waited += 50)
-            juce::Thread::sleep(50);
-
-        if (process->isRunning())
-            process->kill();
+        stopJobProcess(processLock, process, cancelFile, graceMilliseconds);
     }
 
     bool requestCancel()
     {
         if (!isThreadRunning() || cancelRequested.exchange(true))
             return false;
-
-        cancelStartedMs.store(nowMs());
 
         // Writing the sentinel lets the job stop itself cleanly; the kill
         // that follows the grace period is what frees this thread's blocked
@@ -1202,7 +1213,6 @@ public:
 
         return true;
     }
-
 
     void run() override
     {
@@ -1333,11 +1343,7 @@ public:
     }
 
 private:
-    bool isChildRunning()
-    {
-        const juce::ScopedLock lock(processLock);
-        return process != nullptr && process->isRunning();
-    }
+    bool isChildRunning() { return childIsRunning(processLock, process); }
 
     void finish(int exitCode)
     {
@@ -1367,7 +1373,6 @@ private:
     juce::String context;
     juce::File cancelFile;
     std::atomic<bool> cancelRequested{false};
-    std::atomic<double> cancelStartedMs{0.0};
 
     juce::CriticalSection processLock;
     std::unique_ptr<juce::ChildProcess> process;
@@ -1556,10 +1561,10 @@ public:
             formatWriter.release(), owner.diskWriterThread,
             juce::jmax(65536, static_cast<int>(sampleRate * 2.0)));
 
-        // currentSampleRate/currentInputChannels belong to the host's
-        // prepareToPlay and are plain members; writing them from this
-        // capture thread raced that. systemCaptureSampleRate is the atomic
-        // the duration readout actually consults.
+        // currentSampleRate belongs to the host's prepareToPlay and is a
+        // plain member; writing it from this capture thread raced that.
+        // systemCaptureSampleRate is the atomic the duration readout
+        // actually consults.
         owner.systemCaptureSampleRate.store(sampleRate);
         owner.capturedSamples.store(0);
         owner.droppedCaptureSamples.store(0);
@@ -1738,7 +1743,11 @@ private:
 
         owner.appendEngineLog("System audio recording: " + message + "\n");
 
-        owner.setStatus("System audio recording failed - " + message);
+        // Published as a failure, not as news: the footer colours the line by
+        // this severity, and a recording that never started reading the
+        // output is exactly what the red state is for.
+        owner.setStatus("System audio recording failed - " + message,
+                        StemLabAudioProcessor::statusFailure);
     }
 
     StemLabAudioProcessor& owner;
@@ -1746,6 +1755,136 @@ private:
     std::atomic<bool> successful{false};
 };
 #endif
+
+namespace
+{
+/*
+    What Audition MIDI actually plays.
+
+    juce::Synthesiser owns no general-purpose voice - SamplerVoice needs a
+    recorded sample, which nothing here has - so a synthesiser handed neither
+    a sound nor a voice renders silence, however many notes it is given. That
+    is what the audition used to do: mute the monitor for the length of the
+    take and produce nothing at all.
+
+    The pair below is deliberately plain. An audition answers one question -
+    did the transcription put the right notes in the right places - so a sine
+    under a short envelope is enough, and imitating the instrument the stem
+    came from is not the job.
+*/
+struct MidiAuditionSound final : juce::SynthesiserSound
+{
+    bool appliesToNote(int) override { return true; }
+    bool appliesToChannel(int) override { return true; }
+};
+
+class MidiAuditionVoice final : public juce::SynthesiserVoice
+{
+public:
+    bool canPlaySound(juce::SynthesiserSound* sound) override
+    {
+        return dynamic_cast<MidiAuditionSound*>(sound) != nullptr;
+    }
+
+    void setCurrentPlaybackSampleRate(double newRate) override
+    {
+        juce::SynthesiserVoice::setCurrentPlaybackSampleRate(newRate);
+
+        if (newRate <= 0.0)
+            return;
+
+        // Configured here rather than per note-on: ADSR::setParameters
+        // asserts unless it has already been told the rate.
+        envelope.setSampleRate(newRate);
+        envelope.setParameters({0.005f, 0.12f, 0.6f, 0.08f});
+    }
+
+    void startNote(int midiNoteNumber, float velocity, juce::SynthesiserSound*, int) override
+    {
+        const auto rate = getSampleRate();
+
+        // No rate yet means no prepareToPlay has reached the synthesiser, so
+        // there is no phase increment to compute. Free the voice again rather
+        // than hold it for a note that can only be silence.
+        if (rate <= 0.0)
+        {
+            clearCurrentNote();
+            return;
+        }
+
+        phase = 0.0;
+        phaseIncrement = juce::MidiMessage::getMidiNoteInHertz(midiNoteNumber) *
+                         juce::MathConstants<double>::twoPi / rate;
+
+        // Well below unity: several notes of a chord sum here, and an
+        // audition that clips is harder to judge than a quiet one.
+        level = 0.2f * juce::jlimit(0.05f, 1.0f, velocity);
+
+        envelope.reset();
+        envelope.noteOn();
+    }
+
+    void stopNote(float, bool allowTailOff) override
+    {
+        if (allowTailOff && envelope.isActive())
+        {
+            envelope.noteOff();
+            return;
+        }
+
+        envelope.reset();
+        clearCurrentNote();
+    }
+
+    void pitchWheelMoved(int) override {}
+    void controllerMoved(int, int) override {}
+
+    void renderNextBlock(juce::AudioBuffer<float>& outputBuffer, int startSample,
+                         int numSamples) override
+    {
+        if (!envelope.isActive())
+            return;
+
+        const auto channels = outputBuffer.getNumChannels();
+
+        while (--numSamples >= 0)
+        {
+            const auto value =
+                static_cast<float>(std::sin(phase)) * level * envelope.getNextSample();
+
+            for (int channel = 0; channel < channels; ++channel)
+                outputBuffer.addSample(channel, startSample, value);
+
+            phase += phaseIncrement;
+
+            if (phase >= juce::MathConstants<double>::twoPi)
+                phase -= juce::MathConstants<double>::twoPi;
+
+            ++startSample;
+
+            // The release has run out: hand the voice back rather than keep
+            // it held for silence, or a busy passage runs out of voices.
+            if (!envelope.isActive())
+            {
+                clearCurrentNote();
+                break;
+            }
+        }
+    }
+
+    using juce::SynthesiserVoice::renderNextBlock;
+
+private:
+    juce::ADSR envelope;
+    double phase = 0.0;
+    double phaseIncrement = 0.0;
+    float level = 0.0f;
+};
+
+/*  Enough for a dense transcription's chords and their overlapping releases;
+    the synthesiser steals the oldest voice beyond that. */
+constexpr int midiAuditionVoiceCount = 16;
+} // namespace
 
 StemLabAudioProcessor::StemLabAudioProcessor()
     : AudioProcessor(BusesProperties()
@@ -1764,6 +1903,13 @@ StemLabAudioProcessor::StemLabAudioProcessor()
     // it cannot see this manager until the first file is queued, which no
     // caller can do before this constructor returns.
     waveformFormats.registerBasicFormats();
+
+    // Without these the audition renders silence: see MidiAuditionSound. The
+    // playback rate reaches them from both prepareToPlay overloads.
+    midiAuditionSynth.addSound(new MidiAuditionSound());
+
+    for (int voice = 0; voice < midiAuditionVoiceCount; ++voice)
+        midiAuditionSynth.addVoice(new MidiAuditionVoice());
 
     diskWriterThread.startThread();
     previewReadThread.startThread();
@@ -1867,6 +2013,16 @@ StemLabAudioProcessor::~StemLabAudioProcessor()
     analysisThread.reset();
     midiThread.reset();
 
+    /*  Here rather than left to the implicit member teardown, and for the
+        same reason the four above are: these two are declared after the
+        lock, the vectors and the cancel file that their finish() writes
+        into, so members destroyed first would still be written by a
+        download or an inventory probe that is only stopped later. Closing
+        the host mid-download was a use-after-destroy.
+    */
+    modelInventoryThread.reset();
+    modelJobThread.reset();
+
     // Nothing left to hand over, so the poll stops before the thread it
     // watches is joined by the reset below.
     captureStopTimer.stopTimer();
@@ -1885,9 +2041,8 @@ StemLabAudioProcessor::~StemLabAudioProcessor()
 void StemLabAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
     currentSampleRate = sampleRate;
-    currentInputChannels = juce::jmax(1, getTotalNumInputChannels());
 
-    reserveMidiAuditionEvents();
+    prepareMidiAudition(sampleRate);
 
     if (!isStandaloneApp())
     {
@@ -1919,22 +2074,40 @@ void StemLabAudioProcessor::releaseResources()
 
 void StemLabAudioProcessor::prepareToPlay(int samplesPerBlockExpected, double sampleRate)
 {
-    reserveMidiAuditionEvents();
+    prepareMidiAudition(sampleRate);
 
     previewTransport.prepareToPlay(samplesPerBlockExpected, sampleRate);
     stemMixTransport.prepareToPlay(samplesPerBlockExpected, sampleRate);
 }
 
-void StemLabAudioProcessor::reserveMidiAuditionEvents()
+void StemLabAudioProcessor::prepareMidiAudition(double sampleRate)
 {
+    const juce::ScopedLock lock(midiAuditionLock);
+
+    /*  Both prepareToPlay overloads land here, because either wrapper can be
+        the one that ends up rendering an audition. A synthesiser that never
+        hears a playback rate produces nothing whatever it is given, which is
+        half of why Audition MIDI was silent.
+    */
+    if (sampleRate > 0.0)
+        midiAuditionSynth.setCurrentPlaybackSampleRate(sampleRate);
+
     // Room for the note-ons and note-offs of one block many times over; the
     // point is only that renderMidiAudition never has to grow it.
-    const juce::ScopedLock lock(midiAuditionLock);
     midiAuditionEvents.ensureSize(4096);
 }
 
 void StemLabAudioProcessor::getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill)
 {
+    /*  The transport is pulled first and simply not heard, rather than left
+        unpulled for the length of the audition: AudioTransportSource::stop()
+        spin-waits for its render callback to acknowledge, so a transport
+        that stopped being pulled costs the message thread the full ~1 s
+        timeout on the next stop - which is exactly what pressing Stop after
+        an audition used to do.
+    */
+    activeTransport().getNextAudioBlock(bufferToFill);
+
     // Same rule as the VST path: an audition replaces the monitor mix while
     // it plays rather than sounding on top of it.
     if (midiAuditionActive.load())
@@ -1942,10 +2115,7 @@ void StemLabAudioProcessor::getNextAudioBlock(const juce::AudioSourceChannelInfo
         bufferToFill.clearActiveBufferRegion();
         renderMidiAudition(*bufferToFill.buffer, bufferToFill.startSample,
                            bufferToFill.numSamples);
-        return;
     }
-
-    activeTransport().getNextAudioBlock(bufferToFill);
 }
 
 bool StemLabAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
@@ -2035,17 +2205,15 @@ void StemLabAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
     // blocked for the full ~1s timeout on every pause or A/B switch. A
     // stopped transport just clears the scratch and returns.
     // A MIDI audition takes over the output entirely while it plays: it is
-    // an inspection of one stem's notes, not another layer over the mix.
-    if (!isStandaloneApp() && midiAuditionActive.load())
-    {
-        buffer.clear();
-        renderMidiAudition(buffer, 0, buffer.getNumSamples());
-        return;
-    }
+    // an inspection of one stem's notes, not another layer over the mix. It
+    // takes over the output, though, not the pull below - returning early
+    // here left a playing transport unpulled, and the next stop() then spun
+    // the message thread for the full ~1 s the comment above describes.
+    const bool auditioning = !isStandaloneApp() && midiAuditionActive.load();
 
     auto& monitorSource = activeTransport();
 
-    const bool monitorAudible = monitorSource.isPlaying();
+    const bool monitorAudible = monitorSource.isPlaying() && !auditioning;
 
     if (!isStandaloneApp() && previewScratch.getNumChannels() > 0)
     {
@@ -2075,6 +2243,15 @@ void StemLabAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
                 buffer.addFrom(channel, 0, previewScratch, channel, 0, requiredSamples);
             }
         }
+    }
+
+    // After the pull above, so the monitor keeps its clock while the notes
+    // are what is heard.
+    if (auditioning)
+    {
+        buffer.clear();
+        renderMidiAudition(buffer, 0, buffer.getNumSamples());
+        return;
     }
 
     // Standalone recording is intentionally silent monitoring. Preview audio
@@ -2199,8 +2376,6 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
             setActionStatus("Selected audio file contains no audio");
             return false;
         }
-
-        currentInputChannels = static_cast<int>(infoReader->numChannels);
 
         if (infoReader->sampleRate > 0.0)
         {
@@ -2375,6 +2550,16 @@ void StemLabAudioProcessor::toggleStandalonePlayback()
             {
                 previewTransport.stop();
                 setActionStatus("Could not reload the source - stopped");
+            }
+            else
+            {
+                /*  Nothing was playing, so there is nothing to stop - and
+                    with no word here the click did nothing at all, on every
+                    press. The usual cause is a source no bundled decoder
+                    reads (.m4a, .opus and the rest): the engine separates
+                    those happily, this side simply cannot play them.
+                */
+                setActionStatus("This source cannot be previewed - separate it to hear the stems");
             }
 
             return;
@@ -3078,7 +3263,11 @@ bool StemLabAudioProcessor::startThreadedInputCapture(const juce::String& prefix
     }
 
     currentSampleRate = sampleRate;
-    currentInputChannels = juce::jlimit(1, 2, channels);
+
+    // Local rather than a member: nothing outside this writer ever asked how
+    // many channels the capture has, and the member that used to carry it
+    // was written from three places and read from none of them.
+    const auto captureChannels = juce::jlimit(1, 2, channels);
 
     const auto recordingFile = createRecordingFile(prefix);
 
@@ -3094,7 +3283,7 @@ bool StemLabAudioProcessor::startThreadedInputCapture(const juce::String& prefix
     std::unique_ptr<juce::OutputStream> stream = std::move(fileStream);
     const auto options = juce::AudioFormatWriter::Options{}
                              .withSampleRate(currentSampleRate)
-                             .withNumChannels(currentInputChannels)
+                             .withNumChannels(captureChannels)
                              .withBitsPerSample(24);
     auto formatWriter = wav.createWriterFor(stream, options);
 
@@ -3138,14 +3327,13 @@ bool StemLabAudioProcessor::startThreadedInputCapture(const juce::String& prefix
     return true;
 }
 
-void StemLabAudioProcessor::stopStandaloneRecording()
+/*
+ * The end of a threaded-writer capture, shared by Record In and Capture Host:
+ * only the source of the samples differs, and the order these three steps
+ * come in is not something two copies may drift apart on.
+ */
+void StemLabAudioProcessor::finishThreadedCapture()
 {
-    if (!isStandaloneApp() || standaloneRecordingMode.load() != recordingInput ||
-        !capturing.exchange(false))
-    {
-        return;
-    }
-
     {
         // The audio thread loads activeWriter and then writes through it.
         // Publishing null does not close that window - it may already hold
@@ -3157,6 +3345,17 @@ void StemLabAudioProcessor::stopStandaloneRecording()
 
     threadedWriter.reset();
     standaloneRecordingMode.store(recordingNone);
+}
+
+void StemLabAudioProcessor::stopStandaloneRecording()
+{
+    if (!isStandaloneApp() || standaloneRecordingMode.load() != recordingInput ||
+        !capturing.exchange(false))
+    {
+        return;
+    }
+
+    finishThreadedCapture();
 
     const auto recordingFile = getCaptureFile();
     const auto dropped = droppedCaptureSamples.load();
@@ -3215,15 +3414,7 @@ void StemLabAudioProcessor::stopHostAudioCapture()
     if (standaloneRecordingMode.load() != recordingHost || !capturing.exchange(false))
         return;
 
-    {
-        // Same window as stopStandaloneRecording: the audio thread may hold
-        // the old writer pointer, so wait out any in-flight write first.
-        const juce::ScopedLock lock(writerLock);
-        activeWriter.store(nullptr, std::memory_order_release);
-    }
-
-    threadedWriter.reset();
-    standaloneRecordingMode.store(recordingNone);
+    finishThreadedCapture();
 
     const auto recordingFile = getCaptureFile();
 
@@ -3253,6 +3444,17 @@ void StemLabAudioProcessor::beginSystemCaptureSource(const juce::File& recording
         lastJobDirectory = juce::File();
         engineLogChunks.clear();
         engineLogBytes = 0;
+
+        /*  The recording is the source now, and it has no place in the
+            REAPER arrangement - so the geometry of whatever item was pulled
+            before must not survive it. Insert Stems echoes that geometry
+            back, and a take that failed after this point used to leave the
+            previous item's start, length and play rate standing for stems
+            made from a system recording. setInputAudioFile clears it for
+            every other way a source arrives; this is the one path that
+            replaces the source without going through it.
+        */
+        reaperSourceInfo = {};
     }
 
     inputDurationSeconds.store(0.0);
@@ -3538,13 +3740,14 @@ bool StemLabAudioProcessor::sendAbletonControlMessage(const juce::String& messag
 
 bool StemLabAudioProcessor::requestAbletonSourceClip()
 {
+    // getHostIntegration() already answers hostIntegrationNone in the
+    // Standalone, so no separate isStandaloneApp() guard is needed here or
+    // in any of the other Ableton paths below.
     if (getHostIntegration() != hostIntegrationAbletonLive)
         return false;
 
-    if (isStandaloneApp() || capturing.load() || isEngineRunning())
-    {
+    if (capturing.load() || isEngineRunning())
         return false;
-    }
 
     stopStandalonePlayback();
 
@@ -3554,10 +3757,8 @@ bool StemLabAudioProcessor::requestAbletonSourceClip()
 
     replyFolder.createDirectory();
 
+    // Named after a fresh UUID, so there is nothing there to delete first.
     const auto replyFile = replyFolder.getChildFile("clip_" + requestId + ".json");
-
-    if (replyFile.existsAsFile())
-        replyFile.deleteFile();
 
     {
         const juce::ScopedLock lock(stateLock);
@@ -3589,10 +3790,8 @@ void StemLabAudioProcessor::refreshAbletonSourceClipFromDisk()
     if (getHostIntegration() != hostIntegrationAbletonLive)
         return;
 
-    if (isStandaloneApp() || !abletonClipRequestPending.load())
-    {
+    if (!abletonClipRequestPending.load())
         return;
-    }
 
     juce::File reply;
     juce::String requestId;
@@ -3728,29 +3927,15 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
         return false;
     }
 
-    juce::StringArray command;
-    command.add(commandName);
-
     // Portable releases ship a relocatable embedded Python runtime under
     // Engine/ rather than requiring a system Python/venv. When auto-discovery
     // resolves that interpreter, launch StemLab's worker as a module. The old
-    // stemlab-plugin-job development path still works.
-    {
-        const juce::File commandFile(commandName);
+    // stemlab-plugin-job development path still works: it is the engine
+    // command itself, run as it stands.
+    auto command = interpreterModuleCommand(commandName, "stemlab.plugin_job");
 
-        if (looksLikePythonInterpreter(commandFile))
-        {
-            // For the self-contained Engine, -s keeps the user's ~/.local
-            // site-packages from shadowing the Engine's own dependencies. A
-            // system or venv interpreter must NOT get it: a user-site
-            // "pip install --user -e ." setup depends on user site.
-            if (isSelfContainedEngineRuntime(commandFile))
-                command.add("-s");
-
-            command.add("-m");
-            command.add("stemlab.plugin_job");
-        }
-    }
+    if (command.isEmpty())
+        command.add(commandName);
 
     command.add("--input");
     command.add(source.getFullPathName());
@@ -3822,13 +4007,7 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
     // job eventually shows quotes the setting it actually ran with rather
     // than whatever the toggle happens to say when the summary is drawn.
     lastJobRefinement.store(refinementEnabled.load());
-    engineProgress.store(0.01);
-    engineStartMs.store(nowMs());
-    engineProgressUpdateMs.store(engineStartMs.load());
-    lastEngineDurationSeconds.store(0.0);
-    resetEngineEta();
-    engineProgressRate.store(0.0);
-    engineCancelRequested.store(false);
+    resetJobClock(0.01);
 
     // A leftover sentinel must not cancel the new job the moment its
     // watchdog starts; the watchdog honors any sentinel it ever sees.
@@ -3874,22 +4053,13 @@ StemLabAudioProcessor::makePythonModuleCommand(const juce::String& moduleName) c
     if (commandName.isEmpty())
         return {};
 
+    auto command = interpreterModuleCommand(commandName, moduleName);
+
+    if (!command.isEmpty())
+        return command;
+
     const juce::File commandFile(commandName);
     const auto fileName = commandFile.getFileName();
-
-    juce::StringArray command;
-
-    if (looksLikePythonInterpreter(commandFile))
-    {
-        command.add(commandName);
-
-        if (isSelfContainedEngineRuntime(commandFile))
-            command.add("-s");
-
-        command.add("-m");
-        command.add(moduleName);
-        return command;
-    }
 
     const auto script = consoleScriptFor(moduleName);
 
@@ -3916,6 +4086,43 @@ StemLabAudioProcessor::makePythonModuleCommand(const juce::String& moduleName) c
     }
 
     return {};
+}
+
+/*
+ * Forget every node under one parent, because the files behind them are about
+ * to be deleted.
+ *
+ * Both adaptive launchers empty their output directory before they start, so
+ * from that moment the previous children's audio is gone - but they stayed
+ * listed as lanes until a new manifest replaced them, which only happens when
+ * the job succeeds. A cancelled or failed re-split therefore left the
+ * interface offering lanes, drags and saves for files that no longer existed.
+ */
+void StemLabAudioProcessor::forgetRecursiveChildren(const juce::String& parentId)
+{
+    bool forgotten = false;
+
+    {
+        const juce::ScopedLock lock(recursiveLock);
+
+        const auto prefix = parentId + "/";
+
+        const auto firstRemoved =
+            std::remove_if(recursiveItems.begin(), recursiveItems.end(),
+                           [&prefix](const auto& item) { return item.id.startsWith(prefix); });
+
+        forgotten = firstRemoved != recursiveItems.end();
+
+        recursiveItems.erase(firstRemoved, recursiveItems.end());
+
+        // The monitor mix plays the tree's leaves, and the leaf set has just
+        // changed - the generation is what tells it to rebuild.
+        if (forgotten)
+            ++recursiveTreeGeneration;
+    }
+
+    if (forgotten)
+        sendChangeMessage();
 }
 
 void StemLabAudioProcessor::clearRecursiveResults()
@@ -4173,6 +4380,10 @@ bool StemLabAudioProcessor::launchRecursiveStemSplit(int rootStemIndex)
 
     const auto output = getLastJobDirectory().getChildFile("recursive").getChildFile(rootStem);
 
+    // Before the delete, not after the job: what is about to be removed from
+    // disk must stop being offered as lanes now, whatever this run does next.
+    forgetRecursiveChildren(rootStem);
+
     if (output.isDirectory())
         output.deleteRecursively();
     output.createDirectory();
@@ -4200,13 +4411,7 @@ bool StemLabAudioProcessor::launchRecursiveStemSplit(int rootStemIndex)
     command.add("1");
 
     recursiveThread.reset();
-    engineProgress.store(0.01);
-    engineStartMs.store(nowMs());
-    engineProgressUpdateMs.store(engineStartMs.load());
-    lastEngineDurationSeconds.store(0.0);
-    resetEngineEta();
-    engineProgressRate.store(0.0);
-    engineCancelRequested.store(false);
+    resetJobClock(0.01);
 
     const auto cancelFile = output.getChildFile("stemlab_cancel.txt");
 
@@ -4287,6 +4492,10 @@ bool StemLabAudioProcessor::launchRecursiveAction(const juce::String& itemId,
                             .getChildFile("actions")
                             .getChildFile(safeFolder + "_" + operation);
 
+    // Same rule as the split above: this action's previous children are
+    // about to be deleted, so they leave the tree first.
+    forgetRecursiveChildren(target.id);
+
     if (output.isDirectory())
         output.deleteRecursively();
     output.createDirectory();
@@ -4307,13 +4516,7 @@ bool StemLabAudioProcessor::launchRecursiveAction(const juce::String& itemId,
     command.add(juce::String(target.depth + 1));
 
     recursiveThread.reset();
-    engineProgress.store(0.01);
-    engineStartMs.store(nowMs());
-    engineProgressUpdateMs.store(engineStartMs.load());
-    lastEngineDurationSeconds.store(0.0);
-    resetEngineEta();
-    engineProgressRate.store(0.0);
-    engineCancelRequested.store(false);
+    resetJobClock(0.01);
 
     const auto cancelFile = output.getChildFile("stemlab_cancel.txt");
 
@@ -4477,6 +4680,18 @@ void StemLabAudioProcessor::refreshEngineProgressFromDisk()
     if (!isEngineRunning())
         return;
 
+    /*
+        This file is the fallback channel for engines too old to print
+        STEMLAB_PROGRESS - and it retires on the same flag the raw "NN%"
+        scraper does, for the same reason. Once the protocol is flowing,
+        stdout carries the identical percentage and stage text within
+        milliseconds of the engine printing them, and this poll is two stats
+        and a read per tick, for the whole separation, for a value that has
+        already arrived by a better route.
+    */
+    if (sawEngineProgressProtocol.load())
+        return;
+
     const auto job = getLastJobDirectory();
 
     if (!job.isDirectory())
@@ -4517,8 +4732,6 @@ void StemLabAudioProcessor::refreshEngineProgressFromDisk()
         cancel-flag guard here, and a failure reason is published after
         the process exits, when this poll no longer runs.
     */
-    lastPolledFileStage = stage;
-
     if (stage.isNotEmpty() && !engineCancelRequested.load() && stage != getStatus())
         setStatus(stage);
 }
@@ -4678,6 +4891,27 @@ void StemLabAudioProcessor::resetEngineEta() noexcept
     const juce::ScopedLock lock(stateLock);
     engineEtaSeconds = -1.0;
     engineEtaUpdateMs = 0.0;
+}
+
+/*
+ * The clock every job launcher starts from: the bar, the elapsed and ETA
+ * state behind it, and the cancel flag a previous job may have left standing.
+ * Four launchers spelled this out line for line, and one store missing from
+ * one copy is an ETA counted from the wrong moment.
+ *
+ * The main and adaptive jobs open the bar at a sliver rather than at zero, so
+ * that something moves the moment the job is launched; source analysis starts
+ * at nothing and is driven by the worker's own reports.
+ */
+void StemLabAudioProcessor::resetJobClock(double initialProgress)
+{
+    engineCancelRequested.store(false);
+    engineProgress.store(initialProgress);
+    engineStartMs.store(nowMs());
+    engineProgressUpdateMs.store(engineStartMs.load());
+    lastEngineDurationSeconds.store(0.0);
+    resetEngineEta();
+    engineProgressRate.store(0.0);
 }
 
 void StemLabAudioProcessor::handleEngineOutputLine(const juce::String& line)
@@ -4858,10 +5092,6 @@ void StemLabAudioProcessor::handleStemReadyLine(const juce::String& payload)
         }
 
         readyStemFile[static_cast<size_t>(index)] = announced;
-
-        // Bumped inside the lock: a revision published after releasing it
-        // could name a snapshot that a reader had already moved past.
-        ++readyStemRevision;
     }
 
     // Analysed while the rest of the job runs, so the lane has a picture the
@@ -4880,7 +5110,6 @@ void StemLabAudioProcessor::resetReadyStemFiles()
 
     readyStemFile.fill(juce::File());
     readyStemJob = juce::File();
-    ++readyStemRevision;
 }
 
 juce::File StemLabAudioProcessor::getReadyStemFile(int index) const
@@ -4893,12 +5122,6 @@ juce::File StemLabAudioProcessor::getReadyStemFile(int index) const
     // slot mid-copy races that refcount.
     const juce::ScopedLock lock(stemFileCacheLock);
     return readyStemFile[static_cast<size_t>(index)];
-}
-
-int StemLabAudioProcessor::getReadyStemRevision() const
-{
-    const juce::ScopedLock lock(stemFileCacheLock);
-    return readyStemRevision;
 }
 
 void StemLabAudioProcessor::appendEngineLog(const juce::String& text)
@@ -5030,11 +5253,13 @@ juce::File StemLabAudioProcessor::exportLoopedRegions(const juce::File& source,
 
     juce::WavAudioFormat wav;
     std::unique_ptr<juce::OutputStream> stream = std::move(fileStream);
+    // Clamped, so there is no "unknown depth" left for a fallback to answer:
+    // a reader that reports nothing useful still comes out of jlimit at 16.
     const auto bits = juce::jlimit(16, 32, static_cast<int>(reader->bitsPerSample));
     const auto options = juce::AudioFormatWriter::Options{}
                              .withSampleRate(reader->sampleRate)
                              .withNumChannels(static_cast<int>(reader->numChannels))
-                             .withBitsPerSample(bits > 0 ? bits : 24);
+                             .withBitsPerSample(bits);
     auto writer = wav.createWriterFor(stream, options);
 
     if (writer == nullptr)
@@ -5128,9 +5353,6 @@ juce::String StemLabAudioProcessor::getAbletonBridgeStatus() const
 void StemLabAudioProcessor::refreshAbletonBridgeStatusFromDisk()
 {
     if (getHostIntegration() != hostIntegrationAbletonLive)
-        return;
-
-    if (isStandaloneApp())
         return;
 
     // The invisible Remote Script writes a small heartbeat/status file when
@@ -5315,10 +5537,8 @@ bool StemLabAudioProcessor::sendSelectedStemsToAbleton()
     if (getHostIntegration() != hostIntegrationAbletonLive)
         return false;
 
-    if (isStandaloneApp() || isEngineRunning() || !hasSuccessfulJob())
-    {
+    if (isEngineRunning() || !hasSuccessfulJob())
         return false;
-    }
 
     const auto job = getLastJobDirectory();
 
@@ -5437,10 +5657,8 @@ bool StemLabAudioProcessor::retryAbletonImport()
     if (getHostIntegration() != hostIntegrationAbletonLive)
         return false;
 
-    if (isStandaloneApp() || isEngineRunning())
-    {
+    if (isEngineRunning())
         return false;
-    }
 
     const auto job = getLastJobDirectory();
 
@@ -5467,6 +5685,19 @@ bool StemLabAudioProcessor::retryAbletonImport()
     if (importProgress.existsAsFile())
         importProgress.deleteFile();
 
+    /*  The wait is armed after the send, exactly as sendSelectedStemsToAbleton
+        does it. Arming first meant a send that never left the socket still
+        started the 12 s clock and set the ack flag, so the user was shown a
+        phantom "import timed out" for a message Live was never told about -
+        and the ack poll then ran for the rest of the session waiting for a
+        reply to a request that does not exist.
+    */
+    if (!sendAbletonBridgeNotification(manifest))
+    {
+        setStatus("Could not send Retry Import message");
+        return false;
+    }
+
     {
         const juce::ScopedLock lock(abletonBridgeLock);
 
@@ -5475,12 +5706,6 @@ bool StemLabAudioProcessor::retryAbletonImport()
 
     abletonBridgeWaitStartMs.store(nowMs());
     abletonAckExpected.store(true);
-
-    if (!sendAbletonBridgeNotification(manifest))
-    {
-        setStatus("Could not send Retry Import message");
-        return false;
-    }
 
     setStatus("Retry Import sent to Ableton");
     return true;
@@ -5819,13 +6044,19 @@ void StemLabAudioProcessor::runReaperSelfTestIfRequested()
 
     // The project may still be loading while plugins initialise; give REAPER
     // a moment, then run on the message thread like the real UI.
-    juce::WeakReference<StemLabAudioProcessor> weak(this);
+    //
+    // Guarded by lifetimeToken, the same idiom every other delayed callback
+    // in this class uses, rather than by a WeakReference of its own: one way
+    // of asking "is this processor still here" is enough.
+    std::weak_ptr<int> lifetime = lifetimeToken;
 
     juce::Timer::callAfterDelay(2500,
-                                [weak, action, report]
+                                [this, lifetime, action, report]
                                 {
-                                    if (weak != nullptr)
-                                        weak->runReaperSelfTestAction(action, report);
+                                    if (lifetime.expired())
+                                        return;
+
+                                    runReaperSelfTestAction(action, report);
                                 });
 }
 
@@ -6234,17 +6465,54 @@ juce::AudioProcessorEditor* StemLabAudioProcessor::createEditor()
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new StemLabAudioProcessor(); }
 
+/*
+ * Take the analysis slot for a new job.
+ *
+ * The thread in it may still be running - a new file can land in the middle
+ * of an analysis - and destroying it is what the message thread would
+ * otherwise wait for: the destructor writes the cancel sentinel, sleeps out a
+ * 1.5 s grace and only then kills the child, with the join behind that. The
+ * interface froze for over a second every time.
+ *
+ * That grace exists so an engine can take its own model subprocesses down
+ * from the inside. This worker has none - it loads Beat This! in its own
+ * process - so there is nothing to orphan, and the kill is also what releases
+ * the reader parked in readProcessOutput, which is what turns the reset below
+ * into a prompt join rather than one that runs to its timeout.
+ *
+ * The generation bump retires whatever was armed against the outgoing thread.
+ * The Beat This! off-switch's kill timer above all: it fired on whichever
+ * thread happened to be in this slot two seconds later, so switching the
+ * analysis off and straight back on killed the run the user had just asked
+ * for.
+ */
+void StemLabAudioProcessor::retireAnalysisThread()
+{
+    if (analysisThread != nullptr && analysisThread->isThreadRunning())
+        analysisThread->stopChildProcess(0);
+
+    analysisThread.reset();
+
+    analysisThreadGeneration.fetch_add(1);
+}
+
+bool StemLabAudioProcessor::canStartSourceAnalysis() const
+{
+    /*  A separation owns engineProgress, the ETA pair and engineCancelRequested
+        for the whole of its run, and starting an analysis resets all three
+        (see resetJobClock): the bar drops back to zero mid-job and a Cancel
+        the user has just clicked can be thrown away. So an analysis waits for
+        the engine, which is the rule the Beat This! switch already followed
+        and the one every other entry point now shares.
+    */
+    return !sourceAnalysisRunning.load() && !isEngineRunning();
+}
+
 bool StemLabAudioProcessor::startSourceAnalysis(const juce::File& source)
 {
-    analysisThread.reset();
+    retireAnalysisThread();
     sourceAnalysisRunning.store(true);
-    engineCancelRequested.store(false);
-    engineProgress.store(0.0);
-    engineStartMs.store(nowMs());
-    engineProgressUpdateMs.store(engineStartMs.load());
-    lastEngineDurationSeconds.store(0.0);
-    resetEngineEta();
-    engineProgressRate.store(0.0);
+    resetJobClock(0.0);
     sourceBpm.store(-1.0);
     sourceDetectedBpm.store(-1.0);
     sourceHalfBpm.store(-1.0);
@@ -6336,6 +6604,24 @@ void StemLabAudioProcessor::finishSourceAnalysis(const juce::File& source, const
     {
         if (result.existsAsFile())
             result.deleteFile();
+
+        /*  Nothing here wants this result - the source it describes was
+            replaced while it was being worked out - but the run is over all
+            the same, and the flag that says so has to come down. Leaving it
+            standing told the rest of the plugin an analysis was running for
+            the remainder of the session: the editor stayed at its full tick
+            rate, the readout stayed on "Analyzing key/BPM...", and every
+            later analysis was refused because one was already in progress.
+        */
+        sourceAnalysisRunning.store(false);
+
+        // Only ours to clear. A separation launched against the new source
+        // may already be running, and the user's Cancel lives in this same
+        // flag.
+        if (!isEngineRunning())
+            engineCancelRequested.store(false);
+
+        sendChangeMessage();
         return;
     }
 
@@ -6494,40 +6780,6 @@ juce::String StemLabAudioProcessor::getSourceAnalysisText() const
     return "Key: Unknown - BPM: Unknown";
 }
 
-juce::String StemLabAudioProcessor::getSourceAnalysisDetails() const
-{
-    juce::String text = getSourceAnalysisText();
-    const juce::ScopedLock lock(stateLock);
-    if (!beatThisEnabled.load())
-        text += "\nBeat This! is disabled for automatic source analysis.";
-    else if (sourceAnalysisDevice.isNotEmpty())
-        text += "\nBeat This!: " + (sourceBeatModel.isNotEmpty() ? sourceBeatModel : "model") +
-                " on " + sourceAnalysisDevice.toUpperCase();
-    if (!sourceKeyCandidates.empty())
-    {
-        text += "\n\nTop key candidates:";
-        for (size_t index = 0; index < std::min<size_t>(3, sourceKeyCandidates.size()); ++index)
-        {
-            const auto& candidate = sourceKeyCandidates[index];
-            text += "\n" + juce::String(static_cast<int>(index + 1)) + ". " + candidate.key +
-                    " - " + juce::String(juce::roundToInt(candidate.probability * 100.0)) + "%";
-        }
-    }
-    text += "\nMeter: " + juce::String(sourceMeterNumerator.load()) + "/" +
-            juce::String(sourceMeterDenominator.load());
-    text += "\nBar one: " + juce::String(sourceBarOne.load(), 3) + " seconds";
-    text += "\nTempo choices: " + juce::String(sourceHalfBpm.load(), 1) + " / " +
-            juce::String(sourceDetectedBpm.load(), 1) + " / " +
-            juce::String(sourceDoubleBpm.load(), 1) + " BPM";
-    return text;
-}
-
-juce::String StemLabAudioProcessor::getSourceKey() const
-{
-    const juce::ScopedLock lock(stateLock);
-    return sourceKey;
-}
-
 void StemLabAudioProcessor::setBeatThisEnabled(bool enabled)
 {
     beatThisEnabled.store(enabled);
@@ -6544,11 +6796,20 @@ void StemLabAudioProcessor::setBeatThisEnabled(bool enabled)
             // Enforce the grace from here for one that does not: the
             // thread itself is parked in readProcessOutput and cannot.
             std::weak_ptr<int> lifetime = lifetimeToken;
+            const auto generation = analysisThreadGeneration.load();
 
             juce::Timer::callAfterDelay(2000,
-                                        [this, lifetime]
+                                        [this, lifetime, generation]
                                         {
                                             if (lifetime.expired())
+                                                return;
+
+                                            // Only the run this timer was
+                                            // armed for. Switching Beat This!
+                                            // off and straight back on put a
+                                            // new analysis in the slot, and
+                                            // this used to kill that one.
+                                            if (analysisThreadGeneration.load() != generation)
                                                 return;
 
                                             if (analysisThread != nullptr &&
@@ -6563,12 +6824,8 @@ void StemLabAudioProcessor::setBeatThisEnabled(bool enabled)
     }
 
     const auto source = getCaptureFile();
-    if (source.existsAsFile() && !sourceAnalysisRunning.load() &&
-        !isRecursiveEngineRunning() &&
-        !(engineThread != nullptr && engineThread->isThreadRunning()))
-    {
+    if (source.existsAsFile() && canStartSourceAnalysis())
         startSourceAnalysis(source);
-    }
     sendChangeMessage();
 }
 
@@ -6583,7 +6840,7 @@ bool StemLabAudioProcessor::canSetHostTempo() const
         // there in Live, and whether StemLabRemote is listening only shows
         // up as a reply that never arrives - which the poll below reports
         // as its own message rather than pretending the button was dead.
-        return !isStandaloneApp() && !abletonTempoRequestPending.load();
+        return !abletonTempoRequestPending.load();
     }
 
     if (getHostIntegration() != hostIntegrationReaper)
@@ -6599,7 +6856,7 @@ bool StemLabAudioProcessor::canSetHostTempo() const
 
     // Dynamic needs the marker calls as well, and more than one section to
     // write. With one section it is the same job as static.
-    if (tempoAnalysisMode.load() == tempoDynamic && sourceTempoSegments.size() > 1)
+    if (tempoAnalysisMode.load() == tempoDynamic && getSourceTempoSegmentCount() > 1)
     {
         if (api.SetTempoTimeSigMarker == nullptr || api.CountTempoTimeSigMarkers == nullptr
             || api.DeleteTempoTimeSigMarker == nullptr)
@@ -6621,8 +6878,11 @@ juce::String StemLabAudioProcessor::setHostTempo()
     // nullptr is the current project, as everywhere else in the bridge.
     stemlab::reaper::ReaProject* const project = nullptr;
 
-    const auto dynamic =
-        tempoAnalysisMode.load() == tempoDynamic && sourceTempoSegments.size() > 1;
+    // One snapshot for the whole call: the decision below and the markers
+    // written from it have to describe the same analysis.
+    const auto segments = getSourceTempoSegments();
+
+    const auto dynamic = tempoAnalysisMode.load() == tempoDynamic && segments.size() > 1;
     const auto bpm = sourceDetectedBpm.load();
 
     api.Undo_BeginBlock2(project);
@@ -6659,7 +6919,7 @@ juce::String StemLabAudioProcessor::setHostTempo()
 
         int written = 0;
 
-        for (const auto& segment : sourceTempoSegments)
+        for (const auto& segment : segments)
         {
             if (segment.bpm <= 0.0)
                 continue;
@@ -6702,11 +6962,10 @@ juce::String StemLabAudioProcessor::setAbletonTempo()
 
     folder.createDirectory();
 
+    // Both are named after the UUID just generated, so neither can already
+    // exist and there is nothing to clear away first.
     const auto replyFile = folder.getChildFile("tempo_reply_" + requestId + ".json");
     const auto requestFile = folder.getChildFile("tempo_" + requestId + ".json");
-
-    if (replyFile.existsAsFile())
-        replyFile.deleteFile();
 
     auto* request = new juce::DynamicObject();
 
@@ -6725,7 +6984,8 @@ juce::String StemLabAudioProcessor::setAbletonTempo()
 
     if (tempoAnalysisMode.load() == tempoDynamic)
     {
-        for (const auto& segment : sourceTempoSegments)
+        // Snapshotted under the lock, like setHostTempo's REAPER half.
+        for (const auto& segment : getSourceTempoSegments())
         {
             if (segment.bpm <= 0.0)
                 continue;
@@ -6769,10 +7029,10 @@ juce::String StemLabAudioProcessor::setAbletonTempo()
 
 void StemLabAudioProcessor::refreshAbletonTempoReplyFromDisk()
 {
-    if (isStandaloneApp() || !abletonTempoRequestPending.load())
+    if (getHostIntegration() != hostIntegrationAbletonLive)
         return;
 
-    if (getHostIntegration() != hostIntegrationAbletonLive)
+    if (!abletonTempoRequestPending.load())
         return;
 
     juce::File reply;
@@ -6843,9 +7103,22 @@ void StemLabAudioProcessor::setTempoAnalysisMode(int mode)
 
 std::vector<StemLabTempoSegment> StemLabAudioProcessor::getSourceTempoSegments() const
 {
-    // Written and read on the message thread, like sourceBeats and
-    // sourceKeyCandidates beside it, so no lock of its own.
+    /*  Under stateLock, like every other analysis result beside it. The
+        comment that used to stand here claimed message-thread-only access,
+        and that was never true: finishSourceAnalysis move-assigns this
+        vector from the analysis worker, so reading it unlocked meant reading
+        a vector whose buffer was being replaced underneath the reader.
+    */
+    const juce::ScopedLock lock(stateLock);
     return sourceTempoSegments;
+}
+
+size_t StemLabAudioProcessor::getSourceTempoSegmentCount() const
+{
+    // What the button-enable path wants: the count alone, without copying
+    // the segments once per editor tick to ask how many there are.
+    const juce::ScopedLock lock(stateLock);
+    return sourceTempoSegments.size();
 }
 
 void StemLabAudioProcessor::setSourceAnalysisMode(int mode)
@@ -6853,7 +7126,11 @@ void StemLabAudioProcessor::setSourceAnalysisMode(int mode)
     sourceAnalysisMode.store(juce::jlimit(static_cast<int>(analysisAccurate),
                                           static_cast<int>(analysisFast), mode));
     const auto source = getCaptureFile();
-    if (beatThisEnabled.load() && source.existsAsFile() && !sourceAnalysisRunning.load())
+
+    // canStartSourceAnalysis rather than the analysis flag alone: changing the
+    // mode during a separation used to start an analysis on top of it and
+    // reset the engine's shared progress, ETA and cancel state.
+    if (beatThisEnabled.load() && source.existsAsFile() && canStartSourceAnalysis())
         startSourceAnalysis(source);
 }
 
@@ -7332,7 +7609,7 @@ bool StemLabAudioProcessor::launchAnalysisMaintenance(const juce::StringArray& a
         return false;
     command.addArray(arguments);
     const auto source = getCaptureFile();
-    analysisThread.reset();
+    retireAnalysisThread();
     sourceAnalysisRunning.store(true);
     setStatus(label + "...");
     analysisThread = std::make_unique<StemLabUtilityThread>(
@@ -7374,6 +7651,12 @@ void StemLabAudioProcessor::finishAnalysisMaintenance(const juce::File& source,
         [this, lifetime, source]
         {
             if (lifetime.expired())
+                return;
+
+            // A separation may have started in the meantime, and the
+            // follow-up must not reset its progress, ETA and cancel state
+            // from under it.
+            if (!canStartSourceAnalysis())
                 return;
 
             startSourceAnalysis(source);
@@ -7496,21 +7779,6 @@ StemLabGridInfo StemLabAudioProcessor::getWaveformGridInfo() const
     }
 
     return info;
-}
-
-int StemLabAudioProcessor::getWaveformLaneHeight(const juce::String& id) const
-{
-    const juce::ScopedLock lock(laneHeightLock);
-    const auto found = waveformLaneHeights.find(id.toStdString());
-    return found != waveformLaneHeights.end() ? found->second
-                                               : stemlab::waveform::defaultLaneHeight;
-}
-
-void StemLabAudioProcessor::setWaveformLaneHeight(const juce::String& id, int height)
-{
-    const juce::ScopedLock lock(laneHeightLock);
-    waveformLaneHeights[id.toStdString()] = stemlab::waveform::clampLaneHeight(height);
-    sendChangeMessage();
 }
 
 StemLabSelectionRange StemLabAudioProcessor::getStemSelectionRange(const juce::String& id) const
@@ -7838,11 +8106,28 @@ size_t StemLabAudioProcessor::getMidiNoteCount(const juce::String& id) const
 
 bool StemLabAudioProcessor::hasMidiInfo(const juce::String& id) const
 {
-    if (getMidiNoteCount(id) == 0)
-        return false;
+    /*
+     * The UI timer asks this once per converted lane per tick, and it used to
+     * answer by copying the whole record - every note of the conversion -
+     * only to look at the file name in it. The notes are counted in place and
+     * the file is copied out on its own; the stat behind it stays, because a
+     * .mid deleted underneath the plugin should stop offering Save and
+     * Audition.
+     */
+    juce::File midiFile;
 
-    // Only worth the copy once the cheap half has already said yes.
-    return getMidiInfo(id).midiFile.existsAsFile();
+    {
+        const juce::ScopedLock lock(midiInfoLock);
+
+        const auto found = midiInfos.find(id.toStdString());
+
+        if (found == midiInfos.end() || found->second.notes.empty())
+            return false;
+
+        midiFile = found->second.midiFile;
+    }
+
+    return midiFile.existsAsFile();
 }
 
 bool StemLabAudioProcessor::auditionMidi(const juce::String& id)
@@ -7861,32 +8146,50 @@ bool StemLabAudioProcessor::auditionMidi(const juce::String& id)
         return false;
     }
 
+    /*
+     * Prepared before the lock is taken, and swapped in under it.
+     *
+     * midiAuditionLock is a lock the audio thread takes, in
+     * renderMidiAudition. Copying every note of a take and sorting it twice
+     * while holding it made the audio callback wait for exactly that work -
+     * a few thousand notes on a busy stem - which is a dropout, not a
+     * delay. The swap leaves the previous take's vectors in the locals, so
+     * even freeing them happens after the lock is released.
+     *
+     * Both orders are built once, so the render block only ever walks
+     * forward. Nothing outside the audition reads these copies, so
+     * reordering them is free.
+     */
+    auto notes = info.notes;
+
+    std::sort(notes.begin(), notes.end(),
+              [](const StemLabMidiNoteInfo& a, const StemLabMidiNoteInfo& b)
+              { return a.start < b.start; });
+
+    std::vector<size_t> noteOffOrder(notes.size());
+
+    for (size_t i = 0; i < noteOffOrder.size(); ++i)
+        noteOffOrder[i] = i;
+
+    std::sort(noteOffOrder.begin(), noteOffOrder.end(),
+              [&notes](size_t a, size_t b) { return notes[a].end < notes[b].end; });
+
+    double duration = 0.0;
+
+    for (const auto& note : notes)
+        duration = juce::jmax(duration, note.end);
+
     previewTransport.stop();
     {
         const juce::ScopedLock lock(midiAuditionLock);
         midiAuditionSynth.allNotesOff(0, false);
-        midiAuditionNotes = info.notes;
+
+        midiAuditionNotes.swap(notes);
+        midiAuditionNoteOffOrder.swap(noteOffOrder);
+
         midiAuditionId = id;
         midiAuditionPosition = 0.0;
-        midiAuditionDuration = 0.0;
-        for (const auto& note : midiAuditionNotes)
-            midiAuditionDuration = juce::jmax(midiAuditionDuration, note.end);
-
-        // Both orders are built once here so the render block only ever
-        // walks forward. Nothing outside the audition reads these copies,
-        // so reordering them is free.
-        std::sort(midiAuditionNotes.begin(), midiAuditionNotes.end(),
-                  [](const StemLabMidiNoteInfo& a, const StemLabMidiNoteInfo& b)
-                  { return a.start < b.start; });
-
-        midiAuditionNoteOffOrder.resize(midiAuditionNotes.size());
-
-        for (size_t i = 0; i < midiAuditionNoteOffOrder.size(); ++i)
-            midiAuditionNoteOffOrder[i] = i;
-
-        std::sort(midiAuditionNoteOffOrder.begin(), midiAuditionNoteOffOrder.end(),
-                  [this](size_t a, size_t b)
-                  { return midiAuditionNotes[a].end < midiAuditionNotes[b].end; });
+        midiAuditionDuration = duration;
 
         midiAuditionNoteOnCursor = 0;
         midiAuditionNoteOffCursor = 0;
@@ -7997,9 +8300,16 @@ bool StemLabAudioProcessor::renderMidiAudition(juce::AudioBuffer<float>& buffer,
 
 bool StemLabAudioProcessor::sendMidiToAbleton(const juce::String& id)
 {
-    if (isStandaloneApp() || !abletonBridgeActive.load())
+    /*  Gated on the host, exactly as every other Ableton action is. It used
+        to be gated on a flag that nothing ever stored, so this action could
+        only ever answer "StemLab Remote must be active" and the clip was
+        never sent. Whether the Remote Script is listening is not knowable
+        here anyway - it shows up as a reply that does not arrive, which is
+        what the ack file below is for.
+    */
+    if (getHostIntegration() != hostIntegrationAbletonLive)
     {
-        setStatus("StemLab Remote must be active to create an Ableton MIDI clip");
+        setStatus("Creating an Ableton MIDI clip needs Live and StemLabRemote");
         return false;
     }
 
@@ -8082,40 +8392,6 @@ bool StemLabAudioProcessor::sendMidiToAbleton(const juce::String& id)
 
     setStatus("Creating MIDI clip in Ableton...");
     return true;
-}
-
-juce::String StemLabAudioProcessor::getCurrentPreviewSelectionId() const
-{
-    // Which lane a selection applies to. Upstream keyed this off a single
-    // "preview" slot; the Lanes interface has no such slot - what you hear
-    // is the monitor mix - so a soloed lane stands in for it, falling back
-    // to the directly previewed stem.
-    {
-        const juce::ScopedLock lock(recursiveLock);
-
-        for (const auto& item : recursiveItems)
-        {
-            const auto flags = monitorFlagsForRecursive(item.id);
-
-            if (flags != nullptr && flags->solo.load())
-                return item.id;
-        }
-    }
-
-    for (int i = 0; i < stemCount; ++i)
-    {
-        const auto flags = monitorFlagsForStem(i);
-
-        if (flags != nullptr && flags->solo.load())
-            return getStemName(i);
-    }
-
-    const auto index = previewStemIndex.load();
-
-    if (juce::isPositiveAndBelow(index, stemCount))
-        return getStemName(index);
-
-    return {};
 }
 
 void StemLabAudioProcessor::rebuildLoopRegions()
