@@ -59,7 +59,10 @@ struct BandLevels
 /** Per-frame spectral brightness and band balance for one audio file. */
 struct SpectralProfile
 {
-    double lengthSeconds = 0.0;
+    /*  The hop, and no length: the file length the lane reads lives on
+        WaveformProfile, and the copy that used to sit here was only ever
+        written. Mapping a time to a frame needs the hop alone.
+    */
     double secondsPerFrame = 0.0;
 
     /** 0 (bass-heavy) to 1 (bright), one entry per analysis frame. */
@@ -233,8 +236,6 @@ public:
     {
         if (sampleCount == 0 || !(sampleRate > 0.0))
             return;
-
-        profile.lengthSeconds = static_cast<double>(sampleCount) / sampleRate;
 
         // Stretch the hop rather than the frame: the window stays 1024 wide,
         // so the frequency resolution of a long file matches a short one.

@@ -317,18 +317,20 @@ int main()
         }
     }
 
+    /*
+     * Host capture is the one HostIntegrationPolicy rule with a production
+     * caller (PluginProcessor's startHostAudioCapture): only a generic VST
+     * host has a capture to start, and only while nothing else is holding
+     * the audio. The three text helpers that used to be checked here had no
+     * caller at all - the editor hardcodes its own button copy - so they are
+     * gone rather than pinned.
+     */
     using stemlab::host::UiMode;
-    if (stemlab::host::captureActionText(UiMode::ableton) != "Use Live Clip" ||
-        stemlab::host::completedStemActionText(UiMode::ableton) != "Send Selected" ||
-        stemlab::host::captureActionText(UiMode::genericVst) != "Capture Host" ||
-        stemlab::host::completedStemActionText(UiMode::genericVst) != "Drag Selected" ||
-        stemlab::host::showsImportFromPc(UiMode::standalone) ||
-        stemlab::host::showsImportFromPc(UiMode::ableton) ||
-        !stemlab::host::showsImportFromPc(UiMode::genericVst) ||
-        !stemlab::host::canStartHostAudioCapture(UiMode::genericVst, false, false) ||
+    if (!stemlab::host::canStartHostAudioCapture(UiMode::genericVst, false, false) ||
         stemlab::host::canStartHostAudioCapture(UiMode::genericVst, true, false) ||
         stemlab::host::canStartHostAudioCapture(UiMode::genericVst, false, true) ||
-        stemlab::host::canStartHostAudioCapture(UiMode::ableton, false, false))
+        stemlab::host::canStartHostAudioCapture(UiMode::ableton, false, false) ||
+        stemlab::host::canStartHostAudioCapture(UiMode::standalone, false, false))
         return 1;
     return 0;
 }

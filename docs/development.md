@@ -66,23 +66,28 @@ ctest --test-dir src/plugin/build --output-on-failure
 
 | Target | What it holds the line on |
 | --- | --- |
-| `StemLabWaveformGridTests` | Bar and beat placement, and host-integration policy |
+| `StemLabWaveformGridTests` | Bar and beat placement, and when a host capture may start |
 | `StemLabWaveformAnalysisTests` | The JUCE-free spectral analysis, FFT included |
 | `StemLabLoopRegionsTests` | Which loop ranges merge, and where playback jumps |
 | `StemLabSourceLabelTests` | Joining a track and take name without saying it twice |
-| `StemLabLaneWheelDispatchTests` | Which wheel events a lane forwards to the viewport |
+| `StemLabLaneWheelDispatchTests` | That a lane's deep mouse listener leaves the wheel alone |
 | `StemLabHostCaptureTests` | The self-drag guard and a real processor capturing audio |
 
 The first four cover header-only components deliberately kept free of the
 plugin, so a test can reach them without standing one up.
 `StemLabLaneWheelDispatchTests` is the odd one: it pins JUCE's own dispatch
 behaviour rather than code of ours, because a JUCE upgrade that changed it
-would silently undo the fix that depends on it. `StemLabHostCaptureTests`
-links the plugin itself.
+would silently undo the fix that depends on it. The lane listens deeply for
+its hover highlight, and the two facts that keep one wheel notch scrolling
+one row are that `MouseListener::mouseWheelMove` has an empty default body -
+so the lane's relay, which does not override it, adds no second delivery -
+and that `Component::mouseWheelMove` walks the wheel up to the nearest
+enabled ancestor, which is the one delivery the lane list scrolls on.
+`StemLabHostCaptureTests` links the plugin itself.
 
-Two of them link JUCE, but none needs a display - the wheel suite asserts
-against `MouseEvent` identity rather than a window - so the whole suite runs
-on a bare CI runner with `DISPLAY` unset.
+Two of them link JUCE, but none needs a display - the wheel suite counts the
+wheels that reach a stand-in viewport component rather than opening a
+window - so the whole suite runs on a bare CI runner with `DISPLAY` unset.
 
 ## Command Line
 
