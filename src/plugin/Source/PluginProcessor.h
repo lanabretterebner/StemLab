@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "HostIntegrationPolicy.h"
+#include "LoopQuantize.h"
 #include "LoopRegions.h"
 #include "WaveformCache.h"
 
@@ -298,6 +299,17 @@ public:
         tempoHalf = 0,
         tempoDetected = 1,
         tempoDouble = 2
+    };
+
+    /** Snapping step for a swept loop range. Ordered as the settings row
+        reads, and matching stemlab::quantize::Resolution one for one. */
+    enum LoopQuantizeMode
+    {
+        quantizeOff = 0,
+        quantizeQuarterBeat = 1,
+        quantizeHalfBeat = 2,
+        quantizeBeat = 3,
+        quantizeBar = 4
     };
 
     enum WaveformGridMode
@@ -637,6 +649,21 @@ public:
     void setWaveformLaneHeight(const juce::String& id, int height);
 
     /** One highlighted time range per stem. Dragging a waveform sets it. */
+    void setLoopQuantizeMode(int mode) noexcept;
+    int getLoopQuantizeMode() const noexcept { return loopQuantizeMode.load(); }
+
+    /** The rule a swept loop snaps to: the same one the lanes paint. */
+    stemlab::quantize::Grid getLoopQuantizeGrid() const;
+
+    /** False when there is no grid to snap to, whatever the setting says -
+        the grid switched off, or a source with no tempo behind it. */
+    bool canQuantizeLoops() const;
+
+    /** A normalised range put onto the grid, or returned as given when the
+        setting is off or no grid exists. The lane runs its live drag preview
+        through this so the highlight shows where the loop will land. */
+    stemlab::quantize::Range quantizeLoopRange(stemlab::quantize::Range range) const;
+
     StemLabSelectionRange getStemSelectionRange(const juce::String& id) const;
     void setStemSelectionRange(const juce::String& id, double start, double end);
     void clearStemSelectionRange(const juce::String& id);
@@ -1017,6 +1044,10 @@ private:
     std::vector<StemLabTempoSegment> sourceTempoSegments;
     std::atomic<int> tempoInterpretation{tempoDetected};
     std::atomic<int> waveformGridMode{gridSource};
+
+    // Off by default: a sweep does exactly what it did before until the user
+    // asks for snapping.
+    std::atomic<int> loopQuantizeMode{quantizeOff};
     std::atomic<double> manualGridBpm{120.0};
     std::atomic<int> manualGridNumerator{4};
     std::atomic<int> manualGridDenominator{4};

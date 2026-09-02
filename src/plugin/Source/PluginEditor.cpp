@@ -863,6 +863,19 @@ void StemLaneWaveform::paint(juce::Graphics& g)
             from = juce::jmin(selectionAnchor, selectionHead);
             to = juce::jmax(selectionAnchor, selectionHead);
             show = to - from > 0.0;
+
+            /*  Snapped as it is drawn, through the same call that stores it
+                on release: the highlight has to show where the loop will
+                land, not where the pointer happens to be. Without this the
+                range visibly jumps the moment the button comes up.
+            */
+            if (show)
+            {
+                const auto snapped = processor.quantizeLoopRange({from, to});
+
+                from = snapped.start;
+                to = snapped.end;
+            }
         }
         else if (lastDisplay.selectionActive)
         {
@@ -1078,8 +1091,12 @@ void StemLaneWaveform::mouseUp(const juce::MouseEvent& event)
         const auto from = juce::jmin(selectionAnchor, selectionHead);
         const auto to = juce::jmax(selectionAnchor, selectionHead);
 
-        // A sweep that collapses to nothing clears rather than storing an
-        // empty loop the transport would sit inside forever.
+        /*  A sweep that collapses to nothing clears rather than storing an
+            empty loop the transport would sit inside forever. Measured on
+            the raw sweep, before any snapping: quantise opens a short range
+            up to one unit, so testing the snapped one would turn a stray
+            click into a loop instead of clearing.
+        */
         if (to - from >= 0.0005)
             processor.setStemSelectionRange(selectionId, from, to);
         else
@@ -4789,6 +4806,35 @@ void StemLabAudioProcessorEditor::wireSettingsPage()
         refreshFromProcessor();
     };
 
+    settingsPanel.onLoopQuantize = [this](int index)
+    {
+        static constexpr int modes[] = {StemLabAudioProcessor::quantizeOff,
+                                        StemLabAudioProcessor::quantizeQuarterBeat,
+                                        StemLabAudioProcessor::quantizeHalfBeat,
+                                        StemLabAudioProcessor::quantizeBeat,
+                                        StemLabAudioProcessor::quantizeBar};
+
+        if (!juce::isPositiveAndBelow(index, juce::numElementsInArray(modes)))
+            return;
+
+        processor.setLoopQuantizeMode(modes[index]);
+
+        // Named rather than left to be discovered by sweeping: the setting
+        // only shows itself the next time a loop is drawn.
+        static constexpr const char* names[] = {"Loop snapping off",
+                                                "Loops snap to 1/4 beat",
+                                                "Loops snap to 1/2 beat",
+                                                "Loops snap to the beat",
+                                                "Loops snap to the bar"};
+
+        if (index > 0 && !processor.canQuantizeLoops())
+            processor.postUiStatus("Loops will snap once the grid has a tempo");
+        else
+            processor.postUiStatus(names[index]);
+
+        refreshFromProcessor();
+    };
+
     settingsPanel.onGridMode = [this](int index)
     {
         static constexpr int modes[] = {StemLabAudioProcessor::gridHost,
@@ -4927,6 +4973,15 @@ void StemLabAudioProcessorEditor::refreshSettingsPage()
                                     StemLabAudioProcessor::gridOff};
 
     settings.gridMode = pageIndexOf(modes, processor.getWaveformGridMode());
+
+    settings.loopQuantize = processor.getLoopQuantizeMode();
+
+    /*  Whether a grid exists at all, not whether snapping is switched on:
+        the row has to stay live at Off, or there would be no way back to a
+        resolution once it was turned off.
+    */
+    settings.loopQuantizeAvailable =
+        processor.getLoopQuantizeGrid().secondsPerBeat > 0.0;
 
     settings.hostTempoAvailable = !processor.isStandaloneApp();
     settings.manualBpm = processor.getManualGridBpm();

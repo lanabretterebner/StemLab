@@ -599,6 +599,7 @@ namespace stemlab::widgets
             add(gridHeading);
             add(gridMode);
             add(manualTempo);
+            add(loopQuantize);
 
             add(analysisHeading);
             add(analysisQuality);
@@ -632,6 +633,12 @@ namespace stemlab::widgets
             {
                 if (onGridMode)
                     onGridMode(index);
+            };
+
+            loopQuantize.onSelected = [this](int index)
+            {
+                if (onLoopQuantize)
+                    onLoopQuantize(index);
             };
 
             analysisQuality.onSelected = [this](int index)
@@ -693,6 +700,16 @@ namespace stemlab::widgets
 
             gridMode.setSelectedIndex(settings.gridMode);
             manualTempo.setCaption("Manual tempo (" + bpm(settings.manualBpm) + " BPM)");
+
+            loopQuantize.setSelectedIndex(settings.loopQuantize);
+
+            /*  Greyed when there is no rule to snap to - the grid switched
+                off, or a source with no tempo behind it. Left visible, and
+                left showing what it is set to: the setting is remembered,
+                and hiding it would make a loop that suddenly stops snapping
+                look like a bug rather than a missing grid.
+            */
+            loopQuantize.setEnabled(settings.loopQuantizeAvailable);
 
             analysisQuality.setSelectedIndex(settings.analysisQuality);
 
@@ -787,6 +804,7 @@ namespace stemlab::widgets
         std::function<void(int)> onAccent;
         std::function<void(int)> onWaveformPalette;
         std::function<void(int)> onGridMode;
+        std::function<void(int)> onLoopQuantize;
         std::function<void()> onSetManualTempo;
         std::function<void(int)> onAnalysisQuality;
         std::function<void(int)> onTempoMode;
@@ -820,6 +838,12 @@ namespace stemlab::widgets
         HeadingRow gridHeading{"Beat grid"};
         ChoiceRow gridMode{"Grid follows", {"Host", "Source", "Manual", "Off"}};
         ActionRow manualTempo{"Manual tempo", "Set..."};
+
+        /*  Beats, then a bar - the order they grow in, so the row reads as a
+            scale rather than a list. Off leads because it is the default and
+            because it is what the other four are measured against.
+        */
+        ChoiceRow loopQuantize{"Loop quantise", {"Off", "1/4", "1/2", "1", "Bar"}};
 
         HeadingRow analysisHeading{"Source analysis"};
         ChoiceRow analysisQuality{"Analysis quality", {"Fast", "Accurate"}};
@@ -903,6 +927,8 @@ namespace stemlab::widgets
 
         settingsPage->onGridMode = [this](int index)
         { if (onGridMode) onGridMode(index); };
+        settingsPage->onLoopQuantize = [this](int index)
+        { if (onLoopQuantize) onLoopQuantize(index); };
 
         settingsPage->onAnalysisQuality = [this](int index)
         { if (onAnalysisQuality) onAnalysisQuality(index); };
