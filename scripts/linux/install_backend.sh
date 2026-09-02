@@ -10,15 +10,15 @@
 #   Engine   ~/.local/share/StemLab/Engine        ($XDG_DATA_HOME override)
 #
 # Usage:
-#   ./scripts/install_backend.sh              # auto-detect GPU -> cuda/rocm/cpu
-#   ./scripts/install_backend.sh --cpu        # force CPU-only torch (smallest)
-#   ./scripts/install_backend.sh --cuda       # force NVIDIA CUDA torch
-#   ./scripts/install_backend.sh --rocm       # force AMD ROCm torch
-#   ./scripts/install_backend.sh --xpu        # force Intel GPU (XPU) torch
-#   ./scripts/install_backend.sh --dest DIR   # custom Engine location
-#   ./scripts/install_backend.sh --reinstall  # rebuild the Engine from scratch
-#   ./scripts/install_backend.sh --build-only # assembling a bundle: skip the
-#                                             "installed" report
+#   ./scripts/linux/install_backend.sh             # auto-detect GPU -> cuda/rocm/cpu
+#   ./scripts/linux/install_backend.sh --cpu       # force CPU-only torch (smallest)
+#   ./scripts/linux/install_backend.sh --cuda      # force NVIDIA CUDA torch
+#   ./scripts/linux/install_backend.sh --rocm      # force AMD ROCm torch
+#   ./scripts/linux/install_backend.sh --xpu       # force Intel GPU (XPU) torch
+#   ./scripts/linux/install_backend.sh --dest DIR  # custom Engine location
+#   ./scripts/linux/install_backend.sh --reinstall # rebuild the Engine from scratch
+#   ./scripts/linux/install_backend.sh --build-only # assembling a bundle: skip
+#                                                   # the "installed" report
 #
 # --prune-only DIR runs the final prune step against an Engine that already
 # exists and then exits. It sits below the block --help prints (lines 2-19)
@@ -261,7 +261,15 @@ OWNER_MARKER="$DEST/.stemlab-engine"
 
 # Written only after the interpreter extracted and validated, so a run that
 # died mid-extraction is detected and redone instead of trusted.
+#
+# It records which interpreter it was written for. The marker used to be
+# empty, so a re-run reused whatever was already on disk and a bumped
+# PBS_PYTHON or PBS_RELEASE reached new installs only - every existing Engine
+# stayed on the old CPython for ever, with nothing to say so. An Engine from
+# before this change carries no stamp, cannot be shown to match, and is
+# therefore rebuilt once.
 READY_MARKER="$DEST/.stemlab-engine-ready"
+READY_STAMP="$PBS_PYTHON+$PBS_RELEASE"
 
 FLAVOR_FILE="$DEST/.stemlab-torch-flavor"
 
@@ -317,10 +325,19 @@ fi
 # ------------------------------------------------------------ engine decision
 
 engine_ready=0
+recorded_stamp=""
+
+[[ -f "$READY_MARKER" ]] \
+    && recorded_stamp="$(head -1 "$READY_MARKER" | tr -d '[:space:]')"
 
 if [[ $REINSTALL -eq 0 && -x "$PYTHON" && -f "$READY_MARKER" ]]; then
-    engine_ready=1
-    echo "Reusing existing Engine interpreter: $PYTHON"
+    if [[ "$recorded_stamp" == "$READY_STAMP" ]]; then
+        engine_ready=1
+        echo "Reusing existing Engine interpreter: $PYTHON"
+    else
+        echo "The Engine at $DEST was built with CPython" \
+             "${recorded_stamp:-(unrecorded)}, not $READY_STAMP - rebuilding it."
+    fi
 elif [[ $REINSTALL -eq 0 && -d "$DEST" && -f "$OWNER_MARKER" \
         && ! -f "$READY_MARKER" ]]; then
     echo "A previous install of $DEST did not finish - rebuilding it."
@@ -415,7 +432,7 @@ if [[ $engine_ready -eq 0 ]]; then
         exit 1
     }
 
-    touch "$READY_MARKER"
+    printf '%s\n' "$READY_STAMP" > "$READY_MARKER"
 fi
 
 # ------------------------------------------------------------------- backend

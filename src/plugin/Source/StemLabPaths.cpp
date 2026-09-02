@@ -54,20 +54,32 @@ namespace
         anything, no guess at all. The data directory is language-neutral
         and correct by the spec; a wrong folder in the right language is
         worse than a right folder in a dull place.
+
+        One value is not a location at all: xdg-user-dirs turns a user
+        directory OFF by pointing it at the home directory, and the desktops
+        write that out as XDG_MUSIC_DIR="$HOME/". Taking it literally would
+        scatter recordings, captures and job folders through the top of
+        someone's home directory - precisely what switching the music folder
+        off asks us not to do - so the sentinel counts as "nothing said" and
+        the data directory takes over.
     */
     juce::File userMusicRoot()
     {
+        const auto home = homeDirectory();
+
         const auto fromEnvironment =
             juce::SystemStats::getEnvironmentVariable ("XDG_MUSIC_DIR", {}).trim();
 
         if (fromEnvironment.isNotEmpty()
             && juce::File::isAbsolutePath (fromEnvironment))
         {
-            return juce::File (fromEnvironment);
+            const juce::File configured (fromEnvironment);
+
+            return configured == home ? juce::File{} : configured;
         }
 
         juce::StringArray lines;
-        homeDirectory().getChildFile (".config/user-dirs.dirs").readLines (lines);
+        home.getChildFile (".config/user-dirs.dirs").readLines (lines);
 
         for (const auto& raw : lines)
         {
@@ -79,10 +91,14 @@ namespace
             const auto value = line.fromFirstOccurrenceOf ("=", false, false)
                                    .trim()
                                    .unquoted()
-                                   .replace ("$HOME", homeDirectory().getFullPathName());
+                                   .replace ("$HOME", home.getFullPathName());
 
-            if (juce::File::isAbsolutePath (value))
-                return juce::File (value);
+            if (! juce::File::isAbsolutePath (value))
+                continue;
+
+            const juce::File configured (value);
+
+            return configured == home ? juce::File{} : configured;
         }
 
         return {};

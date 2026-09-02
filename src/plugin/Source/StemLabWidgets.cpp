@@ -68,9 +68,7 @@ namespace stemlab::widgets
 
         if (hover)
         {
-            g.setColour(!textColored && (getToggleState() || getName() == "layers")
-                            ? theme::colors::accentTint10()
-                            : theme::colors::hoverFill());
+            g.setColour(theme::colors::hoverFill());
             g.fillRoundedRectangle(bounds, radius);
         }
 
@@ -341,6 +339,24 @@ namespace stemlab::widgets
 
     // ---------------------------------------------------- separate control
 
+    namespace
+    {
+        /*  The Refine label is a constant string in a constant face, and the
+            segment's width and the label's own draw have to agree on how
+            wide it is: measured in two places, a change to the face or to
+            the slack moves the box without moving the text in it.
+
+            The label renders with +0.02em kerning, so measure with a little
+            slack.
+        */
+        int refineLabelWidth()
+        {
+            const juce::Font font{theme::fonts::refineLabel()};
+
+            return juce::roundToInt(juce::GlyphArrangement::getStringWidth(font, "Refine")) + 4;
+        }
+    }
+
     SeparateSplitControl::SeparateSplitControl()
     {
         setRepaintsOnMouseActivity(true);
@@ -386,14 +402,8 @@ namespace stemlab::widgets
     {
         namespace source = theme::metrics::source;
 
-        // Refine segment: label + pill plus padding. The label renders with
-        // +0.02em kerning, so measure with a little slack.
-        const juce::Font font{theme::fonts::refineLabel()};
-
-        const int labelWidth =
-            juce::roundToInt(juce::GlyphArrangement::getStringWidth(font, "Refine")) + 4;
-
-        const int width = source::refinePadLeft + labelWidth + source::pillGap +
+        // Refine segment: label + pill plus padding.
+        const int width = source::refinePadLeft + refineLabelWidth() + source::pillGap +
                           source::pillWidth + source::refinePadRight;
 
         return getLocalBounds().removeFromLeft(width);
@@ -458,11 +468,7 @@ namespace stemlab::widgets
             juce::Font refineFont{theme::fonts::refineLabel()};
             g.setFont(refineFont.withExtraKerningFactor(0.02f));
 
-            const juce::Font font{theme::fonts::refineLabel()};
-            const int labelWidth =
-                juce::roundToInt(juce::GlyphArrangement::getStringWidth(font, "Refine")) + 4;
-
-            g.drawText("Refine", content.removeFromLeft(labelWidth),
+            g.drawText("Refine", content.removeFromLeft(refineLabelWidth()),
                        juce::Justification::centredLeft, false);
 
             content.removeFromLeft(source::pillGap);
@@ -540,7 +546,19 @@ namespace stemlab::widgets
         if (!getLocalBounds().contains(event.getPosition()))
             return;
 
-        if (refineArea().contains(event.getPosition()))
+        /*  The release decides nothing on its own: the segment has to be the
+            one the press started in. Two segments this close together, with
+            no gap between them, made a press on Separate that slipped a few
+            pixels left toggle Refine instead - and a press on Refine that
+            slipped right start a separation, which is the more expensive
+            half of the mistake.
+        */
+        const auto inRefine = refineArea().contains(event.getPosition());
+
+        if (inRefine != refineArea().contains(event.getMouseDownPosition()))
+            return;
+
+        if (inRefine)
         {
             // Return rather than falling through: a click on a locked
             // Refine segment must do nothing at all, not reach the action

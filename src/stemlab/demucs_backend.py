@@ -131,10 +131,6 @@ class DemucsBackend:
         output_dir.mkdir(parents=True, exist_ok=True)
         device = resolve_torch_device(self.device, self._log)
 
-        # Demucs writes canonical names and would overwrite its own output,
-        # but a reused directory can still hold another backend's leftovers.
-        _clear_audio_files(output_dir)
-
         if self.cancellation:
             self.cancellation.raise_if_cancelled()
 
@@ -153,6 +149,16 @@ class DemucsBackend:
                 log=self._log,
                 cancellation=self.cancellation,
             )
+
+            # Demucs writes canonical names and would overwrite its own
+            # output, but a reused directory can still hold another backend's
+            # leftovers. Cleared here rather than on the way in: the checks
+            # above - cancelled, Demucs not installed, an input needing an
+            # ffmpeg that is missing - all end the run, and every one of them
+            # used to end it having already deleted the stems the previous
+            # run produced, leaving the user with neither result.
+            _clear_audio_files(output_dir)
+
             try:
                 source_rate, source_frames = rate_and_frames(staged)
             except Exception as exc:

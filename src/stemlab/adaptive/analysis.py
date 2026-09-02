@@ -81,11 +81,18 @@ def _spectral_flatness(mono: np.ndarray) -> float:
         return 0.0
 
     frame = 2048
-    hop = 2048
+    max_frames = 96
     values: list[float] = []
     window = np.hanning(frame).astype(np.float32)
-    limit = min(mono.size, frame * 96)
-    for start in range(0, max(1, limit - frame + 1), hop):
+
+    # The array handed in is an excerpt stitched from the start, the middle
+    # and the end of the file. A fixed hop of one frame spent the whole
+    # 96-frame budget inside the first ~4.5 s of it at 44.1 kHz, so the
+    # median below described the opening seconds of the track rather than the
+    # track. Striding spends the same budget across all three windows.
+    hop = max(frame, (mono.size - frame) // max(1, max_frames - 1))
+
+    for start in range(0, max(1, mono.size - frame + 1), hop):
         block = mono[start : start + frame]
         if block.size < frame:
             break

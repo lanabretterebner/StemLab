@@ -235,9 +235,19 @@ int main()
         assert(meanBrightness(high) > 0.75f);
         assert(meanBrightness(low) < meanBrightness(high));
 
-        // Profile geometry lines up with the audio it came from.
-        assert(std::abs(low.lengthSeconds - 1.0) < 0.01);
+        /*
+         * Profile geometry lines up with the audio it came from. The profile
+         * no longer carries a length of its own - the lane reads that off
+         * WaveformProfile - so the check is on what the frames span: every
+         * frame has a duration, and together they cover the file with at
+         * most the last frame hanging past the end.
+         */
         assert(low.secondsPerFrame > 0.0);
+
+        const auto lowSpan = low.secondsPerFrame * static_cast<double>(low.brightness.size());
+
+        assert(lowSpan >= 1.0 - 1.0e-9);
+        assert(lowSpan < 1.0 + low.secondsPerFrame);
 
         // Band shares ride along, one per frame.
         assert(low.bands.size() == low.brightness.size());
@@ -292,7 +302,13 @@ int main()
         const auto profile = analyseMono(samples.data(), samples.size(), rate);
 
         assert(profile.brightness.size() <= spectrumMaxFrames + 1);
-        assert(std::abs(profile.lengthSeconds - 400.0) < 0.01);
+
+        // Decimating must not lose the tail: the stretched hop still spans
+        // the whole 400 s, which is the other half of the bound above.
+        const auto span = profile.secondsPerFrame * static_cast<double>(profile.brightness.size());
+
+        assert(span >= 400.0 - 1.0e-6);
+        assert(span < 400.0 + profile.secondsPerFrame);
     }
 
     {
@@ -484,7 +500,6 @@ int main()
 
     {
         SpectralProfile profile;
-        profile.lengthSeconds = 3.0;
         profile.secondsPerFrame = 1.0;
         profile.brightness = {0.1f, 0.5f, 0.9f};
 

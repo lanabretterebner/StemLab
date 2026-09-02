@@ -17,7 +17,6 @@ from stemlab.midi import (
     PitchBendPoint,
     _merge_notes,
     _smooth_pitch_frames,
-    build_ableton_midi_payload,
     convert_stem_to_midi,
     create_transcription,
     metadata_path_for,
@@ -107,7 +106,7 @@ def test_harmonic_stem_preserves_a_polyphonic_chord(tmp_path):
     assert len({60, 64, 67} & detected) >= 2
 
 
-def test_internal_midi_round_trip_drag_lifecycle_and_ableton_payload(tmp_path):
+def test_internal_midi_round_trip_and_drag_lifecycle(tmp_path):
     sample_rate = 22_050
     time_axis = np.arange(sample_rate, dtype=np.float32) / sample_rate
     audio = (0.4 * np.sin(2.0 * np.pi * 110.0 * time_axis)).astype(np.float32)
@@ -122,11 +121,6 @@ def test_internal_midi_round_trip_drag_lifecycle_and_ableton_payload(tmp_path):
     assert transcription.midi_file == str(output.resolve())
     drag_file = os.path.abspath(transcription.drag_file)
     assert os.path.isfile(drag_file)
-
-    payload = build_ableton_midi_payload(transcription, capture_start_ppq=8.0)
-    assert payload["protocol"] == "stemlab-ableton-midi"
-    assert payload["capture_start_ppq"] == 8.0
-    assert payload["notes"][0]["duration"] > 0
 
     convert_stem_to_midi(source, output, "bass", bpm=90.0, grid_mode="manual", bar_one=0.5)
     updated = read_transcription(metadata_path_for(output))

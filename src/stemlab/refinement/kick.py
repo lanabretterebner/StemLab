@@ -119,6 +119,7 @@ def build_kick_reference(
         return None
 
     regions = []
+    amplitudes = []
     for e in strong:
         region, _, _ = _extract_region(
             drums,
@@ -127,24 +128,19 @@ def build_kick_reference(
             post=post,
         )
 
-        peak = np.max(np.abs(region)) + 1e-12
-        regions.append(region / peak)
+        # The peak is wanted twice - once to normalise this region, and once
+        # through the median below to put the prototype back at a real level -
+        # so it is kept here rather than re-extracting every region to measure
+        # it a second time.
+        peak = float(np.max(np.abs(region)))
+        amplitudes.append(peak)
+        regions.append(region / (peak + 1e-12))
 
     # Median rejects overlapping snare/hat material better than a mean.
     reference = np.median(
         np.stack(regions, axis=0),
         axis=0,
     ).astype(np.float32)
-
-    amplitudes = []
-    for e in strong:
-        region, _, _ = _extract_region(
-            drums,
-            e.sample,
-            pre,
-            post,
-        )
-        amplitudes.append(float(np.max(np.abs(region))))
 
     reference *= float(np.median(amplitudes))
     return reference
@@ -262,8 +258,16 @@ def refine_kick_bleed(
         correction = result.cleaned[:, :real_len] - target_region[:, :real_len]
 
         # Short fades ensure the correction reaches exactly zero at region
-        # boundaries, eliminating hard-splice discontinuities/clicks.
-        window = edge_window[:real_len]
+        # boundaries, eliminating hard-splice discontinuities/clicks. A region
+        # clipped by the start or the end of the file is shorter than the
+        # prototype geometry, and slicing the precomputed window from the
+        # front would take the ramp-in and drop the ramp-out - leaving the
+        # correction at full strength exactly where it is spliced back into
+        # the stem. At most the first and the last event need their own.
+        if real_len == region_len:
+            window = edge_window
+        else:
+            window = _edge_window(real_len, fade_samples=fade_samples)
 
         correction_sum[:, start:end] += correction * window[None, :]
         window_sum[start:end] += window
@@ -286,4 +290,7 @@ def refine_kick_bleed(
         mean_confidence=float(np.mean(confidences)) if confidences else 0.0,
     )
 
-    return output.astype(np.float32), stats
+    # original and correction_sum are both float32, so this asserts the
+    # output dtype rather than converting it; copy=False keeps it from
+    # duplicating a whole stem to say so.
+    return output.astype(np.float32, copy=False), stats

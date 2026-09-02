@@ -6,14 +6,13 @@ import hashlib
 import json
 import os
 import sys
-import threading
 import urllib.parse
 import urllib.request
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -113,9 +112,35 @@ class BeatAnalysis:
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "BeatAnalysis":
+        """Rebuild an analysis from what ``to_dict`` wrote and the cache stored.
 
-_MODEL_CACHE: dict[tuple[str, str], torch.nn.Module] = {}
-_MODEL_LOCK = threading.Lock()
+        The inverse is not ``cls(**payload)``. ``asdict`` flattens the tempo
+        segments into plain dicts and the cache round-trips everything through
+        JSON, which turns every tuple into a list - so an analysis rebuilt
+        naively handed its callers dicts where they read ``segment.start``,
+        and the second analysis of any track long enough to have a segment
+        (sixteen beats is enough) died on it while the first succeeded.
+
+        Segments that are already ``TempoSegment`` instances are passed
+        through, so a caller holding an unserialised payload gets the same
+        answer as one reading the cache.
+        """
+        fields = dict(payload)
+        segments = fields.get("tempo_segments") or ()
+
+        return cls(
+            **{
+                **fields,
+                "beats": tuple(fields.get("beats") or ()),
+                "downbeats": tuple(fields.get("downbeats") or ()),
+                "tempo_segments": tuple(
+                    segment if isinstance(segment, TempoSegment) else TempoSegment(**segment)
+                    for segment in segments
+                ),
+            }
+        )
 
 
 def _sha256_file(path: Path) -> str:
@@ -396,18 +421,21 @@ def choose_device(requested: str = "auto") -> torch.device:
     return torch.device(requested)
 
 
-def _load_model_once(path: Path, device: torch.device) -> torch.nn.Module:
-    key = (str(path), str(device))
-    with _MODEL_LOCK:
-        model = _MODEL_CACHE.get(key)
-        if model is None:
-            from beat_this.inference import load_model
+def _load_model(path: Path, device: torch.device) -> torch.nn.Module:
+    """Load one Beat This! checkpoint onto a device.
 
-            # The validated absolute path is deliberate: passing a short name
-            # would make upstream Beat This! attempt a network download.
-            model = load_model(str(path), device=device)
-            _MODEL_CACHE[key] = model
-        return model
+    There is deliberately no process-wide cache behind this. One used to sit
+    here, keyed on path and device, and it could never serve a hit: every
+    analysis runs in its own worker process and calls analyse_beats once, and
+    the only second call is the CUDA-to-CPU fallback, which asks for a
+    different device and so misses by construction. All it did was hold a
+    model that had already been used, in a process about to exit.
+    """
+    from beat_this.inference import load_model
+
+    # The validated absolute path is deliberate: passing a short name would
+    # make upstream Beat This! attempt a network download.
+    return load_model(str(path), device=device)
 
 
 def _robust_intervals(beats: np.ndarray) -> tuple[np.ndarray, float, float]:
@@ -929,7 +957,7 @@ def analyse_beats(
     if progress:
         progress(0.05, f"Loading Beat This! {spec.name} on {selected_device.type}")
     try:
-        model = _load_model_once(model_path, selected_device)
+        model = _load_model(model_path, selected_device)
     except RuntimeError:
         if selected_device.type != "cuda":
             raise
@@ -937,7 +965,7 @@ def analyse_beats(
         selected_device = torch.device("cpu")
         if progress:
             progress(0.05, f"CUDA unavailable; loading Beat This! {spec.name} on CPU")
-        model = _load_model_once(model_path, selected_device)
+        model = _load_model(model_path, selected_device)
     token.raise_if_cancelled()
 
     mono = np.asarray(audio, dtype=np.float32)

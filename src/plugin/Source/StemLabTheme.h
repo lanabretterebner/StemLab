@@ -297,9 +297,10 @@ namespace stemlab::theme
         /*
             The bundled Inter faces, registered once by StemLabLookAndFeel's
             constructor. Every token below carries the typeface explicitly:
-            JUCE 9's font resolution does not consult
-            LookAndFeel::getTypefaceForFont, so a FontOptions without a
-            typeface would silently render in the platform fallback.
+            JUCE 9 resolves a typeface-less FontOptions through the default
+            LookAndFeel's getTypefaceForFont, which in a host belongs to the
+            host and not to StemLab, so the face would silently come back as
+            the platform fallback.
 
             Weight 500 ("medium: true") uses Inter Medium - per Nocturne,
             nothing renders bolder than 500.
@@ -406,12 +407,13 @@ namespace stemlab::theme
             constexpr int settingsIcon = 16;
 
             /*
-                The separation model and the waveform palette sit in the
-                header rather than three levels down a settings menu: they
-                are choices made while working, and the model in particular
-                belongs next to the Separate button that runs it.
+                The separation model sits in the header rather than three
+                levels down a settings menu: it is a choice made while
+                working, and it belongs next to the Separate button that
+                runs it. The waveform palette, which used to sit beside it,
+                is a row on the settings page.
 
-                    < [ * Hybrid v ] >   (palette)   (settings)
+                    < [ * Hybrid v ] >   (settings)
             */
             constexpr int selectorHeight = 30;
             constexpr float selectorRadius = 8.0f;
@@ -425,14 +427,8 @@ namespace stemlab::theme
             constexpr int stepButton = 20;
             constexpr int stepIcon = 9;
 
-            // Between the selector group, the palette, and the settings icon.
+            // Between the selector group and the settings icon.
             constexpr int groupGap = 10;
-            // Square, and the same square as the settings icon beside it:
-            // the two sit side by side and their hover backgrounds have to
-            // match. The glyph stays a shade smaller, since a filled
-            // palette reads heavier than the settings icon's strokes.
-            constexpr int paletteButton = settingsButton;
-            constexpr int paletteIcon = 15;
 
             /*
                 Which stems the job carries forward is a per-lane checkbox,
@@ -617,11 +613,6 @@ namespace stemlab::theme
             // rather than as a lane that failed to load.
             constexpr float waveMinHeight = 1.0f;
 
-            // Retained for the reference layout; the lanes now draw one
-            // column per pixel from a peak envelope rather than these bars.
-            constexpr float barWidth = 2.0f;
-            constexpr float barPitch = 4.0f;
-            constexpr float barMinHeight = 2.0f;
             constexpr float playheadWidth = 1.0f;
             constexpr float playheadGlowWidth = 8.0f;
 
@@ -743,10 +734,6 @@ namespace stemlab::theme
 
         namespace waveform
         {
-            // Thumbnail resolution/cache for the lane previews.
-            constexpr int thumbnailResolution = 512;
-            constexpr int thumbnailCacheSize = 24;
-
             // Below this many pixels of travel a gesture is a seek click;
             // beyond it, an external file drag.
             constexpr int clickVersusDragThreshold = 8;

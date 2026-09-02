@@ -125,7 +125,13 @@ def _probe_available(device: str, probe: Callable[[], bool]) -> bool:
     try:
         available = bool(probe())
     except Exception:
-        available = False
+        # A probe that raised has not answered "no". A torch import that broke
+        # on a half-written wheel, or a CUDA init that threw while the driver
+        # was being upgraded, both arrive here, and neither changes the
+        # fingerprint - so writing "unavailable" would hold this job's CPU
+        # fallback over every job for the next day, long after the cause was
+        # gone. This run falls back; nothing is recorded.
+        return False
 
     if fingerprint is not None:
         _store_answer(fingerprint, device, available)

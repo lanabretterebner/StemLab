@@ -2,15 +2,17 @@
 #
 # Build the StemLab VST3 + Standalone targets on Linux.
 #
-# Mirrors scripts/build_plugin.ps1: the pinned JUCE source is downloaded into
-# .portable-cache/ and passed straight to CMake, so the build never depends on
-# CMake's FetchContent git sub-build.
+# Mirrors scripts/win/build_plugin.ps1: the pinned JUCE source is downloaded
+# into .portable-cache/ and passed straight to CMake, so the build never
+# depends on CMake's FetchContent git sub-build.
 #
 # Usage:
-#   ./scripts/build_plugin.sh
-#   ./scripts/build_plugin.sh --juce-source /path/to/JUCE   # existing checkout
-#   ./scripts/build_plugin.sh --build-type Debug
-#   ./scripts/build_plugin.sh --clean
+#   ./scripts/linux/build_plugin.sh
+#   ./scripts/linux/build_plugin.sh --juce-source /path/to/JUCE  # existing checkout
+#   ./scripts/linux/build_plugin.sh --juce-version 9.0.0         # another JUCE tag
+#   ./scripts/linux/build_plugin.sh --build-type Debug
+#   ./scripts/linux/build_plugin.sh --clean
+#   ./scripts/linux/build_plugin.sh --no-tests   # plugin targets only
 
 set -euo pipefail
 
@@ -18,6 +20,7 @@ JUCE_VERSION="9.0.0"
 BUILD_TYPE="Release"
 JUCE_SOURCE=""
 CLEAN=0
+NO_TESTS=0
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PLUGIN_ROOT="$REPO_ROOT/src/plugin"
@@ -30,8 +33,9 @@ while [[ $# -gt 0 ]]; do
         --juce-source)  JUCE_SOURCE="$2";  shift 2 ;;
         --build-type)   BUILD_TYPE="$2";   shift 2 ;;
         --clean)        CLEAN=1;           shift ;;
+        --no-tests)     NO_TESTS=1;        shift ;;
         -h|--help)
-            sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         *)
             echo "Unknown option: $1" >&2
@@ -224,9 +228,21 @@ fi
 
 [[ $CLEAN -eq 1 ]] && rm -rf "$BUILD_DIR"
 
+# CMakeLists.txt guards the CTest targets with BUILD_TESTING, so switching it
+# off leaves the seven test executables unbuilt - one of which links the whole
+# plugin and is therefore link-time optimised like it. That is minutes of a
+# release build that never runs a test.
+#
+# Passed on every run rather than only with --no-tests: CMake remembers it in
+# the build directory's cache, so a plain run after a --no-tests one has to
+# ask for the tests back explicitly or silently keep skipping them.
+BUILD_TESTING="ON"
+[[ $NO_TESTS -eq 1 ]] && BUILD_TESTING="OFF"
+
 echo "Configuring ($BUILD_TYPE)..."
 cmake -S "$PLUGIN_ROOT" -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+    -DBUILD_TESTING="$BUILD_TESTING" \
     -DSTEMLAB_JUCE_SOURCE_DIR="$JUCE_SOURCE"
 
 echo "Building..."

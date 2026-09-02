@@ -117,12 +117,15 @@ class TestStatusNeedsNothingOptional:
             cache.id for cache in model_manager.caches()
         ]
 
-    def test_missing_flag_agrees_with_the_per_model_entries(self):
+    def test_the_missing_flag_agrees_with_what_is_on_disk(self):
+        # Asked of locate() rather than recomputed out of payload["models"]:
+        # an expectation lifted from the payload under test is the same
+        # expression status just evaluated, so it agrees with the flag however
+        # the flag is wrong.
         payload = model_manager.status()
         expected = any(
-            not entry["present"]
-            for entry in payload["models"]
-            if entry["id"] in model_manager.ESSENTIAL_MODEL_IDS
+            model_manager.locate(model_id) is None
+            for model_id in model_manager.ESSENTIAL_MODEL_IDS
         )
 
         assert payload["essentialModelMissing"] is expected
@@ -227,14 +230,28 @@ class TestCompileSeam:
         assert payload["compileReason"] == ""
 
     def test_probing_asks_compile_support_for_the_real_answer(self, monkeypatch):
+        # Whatever compile_support says has to arrive in the payload intact -
+        # not the silence an unprobed status returns, and not a placeholder.
+        # Asked of a stand-in rather than of this machine: the real answer
+        # costs a torch import, and the only thing a test could then assert
+        # about a machine it knows nothing about is that the answer is a bool,
+        # which it is either way.
         monkeypatch.setenv("STEMLAB_TORCH_COMPILE", "1")
+        monkeypatch.setattr(model_manager, "_best_device", lambda: "cpu")
+
+        import stemlab.compile_support as compile_support
+
+        monkeypatch.setattr(
+            compile_support,
+            "compile_support_status",
+            lambda _device: (False, "no host C++ compiler"),
+        )
 
         payload = model_manager.status(probe_compile=True)
 
-        # Whatever this machine says, it has to be compile_support's answer
-        # for the device a job would use - not a placeholder.
         assert payload["compileRequested"] is True
-        assert isinstance(payload["compileSupported"], bool)
+        assert payload["compileSupported"] is False
+        assert payload["compileReason"] == "no host C++ compiler"
 
     def test_the_probe_asks_about_the_device_a_job_would_use(self, monkeypatch):
         # Asking about "auto" would test a string that has no inductor backend

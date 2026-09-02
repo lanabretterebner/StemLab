@@ -4,8 +4,8 @@
     is subtly harder to read than the one that was designed, on a setting
     nobody will think to blame. So the properties the design depends on are
     asserted rather than eyeballed: the default is untouched, lightness is
-    preserved across a hue turn, every step is inside sRGB, and the contrast
-    the theme documents survives on all eight.
+    preserved across a hue turn, the 100-to-900 ramp keeps separating, and
+    the contrast the theme documents survives on all eight.
 */
 
 #include "StemLabAccent.h"
@@ -72,8 +72,14 @@ int main()
         }
     }
 
-    // Every generated step is a real sRGB color. A step that clipped would
-    // show up as a flat patch where the ramp should still be separating.
+    /*  The 100-to-900 ramp still separates on every preset. This is the
+        symptom of a step falling outside sRGB rather than a gamut test of
+        its own: a step that had to be clamped back into the cube stops
+        moving away from its neighbour, and the ramp shows a flat patch
+        where a reader expects a gradient. Index 0 is the base color, which
+        sits inside the ramp's range rather than on it, so the walk starts
+        at 100.
+    */
     for (int preset = 0; preset < accents::count(); ++preset)
     {
         const auto ramp = accents::ramp(preset);

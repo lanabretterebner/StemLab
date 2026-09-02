@@ -5,7 +5,7 @@ import numpy as np
 import soundfile as sf
 
 from stemlab.analysis_cache import AnalysisCache
-from stemlab.beat_tracking import BeatAnalysis
+from stemlab.beat_tracking import BeatAnalysis, TempoSegment
 from stemlab.source_analysis import analyse_key, analyse_source
 
 
@@ -35,6 +35,13 @@ def test_source_analysis_detects_tempo_and_key(tmp_path, monkeypatch):
     beats = tuple(round(index * 0.5, 6) for index in range(16))
     downbeats = tuple(round(index * 2.0, 6) for index in range(4))
 
+    # The segment is part of the fixture rather than an extra: every real
+    # analysis of a track with sixteen beats reports one, and a fake without
+    # it never exercises the flattening in to_dict or the rebuild on the way
+    # back - which is how a cache-hit crash on segment.start reached a
+    # release with the suite green.
+    segments = (TempoSegment(start=0.0, end=7.5, bpm=120.0, beats=len(beats)),)
+
     def fake_beat_analysis(*_args, **_kwargs):
         return BeatAnalysis(
             bpm=120.0,
@@ -50,16 +57,24 @@ def test_source_analysis_detects_tempo_and_key(tmp_path, monkeypatch):
             model="final0",
             model_version="test-fixture",
             device="cpu",
+            tempo_segments=segments,
         )
 
     monkeypatch.setattr("stemlab.source_analysis.analyse_beats", fake_beat_analysis)
-    result = analyse_source(source, cache=AnalysisCache(tmp_path / "analysis.sqlite3"))
+    cache = AnalysisCache(tmp_path / "analysis.sqlite3")
+    result = analyse_source(source, cache=cache)
     assert result.bpm is not None
     assert 115.0 <= result.bpm <= 125.0
     assert result.key is not None
     assert result.key.endswith(("major", "minor"))
     assert len(result.beats) >= 8
     assert result.half_time_bpm < result.detected_bpm < result.double_time_bpm
+    assert result.tempo_segments == ({"start": 0.0, "end": 7.5, "bpm": 120.0},)
+
+    # Analysing the same file twice is the ordinary case, and the second
+    # answer comes out of the cache: it has to be the first one, segments
+    # and all, rather than a crash on the segments it stored as dicts.
+    assert analyse_source(source, cache=cache) == result
 
 
 def test_tonal_ensemble_prefers_g_minor_over_d_minor():

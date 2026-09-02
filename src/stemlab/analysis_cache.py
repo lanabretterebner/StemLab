@@ -21,8 +21,9 @@ def managed_analysis_dir() -> Path:
     """Return StemLab's private per-user analysis directory.
 
     The location lives in stemlab.paths now, with the recursive weights it
-    used to share ``~/.stemlab`` with. Kept as a name here because it is what
-    the rest of this module and its tests call.
+    used to share ``~/.stemlab`` with. Kept as a name here because it is
+    still what the rest of this module, midi, device, compile_support and
+    model_manager call; it goes when those four call analysis_dir() directly.
     """
     return analysis_dir()
 
@@ -64,8 +65,12 @@ class AnalysisCache:
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
+        # No "PRAGMA foreign_keys = ON" here any more. Neither table declares
+        # a foreign key, so it enforced nothing, and it ran before the try
+        # below - a connection that failed on it was left open rather than
+        # closed. It belongs back the moment a relation between the tables
+        # does, inside the guard.
         connection = sqlite3.connect(self.path, timeout=10.0)
-        connection.execute("PRAGMA foreign_keys = ON")
         try:
             with connection:
                 yield connection

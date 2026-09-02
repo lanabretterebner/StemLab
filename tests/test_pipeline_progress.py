@@ -9,78 +9,56 @@ job-level ETA that never counts only the current stage.
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
-import soundfile as sf
 
 import stemlab.pipeline as pipeline
 from stemlab.audio import STEM_NAMES
 from stemlab.pipeline import ENGINE_CHOICES, _JobProgress, separate
 
 
-def _write_stems(folder, sr=22050, seconds=0.25):
-    folder.mkdir(parents=True, exist_ok=True)
-    samples = int(sr * seconds)
-    tone = 0.1 * np.sin(np.linspace(0.0, 40.0, samples, dtype=np.float64))
-    for stem in STEM_NAMES:
-        sf.write(folder / f"{stem}.wav", np.stack([tone, tone], axis=1), sr)
-
-
-class _FakeBackend:
-    """Stands in for both model backends: emits progress/ETA, writes stems."""
-
-    def __init__(self, **kwargs):
-        self.progress_callback = kwargs.get("progress_callback")
-        self.eta_callback = kwargs.get("eta_callback")
-        self.download_callback = kwargs.get("download_callback")
-
-    def separate(self, input_path, output_dir):
-        for percent, remaining in ((0.0, 40.0), (25.0, 30.0), (50.0, 20.0), (100.0, 0.0)):
-            if self.progress_callback:
-                self.progress_callback(percent)
-            if self.eta_callback and remaining > 0.0:
-                self.eta_callback(remaining)
-        _write_stems(output_dir)
-
-
 @pytest.fixture()
-def fake_backends(monkeypatch):
-    monkeypatch.setattr(pipeline, "RoFormerBackend", _FakeBackend)
-    monkeypatch.setattr(pipeline, "DemucsBackend", _FakeBackend)
+def run_job(tmp_path, fake_backends, write_stems):
+    """Run one separation and hand back its progress reports and its ETAs.
 
+    The fake backends and the source file come with it, so each test below
+    names only what it varies: the engine, whether refinement runs, and - for
+    the tests that read the raw stream - a list to collect the log lines in.
+    """
 
-def _run(tmp_path, engine, refine, lines: list[str] | None = None):
-    source = tmp_path / "input.wav"
-    _write_stems(tmp_path / "srcdir")
-    (tmp_path / "srcdir" / "vocals.wav").replace(source)
+    def run(engine: str, refine: bool, lines: list[str] | None = None):
+        source = tmp_path / "input.wav"
+        write_stems(tmp_path / "srcdir")
+        (tmp_path / "srcdir" / "vocals.wav").replace(source)
 
-    reports: list[tuple[float, str]] = []
-    etas: list[float] = []
+        reports: list[tuple[float, str]] = []
+        etas: list[float] = []
 
-    def on_log(message: str) -> None:
-        if lines is not None:
-            lines.append(message)
+        def on_log(message: str) -> None:
+            if lines is not None:
+                lines.append(message)
 
-        if message.startswith("STEMLAB_ETA "):
-            etas.append(float(message.split()[1]))
+            if message.startswith("STEMLAB_ETA "):
+                etas.append(float(message.split()[1]))
 
-    separate(
-        input_path=source,
-        output_dir=tmp_path / "out",
-        engine=engine,
-        refine=refine,
-        device="cpu",
-        log_callback=on_log,
-        progress_callback=lambda percent, stage: reports.append((percent, stage)),
-    )
+        separate(
+            input_path=source,
+            output_dir=tmp_path / "out",
+            engine=engine,
+            refine=refine,
+            device="cpu",
+            log_callback=on_log,
+            progress_callback=lambda percent, stage: reports.append((percent, stage)),
+        )
 
-    return reports, etas
+        return reports, etas
+
+    return run
 
 
 @pytest.mark.parametrize("engine", ENGINE_CHOICES)
 @pytest.mark.parametrize("refine", (True, False))
-def test_progress_covers_and_never_rewinds(tmp_path, fake_backends, engine, refine):
-    reports, _ = _run(tmp_path, engine, refine)
+def test_progress_covers_and_never_rewinds(run_job, engine, refine):
+    reports, _ = run_job(engine, refine)
 
     percents = [percent for percent, _stage in reports]
 
@@ -97,8 +75,8 @@ def test_progress_covers_and_never_rewinds(tmp_path, fake_backends, engine, refi
 
 
 @pytest.mark.parametrize("engine", ENGINE_CHOICES)
-def test_stage_labels_name_work_in_progress(tmp_path, fake_backends, engine):
-    reports, _ = _run(tmp_path, engine, refine=True)
+def test_stage_labels_name_work_in_progress(run_job, engine):
+    reports, _ = run_job(engine, refine=True)
 
     labels = [stage for _percent, stage in reports]
 
@@ -118,8 +96,8 @@ def test_stage_labels_name_work_in_progress(tmp_path, fake_backends, engine):
 
 
 @pytest.mark.parametrize("engine", ENGINE_CHOICES)
-def test_eta_is_job_level(tmp_path, fake_backends, engine):
-    _, etas = _run(tmp_path, engine, refine=True)
+def test_eta_is_job_level(run_job, engine):
+    _, etas = run_job(engine, refine=True)
 
     assert etas, "model-stage estimates must reach the plugin"
 
@@ -133,12 +111,10 @@ def test_eta_is_job_level(tmp_path, fake_backends, engine):
 
 @pytest.mark.parametrize("engine", ENGINE_CHOICES)
 @pytest.mark.parametrize("refine", (True, False))
-def test_stem_ready_lines_share_the_stream_without_disturbing_it(
-    tmp_path, fake_backends, engine, refine
-):
+def test_stem_ready_lines_share_the_stream_without_disturbing_it(run_job, engine, refine):
     lines: list[str] = []
 
-    reports, etas = _run(tmp_path, engine, refine, lines=lines)
+    reports, etas = run_job(engine, refine, lines=lines)
 
     ready = [line for line in lines if line.startswith("STEMLAB_STEM_READY ")]
 
@@ -153,22 +129,12 @@ def test_stem_ready_lines_share_the_stream_without_disturbing_it(
     assert len([line for line in lines if line.startswith("STEMLAB_ETA ")]) == len(etas)
 
 
-class _DownloadingBackend(_FakeBackend):
-    """A backend whose model has to download before it can separate."""
+def test_first_use_downloads_are_named_and_stay_in_their_sliver(run_job, fake_backends):
+    # A model that is not on disk yet: the backends report a download before
+    # they report any separation at all.
+    fake_backends.download_percentages = (0.0, 50.0, 100.0)
 
-    def separate(self, input_path, output_dir):
-        for percent in (0.0, 50.0, 100.0):
-            if self.download_callback:
-                self.download_callback(percent)
-
-        super().separate(input_path, output_dir)
-
-
-def test_first_use_downloads_are_named_and_stay_in_their_sliver(tmp_path, monkeypatch):
-    monkeypatch.setattr(pipeline, "RoFormerBackend", _DownloadingBackend)
-    monkeypatch.setattr(pipeline, "DemucsBackend", _DownloadingBackend)
-
-    reports, _ = _run(tmp_path, "roformer", refine=False)
+    reports, _ = run_job("roformer", refine=False)
 
     downloads = [(percent, stage) for percent, stage in reports if "Downloading the" in stage]
 

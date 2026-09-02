@@ -81,7 +81,6 @@ namespace stemlab::widgets
 
         juce::TextButton downloadAllButton{"Download all"};
         juce::TextButton cancelButton{"Cancel"};
-        juce::TextButton closeButton{"Close"};
 
         juce::String unavailableReason;
 

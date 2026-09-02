@@ -136,9 +136,14 @@ juce::StringArray wrapTooltip(const juce::String& text, float maxWidth)
 StemLabLookAndFeel::StemLabLookAndFeel()
 {
     /*
-     * Publish the faces to the theme's font tokens: JUCE 9 resolves fonts
-     * without consulting getTypefaceForFont, so every FontOptions must
-     * carry its typeface explicitly (see theme::fonts::make).
+     * Publish the faces to the theme's font tokens: a Font that carries no
+     * typeface is resolved through the DEFAULT LookAndFeel's
+     * getTypefaceForFont - not through the one set on the component drawing
+     * it - and the answer is then cached process-wide against the font's
+     * name and style. Inside a host the default belongs to the host, so the
+     * override below would never be asked and the text would come back in
+     * the platform fallback; every FontOptions therefore carries its
+     * typeface explicitly (see theme::fonts::make).
      *
      * The tokens are also where the faces live for the process. Even the
      * from-memory registration below goes through the FreeType backend's
@@ -617,7 +622,14 @@ void StemLabLookAndFeel::drawTooltip(juce::Graphics& g, const juce::String& text
     // The wrapped case. The wrap is recomputed from the width actually
     // handed down rather than remembered, so a box the tooltip window
     // trimmed to fit the screen still draws the text that width holds.
-    const auto textArea = bounds.reduced(static_cast<float>(tooltipPadX), 0.0f);
+    //
+    // Measured off the full width, not off the half-pixel inset the border
+    // is drawn on: getTooltipBounds sized the box for a wrap at
+    // width - 2 * tooltipPadX, and wrapping one pixel narrower here can
+    // find a line the box has no room for, which is then clipped away.
+    const auto textArea = juce::Rectangle<float>(0.0f, 0.0f, static_cast<float>(width),
+                                                 static_cast<float>(height))
+                              .reduced(static_cast<float>(tooltipPadX), 0.0f);
     const auto lines = wrapTooltip(text, textArea.getWidth());
 
     const auto block = static_cast<float>(lines.size() * tooltipLineSpacing);
@@ -947,9 +959,9 @@ namespace stemlab::icons
     juce::Path magnifier(juce::Rectangle<float> b)
     {
         /*
-         * Stroked, unlike the palette beside it: a magnifier is a lens and a
-         * handle, and filling it would turn the lens into a solid dot.
-         * Drawn as an outline path so the caller can stroke it at any size.
+         * Stroked, not filled: a magnifier is a lens and a handle, and
+         * filling it would turn the lens into a solid dot. Drawn as an
+         * outline path so the caller can stroke it at any size.
          */
         const auto size = juce::jmin(b.getWidth(), b.getHeight());
         const auto lens = size * 0.62f;
@@ -966,31 +978,6 @@ namespace stemlab::icons
 
         p.startNewSubPath(centre.x + radius * diagonal, centre.y + radius * diagonal);
         p.lineTo(b.getX() + size * 0.96f, b.getY() + size * 0.96f);
-
-        return p;
-    }
-
-    juce::Path layers(juce::Rectangle<float> b)
-    {
-        // Diamond on top, two arcs (shallow chevrons) stacked below.
-        juce::Path p;
-
-        const float cx = b.getCentreX();
-        const float topH = b.getHeight() * 0.42f;
-
-        p.startNewSubPath(cx, b.getY());
-        p.lineTo(b.getRight(), b.getY() + topH * 0.5f);
-        p.lineTo(cx, b.getY() + topH);
-        p.lineTo(b.getX(), b.getY() + topH * 0.5f);
-        p.closeSubPath();
-
-        for (int i = 0; i < 2; ++i)
-        {
-            const float y = b.getY() + b.getHeight() * (0.62f + 0.20f * static_cast<float>(i));
-            p.startNewSubPath(b.getX(), y);
-            p.lineTo(cx, y + b.getHeight() * 0.16f);
-            p.lineTo(b.getRight(), y);
-        }
 
         return p;
     }

@@ -22,6 +22,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
+from stemlab import recursive
 from stemlab.recursive import (
     DEVERB_MODEL,
     DRUM_MODEL,
@@ -217,7 +218,11 @@ def test_every_split_asks_its_own_backend_and_conforms_the_result(split, model):
 
 def test_no_split_asks_for_a_rate_without_conforming_the_output():
     """Guards the pairing itself across the whole module."""
-    source = Path("src/stemlab/recursive.py").read_text(encoding="utf-8")
+    # The module as it was imported, rather than a path relative to whatever
+    # directory pytest was started in: the working-directory form failed
+    # outright from anywhere but the repository root, and against an installed
+    # StemLab it read the tree's copy instead of the code that runs.
+    source = inspect.getsource(recursive)
 
     assert source.count("_backend_sample_rate(") == 4  # one def, three calls
     assert source.count("_conform_sample_rate(") == 4

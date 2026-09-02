@@ -138,8 +138,6 @@ namespace stemlab::reaper
         PeakBuilder (const Api& api, const juce::Array<juce::File>& files);
         ~PeakBuilder() override;
 
-        bool isFinished() const noexcept { return finished; }
-
     private:
         void timerCallback() override;
         bool startNextFile();
@@ -154,7 +152,6 @@ namespace stemlab::reaper
         juce::Array<juce::File> pending;
         PCM_source* current = nullptr;
         int slicesOnCurrent = 0;
-        bool finished = false;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PeakBuilder)
     };

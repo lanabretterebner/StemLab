@@ -14,10 +14,12 @@
 #include "WaveformGrid.h"
 
 /**
- * One lane's waveform well: rounded ground-colored well, 2px rounded bars
- * from the real audio peaks in the selected palette's full color, and the
- * shared playhead. Clicks seek the shared transport; dragging exports the
- * stem file to any DAW or file manager.
+ * One lane's waveform well: a rounded ground-colored well, one bar per pixel
+ * column from the real audio peaks in the selected palette's full color, the
+ * beat grid behind them and the shared playhead over the top. Clicks seek the
+ * shared transport and a drag sweeps out this lane's loop range; carrying the
+ * stem file to a DAW or a folder belongs to the lane's own drag handle, since
+ * one gesture cannot both sweep a range and export a file.
  */
 class StemLaneWaveform final : public juce::Component
 {
@@ -309,7 +311,12 @@ public:
                       std::function<void(const juce::String&)> showChildMenu,
                       std::function<void(int, juce::String)> toggleExpanded);
 
-    ~StemLaneComponent() override = default;
+    /*  The deep listener the constructor registers is a member, so it dies
+        with this object; taking it back off the list first is what keeps
+        ~Component from being able to reach an object whose lifetime has
+        already ended.
+    */
+    ~StemLaneComponent() override { removeMouseListener(&descendantMouseRelay); }
 
     void refresh();
 
@@ -353,9 +360,42 @@ public:
     void mouseUp(const juce::MouseEvent&) override;
     void mouseEnter(const juce::MouseEvent&) override;
     void mouseExit(const juce::MouseEvent&) override;
-    void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
 private:
+    /*
+        Relays a descendant's mouse events to the lane.
+
+        The row's hover highlight needs every crossing into or out of a child
+        to count as a hover change for the row (see the constructor), which
+        means listening deeply. The lane used to register ITSELF for that, and
+        a component that is its own listener is told about its OWN events
+        twice - once through the virtual, once through the listener list.
+        Every override here is idempotent under that except the wheel, which
+        is not an override at all but Component's default forward to the
+        nearest enabled ancestor: called twice it scrolled the lane list two
+        rows per notch wherever the pointer sat on the lane's own pixels
+        rather than on one of its children.
+
+        A separate listener fixes it by omission. It carries the four events
+        the row actually wants from its children and simply does not
+        implement mouseWheelMove, so a wheel reaches the lane exactly once -
+        through the virtual for the lane's own pixels, and through
+        Component::mouseWheelMove's walk up the parents for a child's.
+    */
+    struct DescendantMouseRelay final : public juce::MouseListener
+    {
+        explicit DescendantMouseRelay(StemLaneComponent& laneIn) : lane(laneIn) {}
+
+        void mouseEnter(const juce::MouseEvent& event) override { lane.mouseEnter(event); }
+        void mouseExit(const juce::MouseEvent& event) override { lane.mouseExit(event); }
+        void mouseDrag(const juce::MouseEvent& event) override { lane.mouseDrag(event); }
+        void mouseUp(const juce::MouseEvent& event) override { lane.mouseUp(event); }
+
+        StemLaneComponent& lane;
+    };
+
+    DescendantMouseRelay descendantMouseRelay{*this};
+
     StemLabAudioProcessor& processor;
     int stemIndex;
     juce::String childId;
@@ -381,7 +421,6 @@ private:
         out instead of leaving a handle that drags the wrong file. */
     bool midiHandleShown = false;
     std::unique_ptr<stemlab::widgets::IconButton> menuButton;
-    bool hasChildren = false;
     bool externalDragStarted = false;
     bool hiddenDescendantActive = false;
     bool hiddenDescendantSoloed = false;
@@ -481,7 +520,6 @@ private:
 
     /** Show the job output folder in the desktop's file manager. */
     void revealJobFolder();
-    void showSettingsMenu();
     void showStandaloneAudioSettings();
 
     /** Ask for the beat grid's tempo, and switch to the manual grid on OK. */
@@ -534,6 +572,18 @@ private:
 
     std::map<std::pair<int, int>, juce::Image> glowCache;
 
+    /*  The editor size glowCache was last emptied for.
+
+        The glows are keyed by the size of the button they sit behind, and
+        those bounds live in panelContent's design coordinates - a window
+        resize only moves the transform, so a relayout at any size hands the
+        cache back the very keys it already holds. Emptying it on every
+        resized() therefore threw the Gaussian blurs away for nothing, and
+        the next paint re-ran the ones the cache exists to avoid.
+    */
+    int glowCacheWidth = -1;
+    int glowCacheHeight = -1;
+
     /** Lays out the footer status line and progress row; the rows rearrange
         when a job starts or ends, so it runs on every status refresh. */
     void layoutStatusArea();
@@ -549,8 +599,10 @@ private:
     /** Include or exclude every lane, roots and adaptive children alike. */
     void setAllLanesIncluded(bool included);
 
-    /** How many lanes are included, and how many there are. */
-    std::pair<int, int> laneSelectionCounts() const;
+    /** How many lanes are included, and how many there are. Takes the tick's
+        already-fetched tree, so it costs no second lock-and-copy. */
+    std::pair<int, int>
+    laneSelectionCounts(const std::vector<StemLabRecursiveStemInfo>& all) const;
 
     /** Move the shared waveform zoom by whole detents. */
     void stepWaveformZoom(int delta);
@@ -577,7 +629,18 @@ private:
         getRecursiveStemItems() rather than a second lock-and-copy. */
     std::vector<StemLabRecursiveStemInfo>
     getVisibleRecursiveItems(const std::vector<StemLabRecursiveStemInfo>& all) const;
-    void syncLanes();
+
+    /** Brings the child lanes level with the processor's stem tree, and hands
+        that tree back: it is the one fetch the whole tick is meant to share,
+        and everything below here that needs the tree takes it from the
+        return value rather than asking the processor again. */
+    std::vector<StemLabRecursiveStemInfo> syncLanes();
+
+    /** One lane, wired to the editor. Root lanes and adaptive child lanes
+        carry the same four callbacks, the same zoom stepper and the same
+        seek relay, and differ only in which of the first two arguments they
+        are built with, so the wiring lives here rather than at both sites. */
+    std::unique_ptr<StemLaneComponent> makeLane(int stemIndex, juce::String childId);
 
     juce::String jobSummaryLine() const;
     juce::String displayPath(const juce::File& directory) const;
@@ -670,6 +733,22 @@ private:
     stemlab::widgets::RecordButton recordSystemButton{"Record PC"};
     stemlab::widgets::RecordButton recordInputButton{"Record In"};
     stemlab::widgets::SeparateSplitControl separateControl;
+
+    /** What Analyse last read. The strip sizes that pill from its own text,
+        so the text is one of the three things that can move the source
+        strip's layout - and a relayout is a full editor layout, which is far
+        too dear to run on every tick just in case. */
+    juce::String lastAnalyseButtonText;
+
+    /*  The last file name measured against the last width it was measured
+        in, and what that measurement said. Shaping a whole name through
+        GlyphArrangement - to decide whether it needs the path in a tooltip -
+        is the same waste the footer path below avoids, for a string that
+        only changes when a different source is loaded.
+    */
+    juce::String lastFileNameMeasured;
+    int lastFileNameLabelWidth = -1;
+    bool lastFileNameClipped = false;
 
     // Lanes. The waveform cache lives on the processor so profiles survive
     // the editor - reopening the window does not re-read and re-FFT every

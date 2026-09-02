@@ -92,17 +92,6 @@ juce::String formatBpmForDisplay(double bpm)
     return juce::String(bpm, 2).trimCharactersAtEnd("0");
 }
 
-// Settings-menu ids: 1..5 are the fixed entries.
-constexpr int gridModeMenuBase = 400;
-constexpr int manualTempoId = 405;
-constexpr int analysisModeMenuBase = 410;
-constexpr int tempoMenuBase = 420;
-constexpr int analysisEnableId = 430;
-constexpr int analysisClearCacheId = 432;
-constexpr int versionItemId = 440;
-constexpr int modelManagerId = 441;
-constexpr int fusedNormaliseId = 442;
-
 // Lane-menu ids for MIDI, above the per-menu action ids.
 constexpr int midiConvertId = 500;
 constexpr int midiAuditionId = 501;
@@ -159,6 +148,20 @@ juce::String stemDisplayName(int index)
 {
     const auto name = StemLabAudioProcessor::getStemName(index);
     return name.substring(0, 1).toUpperCase() + name.substring(1);
+}
+
+/** Which root lane an adaptive item's rootStem name belongs to, or -1.
+
+    The name comes out of the engine's manifest and is matched
+    case-insensitively wherever it is read, which is why this is a search
+    rather than an index. */
+int rootIndexForStemName(const juce::String& rootStem)
+{
+    for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
+        if (StemLabAudioProcessor::getStemName(i).equalsIgnoreCase(rootStem))
+            return i;
+
+    return -1;
 }
 
 } // namespace
@@ -629,6 +632,17 @@ void StemLaneWaveform::paint(juce::Graphics& g)
         transportLength > 0.0 ? juce::jlimit(0.0, 1.0, transportPosition / transportLength)
                               : -1.0;
 
+    /*  What this paint is actually allowed to touch.
+
+        A repaint that only follows the playhead clips to the two 9 px strips
+        it left and entered (see timerRefresh). The column image is one blit
+        and JUCE clips it for free, but everything else below here is drawn
+        per item - a rule and a shaped number per grid line, a rounded
+        rectangle per note - and would otherwise be built in full for the
+        sake of eighteen pixels, on every tick of every playing lane.
+    */
+    const auto clip = g.getClipBounds().toFloat();
+
     // Beat grid behind the waveform: bars read stronger than beats, and the
     // whole thing stays subordinate to the audio it sits behind. The rules
     // draw here; the numbers are only gathered, and go on after the audio.
@@ -712,6 +726,30 @@ void StemLaneWaveform::paint(juce::Graphics& g)
 
                     if (x < inner.getX() || x > inner.getRight())
                         continue;
+
+                    /*  Outside this paint's clip there is nothing to draw and
+                        nothing to measure. The window reaches back only as
+                        far as a line whose number could still lean into the
+                        clip: the rule sits at x and its number runs to the
+                        right of it, so a line just off the left edge can
+                        still owe one.
+
+                        The reach is the label rect doubled rather than the
+                        rect itself, because the plate behind the number is
+                        sized from the text's own ink (ink +
+                        gridLabelPlatePadding, see below) and a long
+                        "1024.4" at high zoom outgrows the 26 px rect the
+                        glyphs are laid into. Reaching back by the rect alone
+                        would drop that line, and the strip repaint would
+                        leave the waveform showing through where its plate
+                        should be. One extra line kept per paint is cheaper
+                        than getting that wrong.
+                    */
+                    if (x > clip.getRight() ||
+                        x + 2.0f + 2.0f * lanes::gridLabelWidth < clip.getX())
+                    {
+                        continue;
+                    }
 
                     /*  Three weights, not two: subdivisions only appear once
                         a beat is wide enough to hold them, and at this alpha
@@ -862,6 +900,11 @@ void StemLaneWaveform::paint(juce::Graphics& g)
             // at 64x zoomed out is the whole part.
             const auto width = juce::jmax(1.0f, x2 - x1);
 
+            // A busy stem carries thousands of these, and a playhead-strip
+            // repaint has room for a handful of them.
+            if (x1 > clip.getRight() || x1 + width < clip.getX())
+                continue;
+
             const auto fromTop = static_cast<float>(highest - note.pitch) / span;
             const auto y = band.getY() + fromTop * (band.getHeight() - rowHeight);
 
@@ -1006,6 +1049,12 @@ bool StemLaneWaveform::timerRefresh()
         now.gridDenominator == lastDisplay.gridDenominator &&
         now.useDetectedBeats == lastDisplay.useDetectedBeats &&
         now.beatRevision == lastDisplay.beatRevision &&
+        // The transcription is part of the picture too. Without this a
+        // conversion landing, or a re-conversion, changed only what the next
+        // paint would draw - and nothing asked for one, so the new notes
+        // appeared a strip at a time behind the playhead, or not at all on a
+        // stopped transport.
+        now.midiNoteCount == lastDisplay.midiNoteCount &&
         now.selectionActive == lastDisplay.selectionActive &&
         juce::exactlyEqual(now.selectionStart, lastDisplay.selectionStart) &&
         juce::exactlyEqual(now.selectionEnd, lastDisplay.selectionEnd);
@@ -1140,6 +1189,17 @@ void StemLaneWaveform::mouseUp(const juce::MouseEvent& event)
     if (event.getDistanceFromDragStart() >= theme::metrics::waveform::clickVersusDragThreshold)
         return;
 
+    /*
+     * A well is enabled as soon as the job is done and its file is on disk,
+     * which is before the cache has finished analysing it. Without a profile
+     * normalisedForX has no length to map the pointer into and answers 0, so
+     * a click anywhere in a still-blank well threw the shared transport - and
+     * every other lane with it - back to 0:00. The same test normalisedForX
+     * makes, so a click it could only answer with a lie does nothing instead.
+     */
+    if (profile == nullptr || !(profile->lengthSeconds > 0.0))
+        return;
+
     processor.transportSeekNormalised(normalisedForX(event.mouseDownPosition.x));
     timerRefresh();
 
@@ -1231,11 +1291,12 @@ StemLaneComponent::StemLaneComponent(StemLabAudioProcessor& processorIn, int ste
      * lit and the new one dark. Listening deeply makes every crossing into
      * or out of a child count as a hover change for the row.
      *
-     * The price: every mouse override on this class now fires for every
+     * The price: the four events the relay carries now fire for every
      * descendant's events, and twice for the lane's own. Keep them all
-     * idempotent.
+     * idempotent. The relay is what keeps the wheel out of that bargain -
+     * see DescendantMouseRelay.
      */
-    addMouseListener(this, true);
+    addMouseListener(&descendantMouseRelay, true);
 
     twisty.onClick = [this]
     {
@@ -1398,8 +1459,6 @@ StemLaneComponent::StemLaneComponent(StemLabAudioProcessor& processorIn, int ste
 void StemLaneComponent::setChildState(bool laneHasChildren, bool expanded,
                                       bool hiddenActivity, bool hiddenSolo)
 {
-    hasChildren = laneHasChildren;
-
     twisty.setExpanded(expanded);
     twisty.setVisible(laneHasChildren);
 
@@ -1451,7 +1510,15 @@ void StemLaneComponent::setChildInfo(const StemLabRecursiveStemInfo& info)
         waveform->setSelectionId(info.id);
     }
 
-    refresh();
+    /*
+     * No refresh() from here. syncLanes() calls this for every child lane on
+     * every UI tick and refreshFromProcessor() then walks the same lanes and
+     * refreshes them, so a trailing refresh here made each child lane pay for
+     * two - two rounds of processor queries and, because a child lane is the
+     * one kind that has to stat its own file, two stats per lane per tick.
+     * Every path that reaches syncLanes() ends in refreshFromProcessor(), so
+     * the lane is still brought up to date inside the same call.
+     */
 }
 
 void StemLaneComponent::mouseDrag(const juce::MouseEvent& event)
@@ -1528,35 +1595,6 @@ void StemLaneComponent::mouseUp(const juce::MouseEvent&)
 
 void StemLaneComponent::mouseEnter(const juce::MouseEvent&) { updateHover(); }
 void StemLaneComponent::mouseExit(const juce::MouseEvent&) { updateHover(); }
-
-void StemLaneComponent::mouseWheelMove(const juce::MouseEvent& event,
-                                       const juce::MouseWheelDetails& wheel)
-{
-    /*
-     * Listening deeply for the row's hover highlight (see the constructor)
-     * has JUCE replay every descendant's mouse event here as well - the
-     * wheel included, through MouseListenerList::sendMouseEvent. The
-     * descendant's own chain has already decided what the wheel meant: the
-     * waveform well zooms and consumes it, and anything else forwards it to
-     * the viewport. Component::mouseWheelMove then forwarded the replay to
-     * the viewport a second time, so a wheel over the well zoomed AND
-     * scrolled the lane list, and a wheel anywhere else on the lane scrolled
-     * it twice over.
-     *
-     * Only the lane's own events carry on up. The replays are already spoken
-     * for, and eventComponent still names the component the wheel actually
-     * landed on (HierarchyChecker keeps it there while that component is
-     * alive), so the two are told apart by asking.
-     *
-     * It took a deep enough stem tree to make the list scrollable before any
-     * of this was visible - with everything on screen the extra scroll had
-     * nowhere to go.
-     */
-    if (event.eventComponent != this)
-        return;
-
-    Component::mouseWheelMove(event, wheel);
-}
 
 void StemLaneComponent::updateHover()
 {
@@ -2000,7 +2038,12 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
         theme::metrics::header::settingsRadius, true, true);
 
     settingsButton->setTooltip("Settings");
-    settingsButton->onClick = [this] { showSettingsMenu(); };
+
+    // The gear opens the settings window, not a menu: everything the old menu
+    // held is a page in it, and a setting you can see beats one you have to go
+    // looking for.
+    settingsButton->onClick = [this]
+    { showSettingsPanel(stemlab::widgets::SettingsPanel::Page::settings); };
     panelContent.addAndMakeVisible(*settingsButton);
 
     /*
@@ -2250,19 +2293,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
     for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
     {
-        rootLanes[static_cast<size_t>(i)] = std::make_unique<StemLaneComponent>(
-            processor, i, juce::String{}, waveformProfiles,
-            [this] { refreshFromProcessor(); },
-            [this](int stemIndex) { showRootLayersMenu(stemIndex); },
-            [this](const juce::String& id) { showChildLayersMenu(id); },
-            [this](int stemIndex, juce::String id) { toggleLaneExpanded(stemIndex, id); });
-
-        rootLanes[static_cast<size_t>(i)]->setZoomStepHandler(
-            [this](int delta) { stepWaveformZoom(delta); });
-
-        rootLanes[static_cast<size_t>(i)]->setTransportSeekHandler(
-            [this] { handleTransportMoved(); });
-
+        rootLanes[static_cast<size_t>(i)] = makeLane(i, {});
         laneContent.addAndMakeVisible(*rootLanes[static_cast<size_t>(i)]);
     }
 
@@ -2733,9 +2764,20 @@ void StemLabAudioProcessorEditor::resized()
     if (settingsButton == nullptr || zoomResetButton == nullptr)
         return;
 
-    // Buttons take new sizes with the layout, so cached glows for the old
-    // ones would only pile up.
-    glowCache.clear();
+    /*
+        Only when the window itself moved. Cached glows are keyed by the size
+        of the button they sit behind, so a relayout at the same window size
+        asks for the very keys the cache already holds - and emptying it
+        anyway made the next paint re-run the Gaussian blurs it exists to
+        avoid. It is still emptied here rather than never, because a glow for
+        a size nothing draws any more would only pile up.
+    */
+    if (getWidth() != glowCacheWidth || getHeight() != glowCacheHeight)
+    {
+        glowCacheWidth = getWidth();
+        glowCacheHeight = getHeight();
+        glowCache.clear();
+    }
 
     namespace window = theme::metrics::window;
 
@@ -3208,6 +3250,22 @@ void StemLabAudioProcessorEditor::layoutLanes()
     }
 }
 
+std::unique_ptr<StemLaneComponent> StemLabAudioProcessorEditor::makeLane(int stemIndex,
+                                                                        juce::String childId)
+{
+    auto lane = std::make_unique<StemLaneComponent>(
+        processor, stemIndex, std::move(childId), waveformProfiles,
+        [this] { refreshFromProcessor(); },
+        [this](int index) { showRootLayersMenu(index); },
+        [this](const juce::String& id) { showChildLayersMenu(id); },
+        [this](int index, juce::String id) { toggleLaneExpanded(index, id); });
+
+    lane->setZoomStepHandler([this](int delta) { stepWaveformZoom(delta); });
+    lane->setTransportSeekHandler([this] { handleTransportMoved(); });
+
+    return lane;
+}
+
 std::vector<StemLabRecursiveStemInfo> StemLabAudioProcessorEditor::getVisibleRecursiveItems(
     const std::vector<StemLabRecursiveStemInfo>& all) const
 {
@@ -3216,10 +3274,7 @@ std::vector<StemLabRecursiveStemInfo> StemLabAudioProcessorEditor::getVisibleRec
 
     for (const auto& item : all)
     {
-        int rootIndex = -1;
-        for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
-            if (StemLabAudioProcessor::getStemName(i).equalsIgnoreCase(item.rootStem))
-                rootIndex = i;
+        const auto rootIndex = rootIndexForStemName(item.rootStem);
 
         if (rootIndex >= 0 && !rootExpanded[static_cast<size_t>(rootIndex)])
             continue;
@@ -3239,11 +3294,30 @@ std::vector<StemLabRecursiveStemInfo> StemLabAudioProcessorEditor::getVisibleRec
     return visible;
 }
 
-void StemLabAudioProcessorEditor::syncLanes()
+std::vector<StemLabRecursiveStemInfo> StemLabAudioProcessorEditor::syncLanes()
 {
     // One fetch for the whole tick: getRecursiveStemItems takes a lock,
-    // copies the vector and re-orders it, and this runs at 20 Hz.
-    const auto all = processor.getRecursiveStemItems();
+    // copies the vector and re-orders it, and this runs at 20 Hz. It is
+    // handed back to the caller rather than re-fetched further down the
+    // refresh, which is what the promise above used to mean and did not.
+    // Not const, so handing it back is a move rather than a second copy.
+    auto all = processor.getRecursiveStemItems();
+
+    /*
+     * Collapse state is the editor's own, and it outlived the tree it
+     * describes: a new job clears the processor's items but the ids the next
+     * job builds are made from the same stem names, so a row collapsed
+     * before a re-split came back already hidden, with no twisty on screen
+     * yet to say why. An empty tree is the one moment that state can be
+     * dropped without losing a collapse anyone still cares about - with no
+     * children there is nothing collapsed and nothing to collapse.
+     */
+    if (all.empty())
+    {
+        collapsedRecursiveIds.clearQuick();
+        rootExpanded.fill(true);
+    }
+
     const auto items = getVisibleRecursiveItems(all);
 
     /*
@@ -3288,9 +3362,10 @@ void StemLabAudioProcessorEditor::syncLanes()
             // Canonicalise: rootStem comes from the manifest and is matched
             // case-insensitively everywhere else in this file, while
             // StringArray::contains below is case-sensitive.
-            for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
-                if (StemLabAudioProcessor::getStemName(i).equalsIgnoreCase(item.rootStem))
-                    owner = StemLabAudioProcessor::getStemName(i);
+            const auto rootIndex = rootIndexForStemName(item.rootStem);
+
+            if (rootIndex >= 0)
+                owner = StemLabAudioProcessor::getStemName(rootIndex);
         }
 
         if (owner.isEmpty())
@@ -3323,19 +3398,12 @@ void StemLabAudioProcessorEditor::syncLanes()
 
         for (const auto& item : items)
         {
-            auto lane = std::make_unique<StemLaneComponent>(
-                processor, -1, item.id, waveformProfiles,
-                [this] { refreshFromProcessor(); },
-                [this](int stemIndex) { showRootLayersMenu(stemIndex); },
-                [this](const juce::String& id) { showChildLayersMenu(id); },
-                [this](int stemIndex, juce::String id) { toggleLaneExpanded(stemIndex, id); });
+            auto lane = makeLane(-1, item.id);
 
             lane->setChildInfo(item);
             lane->setChildState(item.hasChildren, isLaneExpanded(-1, item.id),
                                 hiddenActiveParents.contains(item.id),
                                 hiddenSoloParents.contains(item.id));
-            lane->setZoomStepHandler([this](int delta) { stepWaveformZoom(delta); });
-            lane->setTransportSeekHandler([this] { handleTransportMoved(); });
             laneContent.addAndMakeVisible(*lane);
             childLanes.push_back(std::move(lane));
         }
@@ -3353,6 +3421,8 @@ void StemLabAudioProcessorEditor::syncLanes()
                                          hiddenSoloParents.contains(items[i].id));
         }
     }
+
+    return all;
 }
 
 void StemLabAudioProcessorEditor::showRootLayersMenu(int stemIndex)
@@ -3796,7 +3866,14 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     const auto jobDone = processor.hasSuccessfulJob();
     const auto nowMs = juce::Time::getMillisecondCounter();
 
-    syncLanes();
+    /*
+     * The stem tree, once, for the whole refresh. It cost a lock, a copy and
+     * a quadratic re-ordering per ask, and this function used to ask nine
+     * times a tick - once here, once for the selection counts, once per root
+     * lane to find out whether it had children, and once more for a count the
+     * selection counts had already worked out.
+     */
+    const auto recursiveItems = syncLanes();
 
     // ------------------------------------------------------------- header
 
@@ -3805,7 +3882,7 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
      * pills and the readout stay dark until then - "0 of 6 stems will be
      * saved" over six empty lanes is noise, not information.
      */
-    const auto [includedLanes, totalLanes] = laneSelectionCounts();
+    const auto [includedLanes, totalLanes] = laneSelectionCounts(recursiveItems);
 
     const bool lanesLive = jobDone && !engineRunning && !capturing;
 
@@ -3953,7 +4030,81 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     // File block.
     juce::String fileName, fileMeta;
 
-    if (processor.isAwaitingAbletonSourceClip())
+    const auto awaitingClip = processor.isAwaitingAbletonSourceClip();
+
+    /*
+     * Analyse and Set BPM act on the source named beside them, so they come
+     * and go with it. Both were made visible inside the "a source is loaded"
+     * branch below and never hidden again, which left the pair standing over
+     * "No audio loaded" once a source had been unloaded or a capture started
+     * over it - Analyse offering to analyse nothing. Decided once, above the
+     * chain, so every branch has an answer.
+     */
+    const bool sourceControlsVisible = captureExists && !capturing && !awaitingClip;
+
+    /*  Only where there is an API that can actually write the tempo.
+        The standalone has no host at all, and a plain VST3 host has no
+        way to be told a tempo - so in both the button could never do
+        anything, and a control that is permanently dead is worse than
+        no control. Where it can work but has nothing to write yet, it
+        is greyed instead (below).
+    */
+    const auto tempoHost =
+        !processor.isStandaloneApp()
+        && (processor.getHostIntegration() == StemLabAudioProcessor::hostIntegrationReaper
+            || processor.getHostIntegration()
+                   == StemLabAudioProcessor::hostIntegrationAbletonLive);
+
+    const bool showHostTempoButton = sourceControlsVisible && tempoHost;
+
+    /*  isSourceAnalysisRunning, not isBeatThisEnabled. The second is the
+        setting - analysis is switched on for this source - and it stays
+        true once the analysis has finished, which is why the old row read
+        "Stop" forever after the first run. The first is the job.
+    */
+    const auto analysing = processor.isSourceAnalysisRunning();
+
+    const juce::String analyseText{analysing ? "Stop" : "Analyse"};
+
+    /*
+     * The source strip's layout depends on exactly these three: which of the
+     * pair is on screen, and how wide the Analyse pill's own text makes it
+     * (layoutPanel measures the text to size the pill). So a relayout is
+     * worth its cost only when one of them moves.
+     *
+     * It used to run on every tick that had a source loaded, which is twenty
+     * full editor layouts a second: about a hundred components repositioned,
+     * both header labels re-shaped, and glowCache emptied - so every paint
+     * that followed re-ran the DropShadow blurs the cache exists to avoid.
+     * All of it for a strip that only changes when somebody clicks something.
+     */
+    const bool sourceStripMoved = analyseButton.isVisible() != sourceControlsVisible ||
+                                  hostTempoButton.isVisible() != showHostTempoButton ||
+                                  analyseText != lastAnalyseButtonText;
+
+    lastAnalyseButtonText = analyseText;
+
+    // Out of the settings window and onto the line it describes: Analyse acts
+    // on this source, and it is the one control there anybody reaches for
+    // repeatedly.
+    analyseButton.setVisible(sourceControlsVisible);
+    analyseButton.setButtonText(analyseText);
+    analyseButton.setEnabled(analysing || !engineRunning);
+
+    hostTempoButton.setVisible(showHostTempoButton);
+
+    /*  Greyed rather than hidden without an analysis: the button is where the
+        tempo goes, and hiding it would leave no sign that it is. Only asked
+        for while it is on screen, because canSetHostTempo takes the
+        processor's state lock to look at what the analysis found.
+    */
+    if (showHostTempoButton)
+        hostTempoButton.setEnabled(processor.canSetHostTempo());
+
+    if (sourceStripMoved)
+        resized();
+
+    if (awaitingClip)
     {
         fileName = "Reading Live clip...";
     }
@@ -3987,39 +4138,6 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
         }
 
         fileMeta = parts.joinIntoString(" · ");
-
-        /*  Only where there is an API that can actually write the tempo.
-            The standalone has no host at all, and a plain VST3 host has no
-            way to be told a tempo - so in both the button could never do
-            anything, and a control that is permanently dead is worse than
-            no control. Where it can work but has nothing to write yet, it
-            is greyed instead (below).
-        */
-        const auto tempoHost =
-            !processor.isStandaloneApp()
-            && (processor.getHostIntegration() == StemLabAudioProcessor::hostIntegrationReaper
-                || processor.getHostIntegration()
-                       == StemLabAudioProcessor::hostIntegrationAbletonLive);
-
-        hostTempoButton.setVisible(tempoHost);
-
-        // Out of the settings window and onto the line it describes: it acts
-        // on this source, and it is the one control there anybody reaches for
-        // repeatedly.
-        /*  isSourceAnalysisRunning, not isBeatThisEnabled. The second is the
-            setting - analysis is switched on for this source - and it stays
-            true once the analysis has finished, which is why the old row read
-            "Stop" forever after the first run. The first is the job.
-        */
-        const auto analysing = processor.isSourceAnalysisRunning();
-
-        analyseButton.setButtonText(analysing ? "Stop" : "Analyse");
-        analyseButton.setVisible(true);
-        analyseButton.setEnabled(analysing || !processor.isEngineRunning());
-        // Greyed rather than hidden without an analysis: the button is where
-        // the tempo goes, and hiding it would leave no sign that it is.
-        hostTempoButton.setEnabled(processor.canSetHostTempo());
-        resized();
     }
     else
     {
@@ -4060,17 +4178,30 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
      * squeezed 120-character name is no more readable than a clipped one.
      */
     {
-        const juce::Font nameFont{theme::fonts::bodyMedium()};
+        const auto available =
+            fileNameLabel.getWidth() - fileNameLabel.getBorderSize().getLeftAndRight();
 
-        const auto available = static_cast<float>(
-            fileNameLabel.getWidth() - fileNameLabel.getBorderSize().getLeftAndRight());
+        /*  Measured only when there is something new to measure, the same way
+            the footer path below is. Constructing a Font and shaping a whole
+            name through GlyphArrangement is not free, and this runs on every
+            refresh for two values that move when a different source is loaded
+            or the window is resized - which is to say almost never.
+        */
+        if (fileName != lastFileNameMeasured || available != lastFileNameLabelWidth)
+        {
+            lastFileNameMeasured = fileName;
+            lastFileNameLabelWidth = available;
 
-        const bool clipped =
-            available > 0.0f &&
-            juce::GlyphArrangement::getStringWidth(nameFont, fileName) > available;
+            const juce::Font nameFont{theme::fonts::bodyMedium()};
 
-        fileNameLabel.setTooltip(clipped && captureExists ? captureFile.getFullPathName()
-                                                          : juce::String());
+            lastFileNameClipped =
+                available > 0 && juce::GlyphArrangement::getStringWidth(nameFont, fileName) >
+                                     static_cast<float>(available);
+        }
+
+        fileNameLabel.setTooltip(lastFileNameClipped && captureExists
+                                     ? captureFile.getFullPathName()
+                                     : juce::String());
     }
 
     // ---------------------------------------------------------- transport
@@ -4122,11 +4253,21 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
 
     // --------------------------------------------------------------- lanes
 
+    /*  Which roots have adaptive children, from the tree this tick already
+        holds. rootHasChildren() answers the same question by fetching the
+        whole tree again, once per root, and the loop below asks it six times.
+    */
+    std::array<bool, StemLabAudioProcessor::stemCount> rootHasChildLanes{};
+
+    for (const auto& item : recursiveItems)
+        if (const auto rootIndex = rootIndexForStemName(item.rootStem); rootIndex >= 0)
+            rootHasChildLanes[static_cast<size_t>(rootIndex)] = true;
+
     for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
     {
         if (auto* lane = rootLanes[static_cast<size_t>(i)].get())
         {
-            const bool hasChildren = rootHasChildren(i);
+            const bool hasChildren = rootHasChildLanes[static_cast<size_t>(i)];
             const auto rootName = StemLabAudioProcessor::getStemName(i);
 
             // syncLanes() ran first this tick, so the hidden-activity sets
@@ -4273,7 +4414,15 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     // so it follows every refresh.
     layoutStatusArea();
 
-    const auto jobPath = displayPath(processor.getJobRootDirectory());
+    /*  One resolution for the refresh. getJobRootDirectory takes the
+        processor's state lock and stats its directory, and on Linux the
+        fallback it returns re-reads ~/.config/user-dirs.dirs to find out
+        where the user's Music folder is - twice a tick, for a path that
+        changes when somebody picks a different job folder.
+    */
+    const auto jobRoot = processor.getJobRootDirectory();
+
+    const auto jobPath = displayPath(jobRoot);
 
     pathLabel.setText(jobPath, juce::dontSendNotification);
 
@@ -4321,23 +4470,15 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     {
         // The path is only meaningful once there is a folder to point at,
         // and the icon should not invite a click that opens nothing.
-        openFolderButton->setEnabled(processor.getJobRootDirectory().isDirectory());
+        openFolderButton->setEnabled(jobRoot.isDirectory());
     }
 
     changeFolderButton.setEnabled(!engineRunning);
 
-    int selectedCount = 0;
-
-    for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
-        if (processor.isStemEnabled(i))
-            ++selectedCount;
-
-    for (const auto& item : processor.getRecursiveStemItems())
-        if (item.selected)
-            ++selectedCount;
-
-    saveButton.setEnabled(jobDone && !engineRunning && !capturing && selectedCount > 0);
-    insertButton.setEnabled(jobDone && !engineRunning && !capturing && selectedCount > 0);
+    // includedLanes, not a second count of its own: laneSelectionCounts works
+    // out exactly this above, over the same roots and the same children.
+    saveButton.setEnabled(jobDone && !engineRunning && !capturing && includedLanes > 0);
+    insertButton.setEnabled(jobDone && !engineRunning && !capturing && includedLanes > 0);
     retryButton.setEnabled(jobDone && !engineRunning);
 
     const bool primaryGlow =
@@ -4643,7 +4784,8 @@ void StemLabAudioProcessorEditor::stepSeparatorEngine(int delta)
     setSeparatorEngine((processor.getSeparatorEngineIndex() + delta + count) % count);
 }
 
-std::pair<int, int> StemLabAudioProcessorEditor::laneSelectionCounts() const
+std::pair<int, int> StemLabAudioProcessorEditor::laneSelectionCounts(
+    const std::vector<StemLabRecursiveStemInfo>& all) const
 {
     int included = 0;
     int total = 0;
@@ -4660,12 +4802,16 @@ std::pair<int, int> StemLabAudioProcessorEditor::laneSelectionCounts() const
      * Every adaptive child counts, whether or not its lane is on screen: a
      * collapsed twisty hides the row, not the stem, and the job carries it
      * forward either way.
+     *
+     * Straight off the passed-in tree: item.selected is the very field
+     * isRecursiveStemEnabled looks the id up to return, so asking would be
+     * one lock and one linear search per child for an answer already in hand.
      */
-    for (const auto& item : processor.getRecursiveStemItems())
+    for (const auto& item : all)
     {
         ++total;
 
-        if (processor.isRecursiveStemEnabled(item.id))
+        if (item.selected)
             ++included;
     }
 
@@ -4739,14 +4885,6 @@ void StemLabAudioProcessorEditor::showEngineMenu()
                        });
 }
 
-void StemLabAudioProcessorEditor::showSettingsMenu()
-{
-    // Kept as the entry point the gear button calls, but it opens the window
-    // rather than a menu now: everything the menu held is a page in it, and a
-    // setting you can see beats one you have to go looking for.
-    showSettingsPanel(stemlab::widgets::SettingsPanel::Page::settings);
-}
-
 namespace
 {
     /*  The settings page's palette order mapped onto the theme's indices.
@@ -4755,6 +4893,21 @@ namespace
         One table, read in both directions, so the two cannot drift apart.
     */
     constexpr int waveformPalettePages[] = {2, 3, 4, 1, 0};
+
+    /*  The same arrangement for the two rows below, and for the same reason:
+        wireSettingsPage reads them forwards to turn a click into a processor
+        value, refreshSettingsPage reads them backwards to put the processor's
+        value back on the page. Held once so a row reordered on the page
+        cannot leave the two halves disagreeing about what index three means.
+    */
+    constexpr int gridModePages[] = {StemLabAudioProcessor::gridHost,
+                                     StemLabAudioProcessor::gridSource,
+                                     StemLabAudioProcessor::gridManual,
+                                     StemLabAudioProcessor::gridOff};
+
+    constexpr int tempoReadingPages[] = {StemLabAudioProcessor::tempoHalf,
+                                         StemLabAudioProcessor::tempoDetected,
+                                         StemLabAudioProcessor::tempoDouble};
 }
 
 void StemLabAudioProcessorEditor::wireSettingsPage()
@@ -4859,15 +5012,10 @@ void StemLabAudioProcessorEditor::wireSettingsPage()
 
     settingsPanel.onGridMode = [this](int index)
     {
-        static constexpr int modes[] = {StemLabAudioProcessor::gridHost,
-                                        StemLabAudioProcessor::gridSource,
-                                        StemLabAudioProcessor::gridManual,
-                                        StemLabAudioProcessor::gridOff};
-
-        if (!juce::isPositiveAndBelow(index, juce::numElementsInArray(modes)))
+        if (!juce::isPositiveAndBelow(index, juce::numElementsInArray(gridModePages)))
             return;
 
-        const auto mode = modes[index];
+        const auto mode = gridModePages[index];
 
         processor.setWaveformGridMode(mode);
 
@@ -4894,12 +5042,6 @@ void StemLabAudioProcessorEditor::wireSettingsPage()
 
     settingsPanel.onSetManualTempo = [this] { promptForManualTempo(); };
 
-    settingsPanel.onAnalysisToggle = [this]
-    {
-        processor.setBeatThisEnabled(!processor.isBeatThisEnabled());
-        refreshFromProcessor();
-    };
-
     settingsPanel.onAnalysisQuality = [this](int index)
     {
         // The one that does not line up: 0 is Accurate in the processor.
@@ -4915,14 +5057,10 @@ void StemLabAudioProcessorEditor::wireSettingsPage()
 
     settingsPanel.onTempoInterpretation = [this](int index)
     {
-        static constexpr int readings[] = {StemLabAudioProcessor::tempoHalf,
-                                           StemLabAudioProcessor::tempoDetected,
-                                           StemLabAudioProcessor::tempoDouble};
-
-        if (!juce::isPositiveAndBelow(index, juce::numElementsInArray(readings)))
+        if (!juce::isPositiveAndBelow(index, juce::numElementsInArray(tempoReadingPages)))
             return;
 
-        processor.setTempoInterpretation(readings[index]);
+        processor.setTempoInterpretation(tempoReadingPages[index]);
         refreshFromProcessor();
     };
 
@@ -4989,12 +5127,7 @@ void StemLabAudioProcessorEditor::refreshSettingsPage()
     settings.waveformPalette =
         pageIndexOf(waveformPalettePages, processor.getWaveformColorIndex());
 
-    static constexpr int modes[] = {StemLabAudioProcessor::gridHost,
-                                    StemLabAudioProcessor::gridSource,
-                                    StemLabAudioProcessor::gridManual,
-                                    StemLabAudioProcessor::gridOff};
-
-    settings.gridMode = pageIndexOf(modes, processor.getWaveformGridMode());
+    settings.gridMode = pageIndexOf(gridModePages, processor.getWaveformGridMode());
 
     settings.loopQuantize = processor.getLoopQuantizeMode();
 
@@ -5010,22 +5143,13 @@ void StemLabAudioProcessorEditor::refreshSettingsPage()
         settings.loopQuantizeAvailable = grid.secondsPerBeat > 0.0 || grid.rulingFromBeats();
     }
 
-    settings.hostTempoAvailable = !processor.isStandaloneApp();
     settings.manualBpm = processor.getManualGridBpm();
-
-    settings.analysisRunning = processor.isSourceAnalysisRunning();
-    settings.analysisToggleEnabled =
-        !processor.isEngineRunning() || processor.isBeatThisEnabled();
 
     settings.analysisQuality =
         processor.getSourceAnalysisMode() == StemLabAudioProcessor::analysisAccurate ? 1 : 0;
 
-    static constexpr int readings[] = {StemLabAudioProcessor::tempoHalf,
-                                       StemLabAudioProcessor::tempoDetected,
-                                       StemLabAudioProcessor::tempoDouble};
-
     settings.tempoInterpretation =
-        pageIndexOf(readings, processor.getTempoInterpretation());
+        pageIndexOf(tempoReadingPages, processor.getTempoInterpretation());
 
     settings.detectedBpm = processor.getDetectedSourceBpm();
     settings.halfBpm = processor.getHalfTimeSourceBpm();

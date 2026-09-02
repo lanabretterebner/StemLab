@@ -256,8 +256,10 @@ InsertResult insertStemTracks (
 
     /*  Folder depths have to balance even when a track cannot be created,
         or REAPER is left with a folder that never closes. A skipped entry
-        hands its close to the last track that was created and carries an
-        open forward to the next one.
+        adds its depth to a running carry: an open waits there for the next
+        track that does get made, and a close first cancels an open the
+        carry is already holding, reaching back to the last created track
+        only for the part no carried open can absorb.
     */
     MediaTrack* lastTrack = nullptr;
     int lastTrackDepth = 0;
@@ -308,14 +310,26 @@ InsertResult insertStemTracks (
 
             failures.add (displayName + " (track creation failed)");
 
-            if (stem.folderDepth < 0 && lastTrack != nullptr)
+            /*  The skipped entry's depth goes into the carry first. A close
+                then cancels an open that an earlier skipped entry left
+                carried - the folder that neither of those tracks exists for
+                is never opened, so nothing is left to close - instead of
+                being applied on top of it, which used to spend the close on
+                an earlier track and carry the open on into the next one,
+                leaving a folder that never closes.
+
+                Only what the carry cannot absorb, a close with no open ahead
+                of it, goes back to the last track that was created: a close
+                has to land on the track before the gap, not on the next one
+                to be made.
+            */
+            carriedDepth += stem.folderDepth;
+
+            if (carriedDepth < 0 && lastTrack != nullptr)
             {
-                lastTrackDepth += stem.folderDepth;
+                lastTrackDepth += carriedDepth;
                 setFolderDepth (lastTrack, lastTrackDepth);
-            }
-            else
-            {
-                carriedDepth += stem.folderDepth;
+                carriedDepth = 0;
             }
 
             continue;
@@ -531,7 +545,6 @@ PeakBuilder::PeakBuilder (const Api& apiIn, const juce::Array<juce::File>& files
     {
         // An older REAPER simply keeps its existing behaviour: peaks appear
         // whenever something else asks REAPER to build them.
-        finished = true;
         return;
     }
 
@@ -542,10 +555,7 @@ PeakBuilder::PeakBuilder (const Api& apiIn, const juce::Array<juce::File>& files
             pending.addIfNotAlreadyThere (file);
 
     if (pending.isEmpty())
-    {
-        finished = true;
         return;
-    }
 
     startTimer (peakTimerIntervalMs);
 }
@@ -603,7 +613,6 @@ bool PeakBuilder::startNextFile()
 void PeakBuilder::finish()
 {
     stopTimer();
-    finished = true;
 
     // The items were drawn before their peaks existed; this is what turns
     // the empty lanes into waveforms.

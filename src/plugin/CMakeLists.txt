@@ -260,16 +260,12 @@ if (WIN32)
             uuid
     )
 elseif (UNIX AND NOT APPLE)
-    # JUCE already propagates X11/freetype/ALSA through its own targets. What
-    # it does not add is the dynamic loader, which juce_audio_devices needs to
-    # pick up JACK at runtime, or the thread library on some toolchains.
-    find_package(Threads REQUIRED)
-
-    target_link_libraries(StemLabPlugin
-        PRIVATE
-            Threads::Threads
-            ${CMAKE_DL_LIBS}
-    )
+    # No thread or loader libraries are named here on purpose. juce_core's own
+    # module metadata reads "linuxLibs: rt dl pthread", and JUCE links those
+    # into every target that uses a JUCE module - which is what already covers
+    # the dlopen calls in this plugin, both juce_audio_devices picking up JACK
+    # and LinuxSystemCapture opening libpulse-simple. Naming Threads::Threads
+    # and ${CMAKE_DL_LIBS} here only restated the link line.
 
     # JACK is loaded with dlopen, so enabling it costs nothing at link time and
     # gives Standalone users on PipeWire/JACK a working device.
