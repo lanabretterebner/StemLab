@@ -4,6 +4,8 @@
 #include <cassert>
 #include <algorithm>
 #include <cmath>
+#include <utility>
+#include <vector>
 
 using namespace stemlab::waveform;
 
@@ -29,7 +31,8 @@ int main()
     // off keeps it off whatever else it is carrying.
     none.bpm = 0.0;
     none.useDetectedBeats = true;
-    none.beats = {0.5, 1.0, 1.5, 2.0};
+    const std::vector<double> noneBeats{0.5, 1.0, 1.5, 2.0};
+    none.beats = noneBeats;
     assert(makeGridLines(none).empty());
 
     GridRequest far;
@@ -64,12 +67,156 @@ int main()
     source.visibleEnd = 3.0;
     source.pixelWidth = 600;
     source.useDetectedBeats = true;
-    source.beats = {0.1, 0.6, 1.1, 1.6, 2.1, 2.6};
-    source.downbeats = {0.1, 1.6};
+    const std::vector<double> sourceBeats{0.1, 0.6, 1.1, 1.6, 2.1, 2.6};
+    const std::vector<double> sourceDownbeats{0.1, 1.6};
+    source.beats = sourceBeats;
+    source.downbeats = sourceDownbeats;
     const auto sourceLines = makeGridLines(source);
     assert(std::any_of(sourceLines.begin(), sourceLines.end(), [](const auto& line)
                        { return line.kind == GridLineKind::bar && line.barNumber == 2 &&
                                 std::abs(line.seconds - 1.6) < 1.0e-9; }));
+
+    // --------------------------------------- ruling from the detected beats
+
+    const auto lineAt = [](const std::vector<GridLine>& lines, double seconds)
+    {
+        return std::find_if(lines.begin(), lines.end(), [seconds](const auto& line)
+                            { return std::abs(line.seconds - seconds) < 1.0e-9; });
+    };
+
+    /*
+     * A track whose tempo moves. The beats are 0.5 s apart for two bars and
+     * then 0.4 s apart, which is exactly what a dynamic analysis produces -
+     * and the whole point of ruling from beats is that nothing here has to
+     * be told the tempo changed.
+     */
+    {
+        GridRequest drifting;
+        drifting.visibleEnd = 10.0;
+        drifting.pixelWidth = 1200;
+        drifting.bpm = 120.0;   // only a zoom threshold now, not a position
+        drifting.useDetectedBeats = true;
+        const std::vector<double> driftingBeats{0.0, 0.5, 1.0, 1.5,   // bar 1 at 120
+                          2.0, 2.5, 3.0, 3.5,   // bar 2 at 120
+                          4.0, 4.4, 4.8, 5.2,   // bar 3 at 150
+                          5.6, 6.0, 6.4, 6.8};
+        drifting.beats = driftingBeats;  // bar 4 at 150
+        const std::vector<double> driftingDown{0.0, 2.0, 4.0, 5.6};
+        drifting.downbeats = driftingDown;
+
+        const auto lines = makeGridLines(drifting);
+
+        // Every bar line sits on its downbeat, including the two after the
+        // tempo moved - a constant rule would have put bar 4 at 6.0.
+        for (const auto [seconds, number] :
+             {std::pair{0.0, 1}, std::pair{2.0, 2}, std::pair{4.0, 3}, std::pair{5.6, 4}})
+        {
+            const auto found = lineAt(lines, seconds);
+            assert(found != lines.end());
+            assert(found->kind == GridLineKind::bar);
+            assert(found->barNumber == number);
+        }
+
+        // Beats inside the fast bars are spaced by what was measured there.
+        const auto fast = lineAt(lines, 4.4);
+        assert(fast != lines.end());
+        assert(fast->kind == GridLineKind::beat);
+        assert(fast->barNumber == 3 && fast->beatInBar == 1);
+
+        const auto later = lineAt(lines, 6.4);
+        assert(later != lines.end());
+        assert(later->barNumber == 4 && later->beatInBar == 2);
+
+        // Nothing lands where a constant 120 grid would have drawn bar 4.
+        const auto ghost = lineAt(lines, 6.0);
+        assert(ghost == lines.end() || ghost->kind != GridLineKind::bar);
+    }
+
+    // A bar the analysis read as five beats long numbers its own beats
+    // rather than being cut short by the meter setting.
+    {
+        GridRequest odd;
+        odd.visibleEnd = 6.0;
+        odd.pixelWidth = 1200;
+        odd.numerator = 4;
+        odd.useDetectedBeats = true;
+        const std::vector<double> oddBeats{0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5};
+        odd.beats = oddBeats;
+        const std::vector<double> oddDown{0.0, 2.5};
+        odd.downbeats = oddDown;
+
+        const auto lines = makeGridLines(odd);
+
+        const auto fifth = lineAt(lines, 2.0);
+        assert(fifth != lines.end());
+        assert(fifth->barNumber == 1 && fifth->beatInBar == 4);
+
+        const auto nextBar = lineAt(lines, 2.5);
+        assert(nextBar != lines.end() && nextBar->kind == GridLineKind::bar);
+        assert(nextBar->barNumber == 2);
+    }
+
+    // Beats before the first downbeat are a pickup: they count backwards
+    // into bar 0 rather than being labelled as part of bar 1.
+    {
+        GridRequest pickup;
+        pickup.visibleEnd = 4.0;
+        pickup.pixelWidth = 1200;
+        pickup.numerator = 4;
+        pickup.useDetectedBeats = true;
+        const std::vector<double> pickupBeats{0.0, 0.5, 1.0, 1.5, 2.0, 2.5};
+        pickup.beats = pickupBeats;
+        const std::vector<double> pickupDown{1.0, 3.0};
+        pickup.downbeats = pickupDown;
+
+        const auto lines = makeGridLines(pickup);
+
+        const auto before = lineAt(lines, 0.5);
+        assert(before != lines.end());
+        assert(before->barNumber <= 0);
+
+        const auto one = lineAt(lines, 1.0);
+        assert(one != lines.end() && one->kind == GridLineKind::bar && one->barNumber == 1);
+    }
+
+    // With no downbeats at all the meter is what makes a bar.
+    {
+        GridRequest noDownbeats;
+        noDownbeats.visibleEnd = 5.0;
+        noDownbeats.pixelWidth = 1200;
+        noDownbeats.numerator = 3;
+        noDownbeats.useDetectedBeats = true;
+        const std::vector<double> noDownbeatsBeats{0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0};
+        noDownbeats.beats = noDownbeatsBeats;
+
+        const auto lines = makeGridLines(noDownbeats);
+
+        const auto secondBar = lineAt(lines, 1.5);
+        assert(secondBar != lines.end());
+        assert(secondBar->kind == GridLineKind::bar && secondBar->barNumber == 2);
+
+        const auto middle = lineAt(lines, 1.0);
+        assert(middle != lines.end());
+        assert(middle->kind == GridLineKind::beat);
+        assert(middle->barNumber == 1 && middle->beatInBar == 2);
+    }
+
+    // The constant-tempo path numbers beats the same way, so a lane's labels
+    // do not change shape when the grid source does.
+    {
+        GridRequest uniform;
+        uniform.visibleEnd = 4.0;
+        uniform.pixelWidth = 1200;
+        uniform.bpm = 120.0;
+        uniform.numerator = 4;
+
+        const auto lines = makeGridLines(uniform);
+
+        const auto third = lineAt(lines, 1.0);
+        assert(third != lines.end());
+        assert(third->kind == GridLineKind::beat);
+        assert(third->barNumber == 1 && third->beatInBar == 2);
+    }
 
     // ------------------------------------------------------- zoom windows
 

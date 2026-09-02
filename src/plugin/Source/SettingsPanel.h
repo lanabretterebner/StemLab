@@ -51,6 +51,8 @@ namespace stemlab::widgets
             int waveformPalette = 0;
 
             int gridMode = 0;
+            int loopQuantize = 0;
+            bool loopQuantizeAvailable = false;
             bool hostTempoAvailable = false;
             double manualBpm = 120.0;
 
@@ -94,6 +96,7 @@ namespace stemlab::widgets
         std::function<void(int)> onAccent;
         std::function<void(int)> onWaveformPalette;
         std::function<void(int)> onGridMode;
+        std::function<void(int)> onLoopQuantize;
         std::function<void()> onSetManualTempo;
         std::function<void()> onAnalysisToggle;
         std::function<void(int)> onAnalysisQuality;
