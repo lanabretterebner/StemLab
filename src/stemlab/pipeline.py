@@ -146,9 +146,13 @@ class _JobProgress:
 
 @dataclass
 class PipelineResult:
-    """Locations and engine name produced by one separation run."""
+    """Output location and engine name produced by one separation run.
 
-    baseline_dir: Path
+    Only the final folder is reported: on a refine run _discard_intermediates
+    deletes baseline/ before this is built, so naming it here handed callers a
+    path that no longer existed.
+    """
+
     final_dir: Path
     engine: str
 
@@ -609,7 +613,6 @@ def separate(
     _discard_intermediates(output_dir, baseline_dir, final_dir, log)
 
     return PipelineResult(
-        baseline_dir=baseline_dir,
         final_dir=final_dir,
         engine=engine,
     )

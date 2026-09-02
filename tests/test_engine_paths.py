@@ -89,8 +89,11 @@ def test_windows_keeps_its_layout(_isolated_home, monkeypatch):
 
 
 def test_the_analysis_cache_and_recursive_split_share_this(_isolated_home):
-    from stemlab.analysis_cache import managed_analysis_dir
+    from stemlab.analysis_cache import AnalysisCache
     from stemlab.recursive import default_model_dir
 
-    assert managed_analysis_dir() == paths.analysis_dir()
+    # Asked of the cache itself rather than of a directory helper: what has to
+    # hold is that the database the cache opens lands under the analysis
+    # directory these tests pin down, whichever helper it reaches it through.
+    assert AnalysisCache().path == paths.analysis_dir() / "analysis.sqlite3"
     assert default_model_dir() == paths.recursive_models_dir()

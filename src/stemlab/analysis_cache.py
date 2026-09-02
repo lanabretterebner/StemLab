@@ -21,8 +21,9 @@ def managed_analysis_dir() -> Path:
     """Return StemLab's private per-user analysis directory.
 
     The location lives in stemlab.paths now, with the recursive weights it
-    used to share ``~/.stemlab`` with. Kept as a name here because it is what
-    the rest of this module and its tests call.
+    used to share ``~/.stemlab`` with. Kept as a name here because it is
+    still what the rest of this module, midi, device, compile_support and
+    model_manager call; it goes when those four call analysis_dir() directly.
     """
     return analysis_dir()
 

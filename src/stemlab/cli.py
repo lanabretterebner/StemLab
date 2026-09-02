@@ -45,8 +45,7 @@ def separate_main() -> None:
         refine=not args.no_refine,
         normalize_fused=args.normalize_fused_stems,
     )
-    print(f"baseline: {result.baseline_dir}")
-    print(f"final:    {result.final_dir}")
+    print(f"final: {result.final_dir}")
 
 
 def refine_main() -> None:

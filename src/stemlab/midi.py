@@ -631,41 +631,6 @@ def convert_stem_to_midi(
     return output
 
 
-def build_ableton_midi_payload(
-    transcription: MidiTranscription,
-    *,
-    capture_start_ppq: float,
-    grid_bpm: float | None = None,
-    target_track: str = "",
-) -> dict:
-    """Create the bridge contract used to populate a Live MIDI clip."""
-    bpm = float(grid_bpm or transcription.source_tempo or 120.0)
-    beats_per_second = bpm / 60.0
-    notes = [
-        {
-            "pitch": note.pitch,
-            "start": round(max(0.0, note.start * beats_per_second), 6),
-            "duration": round(max(1.0e-4, (note.end - note.start) * beats_per_second), 6),
-            "velocity": note.velocity,
-            "confidence": note.confidence,
-            "pitch_bends": [asdict(point) for point in note.pitch_bends],
-        }
-        for note in transcription.notes
-    ]
-    return {
-        "protocol": "stemlab-ableton-midi",
-        "version": 1,
-        "source_stem": transcription.source_stem,
-        "source_tempo": transcription.source_tempo,
-        "grid_mode": transcription.grid_mode,
-        "grid_bpm": bpm,
-        "bar_one": transcription.bar_one,
-        "capture_start_ppq": max(0.0, float(capture_start_ppq)),
-        "target_track": target_track,
-        "notes": notes,
-    }
-
-
 def main() -> None:
     """CLI entry used by the JUCE MIDI worker.
 
