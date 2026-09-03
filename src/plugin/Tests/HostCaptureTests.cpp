@@ -11,11 +11,44 @@ void check(bool condition)
     if (!condition)
         std::abort();
 }
+
+/** setenv is POSIX; MSVC spells it differently and has no compatibility shim. */
+void setEnvironment(const char* name, const juce::String& value)
+{
+   #if JUCE_WINDOWS
+    _putenv_s(name, value.toRawUTF8());
+   #else
+    setenv(name, value.toRawUTF8(), 1);
+   #endif
+}
 } // namespace
 
 int main()
 {
     juce::ScopedJuceInitialiser_GUI juceInitialiser;
+
+    /*  Every setting the plugin remembers is written to a file under the
+        config directory, and this suite constructs processors and changes
+        settings. Point that directory at a temporary one first, or running
+        the tests would rewrite the settings of whoever ran them.
+    */
+    const auto configSandbox =
+        juce::File::getSpecialLocation(juce::File::tempDirectory)
+            .getChildFile("stemlab-test-config-"
+                          + juce::String(juce::Time::getHighResolutionTicks()));
+
+    configSandbox.createDirectory();
+
+    // One per platform: StemLabPaths reads XDG_CONFIG_HOME on Linux,
+    // LOCALAPPDATA on Windows, and the home directory on macOS.
+    for (const auto* variable : {"XDG_CONFIG_HOME", "LOCALAPPDATA", "HOME"})
+        setEnvironment(variable, configSandbox.getFullPathName());
+
+    check(StemLabAudioProcessor::settingsPreferenceFile()
+              .getParentDirectory()
+              .isAChildOf(configSandbox)
+          || StemLabAudioProcessor::settingsPreferenceFile().isAChildOf(configSandbox));
+
     juce::File capturedFile;
 
     {
@@ -206,32 +239,123 @@ int main()
         }
     }
 
-    /*  Refinement is off on a project that has never been told otherwise, and
-        a project that was told stays told.
+    /*  Nothing at all goes into the host's project, and every setting comes
+        back from the preference file instead.
 
-        The default is a product decision - refinement is a second pass over
-        stems that are already usable, and it costs real time on every
-        separation - and nothing else in the build would notice it being
-        flipped back by a refactor. The round trip is here for the same
-        reason: the state key is what keeps a user who wants refinement from
-        having to turn it on again every session, and it is one line away
-        from being nested inside another property's branch and silently lost.
+        The old JSON blob is what made a setting a per-project answer: open
+        the same session on another machine and it overrode what that machine
+        had been told, and every new project started from defaults however
+        many times you had already chosen. These check the two halves - that
+        the project chunk is empty, and that the file carries what the chunk
+        used to.
     */
     {
-        StemLabAudioProcessor fresh;
-        check(!fresh.isRefinementEnabled());
+        StemLabAudioProcessor::settingsPreferenceFile().deleteFile();
 
-        fresh.setRefinementEnabled(true);
+        StemLabAudioProcessor first;
 
-        juce::MemoryBlock saved;
-        fresh.getStateInformation(saved);
+        // Off unless asked for: refinement is a second pass over stems that
+        // are already usable, and it costs real time on every separation.
+        check(!first.isRefinementEnabled());
 
-        StemLabAudioProcessor restored;
-        check(!restored.isRefinementEnabled());
+        juce::MemoryBlock chunk;
+        first.getStateInformation(chunk);
+        check(chunk.getSize() == 0);
 
-        restored.setStateInformation(saved.getData(), (int) saved.getSize());
-        check(restored.isRefinementEnabled());
+        first.setRefinementEnabled(true);
+        first.setSeparatorEngineIndex(StemLabAudioProcessor::separatorHybrid);
+        first.setWaveformZoom(8.0);
+        first.setEditorScalePercent(150);
+        first.setStemEnabled(3, false);
+
+        // Still nothing for the host, however much has been changed.
+        first.getStateInformation(chunk);
+        check(chunk.getSize() == 0);
     }
+
+    // Written when the processor went away, and read by the next one.
+    {
+        check(StemLabAudioProcessor::settingsPreferenceFile().existsAsFile());
+
+        StemLabAudioProcessor second;
+
+        check(second.isRefinementEnabled());
+        check(second.getSeparatorEngineIndex() == StemLabAudioProcessor::separatorHybrid);
+        check(std::abs(second.getWaveformZoom() - 8.0) < 1.0e-9);
+        check(second.getEditorScalePercent() == 150);
+        check(!second.isStemEnabled(3));
+        check(second.isStemEnabled(0));
+    }
+
+    /*  A file somebody edited by hand, or one written by a build whose
+        ranges were wider, goes through the same setters the UI does. A
+        remembered zoom of 4096 must come back clamped, not put the lanes
+        somewhere no control could.
+    */
+    {
+        StemLabAudioProcessor::settingsPreferenceFile().replaceWithText(
+            R"({"waveformZoom": 4096.0, "editorScale": 9000, "separatorEngine": 77})");
+
+        StemLabAudioProcessor clamped;
+
+        check(clamped.getWaveformZoom() <= StemLabAudioProcessor::maxWaveformZoom);
+        check(clamped.getEditorScalePercent() <= 400);
+        check(clamped.getSeparatorEngineIndex()
+              < StemLabAudioProcessor::separatorEngineCount);
+    }
+
+    /*  Upgrading must not silently reset everyone who already had settings.
+
+        Every project saved by an older build still carries the blob this no
+        longer writes, so the first project opened on a machine with no
+        preference file donates its settings to that file - once. After that
+        a file exists and project state is ignored, which is the point of it
+        being a preference: one project decides, rather than whichever was
+        opened last quietly redeciding for all the others.
+    */
+    const juce::String legacyState =
+        R"({"refinement": true, "editorScale": 175, "separatorEngine": 1})";
+
+    {
+        StemLabAudioProcessor::settingsPreferenceFile().deleteFile();
+
+        StemLabAudioProcessor upgrading;
+        check(!upgrading.isRefinementEnabled());
+
+        upgrading.setStateInformation(legacyState.toRawUTF8(),
+                                      (int) legacyState.getNumBytesAsUTF8());
+
+        check(upgrading.isRefinementEnabled());
+        check(upgrading.getEditorScalePercent() == 175);
+
+        // Adopted means written, so the next project finds a file.
+        check(StemLabAudioProcessor::settingsPreferenceFile().existsAsFile());
+    }
+
+    {
+        // A second project, with the preference file now in place: its own
+        // saved settings are not allowed to speak for the user again.
+        StemLabAudioProcessor settled;
+
+        const juce::String otherState =
+            R"({"refinement": false, "editorScale": 300, "separatorEngine": 0})";
+
+        settled.setStateInformation(otherState.toRawUTF8(),
+                                    (int) otherState.getNumBytesAsUTF8());
+
+        check(settled.isRefinementEnabled());
+        check(settled.getEditorScalePercent() == 175);
+    }
+
+    // Nothing at all, which is what an instance the host never restored gets.
+    {
+        StemLabAudioProcessor empty;
+        empty.setStateInformation(nullptr, 0);
+
+        check(empty.getEditorScalePercent() == 175);
+    }
+
+    configSandbox.deleteRecursively();
 
     check(capturedFile.deleteFile());
     return 0;

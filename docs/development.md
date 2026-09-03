@@ -192,10 +192,42 @@ is chosen in the same **Appearance** section - it used to be a palette icon in
 the header opening a popup menu, which is one more thing in the header and one
 more menu than the settings window was meant to leave. Its first entry is named
 **Accent** rather than Nocturne, because it draws with whichever accent is set -
-naming it after the design system would name it after a color it may not be. `setStateInformation` still reads the old
-`waveformColour`/`waveformColor` keys, but only when no preference file
-exists yet, so an existing project's choice carries forward once instead of
-the first project opened deciding the palette for every project after it.
+naming it after the design system would name it after a color it may not be.
+
+### Settings live in the config directory, not in the project
+
+`getStateInformation` writes nothing at all - a chunk of length zero - and
+there are no `AudioProcessorParameter`s either, so a StemLab instance stores
+nothing whatsoever in a host's project. Opening a session cannot change a
+setting, and changing a setting cannot dirty a project.
+
+Everything the plugin remembers is in the config directory instead: the
+accent in `accent.txt`, the lane palette in `waveform_palette.txt`, whether
+this machine can compile in `torch_compile.txt`, and the rest -
+refinement, fused-stem normalisation, the separation model, the grid mode and
+manual grid, loop quantisation, waveform zoom, editor scale, the job folder
+and which stems are enabled - in `settings.json`.
+
+They were project state because that is where a plugin's state usually goes,
+and it was wrong for all of them: which stems you separate and how big you
+like the window describe how somebody works, so carrying them in the project
+meant answering the same questions once per project and again on the next
+machine that opened it.
+
+The trade, stated plainly: two projects can no longer hold different
+settings, and the last window to change one wins across every instance.
+
+Writes are coalesced on a one-second timer, because the zoom slider and a
+window drag both move a setting many times a second and each one is a whole
+file rewritten; the destructor flushes a pending write so a window closed
+straight after a change still keeps it.
+
+`setStateInformation` is not quite a no-op: every project saved by an older
+build still carries the blob, so the first project opened on a machine with
+no `settings.json` donates its settings to that file, once, and after that
+project state is ignored entirely. One project decides, rather than
+whichever was opened last quietly redeciding for all the others - the same
+rule the waveform palette used when it became a preference.
 
 ### `src/plugin/Source/PluginProcessor.h/.cpp`
 
