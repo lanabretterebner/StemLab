@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
-from .analysis_cache import managed_analysis_dir
+from .paths import analysis_dir
 from .runtime import (
     CancellationToken,
     JobCancelled,
@@ -479,12 +479,12 @@ def _huggingface_hub_cache() -> Path | None:
 def _analysis_dir() -> Path | None:
     """StemLab's analysis directory, or None when it cannot be placed.
 
-    managed_analysis_dir falls back to the home directory, which is not
+    analysis_dir falls back to the home directory, which is not
     always nameable - see _home. A cache we cannot locate is one we can
     neither size nor clear, so it is left out rather than reported wrongly.
     """
     try:
-        return managed_analysis_dir()
+        return analysis_dir()
     except (RuntimeError, OSError):
         return None
 

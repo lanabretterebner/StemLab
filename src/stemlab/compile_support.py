@@ -63,9 +63,9 @@ def inductor_cache_dir() -> Path:
 
     # Imported lazily to keep sqlite3 and the runtime helpers off this path
     # when compiling was never requested.
-    from .analysis_cache import managed_analysis_dir
+    from .paths import analysis_dir
 
-    return managed_analysis_dir() / "torchinductor"
+    return analysis_dir() / "torchinductor"
 
 
 # Which managed model a compiled class belongs to. Both transformer classes

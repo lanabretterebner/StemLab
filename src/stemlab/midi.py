@@ -12,7 +12,8 @@ from pathlib import Path
 import mido
 import numpy as np
 
-from .analysis_cache import cleanup_stale_midi_drag_files, managed_analysis_dir, source_identity
+from .analysis_cache import cleanup_stale_midi_drag_files, source_identity
+from .paths import analysis_dir
 from .runtime import configure_utf8_stdio
 
 # librosa is imported inside the transcription functions so that cache-hit
@@ -466,7 +467,7 @@ def _managed_drag_path(source: Path, stem_type: str, source_hash: str) -> Path:
     cleanup_stale_midi_drag_files()
     safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem_type).strip("_") or "stem"
     safe_source = re.sub(r"[^A-Za-z0-9._-]+", "_", source.stem).strip("_") or "source"
-    directory = managed_analysis_dir() / "MidiDrag"
+    directory = analysis_dir() / "MidiDrag"
     directory.mkdir(parents=True, exist_ok=True)
     return directory / f"{safe_source}-{safe_stem}-{source_hash[:10]}.mid"
 
