@@ -27,9 +27,9 @@ def _probe_cache_path() -> Path:
     # Imported lazily: analysis_cache brings sqlite3 and the runtime
     # helpers, a few milliseconds this hot path only pays on a cache
     # access, in exchange for one definition of the managed directory.
-    from .analysis_cache import managed_analysis_dir
+    from .paths import analysis_dir
 
-    return managed_analysis_dir() / "device_probe.json"
+    return analysis_dir() / "device_probe.json"
 
 
 def _driver_markers() -> dict[str, bool]:

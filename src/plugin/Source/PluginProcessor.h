@@ -543,6 +543,11 @@ public:
     /** Live's half of setHostTempo: the Remote Script answers on disk, the
         same way it answers a clip request. */
     void refreshAbletonTempoReplyFromDisk();
+
+    /** Live's half of sendMidiToAbleton. The Remote Script has always
+        written this ack; nothing ever read it, so the status line sat on
+        "Creating MIDI clip in Ableton..." whatever happened. */
+    void refreshAbletonMidiAckFromDisk();
     void setTempoInterpretation(int interpretation);
     int getTempoInterpretation() const noexcept { return tempoInterpretation.load(); }
     bool clearAnalysisCache();
@@ -1060,6 +1065,8 @@ private:
     std::atomic<double> abletonClipRequestStartMs{0.0};
     std::atomic<bool> abletonTempoRequestPending{false};
     std::atomic<double> abletonTempoRequestStartMs{0.0};
+    std::atomic<bool> abletonMidiAckPending{false};
+    std::atomic<double> abletonMidiAckStartMs{0.0};
     std::atomic<double> inputDurationSeconds{0.0};
 
     double currentSampleRate = 44100.0;
@@ -1082,6 +1089,8 @@ private:
     juce::File abletonClipReplyFile;
     juce::File abletonTempoReplyFile;
     juce::File abletonTempoRequestFile;
+    juce::File abletonMidiAckFile;
+    juce::File abletonMidiManifestFile;
     juce::String inputSourceLabel;
     juce::String abletonClipRequestId;
     juce::String abletonTempoRequestId;

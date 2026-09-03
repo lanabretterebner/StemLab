@@ -70,10 +70,12 @@ ctest --test-dir src/plugin/build --output-on-failure
 | `StemLabWaveformAnalysisTests` | The JUCE-free spectral analysis, FFT included |
 | `StemLabLoopRegionsTests` | Which loop ranges merge, and where playback jumps |
 | `StemLabSourceLabelTests` | Joining a track and take name without saying it twice |
+| `StemLabLoopQuantizeTests` | Where a swept loop lands on the grid, beats or constant tempo |
+| `StemLabAccentPaletteTests` | The accent ramp, and that a saved accent survives a reload |
 | `StemLabLaneWheelDispatchTests` | That a lane's deep mouse listener leaves the wheel alone |
 | `StemLabHostCaptureTests` | The self-drag guard and a real processor capturing audio |
 
-The first four cover header-only components deliberately kept free of the
+The first six cover header-only components deliberately kept free of the
 plugin, so a test can reach them without standing one up.
 `StemLabLaneWheelDispatchTests` is the odd one: it pins JUCE's own dispatch
 behaviour rather than code of ours, because a JUCE upgrade that changed it

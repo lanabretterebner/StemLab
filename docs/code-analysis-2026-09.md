@@ -3,11 +3,27 @@
 A read-only pass over the whole repository looking for four things:
 performance problems, avoidable overhead, unnecessary code growth, and
 bugs. This document explains how the analysis was run, what it found,
-and the fixes proposed for each finding that matters. Nothing here has
-been applied yet. The complete verified list, one row per issue with
-file and line, is in
+and the fixes proposed for each finding that matters. The complete
+verified list, one row per issue with file and line, is in
 [code-analysis-2026-09-findings.md](code-analysis-2026-09-findings.md);
 the IDs in brackets below point into it.
+
+
+> **This document is a record of the analysis, not of the code.** Every one
+> of the 152 confirmed findings has since been fixed - 150 in
+> [PR #128](https://github.com/lanabretterebner/StemLab/pull/128) and the
+> last two in its follow-up - so the sections below describe the repository
+> as it was at `ba8cad8`, in the present tense, and no longer describe it as
+> it is. The per-row Status column in
+> [the inventory](code-analysis-2026-09-findings.md) is the current picture.
+> Section 4, "Suggested order of work", is likewise historical: the work was
+> done in two parallel waves partitioned by file ownership rather than in
+> that order.
+>
+> What has **not** been worked: the 57 Plausible findings, all of them low
+> severity. Nor has anything been verified in a DAW or on Windows - the
+> plugin findings still rest on reading the code, as the method section
+> below says.
 
 ## Method
 

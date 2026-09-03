@@ -17,17 +17,6 @@ from .runtime import CancellationToken
 _SCHEMA_VERSION = 2
 
 
-def managed_analysis_dir() -> Path:
-    """Return StemLab's private per-user analysis directory.
-
-    The location lives in stemlab.paths now, with the recursive weights it
-    used to share ``~/.stemlab`` with. Kept as a name here because it is
-    still what the rest of this module, midi, device, compile_support and
-    model_manager call; it goes when those four call analysis_dir() directly.
-    """
-    return analysis_dir()
-
-
 def source_identity(
     path: str | Path,
     cancellation: CancellationToken | None = None,
@@ -59,7 +48,7 @@ class AnalysisCache:
     """Small SQLite store that never leaves the user's computer."""
 
     def __init__(self, path: str | Path | None = None) -> None:
-        self.path = Path(path) if path is not None else managed_analysis_dir() / "analysis.sqlite3"
+        self.path = Path(path) if path is not None else analysis_dir() / "analysis.sqlite3"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._create_schema()
 
@@ -156,7 +145,7 @@ class AnalysisCache:
 
 def cleanup_stale_midi_drag_files(max_age_days: int = 7) -> int:
     """Delete only old temporary MIDI files in StemLab's managed drag directory."""
-    directory = managed_analysis_dir() / "MidiDrag"
+    directory = analysis_dir() / "MidiDrag"
     if not directory.is_dir():
         return 0
 

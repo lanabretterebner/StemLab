@@ -56,7 +56,9 @@ def recursive_models_dir() -> Path:
     """Downloaded weights for the recursive splits. Expensive, so: data."""
     packaged = os.environ.get("STEMLAB_RECURSIVE_MODEL_DIR")
     if packaged:
-        return Path(packaged)
+        # expanduser to match model_manager's mirror of this lookup: a "~/..."
+        # value worked there and silently made a literal "~" directory here.
+        return Path(packaged).expanduser()
 
     local = _windows_local()
     if local:

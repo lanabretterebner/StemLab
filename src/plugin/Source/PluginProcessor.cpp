@@ -3664,7 +3664,18 @@ juce::File StemLabAudioProcessor::createJobDirectory() const
 
     root.createDirectory();
 
-    auto folder = root.getChildFile("job_" + timestampForFilename());
+    /*  The stamp is only second-resolution, so two launches inside one
+        second would otherwise be handed the same folder and the second job
+        would write its stems over the first's. Suffix until the name is
+        free - the loop is bounded because each try is a different name, and
+        a run of collisions that long means something else is wrong.
+    */
+    const auto stamp = timestampForFilename();
+
+    auto folder = root.getChildFile("job_" + stamp);
+
+    for (int attempt = 2; folder.exists() && attempt < 1000; ++attempt)
+        folder = root.getChildFile("job_" + stamp + "_" + juce::String(attempt));
 
     folder.createDirectory();
     return folder;
@@ -8388,6 +8399,11 @@ bool StemLabAudioProcessor::sendMidiToAbleton(const juce::String& id)
     if (!manifest.replaceWithText(juce::JSON::toString(juce::var(payload.release()), true)))
         return false;
 
+    /*  The stale ack goes before the send, and that deletion is what makes
+        the next one unambiguous: the Remote Script's ack carries no request
+        id, so "the file is back" is the only evidence that this send is the
+        one that answered.
+    */
     const auto ack = bridge.getChildFile("stemlab_ableton_midi_ack.json");
     if (ack.existsAsFile())
         ack.deleteFile();
@@ -8399,8 +8415,86 @@ bool StemLabAudioProcessor::sendMidiToAbleton(const juce::String& id)
         return false;
     }
 
+    {
+        const juce::ScopedLock lock(stateLock);
+        abletonMidiAckFile = ack;
+        abletonMidiManifestFile = manifest;
+    }
+
+    abletonMidiAckPending.store(true);
+    abletonMidiAckStartMs.store(nowMs());
+
     setStatus("Creating MIDI clip in Ableton...");
     return true;
+}
+
+void StemLabAudioProcessor::refreshAbletonMidiAckFromDisk()
+{
+    if (getHostIntegration() != hostIntegrationAbletonLive)
+        return;
+
+    if (!abletonMidiAckPending.load())
+        return;
+
+    juce::File ack;
+    juce::File manifest;
+
+    {
+        const juce::ScopedLock lock(stateLock);
+        ack = abletonMidiAckFile;
+        manifest = abletonMidiManifestFile;
+    }
+
+    if (!ack.existsAsFile())
+    {
+        const auto started = abletonMidiAckStartMs.load();
+
+        /*  The same twelve seconds the stem import waits, not the five the
+            tempo reply does: both of these hand work to Live's own
+            per-tick scheduler and then wait for it to come back, where
+            setting a tempo is one assignment that happens at once.
+        */
+        if (started > 0.0 && nowMs() - started > 12000.0)
+        {
+            abletonMidiAckPending.store(false);
+            abletonMidiAckStartMs.store(0.0);
+
+            setStatus("StemLabRemote did not answer. Re-select StemLabRemote in Live Settings, "
+                      "then try again.");
+        }
+
+        return;
+    }
+
+    const auto parsed = juce::JSON::parse(ack.loadFileAsString());
+
+    auto* object = parsed.getDynamicObject();
+
+    // A half-written or foreign file leaves the wait pending so the next
+    // tick can read it properly - the same rule the clip and tempo replies
+    // follow.
+    if (object == nullptr
+        || object->getProperty("protocol").toString() != "stemlab-ableton-midi-ack")
+    {
+        return;
+    }
+
+    abletonMidiAckPending.store(false);
+    abletonMidiAckStartMs.store(0.0);
+
+    const bool success = static_cast<bool>(object->getProperty("success"));
+    const auto answer = object->getProperty("message").toString();
+
+    // Both are ours to clean up: the Remote Script only reads the manifest,
+    // and nothing else ever removes either file.
+    ack.deleteFile();
+    manifest.deleteFile();
+
+    if (success)
+        setActionStatus(answer.isNotEmpty() ? answer : "MIDI clip created in Ableton");
+    else
+        setStatus(answer.isNotEmpty() ? "Ableton MIDI: " + answer
+                                      : "Could not create the MIDI clip in Ableton");
 }
 
 void StemLabAudioProcessor::rebuildLoopRegions()

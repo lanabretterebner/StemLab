@@ -4,6 +4,7 @@
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 /*
@@ -536,6 +537,31 @@ inline PeakRange peakBetween(const PeakEnvelope& envelope, int channel, double s
     return range;
 }
 
+/**
+ * Samples per peak frame: one frame every peakSecondsPerFrame, stretched
+ * when that would need more than peakMaxFrames of them.
+ *
+ * Shared because there are two reductions and only one of them can be
+ * tested. WaveformCache::analyse reduces the file as it streams it, block by
+ * block, so it never has the whole thing in memory - an hour of stereo float
+ * is 635 MB - which is why it cannot simply call analysePeaks below, and why
+ * a plain test binary cannot drive it. The frame sizing is the part the two
+ * genuinely share and the part that is easy to get subtly different, so it
+ * lives here and both call it.
+ */
+inline std::int64_t peakHopSamples(std::int64_t sampleCount, double sampleRate)
+{
+    if (sampleCount <= 0 || !(sampleRate > 0.0))
+        return 1;
+
+    auto hop = static_cast<std::int64_t>(std::max(1.0, sampleRate * peakSecondsPerFrame));
+
+    if (sampleCount / hop > static_cast<std::int64_t>(peakMaxFrames))
+        hop = std::max(hop, sampleCount / static_cast<std::int64_t>(peakMaxFrames));
+
+    return hop;
+}
+
 /** Reduce de-interleaved channel data to a peak envelope. */
 inline PeakEnvelope analysePeaks(const float* const* channelData, int channelCount,
                                  std::size_t sampleCount, double sampleRate)
@@ -547,10 +573,8 @@ inline PeakEnvelope analysePeaks(const float* const* channelData, int channelCou
 
     envelope.channels = std::min(channelCount, peakMaxChannels);
 
-    auto hop = static_cast<std::size_t>(std::max(1.0, sampleRate * peakSecondsPerFrame));
-
-    if (sampleCount / hop > peakMaxFrames)
-        hop = std::max<std::size_t>(hop, sampleCount / peakMaxFrames);
+    const auto hop = static_cast<std::size_t>(
+        peakHopSamples(static_cast<std::int64_t>(sampleCount), sampleRate));
 
     envelope.secondsPerFrame = static_cast<double>(hop) / sampleRate;
 
