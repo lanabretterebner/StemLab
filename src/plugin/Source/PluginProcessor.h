@@ -650,9 +650,9 @@ public:
     /** Cooperative stop for whichever model job is running. */
     void cancelModelJob();
 
-    void setWaveformGridMode(int mode) noexcept;
+    void setWaveformGridMode(int mode);
     int getWaveformGridMode() const noexcept { return waveformGridMode.load(); }
-    void setManualGrid(double bpm, int numerator, int denominator, double barOne) noexcept;
+    void setManualGrid(double bpm, int numerator, int denominator, double barOne);
 
     /** The tempo the manual grid is set to, for the editor to seed its prompt. */
     double getManualGridBpm() const noexcept { return manualGridBpm.load(); }
@@ -684,7 +684,7 @@ public:
     StemLabWaveformCache& getWaveformCache() noexcept { return waveformProfiles; }
 
     /** One highlighted time range per stem. Dragging a waveform sets it. */
-    void setLoopQuantizeMode(int mode) noexcept;
+    void setLoopQuantizeMode(int mode);
     int getLoopQuantizeMode() const noexcept { return loopQuantizeMode.load(); }
 
     /** The rule a swept loop snaps to: the same one the lanes paint.
@@ -769,7 +769,11 @@ public:
     /** Override or query the executable used for the main Python worker. */
     juce::String getEngineCommand() const;
 
-    void setRefinementEnabled(bool enabled) noexcept { refinementEnabled.store(enabled); }
+    void setRefinementEnabled(bool enabled)
+    {
+        if (refinementEnabled.exchange(enabled) != enabled)
+            schedulePreferenceSave();
+    }
 
     bool isRefinementEnabled() const noexcept { return refinementEnabled.load(); }
 
@@ -781,9 +785,10 @@ public:
         shifts. Stems are written as 32-bit float, where a sample above 1.0
         is exactly representable, so nothing clips in the file either way.
     */
-    void setFusedStemNormalisation(bool enabled) noexcept
+    void setFusedStemNormalisation(bool enabled)
     {
-        fusedStemNormalisation.store(enabled);
+        if (fusedStemNormalisation.exchange(enabled) != enabled)
+            schedulePreferenceSave();
     }
 
     bool isFusedStemNormalisation() const noexcept { return fusedStemNormalisation.load(); }
@@ -795,9 +800,12 @@ public:
         separatorHybrid = 2
     };
 
-    void setSeparatorEngineIndex(int index) noexcept
+    void setSeparatorEngineIndex(int index)
     {
-        separatorEngineIndex.store(juce::jlimit(0, separatorEngineCount - 1, index));
+        const auto wanted = juce::jlimit(0, separatorEngineCount - 1, index);
+
+        if (separatorEngineIndex.exchange(wanted) != wanted)
+            schedulePreferenceSave();
     }
 
     int getSeparatorEngineIndex() const noexcept { return separatorEngineIndex.load(); }
@@ -835,6 +843,27 @@ public:
     static juce::File waveformColorPreferenceFile();
     static int readRememberedWaveformColor();
     static void rememberWaveformColor(int index);
+
+    /*  Everything else the plugin remembers, in one file beside those.
+
+        Nothing is written into the host's project at all - see
+        getStateInformation. A DAW project describes a piece of music; which
+        stems you separate, how you like the lanes drawn, how big the window
+        is and where the output goes describe you, and carrying them in the
+        project meant every setting was answered once per project and again
+        on the next machine that opened it. They are answered once here.
+
+        The trade this makes, stated plainly: two projects can no longer hold
+        different settings, and the last window to change one wins across
+        every instance.
+    */
+    static juce::File settingsPreferenceFile();
+
+    /** Re-reads the file. Public for the tests; the constructor calls it. */
+    void loadPreferences();
+
+    /** Writes now rather than on the coalescing timer. */
+    void savePreferences() const;
 
     /**
      * Which palette a fresh instance starts on: Spectrum, index 2.
@@ -1209,6 +1238,46 @@ private:
     };
 
     CaptureStopTimer captureStopTimer{*this};
+
+    /*  Coalesces preference writes. The zoom slider and a window drag both
+        move a setting many times a second, and each one is a whole file
+        rewritten; a second's delay turns a drag into one write and is far
+        below the time between a change and anything that could read it.
+    */
+    struct PreferenceSaveTimer final : juce::Timer
+    {
+        explicit PreferenceSaveTimer(StemLabAudioProcessor& ownerIn) : owner(ownerIn) {}
+
+        void timerCallback() override
+        {
+            stopTimer();
+            owner.savePreferences();
+        }
+
+        StemLabAudioProcessor& owner;
+    };
+
+    PreferenceSaveTimer preferenceSaveTimer{*this};
+
+    void schedulePreferenceSave();
+
+    /** Applies a parsed settings object through the public setters. */
+    void applyPreferences(const juce::var& parsed);
+
+    /*  True while loadPreferences is applying what it read, so that going
+        through the setters - which is how a stored value gets clamped and
+        validated exactly once - does not schedule a write of what was just
+        read.
+    */
+    bool applyingPreferences = false;
+
+    /*  Set when the constructor found no preference file. The first project
+        the host then hands us donates its settings, once, so that upgrading
+        does not silently reset everyone to defaults. Cleared as soon as a
+        file exists, after which saved project state is ignored entirely -
+        which is the point of it being a preference.
+    */
+    bool preferencesMayBeAdopted = false;
 
     juce::String status{"Ready"};
     StatusSeverity statusSeverity = statusInfo;

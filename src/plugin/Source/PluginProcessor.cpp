@@ -1954,6 +1954,12 @@ StemLabAudioProcessor::StemLabAudioProcessor()
     // value on the processor, so every instance reads it for itself.
     waveformColorIndex.store(readRememberedWaveformColor());
 
+    /*  And the rest of them, from settings.json. Last, so that a stored
+        value wins over anything set above it, and before the host can call
+        setStateInformation - which needs to know whether a file was found.
+    */
+    loadPreferences();
+
     if (isStandaloneApp())
     {
         // The processor's own AudioSource override routes between the
@@ -1978,6 +1984,16 @@ StemLabAudioProcessor::StemLabAudioProcessor()
 
 StemLabAudioProcessor::~StemLabAudioProcessor()
 {
+    /*  A window closed within a second of the last change would otherwise
+        take that change with it: the coalescing timer is what makes a drag
+        one write, and a timer that never fires never writes.
+    */
+    if (preferenceSaveTimer.isTimerRunning())
+    {
+        preferenceSaveTimer.stopTimer();
+        savePreferences();
+    }
+
     stopCapture();
     stopStandalonePlayback();
 
@@ -3690,6 +3706,8 @@ void StemLabAudioProcessor::setJobRootDirectory(const juce::File& directory)
         const juce::ScopedLock lock(stateLock);
         jobRootDirectory = directory;
     }
+
+    schedulePreferenceSave();
 
     // The footer's path readout carries the full path; the feedback line
     // only needs to confirm the change.
@@ -6159,8 +6177,11 @@ juce::String StemLabAudioProcessor::getEngineCommand() const
 
 void StemLabAudioProcessor::setStemEnabled(int index, bool enabled)
 {
-    if (juce::isPositiveAndBelow(index, stemCount))
-        stemEnabled[static_cast<size_t>(index)].store(enabled);
+    if (!juce::isPositiveAndBelow(index, stemCount))
+        return;
+
+    if (stemEnabled[static_cast<size_t>(index)].exchange(enabled) != enabled)
+        schedulePreferenceSave();
 }
 
 bool StemLabAudioProcessor::isStemEnabled(int index) const
@@ -6227,6 +6248,7 @@ void StemLabAudioProcessor::setWaveformZoom(double zoom)
 
     waveformZoom.store(clamped);
 
+    schedulePreferenceSave();
     sendChangeMessage();
 }
 
@@ -6255,7 +6277,10 @@ void StemLabAudioProcessor::setEditorScalePercent(int percent)
 {
     // Deliberately no change broadcast: this is written from the editor's
     // own resized(), and telling it to refresh from there would be a loop.
-    editorScalePercent.store(juce::jlimit(25, 400, percent));
+    const auto wanted = juce::jlimit(25, 400, percent);
+
+    if (editorScalePercent.exchange(wanted) != wanted)
+        schedulePreferenceSave();
 }
 
 juce::String StemLabAudioProcessor::getSeparatorEngineId() const
@@ -6322,8 +6347,189 @@ juce::String StemLabAudioProcessor::getStemName(int index)
     return names[index];
 }
 
+/*  The plugin writes nothing into the host's project.
+
+    It used to write a JSON blob carrying every setting: which stems to
+    separate, the separation model, the grid, the zoom, the editor scale,
+    where jobs are written. All of that describes how somebody works rather
+    than what is in the song, and keeping it in the project meant answering
+    the same questions again in the next project, and again on the next
+    machine that opened this one. They live in settingsPreferenceFile() now.
+
+    Nothing is left in its place - not a version marker, not an empty object.
+    A host asked for a chunk and gets a chunk of length zero, which is what
+    "this plugin has nothing to store here" is spelled as.
+
+    There are no AudioProcessorParameters either, so this really is all of
+    it: opening a project cannot change a setting, and changing a setting
+    cannot dirty a project.
+*/
 void StemLabAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
+    destData.reset();
+}
+
+/*  Read once, and only to carry an existing install forward.
+
+    Every project saved by an older build still holds that blob, and every
+    one of those users would otherwise open their next session to defaults.
+    So the first project opened on a machine with no preference file yet
+    donates its settings to that file, and from then on this does nothing at
+    all. One project decides, rather than whichever project was opened last
+    quietly redeciding for all the others - the same rule the waveform
+    palette already used when it became a preference.
+*/
+void StemLabAudioProcessor::setStateInformation(const void* data, int sizeInBytes)
+{
+    // The environment has to be reasserted whatever happens here: this runs
+    // after the constructor, and the first job of a reloaded session must not
+    // inherit whatever the previous one left behind.
+    exportTorchCompilePreference();
+
+    if (!preferencesMayBeAdopted || data == nullptr || sizeInBytes <= 0)
+        return;
+
+    preferencesMayBeAdopted = false;
+
+    const juce::String json(juce::String::fromUTF8(static_cast<const char*>(data), sizeInBytes));
+
+    /*  Held in a named local. A var owns its DynamicObject, so parsing into a
+        temporary and keeping only the pointer getDynamicObject hands back
+        leaves that pointer dangling at the end of the statement - which is a
+        crash on the one path that matters here, an upgrade.
+    */
+    const auto parsed = juce::JSON::parse(json);
+
+    if (parsed.getDynamicObject() == nullptr)
+        return;
+
+    /*  engineCommand and torchCompile were already ignored before this, and
+        stay ignored: where the Engine lives and whether this machine can
+        compile are facts about the install, not about a saved session.
+    */
+    applyPreferences(parsed);
+
+    // So that the next project opened finds a file and leaves it alone.
+    savePreferences();
+}
+
+juce::File StemLabAudioProcessor::settingsPreferenceFile()
+{
+    return stemlab::paths::configDirectory().getChildFile("settings.json");
+}
+
+void StemLabAudioProcessor::loadPreferences()
+{
+    const auto file = settingsPreferenceFile();
+
+    if (!file.existsAsFile())
+    {
+        // Nothing remembered yet, so a project may still speak for this user
+        // once. See setStateInformation.
+        preferencesMayBeAdopted = true;
+        return;
+    }
+
+    applyPreferences(juce::JSON::parse(file));
+}
+
+void StemLabAudioProcessor::applyPreferences(const juce::var& parsed)
+{
+    auto* object = parsed.getDynamicObject();
+
+    if (object == nullptr)
+        return;
+
+    /*  Through the setters, every one of them, so that a file edited by hand
+        or written by a build that allowed a wider range cannot put the
+        plugin somewhere its own UI could not. The flag stops each of those
+        setters scheduling a write of what was just read.
+    */
+    const juce::ScopedValueSetter<bool> applying(applyingPreferences, true);
+
+    const auto has = [object](const char* key) { return object->hasProperty(key); };
+    const auto get = [object](const char* key) { return object->getProperty(key); };
+
+    if (has("refinement"))
+        setRefinementEnabled(static_cast<bool>(get("refinement")));
+
+    if (has("fusedStemNormalisation"))
+        setFusedStemNormalisation(static_cast<bool>(get("fusedStemNormalisation")));
+
+    if (has("separatorEngine"))
+        setSeparatorEngineIndex(static_cast<int>(get("separatorEngine")));
+
+    if (has("gridMode"))
+        setWaveformGridMode(static_cast<int>(get("gridMode")));
+
+    if (has("loopQuantize"))
+        setLoopQuantizeMode(static_cast<int>(get("loopQuantize")));
+
+    if (has("manualGridBpm"))
+    {
+        setManualGrid(static_cast<double>(get("manualGridBpm")),
+                      has("manualGridNumerator") ? static_cast<int>(get("manualGridNumerator"))
+                                                 : manualGridNumerator.load(),
+                      has("manualGridDenominator")
+                          ? static_cast<int>(get("manualGridDenominator"))
+                          : manualGridDenominator.load(),
+                      has("manualGridBarOne") ? static_cast<double>(get("manualGridBarOne"))
+                                              : manualGridBarOne.load());
+    }
+
+    if (has("waveformZoom"))
+        setWaveformZoom(static_cast<double>(get("waveformZoom")));
+
+    if (has("editorScale"))
+        setEditorScalePercent(static_cast<int>(get("editorScale")));
+
+    if (has("jobRootDirectory"))
+    {
+        const juce::File saved(get("jobRootDirectory").toString());
+
+        // Only if it is still there. A folder on a drive that is not
+        // mounted today must not become the place this session writes to.
+        if (saved.isDirectory())
+            setJobRootDirectory(saved);
+    }
+
+    if (auto* array = get("stems").getArray())
+        for (int i = 0; i < juce::jmin(stemCount, array->size()); ++i)
+            setStemEnabled(i, static_cast<bool>(array->getUnchecked(i)));
+}
+
+void StemLabAudioProcessor::schedulePreferenceSave()
+{
+    if (applyingPreferences)
+        return;
+
+    /*  Only the message thread gets the timer. Every rapid change is a UI
+        one and arrives here from that thread, so that is where coalescing is
+        worth anything; a setting moved from a worker - the adaptive split
+        turning off the lane it just replaced - happens once, and Timer's
+        period is a plain member that two threads calling startTimer would
+        race on. Writing it there directly is both safer and cheaper.
+    */
+    if (!juce::MessageManager::existsAndIsCurrentThread())
+    {
+        savePreferences();
+        return;
+    }
+
+    // Restarted rather than left running, so a drag writes once when it
+    // stops rather than once a second while it moves.
+    preferenceSaveTimer.startTimer(1000);
+}
+
+void StemLabAudioProcessor::savePreferences() const
+{
+    auto directory = stemlab::paths::configDirectory();
+
+    // Best effort, for the reason the accent and the palette give: failing to
+    // remember a setting must never be the reason anything else fails.
+    if (!directory.exists() && !directory.createDirectory())
+        return;
+
     auto rootObject = std::make_unique<juce::DynamicObject>();
     rootObject->setProperty("refinement", refinementEnabled.load());
     rootObject->setProperty("fusedStemNormalisation", fusedStemNormalisation.load());
@@ -6336,7 +6542,6 @@ void StemLabAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     rootObject->setProperty("manualGridDenominator", manualGridDenominator.load());
     rootObject->setProperty("manualGridBarOne", manualGridBarOne.load());
     rootObject->setProperty("editorScale", editorScalePercent.load());
-
     rootObject->setProperty("jobRootDirectory", getJobRootDirectory().getFullPathName());
 
     juce::Array<juce::var> stems;
@@ -6346,136 +6551,10 @@ void StemLabAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 
     rootObject->setProperty("stems", stems);
 
-    const auto json = juce::JSON::toString(juce::var(rootObject.release()), false);
-
-    destData.replaceAll(json.toRawUTF8(), static_cast<size_t>(json.getNumBytesAsUTF8()));
-}
-
-void StemLabAudioProcessor::setStateInformation(const void* data, int sizeInBytes)
-{
-    const juce::String json(juce::String::fromUTF8(static_cast<const char*>(data), sizeInBytes));
-
-    const auto parsed = juce::JSON::parse(json);
-    auto* object = parsed.getDynamicObject();
-
-    if (object == nullptr)
-        return;
-
-    /*
-     * engineCommand is deliberately not restored. Where the Engine lives is
-     * a fact about this machine's install, not about the project someone
-     * saved - a session carrying a path from another computer, or from a
-     * venv that has since been deleted, used to decide which interpreter ran
-     * here. Old states may still carry the property; it is ignored.
-     */
-
-    if (object->hasProperty("refinement"))
-    {
-        refinementEnabled.store(static_cast<bool>(object->getProperty("refinement")));
-
-        // A state written before this option existed carries no such
-        // property; getProperty returns void, which converts to false. That
-        // is deliberate rather than merely convenient: those sessions were
-        // getting the per-stem normalisation, and turning it off for them is
-        // the point of the change. Anyone who wants it back has the setting.
-        fusedStemNormalisation.store(
-            static_cast<bool>(object->getProperty("fusedStemNormalisation")));
-    }
-
-    /*
-     * torchCompile is deliberately NOT restored from saved state, and older
-     * projects that carry the property are ignored rather than honoured.
-     *
-     * Whether to compile is a property of the machine - it needs a toolchain,
-     * it costs a slow first run, and it pays back over every run after that.
-     * A project carrying its own answer means opening a session made on
-     * another computer silently overrides what this one was told, in both
-     * directions. The switch reads from torch_compile.txt and the environment
-     * only, both of which describe where the plugin is running.
-     */
-
-    // The environment still has to be reasserted here: this runs after the
-    // constructor, and the first job of a reloaded session must not inherit
-    // whatever the previous one left behind.
-    exportTorchCompilePreference();
-
-    if (object->hasProperty("separatorEngine"))
-    {
-        setSeparatorEngineIndex(static_cast<int>(object->getProperty("separatorEngine")));
-    }
-
-    if (object->hasProperty("gridMode"))
-        setWaveformGridMode(static_cast<int>(object->getProperty("gridMode")));
-
-    if (object->hasProperty("loopQuantize"))
-        setLoopQuantizeMode(static_cast<int>(object->getProperty("loopQuantize")));
-
-    if (object->hasProperty("manualGridBpm"))
-    {
-        // Restored through the setter so a hand-edited or older state cannot
-        // put a tempo outside the range the prompt enforces.
-        setManualGrid(static_cast<double>(object->getProperty("manualGridBpm")),
-                      object->hasProperty("manualGridNumerator")
-                          ? static_cast<int>(object->getProperty("manualGridNumerator"))
-                          : manualGridNumerator.load(),
-                      object->hasProperty("manualGridDenominator")
-                          ? static_cast<int>(object->getProperty("manualGridDenominator"))
-                          : manualGridDenominator.load(),
-                      object->hasProperty("manualGridBarOne")
-                          ? static_cast<double>(object->getProperty("manualGridBarOne"))
-                          : manualGridBarOne.load());
-    }
-
-    /*  The palette is a preference now, not project state, so this no longer
-        writes it and reads it only to carry an old choice forward once.
-
-        Both spellings, because both are on disk: projects from before the
-        rename carry "waveformColour". And only when nothing is remembered
-        yet, or the first project opened after an upgrade would decide the
-        preference for every project after it. Once the file exists, saved
-        state is ignored entirely - which is the point of it being a
-        preference.
-    */
-    if (!waveformColorPreferenceFile().existsAsFile())
-    {
-        for (const auto* key : { "waveformColor", "waveformColour" })
-        {
-            if (object->hasProperty(key))
-            {
-                setWaveformColorIndex(static_cast<int>(object->getProperty(key)));
-                break;
-            }
-        }
-    }
-
-    // Restored unconditionally. The brace this sat inside made the zoom
-    // depend on a waveform palette having been saved as well, so any state
-    // without that property came back at the default zoom.
-    if (object->hasProperty("waveformZoom"))
-        setWaveformZoom(static_cast<double>(object->getProperty("waveformZoom")));
-
-    if (object->hasProperty("editorScale"))
-    {
-        setEditorScalePercent(static_cast<int>(object->getProperty("editorScale")));
-    }
-
-    if (object->hasProperty("jobRootDirectory"))
-    {
-        const juce::File savedJobRoot(object->getProperty("jobRootDirectory").toString());
-
-        if (savedJobRoot.isDirectory())
-            setJobRootDirectory(savedJobRoot);
-    }
-
-    const auto stems = object->getProperty("stems");
-
-    if (auto* array = stems.getArray())
-    {
-        for (int i = 0; i < juce::jmin(stemCount, array->size()); ++i)
-        {
-            setStemEnabled(i, static_cast<bool>(array->getUnchecked(i)));
-        }
-    }
+    // Formatted rather than packed: this is a file a user may well open, and
+    // the whole of it is a few hundred bytes either way.
+    settingsPreferenceFile().replaceWithText(
+        juce::JSON::toString(juce::var(rootObject.release()), false));
 }
 
 juce::AudioProcessorEditor* StemLabAudioProcessor::createEditor()
@@ -7683,20 +7762,24 @@ void StemLabAudioProcessor::finishAnalysisMaintenance(const juce::File& source,
         });
 }
 
-void StemLabAudioProcessor::setWaveformGridMode(int mode) noexcept
+void StemLabAudioProcessor::setWaveformGridMode(int mode)
 {
     waveformGridMode.store(
         juce::jlimit(static_cast<int>(gridHost), static_cast<int>(gridOff), mode));
+
+    schedulePreferenceSave();
     sendChangeMessage();
 }
 
 void StemLabAudioProcessor::setManualGrid(double bpm, int numerator, int denominator,
-                                          double barOne) noexcept
+                                          double barOne)
 {
     manualGridBpm.store(juce::jlimit(20.0, 400.0, bpm));
     manualGridNumerator.store(juce::jlimit(1, 32, numerator));
     manualGridDenominator.store(juce::jlimit(1, 32, denominator));
     manualGridBarOne.store(juce::jmax(0.0, barOne));
+
+    schedulePreferenceSave();
     sendChangeMessage();
 }
 
@@ -7808,7 +7891,7 @@ StemLabSelectionRange StemLabAudioProcessor::getStemSelectionRange(const juce::S
     return found != stemSelections.end() ? found->second : StemLabSelectionRange{};
 }
 
-void StemLabAudioProcessor::setLoopQuantizeMode(int mode) noexcept
+void StemLabAudioProcessor::setLoopQuantizeMode(int mode)
 {
     loopQuantizeMode.store(
         juce::jlimit(static_cast<int>(quantizeOff), static_cast<int>(quantizeBar), mode));
@@ -7816,6 +7899,7 @@ void StemLabAudioProcessor::setLoopQuantizeMode(int mode) noexcept
     // Ranges already swept stay where they are. Snapping them under the user
     // would move loops they placed deliberately, and the setting is about
     // the next sweep, not a re-cut of the last one.
+    schedulePreferenceSave();
     sendChangeMessage();
 }
 
