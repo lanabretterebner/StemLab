@@ -3767,6 +3767,7 @@ void StemLabAudioProcessorEditor::timerCallback()
          */
         processor.refreshAbletonSourceClipFromDisk();
         processor.refreshAbletonTempoReplyFromDisk();
+        processor.refreshAbletonMidiAckFromDisk();
 
         if (nowMs - lastAbletonStatusPollMs >= 250)
         {
