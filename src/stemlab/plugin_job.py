@@ -238,8 +238,16 @@ def run_plugin_job(
     print("Export stems:", ", ".join(x["name"] for x in manifest["stems"]), flush=True)
 
     if notify:
-        notify_ableton(manifest_path)
-        print(f"Notified Ableton bridge on UDP {BRIDGE_PORT}", flush=True)
+        # Guarded because everything the job promised is already on disk by
+        # here. A datagram that cannot be sent - no Remote Script listening,
+        # a firewall, a socket the OS refuses - is worth saying out loud, but
+        # failing the whole job over it would throw away finished stems.
+        try:
+            notify_ableton(manifest_path)
+        except OSError as exc:
+            print(f"Could not notify the Ableton bridge on UDP {BRIDGE_PORT}: {exc}", flush=True)
+        else:
+            print(f"Notified Ableton bridge on UDP {BRIDGE_PORT}", flush=True)
 
     write_progress(output_dir, 100.0, "Done")
     return manifest_path

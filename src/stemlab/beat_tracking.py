@@ -328,7 +328,10 @@ def download_packaged_model(
     directory.mkdir(parents=True, exist_ok=True)
 
     destination = directory / f"{spec.name}.ckpt"
-    partial = destination.with_suffix(".ckpt.partial")
+    # Per-process, because two downloads of one checkpoint would otherwise
+    # open the same .partial "wb" and interleave into a corrupt file that
+    # then gets replace()d into place as if it were whole.
+    partial = destination.with_suffix(".ckpt.partial.%d" % os.getpid())
     token = cancellation or CancellationToken()
 
     if progress:
