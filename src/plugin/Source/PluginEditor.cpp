@@ -1977,6 +1977,34 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
                     windowComponent->setUsingNativeTitleBar(true);
                     windowComponent->setName("StemLab");
+
+                    /*
+                     * The taskbar icon, and on X11 the only place it can come
+                     * from. A Linux executable has nowhere to carry an icon
+                     * the way a .exe or an .app bundle does, so a window that
+                     * publishes no _NET_WM_ICON gets whatever placeholder the
+                     * desktop draws for an unknown application - which is
+                     * what StemLab showed.
+                     *
+                     * The peer's setIcon, not DocumentWindow::setIcon: that
+                     * one only sets the image JUCE paints into its own title
+                     * bar, which a window using the native one never draws.
+                     * Set after the title bar swap because that recreates the
+                     * peer, and the icon lives on the peer.
+                     *
+                     * The desktop entry scripts/linux/build.sh installs
+                     * carries the same artwork, and matches this window by
+                     * its WM_CLASS - JUCE sets that from the application
+                     * name, "StemLab", which is what StartupWMClass says.
+                     */
+                    if (auto* peer = windowComponent->getPeer())
+                    {
+                        const auto icon = juce::ImageCache::getFromMemory(
+                            BinaryData::stemlab256_png, BinaryData::stemlab256_pngSize);
+
+                        if (icon.isValid())
+                            peer->setIcon(icon);
+                    }
                 }
             });
     }

@@ -56,6 +56,21 @@ def _install(home: Path, *, version: str = "0.1.7", flavor: str = "cuda") -> Pat
     for name in ("StemLab", "install.sh", "README.txt", "uninstall.sh", "update.sh"):
         (app / name).touch()
 
+    for size in (16, 32, 48, 64, 128, 256, 512):
+        _write(app / f"icons/stemlab-{size}.png")
+
+    _write(app / "icons/stemlab.svg")
+
+    # What install.sh writes outside the install folder so a launcher can find
+    # the app at all - see TestTheAppReachesTheApplicationsMenu in
+    # test_linux_bundle_installer.py.
+    _write(home / ".local/share/applications/stemlab.desktop", "[Desktop Entry]\n")
+
+    for size in (16, 32, 48, 64, 128, 256):
+        _write(home / f".local/share/icons/hicolor/{size}x{size}/apps/stemlab.png")
+
+    _write(home / ".local/share/icons/hicolor/scalable/apps/stemlab.svg")
+
     # Written by the running app into the same folder - see paths.py's
     # recursive_models_dir and StemLabPaths' remoteStatusDirectory.
     _write(app / "models/recursive/UVR-BVE-4B_SN-44100-2.pth")
@@ -394,6 +409,7 @@ class TestBothScriptsShipWithTheApp:
             "Engine",
             "StemLab",
             "StemLab.vst3",
+            "icons",
             "install.sh",
             "uninstall.sh",
             "update.sh",
@@ -401,6 +417,62 @@ class TestBothScriptsShipWithTheApp:
             ".stemlab-version",
         ):
             assert name in listed
+
+
+class TestUninstallTakesTheLauncherWithIt:
+    """The desktop entry and the icon theme files install.sh writes.
+
+    They are the only things StemLab puts outside its own folders besides the
+    VST3, and they are the ones a user sees if they are left: a menu entry
+    that launches nothing, with an icon, forever.
+    """
+
+    def test_the_menu_entry_goes(self, tmp_path):
+        home = tmp_path / "home"
+        _install(home)
+
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+        assert not (home / ".local/share/applications/stemlab.desktop").exists()
+
+    def test_the_theme_icons_go(self, tmp_path):
+        home = tmp_path / "home"
+        _install(home)
+
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+
+        theme = home / ".local/share/icons/hicolor"
+
+        for size in (16, 32, 48, 64, 128, 256):
+            assert not (theme / f"{size}x{size}/apps/stemlab.png").exists()
+
+        assert not (theme / "scalable/apps/stemlab.svg").exists()
+
+    def test_other_applications_keep_their_icons(self, tmp_path):
+        # hicolor is shared. Only the files called stemlab are ours, and an
+        # uninstaller that removed the size directories would take the rest of
+        # the desktop's icons with it.
+        home = tmp_path / "home"
+        _install(home)
+
+        stranger = home / ".local/share/icons/hicolor/48x48/apps/audacity.png"
+        _write(stranger, "not ours")
+
+        other_entry = home / ".local/share/applications/audacity.desktop"
+        _write(other_entry, "[Desktop Entry]\n")
+
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+        assert stranger.read_text() == "not ours"
+        assert other_entry.exists()
+
+    def test_they_are_named_in_the_dry_run(self, tmp_path):
+        home = tmp_path / "home"
+        _install(home)
+
+        result = _run(UNINSTALL, home, "--dry-run")
+
+        assert result.returncode == 0, result.stderr
+        assert "applications/stemlab.desktop" in result.stdout
+        assert "hicolor/256x256/apps/stemlab.png" in result.stdout
 
 
 class TestUpdateComparesVersions:

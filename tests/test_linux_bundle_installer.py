@@ -65,6 +65,14 @@ def _bundle(where: Path) -> Path:
 
     (where / "README.txt").write_text("StemLab 9.9.9 for Linux\n")
 
+    icons = where / "icons"
+    icons.mkdir()
+
+    for size in (16, 32, 48, 64, 128, 256, 512):
+        (icons / f"stemlab-{size}.png").write_text(f"the {size}px icon")
+
+    (icons / "stemlab.svg").write_text("<svg/>")
+
     return where
 
 
@@ -155,6 +163,103 @@ class TestRunFromWhereverItWasExtracted:
 
         assert _install(installer_source, home, here).returncode == 0
         assert (app / "Engine/bin/python3").read_text() == "the interpreter"
+
+
+class TestTheAppReachesTheApplicationsMenu:
+    """Why a desktop entry, when the window already sets its own icon.
+
+    A Linux executable has nowhere to carry an icon the way a .exe or an .app
+    bundle does. The standalone publishes _NET_WM_ICON, which is what a
+    taskbar draws for a window that is already open - but a launcher has to
+    know the app exists before there is any window, and that is a desktop
+    entry or nothing. StartupWMClass is the other half: it is what ties the
+    running window back to the entry, so a dock shows one StemLab rather than
+    a pinned launcher beside an unknown window.
+    """
+
+    @staticmethod
+    def _entry(home: Path) -> str:
+        return (home / ".local/share/applications/stemlab.desktop").read_text()
+
+    def test_the_entry_is_written(self, tmp_path, installer_source):
+        home = tmp_path / "home"
+        app = _bundle(home / ".local/share/StemLab")
+
+        assert _install(installer_source, home, app).returncode == 0
+
+        entry = self._entry(home)
+
+        assert "[Desktop Entry]" in entry
+        assert "Name=StemLab" in entry
+        assert "Icon=stemlab" in entry
+        assert "Type=Application" in entry
+
+    def test_it_launches_the_app_that_was_installed(self, tmp_path, installer_source):
+        home = tmp_path / "home"
+        home.mkdir()
+        here = _bundle(tmp_path / "Downloads/StemLab-9.9.9-Linux-cpu")
+
+        assert _install(installer_source, home, here).returncode == 0
+
+        # Quoted, because STEMLAB_INSTALL_DIR can point at a path with a space
+        # in it and Exec is parsed as a command line rather than as one path.
+        assert f'Exec="{home}/.local/share/StemLab/StemLab"' in self._entry(home)
+
+    def test_it_names_the_window_class_juce_actually_sets(
+        self, tmp_path, installer_source
+    ):
+        # JUCE sets WM_CLASS from the application name, which for the
+        # standalone is JucePlugin_Name. Anything else here and the dock keeps
+        # the launcher and the running window apart.
+        home = tmp_path / "home"
+        app = _bundle(home / ".local/share/StemLab")
+
+        assert _install(installer_source, home, app).returncode == 0
+        assert "StartupWMClass=StemLab" in self._entry(home)
+
+    def test_the_icon_is_filed_into_the_theme_at_every_size(
+        self, tmp_path, installer_source
+    ):
+        home = tmp_path / "home"
+        app = _bundle(home / ".local/share/StemLab")
+
+        assert _install(installer_source, home, app).returncode == 0
+
+        theme = home / ".local/share/icons/hicolor"
+
+        for size in (16, 32, 48, 64, 128, 256):
+            icon = theme / f"{size}x{size}/apps/stemlab.png"
+
+            assert icon.read_text() == f"the {size}px icon"
+
+        assert (theme / "scalable/apps/stemlab.svg").read_text() == "<svg/>"
+
+    def test_the_icons_survive_a_by_hand_install(self, tmp_path, installer_source):
+        # The extracted folder is emptied into the install directory and can
+        # then be deleted, so the icons have to be carried across with the
+        # rest - otherwise the next update has nothing to re-file.
+        home = tmp_path / "home"
+        home.mkdir()
+        here = _bundle(tmp_path / "Downloads/StemLab-9.9.9-Linux-cpu")
+
+        assert _install(installer_source, home, here).returncode == 0
+
+        installed = home / ".local/share/StemLab/icons"
+
+        assert (installed / "stemlab-256.png").read_text() == "the 256px icon"
+        assert (installed / "stemlab.svg").exists()
+
+    def test_a_bundle_without_icons_still_installs(self, tmp_path, installer_source):
+        # An older bundle, or one built before the icons existed. The entry is
+        # still worth writing: the theme falls back and the app is listed.
+        home = tmp_path / "home"
+        app = _bundle(home / ".local/share/StemLab")
+        shutil.rmtree(app / "icons")
+
+        result = _install(installer_source, home, app)
+
+        assert result.returncode == 0, result.stderr
+        assert "Icon=stemlab" in self._entry(home)
 
 
 class TestItRefusesAnIncompleteFolder:

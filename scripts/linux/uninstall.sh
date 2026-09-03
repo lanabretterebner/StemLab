@@ -93,6 +93,7 @@ BUNDLE_ENTRIES=(
     Engine
     StemLab
     StemLab.vst3
+    icons
     install.sh
     uninstall.sh
     update.sh
@@ -169,6 +170,20 @@ elif [[ -d "$installed_dir" ]]; then
 fi
 
 consider "$HOME/.vst3/StemLab.vst3" "the VST3 plug-in"
+
+# What install.sh put outside the install folder so that a launcher could find
+# the app: the menu entry, and the icon it names, filed into the icon theme at
+# each size. Named one by one rather than by their directories - hicolor holds
+# every application's icons, and only the files called stemlab are ours.
+consider "$DATA_HOME/applications/stemlab.desktop" "the applications-menu entry"
+
+for icon_size in 16 32 48 64 128 256; do
+    consider "$DATA_HOME/icons/hicolor/${icon_size}x${icon_size}/apps/stemlab.png" \
+        "the launcher icon"
+done
+
+consider "$DATA_HOME/icons/hicolor/scalable/apps/stemlab.svg" "the launcher icon"
+
 consider "$CONFIG_HOME/StemLab" "settings: the torch-compile preference"
 
 # Everything of ours under the cache directory, in one target: the analysis
@@ -346,6 +361,16 @@ done
 # more than StemLab.
 rmdir "$HOME/.vst3" 2>/dev/null || true
 rmdir "$installed_dir" 2>/dev/null || true
+
+# A desktop that caches its menu keeps showing an entry whose file is gone
+# until it is told otherwise. Best effort, as in install.sh.
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$DATA_HOME/applications" >/dev/null 2>&1 || true
+fi
+
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -qtf "$DATA_HOME/icons/hicolor" >/dev/null 2>&1 || true
+fi
 
 echo
 echo "StemLab is removed."

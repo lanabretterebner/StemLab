@@ -12,6 +12,8 @@ find its Engine, and nothing failed until the user's first separation.
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 ISS = (ROOT / "scripts" / "win" / "StemLab.iss").read_text(encoding="utf-8")
 BUILDER = (ROOT / "scripts" / "win" / "build_installer_windows.ps1").read_text(encoding="utf-8")
@@ -237,3 +239,61 @@ class TestAbletonSetup:
             r'Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy '
             r'Bypass -File ""{app}\scripts\install_ableton.ps1"""' in ISS
         )
+
+
+class TestTheIconPathsResolve:
+    """Icon paths nothing on this machine would notice were wrong.
+
+    The application icon reaches Windows and macOS through JUCE's ICON_BIG and
+    ICON_SMALL, and juceaide only reads them when it is building for those
+    platforms - on Linux _juce_generate_icon returns before it checks that the
+    files exist at all. The installer's SetupIconFile is the same shape: a
+    path copied into the payload by build_portable_windows.ps1 and read by
+    ISCC, neither of which runs in CI.
+
+    So a rename that misses one of these builds and tests green here, and
+    fails on the release machine or, worse, ships an application with no icon.
+    """
+
+    ICON_DIR = ROOT / "src" / "plugin" / "Resources" / "icons"
+    CMAKELISTS = (ROOT / "src" / "plugin" / "CMakeLists.txt").read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize("key", ["ICON_BIG", "ICON_SMALL"])
+    def test_the_juce_icon_exists(self, key):
+        match = re.search(
+            rf'{key} "\$\{{CMAKE_CURRENT_SOURCE_DIR}}/(?P<path>[^"]+)"', self.CMAKELISTS
+        )
+
+        assert match is not None, f"{key} is no longer set in the plugin CMakeLists"
+        assert (ROOT / "src" / "plugin" / match.group("path")).is_file()
+
+    def test_the_window_icon_is_in_the_binary_data(self):
+        # The one the standalone hands its window manager. It is referenced
+        # from PluginEditor.cpp by the symbol juce_add_binary_data derives
+        # from this filename, so the two have to agree.
+        assert "Resources/icons/stemlab-256.png" in self.CMAKELISTS
+        assert (self.ICON_DIR / "stemlab-256.png").is_file()
+
+        editor = (ROOT / "src" / "plugin" / "Source" / "PluginEditor.cpp").read_text()
+
+        assert "BinaryData::stemlab256_png" in editor
+
+    def test_the_installer_icon_exists(self):
+        portable = (
+            ROOT / "scripts" / "win" / "build_portable_windows.ps1"
+        ).read_text(encoding="utf-8")
+
+        match = re.search(
+            r'Copy-Item -LiteralPath \(Join-Path \$RepoRoot "(?P<path>[^"]*\.ico)"\)',
+            portable,
+        )
+
+        assert match is not None, "build_portable_windows.ps1 no longer stages an icon"
+
+        icon = ROOT / match.group("path").replace("\\", "/")
+
+        assert icon.is_file()
+
+        # ISCC reads it back out of the payload under the name it was copied to.
+        assert "SetupIconFile={#SourceDir}\\StemLabIcon.ico" in ISS
+        assert 'Destination (Join-Path $OutputDirectory "StemLabIcon.ico")' in portable
