@@ -2486,8 +2486,14 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
                         ? "Source ready"
                         : "Source ready - preview unavailable until stems are made");
 
-    if (beatThisEnabled.load())
-        startSourceAnalysis(file);
+    /*
+        A new source is not analysed until it is asked for. beatThisEnabled
+        is cleared with the rest of the previous source's analysis because it
+        is what gates the key/BPM readout: left standing, a fresh file would
+        report the last one's "Key: Unknown - BPM: Unknown" before anything
+        had looked at it.
+    */
+    beatThisEnabled.store(false);
 
     return true;
 }
@@ -7143,15 +7149,11 @@ size_t StemLabAudioProcessor::getSourceTempoSegmentCount() const
 
 void StemLabAudioProcessor::setSourceAnalysisMode(int mode)
 {
+    // Chooses what the next run does. It does not start one: analysis runs
+    // when Analyse is pressed, never as a side effect of changing a setting.
     sourceAnalysisMode.store(juce::jlimit(static_cast<int>(analysisAccurate),
                                           static_cast<int>(analysisFast), mode));
-    const auto source = getCaptureFile();
-
-    // canStartSourceAnalysis rather than the analysis flag alone: changing the
-    // mode during a separation used to start an analysis on top of it and
-    // reset the engine's shared progress, ETA and cancel state.
-    if (beatThisEnabled.load() && source.existsAsFile() && canStartSourceAnalysis())
-        startSourceAnalysis(source);
+    sendChangeMessage();
 }
 
 void StemLabAudioProcessor::setTempoInterpretation(int interpretation)
@@ -7656,31 +7658,10 @@ void StemLabAudioProcessor::finishAnalysisMaintenance(const juce::File& source,
 
     setStatus(label + " complete");
 
-    if (!beatThisEnabled.load() || !source.existsAsFile())
-        return;
-
-    // This runs on the maintenance thread itself, and startSourceAnalysis
-    // opens by resetting analysisThread - which is this thread, so calling it
-    // from here destroys and joins the thread it is running on. The follow-up
-    // therefore starts from the message thread, by which point this thread's
-    // run() has returned and the reset is an ordinary join. The weak token
-    // drops the callback if the processor goes away first.
-    std::weak_ptr<int> lifetime = lifetimeToken;
-
-    juce::MessageManager::callAsync(
-        [this, lifetime, source]
-        {
-            if (lifetime.expired())
-                return;
-
-            // A separation may have started in the meantime, and the
-            // follow-up must not reset its progress, ETA and cancel state
-            // from under it.
-            if (!canStartSourceAnalysis())
-                return;
-
-            startSourceAnalysis(source);
-        });
+    // No follow-up analysis. Clearing the cache is a request to forget what
+    // was worked out, not a request to work it out again - the next run
+    // happens when Analyse is pressed.
+    juce::ignoreUnused(source);
 }
 
 void StemLabAudioProcessor::setWaveformGridMode(int mode) noexcept
