@@ -6466,22 +6466,34 @@ void StemLabAudioProcessor::applyPreferences(const juce::var& parsed)
         setSeparatorEngineIndex(static_cast<int>(get("separatorEngine")));
 
     if (has("gridMode"))
-        setWaveformGridMode(static_cast<int>(get("gridMode")));
+    {
+        const auto mode = static_cast<int>(get("gridMode"));
+
+        /*  Manual does not come back. The tempo it draws with is not
+            remembered - see below - so restoring the mode alone would open
+            every later session in manual at the default 120, which is a
+            confident grid over audio nothing has measured. Source is what
+            manual was chosen instead of, and it draws nothing until there is
+            an analysis to draw.
+        */
+        setWaveformGridMode(mode == gridManual ? static_cast<int>(gridSource) : mode);
+    }
 
     if (has("loopQuantize"))
         setLoopQuantizeMode(static_cast<int>(get("loopQuantize")));
 
-    if (has("manualGridBpm"))
-    {
-        setManualGrid(static_cast<double>(get("manualGridBpm")),
-                      has("manualGridNumerator") ? static_cast<int>(get("manualGridNumerator"))
-                                                 : manualGridNumerator.load(),
-                      has("manualGridDenominator")
-                          ? static_cast<int>(get("manualGridDenominator"))
-                          : manualGridDenominator.load(),
-                      has("manualGridBarOne") ? static_cast<double>(get("manualGridBarOne"))
-                                              : manualGridBarOne.load());
-    }
+    /*  The manual grid is deliberately not among these.
+
+        Every other value here says how somebody works. A tempo, a meter and
+        where bar one falls say what is in one piece of audio, and nothing
+        about the audio survives an instance either - the file is not
+        reopened, the analysis is not restored. A remembered 174 would be a
+        grid drawn confidently over whatever is loaded next, which is the one
+        thing getWaveformGridScalars already refuses to do when it declines
+        to substitute a plausible 120.
+
+        So it lasts as long as the audio it describes does, and no longer.
+    */
 
     if (has("waveformZoom"))
         setWaveformZoom(static_cast<double>(get("waveformZoom")));
@@ -6541,12 +6553,12 @@ void StemLabAudioProcessor::savePreferences() const
     rootObject->setProperty("fusedStemNormalisation", fusedStemNormalisation.load());
     rootObject->setProperty("separatorEngine", separatorEngineIndex.load());
     rootObject->setProperty("waveformZoom", waveformZoom.load());
-    rootObject->setProperty("gridMode", waveformGridMode.load());
+    // Manual is written as source for the reason applyPreferences gives: the
+    // mode outliving the tempo it needs is worse than not remembering it.
+    const auto gridMode = waveformGridMode.load();
+    rootObject->setProperty("gridMode",
+                            gridMode == gridManual ? static_cast<int>(gridSource) : gridMode);
     rootObject->setProperty("loopQuantize", loopQuantizeMode.load());
-    rootObject->setProperty("manualGridBpm", manualGridBpm.load());
-    rootObject->setProperty("manualGridNumerator", manualGridNumerator.load());
-    rootObject->setProperty("manualGridDenominator", manualGridDenominator.load());
-    rootObject->setProperty("manualGridBarOne", manualGridBarOne.load());
     rootObject->setProperty("editorScale", editorScalePercent.load());
     rootObject->setProperty("jobRootDirectory", getJobRootDirectory().getFullPathName());
 
@@ -7760,7 +7772,8 @@ void StemLabAudioProcessor::setManualGrid(double bpm, int numerator, int denomin
     manualGridDenominator.store(juce::jlimit(1, 32, denominator));
     manualGridBarOne.store(juce::jmax(0.0, barOne));
 
-    schedulePreferenceSave();
+    // No schedulePreferenceSave: this one is not remembered. See
+    // applyPreferences for why a tempo is not a preference.
     sendChangeMessage();
 }
 

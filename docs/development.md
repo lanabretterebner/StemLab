@@ -204,9 +204,18 @@ setting, and changing a setting cannot dirty a project.
 Everything the plugin remembers is in the config directory instead: the
 accent in `accent.txt`, the lane palette in `waveform_palette.txt`, whether
 this machine can compile in `torch_compile.txt`, and the rest -
-refinement, fused-stem normalisation, the separation model, the grid mode and
-manual grid, loop quantisation, waveform zoom, editor scale, the job folder
-and which stems are enabled - in `settings.json`.
+refinement, fused-stem normalisation, the separation model, the grid mode,
+loop quantisation, waveform zoom, editor scale, the job folder and which
+stems are enabled - in `settings.json`.
+
+The manual grid is the one thing deliberately left out. A tempo, a meter and
+where bar one falls describe one piece of audio rather than how somebody
+works, and no instance restores the audio either, so a remembered 174 would
+be a grid drawn confidently over whatever is loaded next - the same thing
+`getWaveformGridScalars` refuses to do when it declines to substitute a
+plausible 120. The mode goes with it: `gridManual` is written and read as
+`gridSource`, because restoring the mode without its tempo opens every later
+session in manual at the default 120.
 
 They were project state because that is where a plugin's state usually goes,
 and it was wrong for all of them: which stems you separate and how big you

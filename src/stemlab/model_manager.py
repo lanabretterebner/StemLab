@@ -702,10 +702,11 @@ def _run_child(
 
     environment = child_process_env()
 
-    # A packaged release sets HF_HUB_OFFLINE=1 at import time so ordinary
-    # jobs never reach the network. Downloading is the one operation that
-    # must, and it is explicit rather than incidental, so the switch is
-    # lifted for exactly this child.
+    # HF_HUB_OFFLINE=1 in the environment keeps ordinary jobs off the
+    # network - a release used to set it for itself, and it is the user's or
+    # the site's to set now. Downloading is the one operation that must reach
+    # it, and it is explicit rather than incidental, so the switch is lifted
+    # for exactly this child.
     environment.pop("HF_HUB_OFFLINE", None)
     environment.pop("TRANSFORMERS_OFFLINE", None)
 

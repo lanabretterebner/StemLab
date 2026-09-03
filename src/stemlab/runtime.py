@@ -66,23 +66,24 @@ _active_processes_lock = threading.Lock()
 _shutdown_in_progress = threading.Event()
 
 
-def _configure_packaged_models() -> None:
-    """Point third-party backends at release-local model caches when present."""
-    engine = Path(sys.executable).resolve().parent
-    caches = engine / "ModelCaches"
-    if not caches.is_dir():
-        return
-    os.environ.setdefault("BS_ROFORMER_MODELS_PATH", str(caches / "bs-roformer-infer"))
-    demucs_repo = caches / "demucs"
-    if (demucs_repo / "5c90dfd2-34c22ccb.th").is_file():
-        os.environ.setdefault("STEMLAB_DEMUCS_MODEL_REPO", str(demucs_repo))
-    os.environ.setdefault("HF_HOME", str(caches / "huggingface"))
-    os.environ.setdefault("HF_HUB_OFFLINE", "1")
-    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-    os.environ.setdefault("STEMLAB_RECURSIVE_MODEL_DIR", str(engine / "Models" / "Recursive"))
-
-
-_configure_packaged_models()
+# Weights used to be staged inside the Engine directory, and a
+# _configure_packaged_models() here pointed every backend at them on import:
+# BS_ROFORMER_MODELS_PATH, HF_HOME, the Demucs repo and
+# STEMLAB_RECURSIVE_MODEL_DIR all under Engine/, plus HF_HUB_OFFLINE.
+#
+# Nothing has staged them since they moved to downloading on first use, so
+# the Engine/ModelCaches it looked for stopped existing and the whole
+# function returned on its first line. It is gone rather than kept, because
+# what it did if that directory ever came back is put every weight inside the
+# one directory an update replaces wholesale - and the setup script's
+# carry-across, which exists precisely to keep weights across an update,
+# skips Engine on purpose. A dead branch that reintroduces the bug it was
+# written before is worse than no branch.
+#
+# Every variable it set is still read where it was read: paths.py and
+# model_manager.py honour STEMLAB_RECURSIVE_MODEL_DIR, demucs_backend.py
+# honours STEMLAB_DEMUCS_MODEL_REPO, and HF_HUB_OFFLINE still forces offline
+# for anyone who sets it. They are the user's to set now, not ours.
 
 
 class JobCancelled(RuntimeError):
