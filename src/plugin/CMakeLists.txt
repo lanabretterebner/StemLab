@@ -84,12 +84,25 @@ juce_add_plugin(StemLabPlugin
     IS_MIDI_EFFECT FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
     COPY_PLUGIN_AFTER_BUILD FALSE
+    # Windows and macOS take their application icon from the executable
+    # itself, which is what these produce - an .ico resource and an .icns in
+    # the bundle. juceaide is not asked for anything on Linux, where an
+    # executable has nowhere to carry an icon: there it is set on the window
+    # at runtime (PluginEditor) and installed as a desktop entry alongside
+    # the app (scripts/linux/build.sh).
+    ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icons/stemlab-512.png"
+    ICON_SMALL "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icons/stemlab-64.png"
 )
 
 juce_add_binary_data(StemLabAssets
     SOURCES
         Resources/fonts/Inter-Regular.ttf
         Resources/fonts/Inter-Medium.ttf
+        # The window icon the standalone hands its window manager. 256 is
+        # what _NET_WM_ICON carries: JUCE publishes a single size and every
+        # taskbar scales it down, so this is the one that has to be big
+        # enough for the largest place it appears - the alt-tab switcher.
+        Resources/icons/stemlab-256.png
 )
 
 target_sources(StemLabPlugin

@@ -99,6 +99,11 @@ mkdir -p "$DIST_DIR"
 cp "$ARTEFACTS/Standalone/StemLab" "$DIST_DIR/StemLab"
 cp -r "$ARTEFACTS/VST3/StemLab.vst3" "$DIST_DIR/StemLab.vst3"
 
+# The application icon, at the sizes an icon theme is indexed by. A Linux
+# executable has nowhere to carry one the way a .exe or an .app bundle does,
+# so it ships beside the app and install.sh files it into the icon theme.
+cp -r "$REPO_ROOT/src/plugin/Resources/icons" "$DIST_DIR/icons"
+
 # ---------------------------------------------------------------- 3. engine
 
 FLAVOR_ARGS=()
@@ -164,7 +169,7 @@ if [[ "$HERE" != "$INSTALL_DIR" ]]; then
     # The app and the two scripts that manage it, so the extracted folder is
     # not the only copy of the uninstaller. uninstall.sh already expects to
     # find them here.
-    for item in StemLab uninstall.sh update.sh README.txt .stemlab-version; do
+    for item in StemLab icons uninstall.sh update.sh README.txt .stemlab-version; do
         [[ -e "$HERE/$item" ]] && cp -r "$HERE/$item" "$INSTALL_DIR/$item"
     done
 fi
@@ -172,12 +177,69 @@ fi
 chmod +x "$INSTALL_DIR/StemLab" "$INSTALL_DIR/uninstall.sh" \
     "$INSTALL_DIR/update.sh" 2>/dev/null || true
 
+# What puts StemLab in the applications menu with its own icon.
+#
+# The window publishes _NET_WM_ICON itself, which is enough for the icon a
+# taskbar draws for a window that is already open. A desktop entry is a
+# different thing: it is the only way a launcher knows the app exists at all,
+# and StartupWMClass is what ties the running window back to that entry, so a
+# dock shows one StemLab rather than a pinned launcher beside an unknown
+# window. JUCE sets WM_CLASS from the application name, which is "StemLab".
+#
+# Per-user, under $DATA_HOME, because that is where the rest of this install
+# goes; nothing here needs root.
+for size in 16 32 48 64 128 256; do
+    icon="$INSTALL_DIR/icons/stemlab-$size.png"
+    [[ -f "$icon" ]] || continue
+
+    mkdir -p "$DATA_HOME/icons/hicolor/${size}x${size}/apps"
+    cp "$icon" "$DATA_HOME/icons/hicolor/${size}x${size}/apps/stemlab.png"
+done
+
+if [[ -f "$INSTALL_DIR/icons/stemlab.svg" ]]; then
+    mkdir -p "$DATA_HOME/icons/hicolor/scalable/apps"
+    cp "$INSTALL_DIR/icons/stemlab.svg" \
+        "$DATA_HOME/icons/hicolor/scalable/apps/stemlab.svg"
+fi
+
+mkdir -p "$DATA_HOME/applications"
+
+# Exec is quoted because STEMLAB_INSTALL_DIR can point anywhere, including a
+# path with a space in it, and the desktop entry spec parses Exec as a
+# command line rather than as a single path.
+cat > "$DATA_HOME/applications/stemlab.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=StemLab
+GenericName=Stem Separation
+Comment=Capture, separate, and export stems to Ableton Live
+Exec="$INSTALL_DIR/StemLab"
+Icon=stemlab
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=stems;separation;acapella;instrumental;karaoke;
+StartupNotify=true
+StartupWMClass=StemLab
+DESKTOP
+
+# Best effort, both of them: a desktop that keeps these caches wants to be
+# told, and one that does not have the commands reads the files directly.
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$DATA_HOME/applications" >/dev/null 2>&1 || true
+fi
+
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -qtf "$DATA_HOME/icons/hicolor" >/dev/null 2>&1 || true
+fi
+
 cat <<EOF
 StemLab installed.
 
   VST3:       $HOME/.vst3/StemLab.vst3
   Standalone: $INSTALL_DIR/StemLab
   Engine:     $INSTALL_DIR/Engine
+  Menu entry: $DATA_HOME/applications/stemlab.desktop
   Update:     $INSTALL_DIR/update.sh
   Uninstall:  $INSTALL_DIR/uninstall.sh
 

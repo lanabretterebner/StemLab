@@ -66,6 +66,16 @@ then the bundle's `install.sh`, which registers the VST3 in `~/.vst3` and the
 Engine in one step. In REAPER, make sure `~/.vst3` is listed under
 **Options > Preferences > Plug-ins > VST**, then **Re-scan**.
 
+`install.sh` also adds StemLab to the applications menu — a desktop entry in
+`$XDG_DATA_HOME/applications` and its icon in the `hicolor` theme, both
+per-user and both removed by `uninstall.sh`. A Linux executable has nowhere to
+carry an icon the way a `.exe` or an `.app` bundle does, so the standalone
+sets one on its own window at runtime as well; that covers a launch from a
+terminal, where there is no desktop entry involved. The entry's
+`StartupWMClass` is `StemLab`, which is the `WM_CLASS` JUCE gives the window,
+so a dock shows one StemLab rather than a pinned launcher beside an unknown
+window.
+
 ## 3. Install the separation backend
 
 The plugin shells out to the Python backend. One script sets it up - no venv,
