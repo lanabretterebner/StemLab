@@ -151,15 +151,15 @@ StemLabWaveformCache::Profile StemLabWaveformCache::analyse(const juce::File& fi
     profile.lengthSeconds = static_cast<double>(total) / rate;
 
     /*
-     * Frames are sized here rather than inside analysePeaks because the read
-     * blocks below are a whole number of frames: a frame that straddled two
-     * blocks would need carrying across, and getting that wrong shows up as
-     * a stripe of wrong peaks every block boundary.
+     * The reduction itself cannot call analysePeaks: that one takes the whole
+     * file as channel arrays, and this reads in blocks precisely so it never
+     * holds the whole file - an hour of stereo float is 635 MB. The frame
+     * sizing is the part both need to agree on, so it comes from the shared
+     * helper and the read blocks below stay a whole number of those frames:
+     * a frame straddling two blocks would need carrying across, and getting
+     * that wrong shows up as a stripe of wrong peaks at every boundary.
      */
-    auto hop = static_cast<juce::int64>(juce::jmax(1.0, rate * waveform::peakSecondsPerFrame));
-
-    if (static_cast<std::size_t>(total / hop) > waveform::peakMaxFrames)
-        hop = juce::jmax(hop, total / static_cast<juce::int64>(waveform::peakMaxFrames));
+    const auto hop = static_cast<juce::int64>(waveform::peakHopSamples(total, rate));
 
     profile.peaks.channels = channels;
     profile.peaks.secondsPerFrame = static_cast<double>(hop) / rate;
