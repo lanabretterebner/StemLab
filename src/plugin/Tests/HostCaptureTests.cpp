@@ -206,6 +206,33 @@ int main()
         }
     }
 
+    /*  Refinement is off on a project that has never been told otherwise, and
+        a project that was told stays told.
+
+        The default is a product decision - refinement is a second pass over
+        stems that are already usable, and it costs real time on every
+        separation - and nothing else in the build would notice it being
+        flipped back by a refactor. The round trip is here for the same
+        reason: the state key is what keeps a user who wants refinement from
+        having to turn it on again every session, and it is one line away
+        from being nested inside another property's branch and silently lost.
+    */
+    {
+        StemLabAudioProcessor fresh;
+        check(!fresh.isRefinementEnabled());
+
+        fresh.setRefinementEnabled(true);
+
+        juce::MemoryBlock saved;
+        fresh.getStateInformation(saved);
+
+        StemLabAudioProcessor restored;
+        check(!restored.isRefinementEnabled());
+
+        restored.setStateInformation(saved.getData(), (int) saved.getSize());
+        check(restored.isRefinementEnabled());
+    }
+
     check(capturedFile.deleteFile());
     return 0;
 }

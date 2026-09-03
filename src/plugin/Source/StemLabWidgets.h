@@ -183,7 +183,10 @@ namespace stemlab::widgets
     private:
         juce::Rectangle<int> refineArea() const;
 
-        bool refineOn = true;
+        // The editor pushes the processor's value in before this is ever
+        // painted; it agrees with that default so a control constructed and
+        // shown without one cannot flash the opposite state.
+        bool refineOn = false;
         bool separateEnabled = false;
         bool refineInteractive = true;
         bool hoverRefine = false, hoverSeparate = false;

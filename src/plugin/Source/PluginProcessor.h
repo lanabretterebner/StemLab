@@ -1267,7 +1267,14 @@ private:
     void runReaperSelfTestAction(const juce::String& action, const juce::File& report);
 
     std::array<std::atomic<bool>, stemCount> stemEnabled;
-    std::atomic<bool> refinementEnabled{true};
+
+    /*  Off unless asked for. Refinement is a second pass over stems that are
+        already usable, and it costs real time on every separation - so it is
+        a choice, not a tax on the first run somebody does. The toggle is
+        saved with the session, so a user who wants it keeps it: this is the
+        value a project that has never been told anything comes up with.
+    */
+    std::atomic<bool> refinementEnabled{false};
     std::atomic<bool> fusedStemNormalisation{false};
     std::atomic<int> separatorEngineIndex{separatorRoFormer};
     std::atomic<double> waveformZoom{1.0};
@@ -1286,7 +1293,10 @@ private:
 
     // Snapshotted at launch, where the --no-refine decision is made, so the
     // finished job's summary and the command it actually ran cannot differ.
-    std::atomic<bool> lastJobRefinement{true};
+    // Initialised to match refinementEnabled above rather than to true: no
+    // summary reads it before a job has run, and two defaults that disagree
+    // are a question somebody has to answer twice.
+    std::atomic<bool> lastJobRefinement{false};
 
     /*
         Engine-reported seconds remaining (STEMLAB_ETA lines) and when the
