@@ -87,6 +87,26 @@ music_dir() {
 
 MEDIA_HOME="$(music_dir)/StemLab"
 
+# ...and whether the desktop names one at all, which is a different question.
+#
+# music_dir falls back to ~/Music so that --everything has somewhere to sweep.
+# StemLabPaths does not: with no XDG_MUSIC_DIR it gives up and writes audio
+# into the install directory, because a folder invented in English is worse
+# than no folder. So this asks the app's question rather than the sweep's -
+# is there a music folder for audio to have gone to - and the answer decides
+# whether Captures, Recordings and Jobs inside the install directory are the
+# app's leftovers or the only copy of the user's audio.
+music_root_named() {
+    local configured="${XDG_MUSIC_DIR:-}"
+
+    if [[ "$configured" != /* && -f "$CONFIG_HOME/user-dirs.dirs" ]]; then
+        configured="$(sed -n 's/^[[:space:]]*XDG_MUSIC_DIR=//p' "$CONFIG_HOME/user-dirs.dirs" \
+            | tail -1 | tr -d '"' | sed "s|^\$HOME|$HOME|")"
+    fi
+
+    [[ "$configured" == /* && "$configured" != "$HOME" ]]
+}
+
 # What the bundle lays down. install_backend.sh on its own creates only
 # Engine/, so a source install is this list minus the app.
 BUNDLE_ENTRIES=(
@@ -108,7 +128,16 @@ BUNDLE_ENTRIES=(
 RUNTIME_ENTRIES=(Ableton)
 MODEL_ENTRIES=(models)
 
+# Audio directories the app used to write here and does not any more: they
+# moved to the music folder when Captures, Recordings and Jobs did. Taken
+# only when there is a music folder for them to have moved to - on a desktop
+# that names none, StemLabPaths still puts audio here and these are the only
+# copy of it, which is the regression this whole script is shaped around.
+AUDIO_ENTRIES=(Jobs Captures Recordings)
+
 APP_ENTRIES=("${BUNDLE_ENTRIES[@]}" "${RUNTIME_ENTRIES[@]}")
+
+music_root_named && APP_ENTRIES+=("${AUDIO_ENTRIES[@]}")
 
 [[ $KEEP_MODELS -eq 1 ]] || APP_ENTRIES+=("${MODEL_ENTRIES[@]}")
 
@@ -184,7 +213,10 @@ done
 
 consider "$DATA_HOME/icons/hicolor/scalable/apps/stemlab.svg" "the launcher icon"
 
-consider "$CONFIG_HOME/StemLab" "settings: the torch-compile preference"
+# Every setting the plugin keeps, which since none of it goes into a DAW
+# project is all of it: settings.json, the accent, the lane palette and the
+# torch-compile preference.
+consider "$CONFIG_HOME/StemLab" "your settings and preferences"
 
 # Everything of ours under the cache directory, in one target: the analysis
 # database, the compiled kernels and their warm-up markers, the jobs folder

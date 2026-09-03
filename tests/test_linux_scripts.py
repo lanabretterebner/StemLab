@@ -419,6 +419,96 @@ class TestBothScriptsShipWithTheApp:
             assert name in listed
 
 
+class TestUninstallTakesEverythingOutsideTheMusicFolder:
+    """What is left in the install directory when the audio moved out of it.
+
+    Captures, Recordings and Jobs are written to the music folder now. What
+    is in the install directory under those names is the old layout's, and
+    leaving it there is a StemLab folder in ~/.local/share that outlives the
+    uninstall - which is the whole complaint.
+
+    The exception is the desktop that names no music folder. StemLabPaths
+    does not invent one in English: with no XDG_MUSIC_DIR it writes audio
+    into the install directory, and there those three are the only copy of
+    it. That case keeps the protection this script was shaped around.
+    """
+
+    @staticmethod
+    def _name_the_music_folder(home: Path) -> None:
+        _write(home / ".config/user-dirs.dirs", 'XDG_MUSIC_DIR="$HOME/Music"\n')
+
+    def _leftovers(self, home: Path) -> dict[str, Path]:
+        app = home / ".local/share/StemLab"
+
+        return {
+            name: _write(app / f"{name}/old.wav", "audio")
+            for name in ("Jobs", "Captures", "Recordings")
+        }
+
+    @pytest.mark.parametrize("name", ["Jobs", "Captures", "Recordings"])
+    def test_they_go_when_the_audio_lives_in_the_music_folder(self, tmp_path, name):
+        home = tmp_path / "home"
+        _install(home)
+        self._name_the_music_folder(home)
+        leftovers = self._leftovers(home)
+
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+        assert not leftovers[name].exists()
+
+    def test_the_install_directory_itself_goes(self, tmp_path):
+        # The point of the change: nothing called StemLab is left behind in
+        # ~/.local/share once the audio has somewhere else to be.
+        home = tmp_path / "home"
+        app = _install(home)
+        self._name_the_music_folder(home)
+        self._leftovers(home)
+
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+        assert not app.exists()
+
+    @pytest.mark.parametrize("name", ["Jobs", "Captures", "Recordings"])
+    def test_they_stay_when_there_is_nowhere_else_for_them(self, tmp_path, name):
+        # No user-dirs.dirs, so no music folder is named and the app writes
+        # audio here. Taking it would be taking the only copy.
+        home = tmp_path / "home"
+        _install(home)
+        leftovers = self._leftovers(home)
+
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+        assert leftovers[name].read_text() == "audio"
+
+    def test_the_music_folder_is_still_never_touched(self, tmp_path):
+        home = tmp_path / "home"
+        _install(home)
+        self._name_the_music_folder(home)
+        self._leftovers(home)
+
+        kept = _write(home / "Music/StemLab/Recordings/take.wav", "audio")
+
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+        assert kept.read_text() == "audio"
+
+
+class TestUninstallTakesTheSettings:
+    """All of them, which since none of it goes into a DAW project is all
+    there is: settings.json, the accent, the lane palette and the
+    torch-compile preference, in one config directory."""
+
+    @pytest.mark.parametrize(
+        "name",
+        ["settings.json", "accent.txt", "waveform_palette.txt", "torch_compile.txt"],
+    )
+    def test_the_config_directory_goes(self, tmp_path, name):
+        home = tmp_path / "home"
+        _install(home)
+
+        setting = _write(home / f".config/StemLab/{name}", "remembered")
+
+        assert _run(UNINSTALL, home, "--yes").returncode == 0
+        assert not setting.exists()
+        assert not (home / ".config/StemLab").exists()
+
+
 class TestUninstallTakesTheLauncherWithIt:
     """The desktop entry and the icon theme files install.sh writes.
 

@@ -355,6 +355,42 @@ int main()
         check(empty.getEditorScalePercent() == 175);
     }
 
+    /*  A tempo is not a preference, and neither is the mode that needs one.
+
+        Everything else remembered here says how somebody works. A manual
+        tempo, its meter and where bar one falls say what is in one piece of
+        audio - and no instance restores the audio either, so a remembered
+        174 would be a grid drawn confidently over whatever is loaded next.
+        The mode goes with it: manual restored without its tempo opens at the
+        default 120, which is the same confident grid over nothing.
+    */
+    {
+        StemLabAudioProcessor::settingsPreferenceFile().deleteFile();
+
+        {
+            StemLabAudioProcessor tempo;
+            tempo.setManualGrid(174.0, 7, 8, 1.5);
+            tempo.setWaveformGridMode(StemLabAudioProcessor::gridManual);
+
+            // Something that is remembered, so the file is written at all.
+            tempo.setEditorScalePercent(133);
+        }
+
+        const auto stored =
+            StemLabAudioProcessor::settingsPreferenceFile().loadFileAsString();
+
+        check(stored.contains("editorScale"));
+        check(!stored.contains("manualGridBpm"));
+        check(!stored.contains("manualGridNumerator"));
+        check(!stored.contains("manualGridDenominator"));
+        check(!stored.contains("manualGridBarOne"));
+
+        StemLabAudioProcessor next;
+
+        check(next.getEditorScalePercent() == 133);
+        check(next.getWaveformGridMode() != StemLabAudioProcessor::gridManual);
+    }
+
     configSandbox.deleteRecursively();
 
     check(capturedFile.deleteFile());
