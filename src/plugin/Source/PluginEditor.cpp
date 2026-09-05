@@ -1932,8 +1932,13 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
         auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
 
+        // Read before the window exists, because the title-bar swap below
+        // makes resized() overwrite it - which is the very thing the resize
+        // at the end of that callback undoes.
+        const auto openScalePercent = processor.getEditorScalePercent();
+
         juce::MessageManager::callAsync(
-            [safeThis]
+            [safeThis, openScalePercent]
             {
                 if (safeThis == nullptr)
                     return;
@@ -2005,6 +2010,33 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
                         if (icon.isValid())
                             peer->setIcon(icon);
                     }
+
+                    /*
+                     * Ask for the size again, because the swap above did not
+                     * give the window back.
+                     *
+                     * The standalone window is built with JUCE's own title
+                     * bar and border, so it is a decoration larger than the
+                     * editor asked for. Swapping to the native title bar
+                     * keeps those outer bounds and moves the decoration out
+                     * of them, and the content component hands the surplus -
+                     * eight pixels of width here - straight to this editor.
+                     * resized() then reads a scale nobody chose out of a
+                     * width nobody asked for and remembers it, so every
+                     * launch opened one percent larger than the one before:
+                     * 888, 897, 906, 914 ... measured from a fresh config.
+                     *
+                     * Setting the size the editor actually wants refits the
+                     * window around it, because the standalone's content
+                     * component sizes itself to whatever the editor does.
+                     * openScalePercent is the value from before the swap;
+                     * reading it here would read the inflated one back.
+                     */
+                    const auto openScale = juce::jlimit(window::minScale, window::maxScale,
+                                                        openScalePercent / 100.0);
+
+                    safeThis->setSize(juce::roundToInt(window::width * openScale),
+                                      juce::roundToInt(window::height * openScale));
                 }
             });
     }

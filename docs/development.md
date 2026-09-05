@@ -74,6 +74,7 @@ ctest --test-dir src/plugin/build --output-on-failure
 | `StemLabAccentPaletteTests` | The accent ramp, and that a saved accent survives a reload |
 | `StemLabLaneWheelDispatchTests` | That a lane's deep mouse listener leaves the wheel alone |
 | `StemLabHostCaptureTests` | The self-drag guard and a real processor capturing audio |
+| `StemLabEditorLifecycleTests` | That opening and closing the editor leaves nothing for static destruction |
 
 The first six cover header-only components deliberately kept free of the
 plugin, so a test can reach them without standing one up.
@@ -85,11 +86,16 @@ one row are that `MouseListener::mouseWheelMove` has an empty default body -
 so the lane's relay, which does not override it, adds no second delivery -
 and that `Component::mouseWheelMove` walks the wheel up to the nearest
 enabled ancestor, which is the one delivery the lane list scrolls on.
-`StemLabHostCaptureTests` links the plugin itself.
+`StemLabHostCaptureTests` links the plugin itself, and so does
+`StemLabEditorLifecycleTests`, whose real assertion is its own exit status:
+the bundled faces are published through statics, and a build that leaves them
+there crashes in JUCE's font cache after main returns rather than failing any
+check inside it.
 
-Two of them link JUCE, but none needs a display - the wheel suite counts the
-wheels that reach a stand-in viewport component rather than opening a
-window - so the whole suite runs on a bare CI runner with `DISPLAY` unset.
+Three of them link JUCE, but none needs a display - the wheel suite counts the
+wheels that reach a stand-in viewport component rather than opening a window,
+and the lifecycle suite builds the editor without putting it on screen - so the
+whole suite runs on a bare CI runner with `DISPLAY` unset.
 
 ## Command Line
 
