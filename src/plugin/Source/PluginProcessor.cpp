@@ -769,15 +769,24 @@ public:
         owner.mainEngineRunning.store(true);
 
         juce::ChildProcess* childProcess = nullptr;
+        bool started = false;
 
         {
             const juce::ScopedLock lock(processLock);
+
+            // Shutdown takes this same lock after setting the exit flag.
+            // It must either see the started child or prevent its launch;
+            // publishing an unstarted ChildProcess lets shutdown miss it.
+            if (threadShouldExit())
+                return;
+
             process = std::make_unique<juce::ChildProcess>();
             childProcess = process.get();
+            started = childProcess->start(
+                command, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr);
         }
 
-        if (!childProcess->start(command,
-                                 juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+        if (!started)
         {
             owner.setStatus("Could not start StemLab engine",
                             StemLabAudioProcessor::statusFailure);
@@ -1001,15 +1010,24 @@ public:
         owner.waveformProfiles.setSeparationActive(true);
 
         juce::ChildProcess* childProcess = nullptr;
+        bool started = false;
 
         {
             const juce::ScopedLock lock(processLock);
+
+            // Shutdown takes this same lock after setting the exit flag.
+            // It must either see the started child or prevent its launch;
+            // publishing an unstarted ChildProcess lets shutdown miss it.
+            if (threadShouldExit())
+                return;
+
             process = std::make_unique<juce::ChildProcess>();
             childProcess = process.get();
+            started = childProcess->start(
+                command, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr);
         }
 
-        if (!childProcess->start(command,
-                                 juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+        if (!started)
         {
             owner.setStatus("Could not start Recursive Stem Splitting",
                             StemLabAudioProcessor::statusFailure);
@@ -1217,15 +1235,24 @@ public:
     void run() override
     {
         juce::ChildProcess* childProcess = nullptr;
+        bool started = false;
 
         {
             const juce::ScopedLock lock(processLock);
+
+            // Shutdown takes this same lock after setting the exit flag.
+            // It must either see the started child or prevent its launch;
+            // publishing an unstarted ChildProcess lets shutdown miss it.
+            if (threadShouldExit())
+                return;
+
             process = std::make_unique<juce::ChildProcess>();
             childProcess = process.get();
+            started = childProcess->start(
+                command, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr);
         }
 
-        if (!childProcess->start(command,
-                                 juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+        if (!started)
         {
             // Every finish() below sends the user to the diagnostics, so a
             // launch that produced no output at all still has to leave
@@ -2059,11 +2086,10 @@ void StemLabAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock
         previewTransport.prepareToPlay(samplesPerBlock, sampleRate);
         stemMixTransport.prepareToPlay(samplesPerBlock, sampleRate);
 
-        // Generous headroom: some hosts deliver blocks larger than they
-        // announced (offline bounces especially), and growing this buffer
-        // inside processBlock would allocate on the audio thread.
+        // Pull larger host blocks in prepared-size slices. This also keeps
+        // JUCE's transport resampler from growing for an oversized block.
         previewScratch.setSize(juce::jmax(1, getTotalNumOutputChannels()),
-                               juce::jmax(4096, 4 * samplesPerBlock), false, false, true);
+                               juce::jmax(1, samplesPerBlock), false, false, true);
     }
 }
 
@@ -2102,13 +2128,14 @@ void StemLabAudioProcessor::prepareMidiAudition(double sampleRate)
     if (sampleRate > 0.0)
         midiAuditionSynth.setCurrentPlaybackSampleRate(sampleRate);
 
-    // Room for the note-ons and note-offs of one block many times over; the
-    // point is only that renderMidiAudition never has to grow it.
+    // Initial capacity; auditionMidi reserves for the actual take before
+    // publishing it, since a block's event count has no fixed upper bound.
     midiAuditionEvents.ensureSize(4096);
 }
 
 void StemLabAudioProcessor::getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill)
 {
+    juce::ScopedNoDenormals noDenormals;
     /*  The transport is pulled first and simply not heard, rather than left
         unpulled for the length of the audition: AudioTransportSource::stop()
         spin-waits for its render callback to acknowledge, so a transport
@@ -2225,33 +2252,28 @@ void StemLabAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
 
     const bool monitorAudible = monitorSource.isPlaying() && !auditioning;
 
-    if (!isStandaloneApp() && previewScratch.getNumChannels() > 0)
+    if (!isStandaloneApp() && previewScratch.getNumSamples() > 0)
     {
         const auto requiredSamples = buffer.getNumSamples();
-
-        if (previewScratch.getNumSamples() < requiredSamples)
-        {
-            previewScratch.setSize(juce::jmax(1, buffer.getNumChannels()), requiredSamples, false,
-                                   false, true);
-        }
-
-        previewScratch.clear();
-
-        juce::AudioSourceChannelInfo info(&previewScratch, 0, requiredSamples);
-
-        monitorSource.getNextAudioBlock(info);
-
         if (monitorAudible)
-        {
             buffer.clear();
 
-            const auto channels =
-                juce::jmin(buffer.getNumChannels(), previewScratch.getNumChannels());
+        for (int offset = 0; offset < requiredSamples;)
+        {
+            const auto count = juce::jmin(previewScratch.getNumSamples(), requiredSamples - offset);
+            juce::AudioSourceChannelInfo info(&previewScratch, 0, count);
+            monitorSource.getNextAudioBlock(info);
 
-            for (int channel = 0; channel < channels; ++channel)
+            if (monitorAudible)
             {
-                buffer.addFrom(channel, 0, previewScratch, channel, 0, requiredSamples);
+                const auto channels =
+                    juce::jmin(buffer.getNumChannels(), previewScratch.getNumChannels());
+
+                for (int channel = 0; channel < channels; ++channel)
+                    buffer.copyFrom(channel, offset, previewScratch, channel, 0, count);
             }
+
+            offset += count;
         }
     }
 
@@ -3278,7 +3300,7 @@ bool StemLabAudioProcessor::startThreadedInputCapture(const juce::String& prefix
         return false;
     }
 
-    currentSampleRate = sampleRate;
+    currentSampleRate.store(sampleRate);
 
     // Local rather than a member: nothing outside this writer ever asked how
     // many channels the capture has, and the member that used to carry it
@@ -3298,7 +3320,7 @@ bool StemLabAudioProcessor::startThreadedInputCapture(const juce::String& prefix
     juce::WavAudioFormat wav;
     std::unique_ptr<juce::OutputStream> stream = std::move(fileStream);
     const auto options = juce::AudioFormatWriter::Options{}
-                             .withSampleRate(currentSampleRate)
+                             .withSampleRate(sampleRate)
                              .withNumChannels(captureChannels)
                              .withBitsPerSample(24);
     auto formatWriter = wav.createWriterFor(stream, options);
@@ -3314,7 +3336,7 @@ bool StemLabAudioProcessor::startThreadedInputCapture(const juce::String& prefix
     // at 48 kHz, inside the range of an ordinary flush stall, so budget two
     // seconds at whatever rate the device is actually running.
     const int captureFifoSamples =
-        juce::jmax(32768, static_cast<int>(currentSampleRate * 2.0));
+        juce::jmax(32768, static_cast<int>(sampleRate * 2.0));
 
     threadedWriter = std::make_unique<juce::AudioFormatWriter::ThreadedWriter>(
         formatWriter.release(), diskWriterThread, captureFifoSamples);
@@ -3411,7 +3433,7 @@ bool StemLabAudioProcessor::startHostAudioCapture()
 
     stopStandalonePlayback();
 
-    const auto sampleRate = currentSampleRate;
+    const auto sampleRate = currentSampleRate.load();
     const auto channels = juce::jlimit(1, 2, getTotalNumInputChannels());
 
     if (sampleRate <= 0.0 || channels <= 0)
@@ -3759,10 +3781,11 @@ double StemLabAudioProcessor::getCapturedSeconds() const noexcept
             return static_cast<double>(capturedSamples.load()) / captureRate;
     }
 
-    if (currentSampleRate <= 0.0)
+    const auto sampleRate = currentSampleRate.load();
+    if (sampleRate <= 0.0)
         return 0.0;
 
-    return static_cast<double>(capturedSamples.load()) / currentSampleRate;
+    return static_cast<double>(capturedSamples.load()) / sampleRate;
 }
 
 juce::File StemLabAudioProcessor::getCaptureFile() const
@@ -6392,10 +6415,22 @@ void StemLabAudioProcessor::setStateInformation(const void* data, int sizeInByte
     // inherit whatever the previous one left behind.
     exportTorchCompilePreference();
 
+    // Hosts may construct several instances before restoring any of them.
+    // Serialize adoption across those instances and recheck the file here;
+    // the constructor's absence check alone lets every instance donate.
+    static juce::CriticalSection migrationLock;
+    const juce::ScopedLock migration(migrationLock);
+
     if (!preferencesMayBeAdopted || data == nullptr || sizeInBytes <= 0)
         return;
 
     preferencesMayBeAdopted = false;
+
+    if (settingsPreferenceFile().existsAsFile())
+    {
+        loadPreferences();
+        return;
+    }
 
     const juce::String json(juce::String::fromUTF8(static_cast<const char*>(data), sizeInBytes));
 
@@ -8277,6 +8312,13 @@ bool StemLabAudioProcessor::auditionMidi(const juce::String& id)
     for (const auto& note : notes)
         duration = juce::jmax(duration, note.end);
 
+    // JUCE 9 stores each three-byte note message with a six-byte header.
+    // Reserve both events for every note: even a whole-take offline block
+    // then fits. Allocate here and retire the previous storage outside the
+    // lock used by the audio callback.
+    juce::MidiBuffer events;
+    events.ensureSize(juce::jmax(size_t{4096}, notes.size() * size_t{18}));
+
     previewTransport.stop();
     {
         const juce::ScopedLock lock(midiAuditionLock);
@@ -8284,6 +8326,7 @@ bool StemLabAudioProcessor::auditionMidi(const juce::String& id)
 
         midiAuditionNotes.swap(notes);
         midiAuditionNoteOffOrder.swap(noteOffOrder);
+        midiAuditionEvents.swapWith(events);
 
         midiAuditionId = id;
         midiAuditionPosition = 0.0;
@@ -8322,11 +8365,15 @@ bool StemLabAudioProcessor::renderMidiAudition(juce::AudioBuffer<float>& buffer,
                                                int numSamples)
 {
     const juce::ScopedLock lock(midiAuditionLock);
-    if (!midiAuditionActive.load() || currentSampleRate <= 0.0 || numSamples <= 0)
+    // The AudioSource and AudioProcessor entry points can prepare separately.
+    // Use the rate of the voices we are rendering, under the same lock as
+    // prepareMidiAudition, rather than the capture/host rate.
+    const auto sampleRate = midiAuditionSynth.getSampleRate();
+    if (!midiAuditionActive.load() || sampleRate <= 0.0 || numSamples <= 0)
         return false;
 
     const auto blockStart = midiAuditionPosition;
-    const auto blockEnd = blockStart + static_cast<double>(numSamples) / currentSampleRate;
+    const auto blockEnd = blockStart + static_cast<double>(numSamples) / sampleRate;
 
     midiAuditionEvents.clear();
 
@@ -8335,7 +8382,7 @@ bool StemLabAudioProcessor::renderMidiAudition(juce::AudioBuffer<float>& buffer,
         return startSample + juce::jlimit(
                                  0, numSamples - 1,
                                  static_cast<int>(std::round((seconds - blockStart) *
-                                                             currentSampleRate)));
+                                                             sampleRate)));
     };
 
     const auto noteCount = midiAuditionNotes.size();
@@ -8391,7 +8438,8 @@ bool StemLabAudioProcessor::renderMidiAudition(juce::AudioBuffer<float>& buffer,
         midiAuditionNoteOffOrder.clear();
         midiAuditionNoteOnCursor = 0;
         midiAuditionNoteOffCursor = 0;
-        midiAuditionId.clear();
+        // Retire the ID on stop/restart; releasing its last String reference
+        // here could free heap storage on the audio thread.
     }
     return true;
 }

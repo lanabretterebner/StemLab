@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "SelfFileDragGuard.h"
+#include "AudioProcessingChecks.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -355,6 +356,23 @@ int main()
         check(empty.getEditorScalePercent() == 175);
     }
 
+    // A host can construct all instances before restoring their chunks.
+    // Only the first valid chunk may donate, even when both constructors
+    // observed a missing settings file.
+    {
+        StemLabAudioProcessor::settingsPreferenceFile().deleteFile();
+        StemLabAudioProcessor first;
+        StemLabAudioProcessor second;
+        first.setStateInformation(legacyState.toRawUTF8(),
+                                  static_cast<int>(legacyState.getNumBytesAsUTF8()));
+        const juce::String otherState = R"({"editorScale": 300})";
+        second.setStateInformation(otherState.toRawUTF8(),
+                                   static_cast<int>(otherState.getNumBytesAsUTF8()));
+        check(second.getEditorScalePercent() == 175);
+        StemLabAudioProcessor reloaded;
+        check(reloaded.getEditorScalePercent() == 175);
+    }
+
     /*  A tempo is not a preference, and neither is the mode that needs one.
 
         Everything else remembered here says how somebody works. A manual
@@ -390,6 +408,8 @@ int main()
         check(next.getEditorScalePercent() == 133);
         check(next.getWaveformGridMode() != StemLabAudioProcessor::gridManual);
     }
+
+    StemLabAudioProcessingTestAccess::run();
 
     configSandbox.deleteRecursively();
 
