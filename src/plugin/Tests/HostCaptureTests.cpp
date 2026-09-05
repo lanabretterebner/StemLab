@@ -1,3 +1,4 @@
+#include "MixAudibility.h"
 #include "PluginProcessor.h"
 #include "SelfFileDragGuard.h"
 #include "AudioProcessingChecks.h"
@@ -27,6 +28,27 @@ void setEnvironment(const char* name, const juce::String& value)
 int main()
 {
     juce::ScopedJuceInitialiser_GUI juceInitialiser;
+
+    /*  The one rule the mixer and the lane drawing share.
+
+        Muting a soloed lane used to light the button and change nothing,
+        because "anything soloed" meant only solo counted - so the lane kept
+        playing while its own button claimed otherwise.
+    */
+    {
+        using stemlab::mix::isAudible;
+
+        // Nothing soloed: mute is the whole answer.
+        static_assert(isAudible(false, false, false));
+        static_assert(!isAudible(true, false, false));
+
+        // Something is soloed: this lane is heard only if it is one of them.
+        static_assert(isAudible(false, true, true));
+        static_assert(!isAudible(false, false, true));
+
+        // And a soloed lane that is also muted stays silent.
+        static_assert(!isAudible(true, true, true));
+    }
 
     /*  Every setting the plugin remembers is written to a file under the
         config directory, and this suite constructs processors and changes

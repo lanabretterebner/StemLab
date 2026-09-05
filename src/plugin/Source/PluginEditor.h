@@ -761,6 +761,10 @@ private:
     int lastFileMetaLabelWidth = -1;
     bool lastFileMetaClipped = false;
 
+    juce::String lastJobPathRaw;
+    juce::String lastJobPathElided;
+    int lastJobPathRawWidth = -1;
+
     // Lanes. The waveform cache lives on the processor so profiles survive
     // the editor - reopening the window does not re-read and re-FFT every
     // stem; the lanes borrow it through this reference.
