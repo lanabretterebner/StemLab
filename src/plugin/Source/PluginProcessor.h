@@ -1075,6 +1075,7 @@ private:
     juce::TimeSliceThread previewReadThread{"StemLab preview reader"};
     std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> threadedWriter;
     std::atomic<juce::AudioFormatWriter::ThreadedWriter*> activeWriter{nullptr};
+    std::atomic<int> threadedCaptureInputChannels{0}; // bus layout when the take started
 
     std::atomic<bool> capturing{false};
     std::atomic<int> standaloneRecordingMode{recordingNone};
@@ -1526,6 +1527,7 @@ private:
     juce::AudioTransportSource previewTransport;
     juce::AudioSourcePlayer previewPlayer;
     juce::AudioBuffer<float> previewScratch;
+    int previewSourceBlockSize = 1; // prepared/rendered by the AudioSource device callback
 
     // The stem-mix monitor. stemMixSource owns one reader per completed
     // stem and sums them with per-stem solo/mute gains; stemMixTransport

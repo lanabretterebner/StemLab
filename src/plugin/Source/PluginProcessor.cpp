@@ -205,6 +205,12 @@ public:
 
             const float next =
                 previous + juce::jlimit(-maxDelta, maxDelta, target - previous);
+            // Finish the fade when it reaches the target, then hold it.
+            // Ramping over the entire block stretches a 10 ms transition
+            // to the host's block duration whenever that block is longer.
+            const auto rampSamples = juce::jmin(
+                info.numSamples,
+                static_cast<int>(std::ceil(std::abs(next - previous) / gainStepPerSample)));
 
             // Silent stems are still pulled, only not mixed: a buffered
             // source that stopped being read would have to refill from a
@@ -236,9 +242,14 @@ public:
 
             for (int channel = 0; channel < channels; ++channel)
             {
-                info.buffer->addFromWithRamp(channel, info.startSample,
-                                             scratch.getReadPointer(channel), info.numSamples,
-                                             previous, next);
+                if (rampSamples > 0)
+                    info.buffer->addFromWithRamp(channel, info.startSample,
+                                                 scratch.getReadPointer(channel), rampSamples,
+                                                 previous, next);
+
+                if (rampSamples < info.numSamples)
+                    info.buffer->addFrom(channel, info.startSample + rampSamples, scratch,
+                                         channel, rampSamples, info.numSamples - rampSamples, next);
             }
 
             currentGains[i] = next;
@@ -2077,6 +2088,15 @@ StemLabAudioProcessor::~StemLabAudioProcessor()
 
 void StemLabAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
+    // Re-preparation need not be preceded by releaseResources. Finish the
+    // existing WAV before its rate/layout changes: a stereo ThreadedWriter
+    // unconditionally dereferences two input pointers, and its WAV rate
+    // cannot change midway through a take. Keep block-size-only changes live.
+    if (activeWriter.load(std::memory_order_acquire) != nullptr &&
+        (!juce::approximatelyEqual(sampleRate, currentSampleRate.load()) ||
+         threadedCaptureInputChannels.load() != getTotalNumInputChannels()))
+        stopCapture();
+
     currentSampleRate = sampleRate;
 
     prepareMidiAudition(sampleRate);
@@ -2110,6 +2130,7 @@ void StemLabAudioProcessor::releaseResources()
 
 void StemLabAudioProcessor::prepareToPlay(int samplesPerBlockExpected, double sampleRate)
 {
+    previewSourceBlockSize = juce::jmax(1, samplesPerBlockExpected);
     prepareMidiAudition(sampleRate);
 
     previewTransport.prepareToPlay(samplesPerBlockExpected, sampleRate);
@@ -2143,7 +2164,16 @@ void StemLabAudioProcessor::getNextAudioBlock(const juce::AudioSourceChannelInfo
         timeout on the next stop - which is exactly what pressing Stop after
         an audition used to do.
     */
-    activeTransport().getNextAudioBlock(bufferToFill);
+    // AudioSource's expected size is only a hint too. Bound each transport
+    // pull just as processBlock does, so its resampler and the stem mixer
+    // keep their prepared storage even when a device delivers a larger block.
+    auto& transport = activeTransport();
+    for (int offset = 0; offset < bufferToFill.numSamples;)
+    {
+        const auto count = juce::jmin(previewSourceBlockSize, bufferToFill.numSamples - offset);
+        transport.getNextAudioBlock({bufferToFill.buffer, bufferToFill.startSample + offset, count});
+        offset += count;
+    }
 
     // Same rule as the VST path: an audition replaces the monitor mix while
     // it plays rather than sounding on top of it.
@@ -3358,6 +3388,7 @@ bool StemLabAudioProcessor::startThreadedInputCapture(const juce::String& prefix
 
     standaloneRecordingMode.store(recordingMode);
 
+    threadedCaptureInputChannels.store(getTotalNumInputChannels());
     activeWriter.store(threadedWriter.get(), std::memory_order_release);
 
     capturing.store(true);
