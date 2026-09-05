@@ -907,6 +907,7 @@ public:
     static constexpr int stemCount = 6;
 
 private:
+    friend struct StemLabAudioProcessingTestAccess;
     friend class StemLabEngineThread;
     friend class StemLabRecursiveThread;
     friend class StemLabUtilityThread;
@@ -1098,7 +1099,8 @@ private:
     std::atomic<double> abletonMidiAckStartMs{0.0};
     std::atomic<double> inputDurationSeconds{0.0};
 
-    double currentSampleRate = 44100.0;
+    // Host preparation may run concurrently with the editor's capture readout.
+    std::atomic<double> currentSampleRate{44100.0};
 
     // Rate of the WAV a system-capture thread is writing. Atomic because the
     // capture thread stores it while the editor timer reads it through
@@ -1189,9 +1191,9 @@ private:
     size_t midiAuditionNoteOnCursor = 0;
     size_t midiAuditionNoteOffCursor = 0;
 
-    /*  Sized in prepareToPlay and cleared per block: MidiBuffer allocates on
-        its first event, which a fresh buffer per render put on the audio
-        thread. clear() keeps the allocation.
+    /*  Reserved for the whole take by auditionMidi and cleared per block,
+        so even a large offline block cannot grow it on the audio thread.
+        clear() keeps the allocation.
     */
     juce::MidiBuffer midiAuditionEvents;
 
