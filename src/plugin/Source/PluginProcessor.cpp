@@ -1201,11 +1201,12 @@ public:
 
     StemLabUtilityThread(StemLabAudioProcessor& ownerIn, Kind kindIn, juce::StringArray commandIn,
                          juce::File sourceIn, juce::File outputIn, juce::String labelIn = {},
-                         juce::String contextIn = {}, juce::File cancelFileIn = {})
+                         juce::String contextIn = {}, juce::File cancelFileIn = {},
+                         juce::uint64 resultGenerationIn = 0)
         : juce::Thread(threadNameFor(kindIn)),
           owner(ownerIn), kind(kindIn), command(std::move(commandIn)), source(std::move(sourceIn)),
           output(std::move(outputIn)), label(std::move(labelIn)), context(std::move(contextIn)),
-          cancelFile(std::move(cancelFileIn))
+          cancelFile(std::move(cancelFileIn)), resultGeneration(resultGenerationIn)
     {
     }
 
@@ -1399,7 +1400,7 @@ private:
         else if (kind == modelMaintenance)
             owner.finishModelJob(label, exitCode);
         else
-            owner.finishMidiConversion(label, output, exitCode, context);
+            owner.finishMidiConversion(label, output, exitCode, context, resultGeneration);
     }
 
     StemLabAudioProcessor& owner;
@@ -1410,6 +1411,7 @@ private:
     juce::String label;
     juce::String context;
     juce::File cancelFile;
+    const juce::uint64 resultGeneration;
     std::atomic<bool> cancelRequested{false};
 
     juce::CriticalSection processLock;
@@ -2485,6 +2487,7 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
     }
 
     inputDurationSeconds.store(juce::jmax(0.0, duration));
+    resetManualGridForNewSource();
 
     {
         const juce::ScopedLock lock(stateLock);
@@ -3371,6 +3374,9 @@ bool StemLabAudioProcessor::startThreadedInputCapture(const juce::String& prefix
     threadedWriter = std::make_unique<juce::AudioFormatWriter::ThreadedWriter>(
         formatWriter.release(), diskWriterThread, captureFifoSamples);
 
+    resetManualGridForNewSource();
+    invalidateMidiResults();
+
     {
         const juce::ScopedLock lock(stateLock);
         captureFile = recordingFile;
@@ -3507,6 +3513,8 @@ void StemLabAudioProcessor::stopHostAudioCapture()
 
 void StemLabAudioProcessor::beginSystemCaptureSource(const juce::File& recordingFile)
 {
+    resetManualGridForNewSource();
+    invalidateMidiResults();
     {
         const juce::ScopedLock lock(stateLock);
         captureFile = recordingFile;
@@ -4198,6 +4206,7 @@ StemLabAudioProcessor::makePythonModuleCommand(const juce::String& moduleName) c
  */
 void StemLabAudioProcessor::forgetRecursiveChildren(const juce::String& parentId)
 {
+    invalidateMidiResults(parentId + "/");
     bool forgotten = false;
 
     {
@@ -4225,6 +4234,7 @@ void StemLabAudioProcessor::forgetRecursiveChildren(const juce::String& parentId
 
 void StemLabAudioProcessor::clearRecursiveResults()
 {
+    invalidateMidiResults();
     {
         const juce::ScopedLock lock(recursiveLock);
         recursiveItems.clear();
@@ -7830,6 +7840,18 @@ void StemLabAudioProcessor::setWaveformGridMode(int mode)
     sendChangeMessage();
 }
 
+void StemLabAudioProcessor::resetManualGridForNewSource()
+{
+    // Manual timing describes the previous audio, unlike the user's choice
+    // of Host/Source/Off. Do not carry it onto an unmeasured replacement.
+    auto expected = static_cast<int>(gridManual);
+    waveformGridMode.compare_exchange_strong(expected, gridSource);
+    manualGridBpm.store(120.0);
+    manualGridNumerator.store(4);
+    manualGridDenominator.store(4);
+    manualGridBarOne.store(0.0);
+}
+
 void StemLabAudioProcessor::setManualGrid(double bpm, int numerator, int denominator,
                                           double barOne)
 {
@@ -8128,6 +8150,14 @@ bool StemLabAudioProcessor::launchMidiConversion(const juce::File& source,
                                                  const juce::String& outputName,
                                                  const juce::String& resultId)
 {
+    midiThread.reset();
+    juce::uint64 generation;
+    {
+        const juce::ScopedLock lock(midiInfoLock);
+        midiConversionId = resultId;
+        generation = ++midiResultGeneration;
+    }
+
     if (!source.existsAsFile())
     {
         setStatus("MIDI source stem was not found");
@@ -8157,21 +8187,16 @@ bool StemLabAudioProcessor::launchMidiConversion(const juce::File& source,
     command.add("--stem-type");
     command.add(stemType);
 
-    const auto grid = getWaveformGridInfo();
-    command.add("--grid-mode");
-    command.add(grid.mode == gridHost ? "host" : (grid.mode == gridManual ? "manual" : "source"));
-    command.add("--bar-one");
-    command.add(juce::String(grid.barOne, 6));
+    appendMidiGridArguments(command);
 
-    if (getSourceBpm() > 0.0)
-    {
-        command.add("--bpm");
-        command.add(juce::String(getSourceBpm(), 3));
-    }
-
-    midiThread.reset();
+    // A capture may replace the source while command/file setup runs.
+    // Retire that request before it starts, using the same publication lock.
+    const juce::ScopedLock lock(midiInfoLock);
+    if (generation != midiResultGeneration)
+        return false;
     midiThread = std::make_unique<StemLabUtilityThread>(*this, StemLabUtilityThread::midiConversion,
-                                                        command, source, output, label, resultId);
+                                                        command, source, output, label, resultId,
+                                                        juce::File{}, generation);
     setStatus("Converting " + label + " to MIDI...");
 
     if (!midiThread->startThread())
@@ -8183,13 +8208,61 @@ bool StemLabAudioProcessor::launchMidiConversion(const juce::File& source,
     return true;
 }
 
+void StemLabAudioProcessor::appendMidiGridArguments(juce::StringArray& command) const
+{
+    const auto grid = getWaveformGridScalars();
+    command.add("--grid-mode");
+    command.add(grid.mode == gridHost ? "host" : (grid.mode == gridManual ? "manual" : "source"));
+    command.add("--bar-one");
+    command.add(juce::String(grid.barOne, 6));
+    if (std::isfinite(grid.bpm) && grid.bpm > 0.0)
+    {
+        command.add("--bpm");
+        command.add(juce::String(grid.bpm, 3));
+    }
+}
+
+void StemLabAudioProcessor::invalidateMidiResults(const juce::String& prefix)
+{
+    const juce::ScopedLock lock(midiInfoLock);
+    const auto affected = [&prefix](const juce::String& id)
+    { return prefix.isEmpty() || id.startsWith(prefix); };
+
+    // A worker may still be reading the retired source. It may finish its
+    // files, but must not republish them into a reused lane ID or change the
+    // new source's status. Keep unrelated conversions alive on a re-split.
+    if (affected(midiConversionId))
+        ++midiResultGeneration;
+
+    for (auto it = midiInfos.begin(); it != midiInfos.end();)
+        if (affected(juce::String(it->first)))
+            it = midiInfos.erase(it);
+        else
+            ++it;
+
+    const juce::ScopedLock auditionLock(midiAuditionLock);
+    if (affected(midiAuditionId))
+        stopMidiAudition();
+}
+
 void StemLabAudioProcessor::finishMidiConversion(const juce::String& label,
                                                  const juce::File& output, int exitCode,
-                                                 const juce::String& resultId)
+                                                 const juce::String& resultId,
+                                                 juce::uint64 generation)
 {
-    if (exitCode == 0 && output.existsAsFile() && loadMidiInfo(resultId, output))
+    // Parse off the lock; retirement and the final publish share the lock,
+    // so a source change during a slow metadata read still wins.
+    auto info = exitCode == 0 && output.existsAsFile() ? readMidiInfo(resultId, output)
+                                                      : std::nullopt;
+    const juce::ScopedLock lock(midiInfoLock);
+    if (generation != midiResultGeneration)
+        return;
+
+    if (info.has_value())
     {
+        midiInfos[resultId.toStdString()] = std::move(*info);
         setStatus("MIDI saved: " + output.getFullPathName());
+        sendChangeMessage();
     }
     else
     {
@@ -8199,17 +8272,18 @@ void StemLabAudioProcessor::finishMidiConversion(const juce::String& label,
     }
 }
 
-bool StemLabAudioProcessor::loadMidiInfo(const juce::String& id, const juce::File& midiFile)
+std::optional<StemLabMidiInfo> StemLabAudioProcessor::readMidiInfo(const juce::String& id,
+                                                                const juce::File& midiFile)
 {
     const auto metadata = midiFile.getSiblingFile(midiFile.getFileNameWithoutExtension() +
                                                    ".stemlab-midi.json");
     if (!metadata.existsAsFile())
-        return false;
+        return std::nullopt;
 
     const auto parsed = juce::JSON::parse(metadata.loadFileAsString());
     auto* object = parsed.getDynamicObject();
     if (object == nullptr || static_cast<int>(object->getProperty("schema")) < 1)
-        return false;
+        return std::nullopt;
 
     StemLabMidiInfo info;
     info.id = id;
@@ -8240,12 +8314,9 @@ bool StemLabAudioProcessor::loadMidiInfo(const juce::String& id, const juce::Fil
     }
 
     if (info.notes.empty())
-        return false;
+        return std::nullopt;
 
-    const juce::ScopedLock lock(midiInfoLock);
-    midiInfos[id.toStdString()] = std::move(info);
-    sendChangeMessage();
-    return true;
+    return info;
 }
 
 StemLabMidiInfo StemLabAudioProcessor::getMidiInfo(const juce::String& id) const
@@ -8303,7 +8374,13 @@ bool StemLabAudioProcessor::auditionMidi(const juce::String& id)
         return true;
     }
 
-    const auto info = getMidiInfo(id);
+    StemLabMidiInfo info;
+    juce::uint64 generation;
+    {
+        const juce::ScopedLock lock(midiInfoLock);
+        info = getMidiInfo(id);
+        generation = midiResultGeneration;
+    }
     if (info.notes.empty())
     {
         setStatus("Convert this stem to MIDI first");
@@ -8351,6 +8428,11 @@ bool StemLabAudioProcessor::auditionMidi(const juce::String& id)
     events.ensureSize(juce::jmax(size_t{4096}, notes.size() * size_t{18}));
 
     previewTransport.stop();
+    // A system-capture worker may retire this source while the note orders
+    // above are being built. Do not start an audition from that stale copy.
+    const juce::ScopedLock infoLock(midiInfoLock);
+    if (generation != midiResultGeneration || midiInfos.find(id.toStdString()) == midiInfos.end())
+        return false;
     {
         const juce::ScopedLock lock(midiAuditionLock);
         midiAuditionSynth.allNotesOff(0, false);

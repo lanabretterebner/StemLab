@@ -46,6 +46,21 @@ def _note_ons(path):
     return midi_file, notes, tempo
 
 
+@pytest.mark.parametrize("bpm", [20.0, 120.0, 174.0, 300.0, 350.0, 400.0])
+def test_midi_export_supports_the_plugin_grid_tempo_range(tmp_path, bpm):
+    output = tmp_path / "tempo.mid"
+    stemlab.midi.write_midi(
+        output,
+        [NoteEvent(1.0, 1.5, 60, 100)],
+        bpm=bpm,
+        stem_type="piano",
+        drums=False,
+    )
+    midi_file, notes, tempo = _note_ons(output)
+    assert tempo == mido.bpm2tempo(bpm)
+    assert notes[0][1] == round(mido.second2tick(1.0, midi_file.ticks_per_beat, tempo))
+
+
 def test_monophonic_stem_writes_timed_midi(tmp_path):
     sample_rate = 22_050
     audio = np.zeros(int(sample_rate * 1.4), dtype=np.float32)

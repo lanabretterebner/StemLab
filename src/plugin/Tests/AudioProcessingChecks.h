@@ -4,6 +4,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <thread>
 
 struct StemLabAudioProcessingTestAccess
 {
@@ -267,6 +268,153 @@ struct StemLabAudioProcessingTestAccess
             processor.previewTransport.setSource(nullptr);
             processor.previewReaderSource.reset();
             require(file.deleteFile(), "remove reconfigured capture");
+        }
+    }
+
+    static void checkSourceLifecycle(const juce::File& source)
+    {
+        StemLabAudioProcessor processor;
+        processor.prepareToPlay(48000.0, 256);
+        require(processor.setInputAudioFile(source), "load lifecycle source");
+        processor.setManualGrid(174.0, 3, 4, 0.25);
+        processor.setWaveformGridMode(StemLabAudioProcessor::gridManual);
+        processor.midiInfos["vocals"].notes.push_back({0.0, 10.0, 69, 100, 1.0});
+        require(processor.auditionMidi("vocals"), "start old source MIDI audition");
+
+        require(!processor.setInputAudioFile(juce::File()), "reject missing replacement");
+        require(processor.getMidiNoteCount("vocals") == 1 &&
+                    processor.isMidiAuditioning("vocals"),
+                "failed source replacement preserves MIDI");
+        require(processor.getWaveformGridMode() == StemLabAudioProcessor::gridManual,
+                "failed source replacement preserves manual grid");
+
+        require(processor.setInputAudioFile(source), "accept replacement source");
+        require(processor.getWaveformGridMode() == StemLabAudioProcessor::gridSource,
+                "new source retires the previous manual grid");
+        require(processor.getMidiNoteCount("vocals") == 0,
+                "new source cannot offer the previous lane's MIDI");
+        require(!processor.isMidiAuditioning("vocals"),
+                "new source stops old MIDI audition");
+
+        // A new separation of the same source replaces the MIDI results,
+        // while the source's deliberately chosen grid still applies.
+        processor.setManualGrid(150.0, 4, 4, 0.0);
+        processor.setWaveformGridMode(StemLabAudioProcessor::gridManual);
+        processor.midiInfos["vocals"].notes.push_back({0.0, 10.0, 69, 100, 1.0});
+        processor.clearRecursiveResults();
+        require(processor.getMidiNoteCount("vocals") == 0,
+                "new separation retires old MIDI results");
+        require(processor.getWaveformGridMode() == StemLabAudioProcessor::gridManual,
+                "same-source separation preserves manual grid");
+
+        for (const auto* id : {"vocals", "drums", "drums/kick", "drums/kick/sub"})
+            processor.midiInfos[id].notes.push_back({0.0, 10.0, 69, 100, 1.0});
+        require(processor.auditionMidi("drums/kick"), "audition recursive MIDI");
+        processor.forgetRecursiveChildren("drums");
+        require(processor.getMidiNoteCount("drums/kick") == 0 &&
+                    processor.getMidiNoteCount("drums/kick/sub") == 0,
+                "replacing recursive children retires their MIDI");
+        require(processor.getMidiNoteCount("vocals") == 1 &&
+                    processor.getMidiNoteCount("drums") == 1,
+                "recursive replacement preserves unaffected MIDI");
+        require(!processor.isMidiAuditioning("drums/kick"),
+                "recursive replacement stops retired audition");
+
+        for (const auto mode : {StemLabAudioProcessor::gridHost, StemLabAudioProcessor::gridOff})
+        {
+            processor.setWaveformGridMode(mode);
+            require(processor.setInputAudioFile(source), "replace source with non-manual grid");
+            require(processor.getWaveformGridMode() == mode,
+                    "new source preserves Host and Off grid preferences");
+        }
+
+        processor.setWaveformGridMode(StemLabAudioProcessor::gridManual);
+        processor.midiInfos["vocals"].notes.push_back({0.0, 10.0, 69, 100, 1.0});
+        require(processor.startHostAudioCapture(), "start replacement capture");
+        const auto capture = processor.getCaptureFile();
+        require(processor.getMidiNoteCount("vocals") == 0 &&
+                    processor.getWaveformGridMode() == StemLabAudioProcessor::gridSource,
+                "committed input capture retires MIDI and manual grid");
+        processor.stopHostAudioCapture();
+        require(capture.deleteFile(), "remove empty capture fixture");
+
+        processor.setWaveformGridMode(StemLabAudioProcessor::gridManual);
+        processor.midiInfos["vocals"].notes.push_back({0.0, 10.0, 69, 100, 1.0});
+        processor.beginSystemCaptureSource(source);
+        require(processor.getMidiNoteCount("vocals") == 0 &&
+                    processor.getWaveformGridMode() == StemLabAudioProcessor::gridSource,
+                "committed system capture retires MIDI and manual grid");
+    }
+
+    static void checkMidiResultRetirement(const juce::File& source)
+    {
+        const auto directory = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                   .getNonexistentChildFile("stemlab-midi-lifecycle", "", false);
+        require(directory.createDirectory().wasOk(), "create MIDI result fixture");
+        const auto output = directory.getChildFile("vocals.mid");
+        require(output.create().wasOk(), "create MIDI result file");
+        require(directory.getChildFile("vocals.stemlab-midi.json").replaceWithText(
+                    R"({"schema":1,"notes":[{"start":0.0,"end":0.1,"pitch":60,"velocity":100}]})"),
+                "write MIDI metadata fixture");
+        {
+            StemLabAudioProcessor processor;
+            processor.prepareToPlay(48000.0, 256);
+            require(processor.setInputAudioFile(source), "load MIDI result source");
+            processor.midiConversionId = "vocals";
+            const auto generation = ++processor.midiResultGeneration;
+            processor.finishMidiConversion("vocals", output, 0, "vocals", generation);
+            require(processor.hasMidiInfo("vocals"), "current conversion publishes MIDI");
+            require(processor.setInputAudioFile(source), "replace source before late completion");
+            const auto status = processor.getStatus();
+            for (const auto exitCode : {0, 1})
+            {
+                std::thread completion([&]
+                { processor.finishMidiConversion("vocals", output, exitCode, "vocals", generation); });
+                completion.join();
+                require(!processor.hasMidiInfo("vocals"), "retired completion cannot republish MIDI");
+                require(processor.getStatus() == status,
+                        "retired completion cannot overwrite new source status");
+            }
+            require(output.existsAsFile(), "retirement leaves previous exported files intact");
+
+            processor.midiConversionId = "vocals";
+            const auto unrelatedGeneration = ++processor.midiResultGeneration;
+            processor.forgetRecursiveChildren("drums");
+            processor.finishMidiConversion("vocals", output, 0, "vocals", unrelatedGeneration);
+            require(processor.hasMidiInfo("vocals"), "unrelated conversion survives a re-split");
+
+            processor.midiConversionId = "drums/kick";
+            const auto childGeneration = ++processor.midiResultGeneration;
+            processor.forgetRecursiveChildren("drums");
+            processor.finishMidiConversion("kick", output, 0, "drums/kick", childGeneration);
+            require(!processor.hasMidiInfo("drums/kick"), "retired child completion is ignored");
+        }
+        require(directory.deleteRecursively(), "remove MIDI result fixture");
+    }
+
+    static void checkMidiGridArguments()
+    {
+        StemLabAudioProcessor processor;
+        processor.sourceBpm.store(100.0);
+        processor.lastHostBpm.store(135.0);
+        processor.setManualGrid(350.0, 4, 4, 0.25);
+        for (const auto mode : {StemLabAudioProcessor::gridSource, StemLabAudioProcessor::gridHost,
+                               StemLabAudioProcessor::gridManual, StemLabAudioProcessor::gridOff})
+        {
+            processor.setWaveformGridMode(mode);
+            juce::StringArray command;
+            processor.appendMidiGridArguments(command);
+            const auto bpmIndex = command.indexOf("--bpm");
+            if (mode == StemLabAudioProcessor::gridOff)
+            {
+                require(bpmIndex == -1, "grid off leaves MIDI fallback tempo to the worker");
+                continue;
+            }
+            require(bpmIndex >= 0 && bpmIndex + 1 < command.size(), "grid supplies a MIDI BPM");
+            const auto expected = mode == StemLabAudioProcessor::gridManual ? 350.0
+                                : mode == StemLabAudioProcessor::gridHost ? 135.0 : 100.0;
+            require(juce::exactlyEqual(command[bpmIndex + 1].getDoubleValue(), expected),
+                    "MIDI export uses the selected grid tempo");
         }
     }
 };

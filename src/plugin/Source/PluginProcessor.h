@@ -7,6 +7,7 @@
 #include <map>
 #include <unordered_map>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "HostIntegrationPolicy.h"
@@ -980,8 +981,12 @@ private:
                               const juce::String& label, const juce::String& outputName,
                               const juce::String& resultId);
     void finishMidiConversion(const juce::String& label, const juce::File& output, int exitCode,
-                              const juce::String& resultId);
-    bool loadMidiInfo(const juce::String& id, const juce::File& midiFile);
+                              const juce::String& resultId, juce::uint64 generation);
+    static std::optional<StemLabMidiInfo> readMidiInfo(const juce::String& id,
+                                                     const juce::File& midiFile);
+    void invalidateMidiResults(const juce::String& prefix = {});
+    void appendMidiGridArguments(juce::StringArray& command) const;
+    void resetManualGridForNewSource();
     bool renderMidiAudition(juce::AudioBuffer<float>& buffer, int startSample, int numSamples);
 
     /** Give the audition synthesiser the playback rate and make sure its
@@ -1179,6 +1184,9 @@ private:
 
     mutable juce::CriticalSection midiInfoLock;
     std::unordered_map<std::string, StemLabMidiInfo> midiInfos;
+    // Guarded by midiInfoLock, including the worker's final publication.
+    juce::uint64 midiResultGeneration = 0;
+    juce::String midiConversionId;
 
     juce::Synthesiser midiAuditionSynth;
     mutable juce::CriticalSection midiAuditionLock;
