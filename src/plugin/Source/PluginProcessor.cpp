@@ -1,4 +1,5 @@
 #include "PluginProcessor.h"
+#include "MixAudibility.h"
 #include "PluginEditor.h"
 #include "ReaperBridge.h"
 #include "SourceLabel.h"
@@ -299,7 +300,7 @@ public:
 
     static bool isEntryAudible(const Entry& entry, bool anySolo)
     {
-        return anySolo ? entry.soloed() : !entry.muted();
+        return stemlab::mix::isAudible(entry.muted(), entry.soloed(), anySolo);
     }
 
     /** True when at least one entry that answers to these flags is audible.
@@ -383,6 +384,7 @@ double nowMs() { return juce::Time::getMillisecondCounterHiRes(); }
 constexpr double endGuardMinSeconds = 0.25;
 constexpr double endGuardMaxSeconds = 2.0;
 constexpr double endGuardFraction = 0.005;
+constexpr double endGuardShare = 0.1;
 
 bool transportIsAtEnd(const juce::AudioTransportSource& transport)
 {
@@ -393,8 +395,18 @@ bool transportIsAtEnd(const juce::AudioTransportSource& transport)
     if (length <= 0.0)
         return false;
 
-    const auto guard =
-        juce::jlimit(endGuardMinSeconds, endGuardMaxSeconds, length * endGuardFraction);
+    /*  ... but never more of the source than endGuardShare.
+
+        The floor is there to keep short sources usable, and below about
+        two and a half seconds it did the opposite: on a 0.3 s file the flat
+        0.25 s swallowed the last five sixths of the scrubber, so almost
+        every deliberate seek was thrown away and Play started from the
+        beginning. Above 2.5 s the share never binds and the guard is
+        exactly what it was.
+    */
+    const auto guard = juce::jmin(
+        juce::jlimit(endGuardMinSeconds, endGuardMaxSeconds, length * endGuardFraction),
+        length * endGuardShare);
 
     return transport.getCurrentPosition() >= length - guard;
 }
