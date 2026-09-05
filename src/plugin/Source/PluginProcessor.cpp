@@ -15,6 +15,11 @@
 #include "LinuxSystemCapture.h"
 #endif
 
+#if ! JUCE_WINDOWS
+// access(X_OK): whether the engine can be executed, which juce::File cannot say.
+#include <unistd.h>
+#endif
+
 #if defined(JucePlugin_Build_Standalone) && JucePlugin_Build_Standalone
 #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
 #endif
@@ -725,6 +730,34 @@ void stopJobProcess(juce::CriticalSection& processLock,
         process->kill();
 }
 
+/*
+ * Remove a job folder that holds nothing worth keeping.
+ *
+ * Every press of Separate creates a dated folder before the engine is
+ * launched, and a job that failed or was cancelled before writing anything
+ * left it there: after an afternoon of interrupted runs the user's
+ * Music/StemLab/Jobs was a column of dated directories holding two sentinel
+ * files each, with nothing in the interface that mentioned them.
+ *
+ * Only when there is genuinely nothing in it. A cancelled job can already
+ * have written stems - the engine announces them as it goes - and half a
+ * separation the user can still drag out of the folder is worth more than a
+ * tidy directory listing.
+ */
+void discardEmptyJobDirectory(const juce::File& job)
+{
+    if (job == juce::File() || !job.isDirectory())
+        return;
+
+    static const juce::StringArray sentinels{"stemlab_cancel.txt", "stemlab_progress.txt"};
+
+    for (const auto& entry : job.findChildFiles(juce::File::findFiles, true))
+        if (!sentinels.contains(entry.getFileName()))
+            return;
+
+    job.deleteRecursively();
+}
+
 /*  Whether the child of a reader thread is still alive, asked under the same
     lock that guards its lifetime. All three reader threads want exactly this
     and each used to carry its own copy.
@@ -892,6 +925,8 @@ public:
 
             owner.appendEngineLog("Separation cancelled by user.\n");
             owner.setStatus("Separation cancelled");
+
+            discardEmptyJobDirectory(successMarker.getParentDirectory());
         }
         else if (exitCode == 0 && successMarker.existsAsFile())
         {
@@ -956,18 +991,29 @@ public:
 
             if (exitCode == 0)
             {
-                // A child killed by a signal (the OOM killer on a big model,
-                // or a crash inside native torch code) is reaped without an
-                // exit status, and getExitCode() then reports 0. Only the
-                // job's own manifest proves the run actually finished.
+                /*  A child killed by a signal (the OOM killer on a big model,
+                    or a crash inside native torch code) is reaped without an
+                    exit status, and getExitCode() then reports 0. Only the
+                    job's own manifest proves the run actually finished.
+
+                    Which is exactly why this must not name the cause: an
+                    engine that returned 0 having written every stem but no
+                    manifest is indistinguishable from here, and telling that
+                    user their machine ran out of memory sends them to fix
+                    something that was never wrong. Report what is known -
+                    no manifest, exit status 0 - and offer the likely reason
+                    as a possibility.
+                */
                 owner.appendEngineLog(
-                    "Engine stopped before writing its manifest - it was terminated"
-                    " (out of memory or a crash) rather than finishing.\n");
+                    "Engine exit code: 0, but it wrote no manifest, so the job did not"
+                    " finish - it may have been terminated (out of memory or a crash).\n");
             }
             else
             {
                 owner.appendEngineLog("Engine exit code: " + juce::String(exitCode) + "\n");
             }
+
+            discardEmptyJobDirectory(successMarker.getParentDirectory());
         }
     }
 
@@ -4033,6 +4079,26 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
         return false;
     }
 
+    /*
+     * Say which of the two install faults this is, before launching into it.
+     *
+     * JUCE's POSIX ChildProcess forks and the child _exit(255)s after a
+     * failed execvp, so start() succeeds whatever is at the path and the
+     * only thing that ever reached the user was "Engine exit code: 255" -
+     * for a StemLab with no Engine installed at all, for one pointed at the
+     * wrong place, and for one whose interpreter lost its execute bit. The
+     * "Could not start StemLab engine" branch below cannot run on this
+     * platform, so the check has to happen before the fork rather than after
+     * it. An empty job folder for a job that never started is not left
+     * behind either, because we return before creating one.
+     */
+    if (const auto trouble = engineLaunchProblem(commandName); trouble.isNotEmpty())
+    {
+        appendEngineLog(trouble + "\n");
+        setStatus(trouble, statusFailure);
+        return false;
+    }
+
     // Portable releases ship a relocatable embedded Python runtime under
     // Engine/ rather than requiring a system Python/venv. When auto-discovery
     // resolves that interpreter, launch StemLab's worker as a module. The old
@@ -4235,18 +4301,31 @@ void StemLabAudioProcessor::forgetRecursiveChildren(const juce::String& parentId
 void StemLabAudioProcessor::clearRecursiveResults()
 {
     invalidateMidiResults();
+
+    bool hadChildren = false;
+
     {
         const juce::ScopedLock lock(recursiveLock);
+        hadChildren = !recursiveItems.empty();
         recursiveItems.clear();
         recursiveMonitorFlags.clear();
         ++recursiveTreeGeneration;
     }
 
-    // Recursive children replace their parent in the default selection for a
-    // completed job. Clearing the recursive tree restores the normal six
-    // top-level stems for the next source/separation.
-    for (auto& value : stemEnabled)
-        value.store(true);
+    /*  Recursive children replace their parent in the default selection, so
+        losing them has to give the parent back - otherwise a split lane's
+        stem would be excluded by a choice the user can no longer see.
+
+        Only then, though. This runs at the top of every separation as well,
+        and unconditionally it threw away the lane selection the user had
+        just made: uncheck two stems, press Separate to redo the job with
+        Refine on, and a second later all six were ticked again with nothing
+        said. Which stems to keep is a preference the app remembers across
+        launches; pressing Separate is not a request to forget it.
+    */
+    if (hadChildren)
+        for (auto& value : stemEnabled)
+            value.store(true);
 
     sendChangeMessage();
 }
@@ -6226,6 +6305,36 @@ void StemLabAudioProcessor::runReaperSelfTestAction(const juce::String& action,
     report.replaceWithText(text);
 }
 
+/*
+ * What is wrong with the engine at this path, in one sentence, or nothing at
+ * all when it looks runnable.
+ *
+ * Named rather than guessed at: a fresh install with no Engine, a
+ * STEMLAB_ENGINE pointing somewhere stale, and a file that lost its execute
+ * bit are three different repairs, and all three used to arrive as the same
+ * "Engine exit code: 255" with an empty log behind it.
+ */
+juce::String StemLabAudioProcessor::engineLaunchProblem(const juce::String& commandName)
+{
+    const juce::File engine(commandName);
+
+    if (engine.isDirectory())
+        return "The StemLab engine at " + commandName + " is a folder, not a program.";
+
+    if (!engine.existsAsFile())
+    {
+        return "No StemLab engine at " + commandName +
+               " - install the Engine, or point STEMLAB_ENGINE at one.";
+    }
+
+   #if ! JUCE_WINDOWS
+    if (access(commandName.toRawUTF8(), X_OK) != 0)
+        return "The StemLab engine at " + commandName + " is not executable.";
+   #endif
+
+    return {};
+}
+
 juce::String StemLabAudioProcessor::getEngineCommand() const
 {
     /*
@@ -7483,10 +7592,14 @@ bool StemLabAudioProcessor::refreshModelInventory(bool probeCompile)
 
     if (command.isEmpty())
     {
-        // No engine configured yet. That is not a failed read - there is
-        // nothing to read from - so the Model Manager can say "point me at an
-        // engine" rather than "your models are missing".
-        modelInventoryBroken.store(false);
+        /*  No worker to ask. Not a failed read - there is nothing to read
+            from - but the page has to say so all the same: left as "not
+            broken, not running, no inventory" it sat on "Asking the engine
+            what is installed..." for ever, and a partial install where
+            separation itself works is exactly when somebody opens it.
+        */
+        modelInventoryBroken.store(true);
+        sendChangeMessage();
         return false;
     }
 
@@ -7550,7 +7663,7 @@ void StemLabAudioProcessor::finishModelInventory(const juce::File& output, int e
             appears, and the app looks like it simply has no opinion.
         */
         modelInventoryBroken.store(true);
-        setStatus("The engine could not report its models - check it in Settings");
+        setStatus("The engine could not report its models - see Settings > Models");
         sendChangeMessage();
         return;
     }

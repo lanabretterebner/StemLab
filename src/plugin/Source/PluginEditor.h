@@ -647,6 +647,13 @@ private:
 
     static bool isSupportedAudioFile(const juce::File& file);
 
+    /** The chooser wildcard built from the same list isSupportedAudioFile reads. */
+    static juce::String audioFilePattern();
+
+    /** A path shortened from the front, so the folder it names survives. */
+    static juce::String elideFromFront(const juce::String& path, const juce::Font& font,
+                                       int lineWidth, int lines);
+
     StemLabAudioProcessor& processor;
 
     /*
@@ -749,6 +756,10 @@ private:
     juce::String lastFileNameMeasured;
     int lastFileNameLabelWidth = -1;
     bool lastFileNameClipped = false;
+
+    juce::String lastFileMetaMeasured;
+    int lastFileMetaLabelWidth = -1;
+    bool lastFileMetaClipped = false;
 
     // Lanes. The waveform cache lives on the processor so profiles survive
     // the editor - reopening the window does not re-read and re-FFT every

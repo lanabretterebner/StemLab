@@ -31,6 +31,9 @@ class StemLabLookAndFeel final : public juce::LookAndFeel_V4
 public:
     StemLabLookAndFeel();
 
+    /** Drops the shared faces again - see theme::fonts::releaseTypefaces. */
+    ~StemLabLookAndFeel() override;
+
     juce::Typeface::Ptr getTypefaceForFont(const juce::Font& font) override;
 
     void drawButtonBackground(juce::Graphics&, juce::Button&, const juce::Colour&,

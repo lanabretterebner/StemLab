@@ -245,6 +245,21 @@ if (BUILD_TESTING)
                                                           juce::juce_gui_extra)
     stemlab_enable_test_assertions(StemLabHostCaptureTests)
     add_test(NAME StemLabHostCaptureTests COMMAND StemLabHostCaptureTests)
+
+    # Opens and closes the editor twice, and its assertion is that the process
+    # then exits: a build that leaves the bundled faces in a static crashes
+    # after main, in JUCE's own font cache. Links the plugin, needs no display.
+    add_executable(StemLabEditorLifecycleTests Tests/EditorLifecycleTests.cpp)
+    target_include_directories(StemLabEditorLifecycleTests PRIVATE Source
+                               "${CMAKE_CURRENT_BINARY_DIR}/StemLabPlugin_artefacts/JuceLibraryCode"
+                               "${CMAKE_CURRENT_BINARY_DIR}/juce_binarydata_StemLabAssets/JuceLibraryCode")
+    target_compile_features(StemLabEditorLifecycleTests PRIVATE cxx_std_20)
+    target_link_libraries(StemLabEditorLifecycleTests PRIVATE StemLabPlugin
+                                                             juce::juce_audio_utils
+                                                             juce::juce_audio_formats
+                                                             juce::juce_gui_extra)
+    stemlab_enable_test_assertions(StemLabEditorLifecycleTests)
+    add_test(NAME StemLabEditorLifecycleTests COMMAND StemLabEditorLifecycleTests)
 endif()
 
 target_compile_definitions(StemLabPlugin

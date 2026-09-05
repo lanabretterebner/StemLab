@@ -1932,8 +1932,13 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
 
         auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
 
+        // Read before the window exists, because the title-bar swap below
+        // makes resized() overwrite it - which is the very thing the resize
+        // at the end of that callback undoes.
+        const auto openScalePercent = processor.getEditorScalePercent();
+
         juce::MessageManager::callAsync(
-            [safeThis]
+            [safeThis, openScalePercent]
             {
                 if (safeThis == nullptr)
                     return;
@@ -1948,20 +1953,41 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
                      * hints: it forwards checkBounds to ours but not the
                      * numbers, so without this the window manager is told the
                      * window may be any size at all and a drag can take it
-                     * below anything legible. The numbers are a few pixels
-                     * generous because the window's border - title bar and
-                     * notification strip - is inside them, which only makes
-                     * the advertised minimum safer than the real one.
+                     * below anything legible.
+                     *
+                     * The editor's own minimum plus whatever the standalone
+                     * puts around it, which is not the same number. The
+                     * window's content is this editor with the "Audio input
+                     * is muted" strip above it, so advertising the editor's
+                     * 395 px as the window's minimum bought the editor only
+                     * 365 - and at exactly the size the app told the window
+                     * manager was legal, the whole footer, Save Stems
+                     * included, was below the bottom edge. Measured rather
+                     * than assumed, because the strip comes and goes with
+                     * the mute setting.
+                     *
                      * Set before the title bar swap: that recreates the peer,
                      * which is what republishes the hints.
                      */
                     if (auto* windowConstrainer = windowComponent->getConstrainer())
                     {
+                        const auto* content = windowComponent->getContentComponent();
+
+                        const auto extraHeight =
+                            content != nullptr
+                                ? juce::jmax(0, content->getHeight() - safeThis->getHeight())
+                                : 0;
+
+                        const auto extraWidth =
+                            content != nullptr
+                                ? juce::jmax(0, content->getWidth() - safeThis->getWidth())
+                                : 0;
+
                         windowConstrainer->setSizeLimits(
-                            juce::roundToInt(window::width * window::minScale),
-                            juce::roundToInt(window::height * window::minScale),
-                            juce::roundToInt(window::width * window::maxScale),
-                            juce::roundToInt(window::height * window::maxScale));
+                            juce::roundToInt(window::width * window::minScale) + extraWidth,
+                            juce::roundToInt(window::height * window::minScale) + extraHeight,
+                            juce::roundToInt(window::width * window::maxScale) + extraWidth,
+                            juce::roundToInt(window::height * window::maxScale) + extraHeight);
                     }
 
                     /*
@@ -2005,6 +2031,33 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
                         if (icon.isValid())
                             peer->setIcon(icon);
                     }
+
+                    /*
+                     * Ask for the size again, because the swap above did not
+                     * give the window back.
+                     *
+                     * The standalone window is built with JUCE's own title
+                     * bar and border, so it is a decoration larger than the
+                     * editor asked for. Swapping to the native title bar
+                     * keeps those outer bounds and moves the decoration out
+                     * of them, and the content component hands the surplus -
+                     * eight pixels of width here - straight to this editor.
+                     * resized() then reads a scale nobody chose out of a
+                     * width nobody asked for and remembers it, so every
+                     * launch opened one percent larger than the one before:
+                     * 888, 897, 906, 914 ... measured from a fresh config.
+                     *
+                     * Setting the size the editor actually wants refits the
+                     * window around it, because the standalone's content
+                     * component sizes itself to whatever the editor does.
+                     * openScalePercent is the value from before the swap;
+                     * reading it here would read the inflated one back.
+                     */
+                    const auto openScale = juce::jlimit(window::minScale, window::maxScale,
+                                                        openScalePercent / 100.0);
+
+                    safeThis->setSize(juce::roundToInt(window::width * openScale),
+                                      juce::roundToInt(window::height * openScale));
                 }
             });
     }
@@ -2511,12 +2564,40 @@ StemLabAudioProcessorEditor::~StemLabAudioProcessorEditor()
     stopTimer();
 }
 
+/*
+ * The one list the file chooser and the drop target both read.
+ *
+ * Wider than what this side can decode, on purpose. setInputAudioFile lets an
+ * extension no registered format claims through and says so - the Engine
+ * normalises through FFmpeg before separation, so an .m4a or an .opus
+ * separates perfectly well even though nothing here can preview or draw it.
+ * The pickers used to allow six extensions while the loader named those two
+ * in its own comment, so the only way to open an .m4a was to type its path
+ * into the chooser by hand.
+ */
+static const char* const supportedAudioExtensions[] = {
+    ".wav", ".flac", ".mp3",  ".aiff", ".aif", ".aifc", ".ogg", ".oga",
+    ".opus", ".m4a", ".mp4",  ".aac",  ".wma", ".caf",  ".w64", ".mka"};
+
+juce::String StemLabAudioProcessorEditor::audioFilePattern()
+{
+    juce::StringArray patterns;
+
+    for (const auto* extension : supportedAudioExtensions)
+        patterns.add("*" + juce::String(extension));
+
+    return patterns.joinIntoString(";");
+}
+
 bool StemLabAudioProcessorEditor::isSupportedAudioFile(const juce::File& file)
 {
     const auto ext = file.getFileExtension().toLowerCase();
 
-    return ext == ".wav" || ext == ".flac" || ext == ".mp3" || ext == ".aiff" || ext == ".aif" ||
-           ext == ".ogg";
+    for (const auto* extension : supportedAudioExtensions)
+        if (ext == extension)
+            return true;
+
+    return false;
 }
 
 bool StemLabAudioProcessorEditor::isInterestedInFileDrag(const juce::StringArray& files)
@@ -3880,6 +3961,53 @@ juce::String StemLabAudioProcessorEditor::displayPath(const juce::File& director
     return path;
 }
 
+/*
+ * Shorten a path from the FRONT, because the front is the part that says
+ * nothing.
+ *
+ * The footer label is the only lasting statement of where stems are written,
+ * and a plain Label truncates its tail - so on a deep root every folder drew
+ * as the same leading characters, and picking a different one through Change
+ * left the readout pixel for pixel identical. What identifies a folder is its
+ * last component or two, so those are what survive.
+ *
+ * Two lines' worth of width is the budget, which is what the footer label
+ * gives this font; it is an estimate rather than a layout, but it errs
+ * towards shortening, and a slightly over-shortened path still names the
+ * folder while a truncated one does not.
+ */
+juce::String StemLabAudioProcessorEditor::elideFromFront(const juce::String& path,
+                                                         const juce::Font& font, int lineWidth,
+                                                         int lines)
+{
+    if (lineWidth <= 0 || lines <= 0)
+        return path;
+
+    const auto budget = static_cast<float>(lineWidth * lines);
+
+    if (juce::GlyphArrangement::getStringWidth(font, path) <= budget)
+        return path;
+
+    const auto separator = juce::File::getSeparatorString();
+    const auto ellipsis = juce::String::fromUTF8("\xe2\x80\xa6");
+
+    auto components = juce::StringArray::fromTokens(path, separator, {});
+
+    // Drop leading components one at a time, keeping at least the last one
+    // that has any text in it - a trailing separator leaves an empty token.
+    while (components.size() > 2)
+    {
+        components.remove(0);
+
+        const auto candidate = ellipsis + separator + components.joinIntoString(separator);
+
+        if (juce::GlyphArrangement::getStringWidth(font, candidate) <= budget)
+            return candidate;
+    }
+
+    return ellipsis + separator + components.joinIntoString(separator);
+}
+
 void StemLabAudioProcessorEditor::refreshFromProcessor()
 {
     // Ahead of the rest: the manager can open itself here, and it should be
@@ -4233,6 +4361,33 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
                                      : juce::String());
     }
 
+    /*
+     * And the same for the line under it, which is narrower still and holds
+     * the one place the analysis result is shown. At the default window size
+     * a full reading runs out of room - "00:30 · Key: Unknown - BPM: Unkn..."
+     * - and unlike the name above it there was nothing to hover, so the
+     * clipped half was simply gone. Same rule: a tooltip only while the text
+     * does not fit.
+     */
+    {
+        const auto available =
+            fileMetaLabel.getWidth() - fileMetaLabel.getBorderSize().getLeftAndRight();
+
+        if (fileMeta != lastFileMetaMeasured || available != lastFileMetaLabelWidth)
+        {
+            lastFileMetaMeasured = fileMeta;
+            lastFileMetaLabelWidth = available;
+
+            const juce::Font metaFont{theme::fonts::meta()};
+
+            lastFileMetaClipped =
+                available > 0 && juce::GlyphArrangement::getStringWidth(metaFont, fileMeta) >
+                                     static_cast<float>(available);
+        }
+
+        fileMetaLabel.setTooltip(lastFileMetaClipped ? fileMeta : juce::String());
+    }
+
     // ---------------------------------------------------------- transport
 
     // The first sight of a finished job flips monitoring to the stem mix.
@@ -4266,8 +4421,22 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
                           ((captureExists || jobDone) && !capturing && !engineRunning));
     playButton.setShowPause(transportPlaying);
 
-    const auto transportLength = processor.getTransportLengthSeconds();
-    const auto transportPosition = processor.getTransportPositionSeconds();
+    /*
+        A source can go out from under the transport - deleted, unmounted, a
+        scratch file swept up - and the strip above notices: it falls back to
+        "No audio loaded" and takes Analyse and Separate away with it. The
+        transport did not, so it went on showing the dead file's length over
+        a live scrubber that could be dragged to 00:15 of nothing.
+
+        Playing is the one reason to keep reading it whatever the file system
+        now says, which is the same reason the stop control above stays live.
+    */
+    const bool transportHasAudio = transportPlaying || captureExists || jobDone;
+
+    const auto transportLength =
+        transportHasAudio ? processor.getTransportLengthSeconds() : 0.0;
+    const auto transportPosition =
+        transportHasAudio ? processor.getTransportPositionSeconds() : 0.0;
 
     timeLabel.setText(formatSeconds(transportPosition) + " / " +
                           (transportLength > 0.0 ? formatSeconds(transportLength) : "--:--"),
@@ -4451,9 +4620,12 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     */
     const auto jobRoot = processor.getJobRootDirectory();
 
-    const auto jobPath = displayPath(jobRoot);
+    const auto jobPath =
+        elideFromFront(displayPath(jobRoot), juce::Font{theme::fonts::footerPath()},
+                       pathLabel.getWidth() - pathLabel.getBorderSize().getLeftAndRight(), 2);
 
     pathLabel.setText(jobPath, juce::dontSendNotification);
+    pathLabel.setTooltip(processor.getJobRootDirectory().getFullPathName());
 
     // The folder icon hugs the start of the right-aligned path text. Parked
     // at the fixed left edge of the label it left a gap that grew with every
@@ -4577,7 +4749,7 @@ void StemLabAudioProcessorEditor::chooseStandaloneAudioFile()
         start = juce::File::getSpecialLocation(juce::File::userHomeDirectory);
 
     audioFileChooser = std::make_unique<juce::FileChooser>(
-        "Choose audio file", start, "*.wav;*.flac;*.mp3;*.aiff;*.aif;*.ogg");
+        "Choose audio file", start, audioFilePattern());
 
     audioFileChooser->launchAsync(juce::FileBrowserComponent::openMode |
                                       juce::FileBrowserComponent::canSelectFiles,
@@ -4819,8 +4991,23 @@ std::pair<int, int> StemLabAudioProcessorEditor::laneSelectionCounts(
     int included = 0;
     int total = 0;
 
+    /*
+     * Only lanes with a stem behind them. A separation can come back with
+     * fewer stems than it was asked for - a backend that wrote nothing for
+     * piano, a run that was partly interrupted - and counting the six lanes
+     * instead of the files then promised "6 of 6 stems will be saved" over
+     * two empty lanes, directly above a footer already saying "Separated 4
+     * stems". Saving wrote four, which was right; the readout was not.
+     *
+     * hasCompletedStemFile answers from the processor's own scan cache, so
+     * this stays one cached lookup per lane on a readout the editor rebuilds
+     * at UI rate.
+     */
     for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
     {
+        if (!processor.hasCompletedStemFile(i))
+            continue;
+
         ++total;
 
         if (processor.isStemEnabled(i))
@@ -5458,9 +5645,14 @@ void StemLabAudioProcessorEditor::refreshSettingsPanel()
 
     if (processor.modelInventoryFailed())
     {
+        /*  Name the place rather than sending the reader to a page that has
+            no engine control on it - Settings holds appearance, the grid,
+            analysis and diagnostics, and never had a row for this.
+        */
         settingsPanel.models().setUnavailable(
             "The StemLab engine could not report its models.\n"
-            "Check the engine under Settings, then reopen this.");
+            "StemLab looks for it at " + processor.getEngineCommand() + "\n"
+            "Reinstall the Engine, or set STEMLAB_ENGINE to point at one.");
     }
     else if (processor.hasModelInventory())
     {
