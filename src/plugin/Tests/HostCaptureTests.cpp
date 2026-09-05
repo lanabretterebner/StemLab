@@ -410,6 +410,9 @@ int main()
     }
 
     StemLabAudioProcessingTestAccess::run();
+    StemLabAudioProcessingTestAccess::checkSourceLifecycle(capturedFile);
+    StemLabAudioProcessingTestAccess::checkMidiResultRetirement(capturedFile);
+    StemLabAudioProcessingTestAccess::checkMidiGridArguments();
 
     configSandbox.deleteRecursively();
 
