@@ -4620,12 +4620,33 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     */
     const auto jobRoot = processor.getJobRootDirectory();
 
-    const auto jobPath =
-        elideFromFront(displayPath(jobRoot), juce::Font{theme::fonts::footerPath()},
-                       pathLabel.getWidth() - pathLabel.getBorderSize().getLeftAndRight(), 2);
+    /*  Shortened only when there is something new to shorten. elideFromFront
+        shapes the whole string through GlyphArrangement, once per component
+        it drops, and this runs at UI rate for a path that changes when
+        somebody picks a different folder - which is to say almost never. The
+        same rule the measurement below it already follows.
+    */
+    {
+        const auto available =
+            pathLabel.getWidth() - pathLabel.getBorderSize().getLeftAndRight();
+
+        const auto rawPath = displayPath(jobRoot);
+
+        if (rawPath != lastJobPathRaw || available != lastJobPathRawWidth)
+        {
+            lastJobPathRaw = rawPath;
+            lastJobPathRawWidth = available;
+            lastJobPathElided = elideFromFront(
+                rawPath, juce::Font{theme::fonts::footerPath()}, available, 2);
+
+            // The whole path, for the times the label cannot carry it.
+            pathLabel.setTooltip(jobRoot.getFullPathName());
+        }
+    }
+
+    const auto jobPath = lastJobPathElided;
 
     pathLabel.setText(jobPath, juce::dontSendNotification);
-    pathLabel.setTooltip(processor.getJobRootDirectory().getFullPathName());
 
     // The folder icon hugs the start of the right-aligned path text. Parked
     // at the fixed left edge of the label it left a gap that grew with every
