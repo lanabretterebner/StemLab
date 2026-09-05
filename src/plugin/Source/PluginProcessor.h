@@ -770,6 +770,9 @@ public:
     /** Override or query the executable used for the main Python worker. */
     juce::String getEngineCommand() const;
 
+    /** Why the engine at this path cannot be launched, or an empty string. */
+    static juce::String engineLaunchProblem(const juce::String& commandName);
+
     void setRefinementEnabled(bool enabled)
     {
         if (refinementEnabled.exchange(enabled) != enabled)
