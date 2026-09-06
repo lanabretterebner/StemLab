@@ -48,6 +48,48 @@ juce::File abletonSetupScript()
     return {};
 }
 
+/*  JUCE's own "Audio input is muted to avoid feedback loop" strip carries a
+    Settings... button, and that button is the one piece of the standalone's
+    chrome StemLab's theme makes unreadable.
+
+    The strip paints itself lightgoldenrodyellow and JUCE blackens the label
+    on it explicitly (juce_StandaloneFilterWindow.h: notification.setColour
+    (Label::textColourId, Colours::black)) - but not the button beside it.
+    StemLab publishes its dark look-and-feel as the process default so the
+    rest of that chrome is themed, which leaves the button drawing pale text
+    on pale yellow: measured at 1.13:1, the darkest pixel anywhere in it
+    #EBEBE9 against #FAFAD2, legible only at 500% magnification. It still
+    works, which is worse than not being there.
+
+    Found by walking rather than by reaching into JUCE: the button is private
+    to an inner class. The editor's own subtree is skipped so this can never
+    reach a StemLab control.
+*/
+void blackenStandaloneNotificationButtons(juce::Component& root, const juce::Component* skip)
+{
+    for (auto* child : root.getChildren())
+    {
+        if (child == nullptr || child == skip)
+            continue;
+
+        if (auto* button = dynamic_cast<juce::TextButton*>(child))
+        {
+            const auto text = button->getButtonText();
+
+            if (text == "Settings..." || text == "Unmute Input")
+            {
+                button->setColour(juce::TextButton::textColourOffId, juce::Colours::black);
+                button->setColour(juce::TextButton::textColourOnId, juce::Colours::black);
+                button->setColour(juce::TextButton::buttonColourId,
+                                  juce::Colours::black.withAlpha(0.10f));
+                continue;
+            }
+        }
+
+        blackenStandaloneNotificationButtons(*child, skip);
+    }
+}
+
 juce::String formatSeconds(double seconds)
 {
     // Written as !(>= 0) so a NaN - an unfinished duration, a division by a
@@ -2010,6 +2052,8 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
                      * black band torn out of the panel.
                      */
                     windowComponent->setBackgroundColour(theme::colors::ground());
+
+                    blackenStandaloneNotificationButtons(*windowComponent, safeThis);
 
                     windowComponent->setUsingNativeTitleBar(true);
                     windowComponent->setName("StemLab");
