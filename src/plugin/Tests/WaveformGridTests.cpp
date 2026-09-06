@@ -55,13 +55,61 @@ int main()
     assert(std::any_of(closeLines.begin(), closeLines.end(),
                        [](const auto& line) { return line.kind == GridLineKind::subdivision; }));
 
+    // Numbering in 3/4, at a width a lane would really have: this used to
+    // run at the struct's default 1 px, where bars now thin out for density
+    // and the numbering it is checking would never be drawn.
     GridRequest threeFour;
     threeFour.visibleEnd = 6.1;
+    threeFour.pixelWidth = 600;
     threeFour.numerator = 3;
     const auto threeFourLines = makeGridLines(threeFour);
     assert(std::any_of(threeFourLines.begin(), threeFourLines.end(), [](const auto& line)
                        { return line.kind == GridLineKind::bar && line.barNumber == 2 &&
                                 std::abs(line.seconds - 1.5) < 1.0e-9; }));
+
+    /*  Bars thin out rather than fill the lane.
+
+        A six-minute track at 1x drew a bar line every 3.09 px - 179 of them
+        across a 560 px lane, 77% of its columns carrying grid ink - because
+        bars were emitted at any spacing while beats had been gated all
+        along. The rule now is one for both: nothing closer than 9 px.
+    */
+    {
+        GridRequest dense;
+        dense.visibleEnd = 360.0;   // six minutes
+        dense.pixelWidth = 560;     // one lane's well
+        const auto lines = makeGridLines(dense);
+
+        assert(!lines.empty());
+
+        std::vector<double> bars;
+
+        for (const auto& line : lines)
+            if (line.kind == GridLineKind::bar)
+                bars.push_back(line.seconds);
+
+        assert(bars.size() > 1);
+
+        const auto secondsPerPixel = 360.0 / 560.0;
+
+        for (std::size_t i = 1; i < bars.size(); ++i)
+            assert((bars[i] - bars[i - 1]) / secondsPerPixel >= 9.0 - 1.0e-9);
+
+        // Bar one is kept whatever the step, so the ruler still starts where
+        // the music does.
+        assert(std::abs(bars.front()) < 1.0e-9);
+
+        // And zoomed in far enough, every bar is back.
+        GridRequest roomy = dense;
+        roomy.visibleEnd = 20.0;
+        std::size_t roomyBars = 0;
+
+        for (const auto& line : makeGridLines(roomy))
+            if (line.kind == GridLineKind::bar)
+                ++roomyBars;
+
+        assert(roomyBars >= 10);
+    }
 
     GridRequest source;
     source.visibleEnd = 3.0;
