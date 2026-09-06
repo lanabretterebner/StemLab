@@ -1,7 +1,9 @@
 #include "PluginProcessor.h"
+#include "MixAudibility.h"
 #include "PluginEditor.h"
 #include "ReaperBridge.h"
 #include "SourceLabel.h"
+#include "SourceLengthReader.h"
 #include "StemLabPaths.h"
 #include "StemLabTheme.h"
 #include "WaveformGrid.h"
@@ -13,6 +15,11 @@
 
 #if JUCE_LINUX
 #include "LinuxSystemCapture.h"
+#endif
+
+#if ! JUCE_WINDOWS
+// access(X_OK): whether the engine can be executed, which juce::File cannot say.
+#include <unistd.h>
 #endif
 
 #if defined(JucePlugin_Build_Standalone) && JucePlugin_Build_Standalone
@@ -205,6 +212,12 @@ public:
 
             const float next =
                 previous + juce::jlimit(-maxDelta, maxDelta, target - previous);
+            // Finish the fade when it reaches the target, then hold it.
+            // Ramping over the entire block stretches a 10 ms transition
+            // to the host's block duration whenever that block is longer.
+            const auto rampSamples = juce::jmin(
+                info.numSamples,
+                static_cast<int>(std::ceil(std::abs(next - previous) / gainStepPerSample)));
 
             // Silent stems are still pulled, only not mixed: a buffered
             // source that stopped being read would have to refill from a
@@ -236,9 +249,14 @@ public:
 
             for (int channel = 0; channel < channels; ++channel)
             {
-                info.buffer->addFromWithRamp(channel, info.startSample,
-                                             scratch.getReadPointer(channel), info.numSamples,
-                                             previous, next);
+                if (rampSamples > 0)
+                    info.buffer->addFromWithRamp(channel, info.startSample,
+                                                 scratch.getReadPointer(channel), rampSamples,
+                                                 previous, next);
+
+                if (rampSamples < info.numSamples)
+                    info.buffer->addFrom(channel, info.startSample + rampSamples, scratch,
+                                         channel, rampSamples, info.numSamples - rampSamples, next);
             }
 
             currentGains[i] = next;
@@ -283,7 +301,7 @@ public:
 
     static bool isEntryAudible(const Entry& entry, bool anySolo)
     {
-        return anySolo ? entry.soloed() : !entry.muted();
+        return stemlab::mix::isAudible(entry.muted(), entry.soloed(), anySolo);
     }
 
     /** True when at least one entry that answers to these flags is audible.
@@ -367,6 +385,7 @@ double nowMs() { return juce::Time::getMillisecondCounterHiRes(); }
 constexpr double endGuardMinSeconds = 0.25;
 constexpr double endGuardMaxSeconds = 2.0;
 constexpr double endGuardFraction = 0.005;
+constexpr double endGuardShare = 0.1;
 
 bool transportIsAtEnd(const juce::AudioTransportSource& transport)
 {
@@ -377,8 +396,18 @@ bool transportIsAtEnd(const juce::AudioTransportSource& transport)
     if (length <= 0.0)
         return false;
 
-    const auto guard =
-        juce::jlimit(endGuardMinSeconds, endGuardMaxSeconds, length * endGuardFraction);
+    /*  ... but never more of the source than endGuardShare.
+
+        The floor is there to keep short sources usable, and below about
+        two and a half seconds it did the opposite: on a 0.3 s file the flat
+        0.25 s swallowed the last five sixths of the scrubber, so almost
+        every deliberate seek was thrown away and Play started from the
+        beginning. Above 2.5 s the share never binds and the guard is
+        exactly what it was.
+    */
+    const auto guard = juce::jmin(
+        juce::jlimit(endGuardMinSeconds, endGuardMaxSeconds, length * endGuardFraction),
+        length * endGuardShare);
 
     return transport.getCurrentPosition() >= length - guard;
 }
@@ -714,6 +743,34 @@ void stopJobProcess(juce::CriticalSection& processLock,
         process->kill();
 }
 
+/*
+ * Remove a job folder that holds nothing worth keeping.
+ *
+ * Every press of Separate creates a dated folder before the engine is
+ * launched, and a job that failed or was cancelled before writing anything
+ * left it there: after an afternoon of interrupted runs the user's
+ * Music/StemLab/Jobs was a column of dated directories holding two sentinel
+ * files each, with nothing in the interface that mentioned them.
+ *
+ * Only when there is genuinely nothing in it. A cancelled job can already
+ * have written stems - the engine announces them as it goes - and half a
+ * separation the user can still drag out of the folder is worth more than a
+ * tidy directory listing.
+ */
+void discardEmptyJobDirectory(const juce::File& job)
+{
+    if (job == juce::File() || !job.isDirectory())
+        return;
+
+    static const juce::StringArray sentinels{"stemlab_cancel.txt", "stemlab_progress.txt"};
+
+    for (const auto& entry : job.findChildFiles(juce::File::findFiles, true))
+        if (!sentinels.contains(entry.getFileName()))
+            return;
+
+    job.deleteRecursively();
+}
+
 /*  Whether the child of a reader thread is still alive, asked under the same
     lock that guards its lifetime. All three reader threads want exactly this
     and each used to carry its own copy.
@@ -769,15 +826,24 @@ public:
         owner.mainEngineRunning.store(true);
 
         juce::ChildProcess* childProcess = nullptr;
+        bool started = false;
 
         {
             const juce::ScopedLock lock(processLock);
+
+            // Shutdown takes this same lock after setting the exit flag.
+            // It must either see the started child or prevent its launch;
+            // publishing an unstarted ChildProcess lets shutdown miss it.
+            if (threadShouldExit())
+                return;
+
             process = std::make_unique<juce::ChildProcess>();
             childProcess = process.get();
+            started = childProcess->start(
+                command, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr);
         }
 
-        if (!childProcess->start(command,
-                                 juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+        if (!started)
         {
             owner.setStatus("Could not start StemLab engine",
                             StemLabAudioProcessor::statusFailure);
@@ -872,6 +938,8 @@ public:
 
             owner.appendEngineLog("Separation cancelled by user.\n");
             owner.setStatus("Separation cancelled");
+
+            discardEmptyJobDirectory(successMarker.getParentDirectory());
         }
         else if (exitCode == 0 && successMarker.existsAsFile())
         {
@@ -927,27 +995,55 @@ public:
 
             // Same reason as the cancel arm, and one case more: a job that
             // fails before announcing anything would otherwise leave the
-            // previous job's slots standing.
+            // previous job's slots standing. Counted first: the reset is
+            // what makes the announcements unreachable from here.
+            const auto announcedStems = owner.countReadyStemFiles();
+
             owner.resetReadyStemFiles();
 
             if (!owner.getStatus().startsWithIgnoreCase("Failed - "))
                 owner.setStatus("StemLab engine failed - see Settings > Copy diagnostics",
                                 StemLabAudioProcessor::statusFailure);
 
+            /*  A job can fail having already announced stems, and those files
+                are still on disk: an engine that wrote all six and then died
+                before its manifest leaves them there. The lanes are cleared
+                either way - without the manifest nothing here can vouch for
+                the set - but silently is the wrong way to leave them. Say
+                how many there are and where, so the diagnostics the failure
+                message points at can answer "was any of that work kept".
+            */
+            if (announcedStems > 0)
+                owner.appendEngineLog("The engine announced " + juce::String(announcedStems)
+                                      + (announcedStems == 1 ? " stem before it failed; that file is in "
+                                                             : " stems before it failed; those files are in ")
+                                      + successMarker.getParentDirectory().getFullPathName() + "\n");
+
             if (exitCode == 0)
             {
-                // A child killed by a signal (the OOM killer on a big model,
-                // or a crash inside native torch code) is reaped without an
-                // exit status, and getExitCode() then reports 0. Only the
-                // job's own manifest proves the run actually finished.
+                /*  A child killed by a signal (the OOM killer on a big model,
+                    or a crash inside native torch code) is reaped without an
+                    exit status, and getExitCode() then reports 0. Only the
+                    job's own manifest proves the run actually finished.
+
+                    Which is exactly why this must not name the cause: an
+                    engine that returned 0 having written every stem but no
+                    manifest is indistinguishable from here, and telling that
+                    user their machine ran out of memory sends them to fix
+                    something that was never wrong. Report what is known -
+                    no manifest, exit status 0 - and offer the likely reason
+                    as a possibility.
+                */
                 owner.appendEngineLog(
-                    "Engine stopped before writing its manifest - it was terminated"
-                    " (out of memory or a crash) rather than finishing.\n");
+                    "Engine exit code: 0, but it wrote no manifest, so the job did not"
+                    " finish - it may have been terminated (out of memory or a crash).\n");
             }
             else
             {
                 owner.appendEngineLog("Engine exit code: " + juce::String(exitCode) + "\n");
             }
+
+            discardEmptyJobDirectory(successMarker.getParentDirectory());
         }
     }
 
@@ -1006,15 +1102,24 @@ public:
         owner.recursiveEngineRunning.store(true);
 
         juce::ChildProcess* childProcess = nullptr;
+        bool started = false;
 
         {
             const juce::ScopedLock lock(processLock);
+
+            // Shutdown takes this same lock after setting the exit flag.
+            // It must either see the started child or prevent its launch;
+            // publishing an unstarted ChildProcess lets shutdown miss it.
+            if (threadShouldExit())
+                return;
+
             process = std::make_unique<juce::ChildProcess>();
             childProcess = process.get();
+            started = childProcess->start(
+                command, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr);
         }
 
-        if (!childProcess->start(command,
-                                 juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+        if (!started)
         {
             owner.setStatus("Could not start Recursive Stem Splitting",
                             StemLabAudioProcessor::statusFailure);
@@ -1180,11 +1285,12 @@ public:
 
     StemLabUtilityThread(StemLabAudioProcessor& ownerIn, Kind kindIn, juce::StringArray commandIn,
                          juce::File sourceIn, juce::File outputIn, juce::String labelIn = {},
-                         juce::String contextIn = {}, juce::File cancelFileIn = {})
+                         juce::String contextIn = {}, juce::File cancelFileIn = {},
+                         juce::uint64 resultGenerationIn = 0)
         : juce::Thread(threadNameFor(kindIn)),
           owner(ownerIn), kind(kindIn), command(std::move(commandIn)), source(std::move(sourceIn)),
           output(std::move(outputIn)), label(std::move(labelIn)), context(std::move(contextIn)),
-          cancelFile(std::move(cancelFileIn))
+          cancelFile(std::move(cancelFileIn)), resultGeneration(resultGenerationIn)
     {
     }
 
@@ -1225,15 +1331,24 @@ public:
     void run() override
     {
         juce::ChildProcess* childProcess = nullptr;
+        bool started = false;
 
         {
             const juce::ScopedLock lock(processLock);
+
+            // Shutdown takes this same lock after setting the exit flag.
+            // It must either see the started child or prevent its launch;
+            // publishing an unstarted ChildProcess lets shutdown miss it.
+            if (threadShouldExit())
+                return;
+
             process = std::make_unique<juce::ChildProcess>();
             childProcess = process.get();
+            started = childProcess->start(
+                command, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr);
         }
 
-        if (!childProcess->start(command,
-                                 juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+        if (!started)
         {
             // Every finish() below sends the user to the diagnostics, so a
             // launch that produced no output at all still has to leave
@@ -1369,7 +1484,7 @@ private:
         else if (kind == modelMaintenance)
             owner.finishModelJob(label, exitCode);
         else
-            owner.finishMidiConversion(label, output, exitCode, context);
+            owner.finishMidiConversion(label, output, exitCode, context, resultGeneration);
     }
 
     StemLabAudioProcessor& owner;
@@ -1380,6 +1495,7 @@ private:
     juce::String label;
     juce::String context;
     juce::File cancelFile;
+    const juce::uint64 resultGeneration;
     std::atomic<bool> cancelRequested{false};
 
     juce::CriticalSection processLock;
@@ -1980,6 +2096,12 @@ StemLabAudioProcessor::StemLabAudioProcessor()
     // value on the processor, so every instance reads it for itself.
     waveformColorIndex.store(readRememberedWaveformColor());
 
+    /*  And the rest of them, from settings.json. Last, so that a stored
+        value wins over anything set above it, and before the host can call
+        setStateInformation - which needs to know whether a file was found.
+    */
+    loadPreferences();
+
     if (isStandaloneApp())
     {
         // The processor's own AudioSource override routes between the
@@ -2004,6 +2126,16 @@ StemLabAudioProcessor::StemLabAudioProcessor()
 
 StemLabAudioProcessor::~StemLabAudioProcessor()
 {
+    /*  A window closed within a second of the last change would otherwise
+        take that change with it: the coalescing timer is what makes a drag
+        one write, and a timer that never fires never writes.
+    */
+    if (preferenceSaveTimer.isTimerRunning())
+    {
+        preferenceSaveTimer.stopTimer();
+        savePreferences();
+    }
+
     stopCapture();
     stopStandalonePlayback();
 
@@ -2060,6 +2192,15 @@ StemLabAudioProcessor::~StemLabAudioProcessor()
 
 void StemLabAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
+    // Re-preparation need not be preceded by releaseResources. Finish the
+    // existing WAV before its rate/layout changes: a stereo ThreadedWriter
+    // unconditionally dereferences two input pointers, and its WAV rate
+    // cannot change midway through a take. Keep block-size-only changes live.
+    if (activeWriter.load(std::memory_order_acquire) != nullptr &&
+        (!juce::approximatelyEqual(sampleRate, currentSampleRate.load()) ||
+         threadedCaptureInputChannels.load() != getTotalNumInputChannels()))
+        stopCapture();
+
     currentSampleRate = sampleRate;
 
     prepareMidiAudition(sampleRate);
@@ -2069,11 +2210,10 @@ void StemLabAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock
         previewTransport.prepareToPlay(samplesPerBlock, sampleRate);
         stemMixTransport.prepareToPlay(samplesPerBlock, sampleRate);
 
-        // Generous headroom: some hosts deliver blocks larger than they
-        // announced (offline bounces especially), and growing this buffer
-        // inside processBlock would allocate on the audio thread.
+        // Pull larger host blocks in prepared-size slices. This also keeps
+        // JUCE's transport resampler from growing for an oversized block.
         previewScratch.setSize(juce::jmax(1, getTotalNumOutputChannels()),
-                               juce::jmax(4096, 4 * samplesPerBlock), false, false, true);
+                               juce::jmax(1, samplesPerBlock), false, false, true);
     }
 }
 
@@ -2094,6 +2234,7 @@ void StemLabAudioProcessor::releaseResources()
 
 void StemLabAudioProcessor::prepareToPlay(int samplesPerBlockExpected, double sampleRate)
 {
+    previewSourceBlockSize = juce::jmax(1, samplesPerBlockExpected);
     prepareMidiAudition(sampleRate);
 
     previewTransport.prepareToPlay(samplesPerBlockExpected, sampleRate);
@@ -2112,13 +2253,14 @@ void StemLabAudioProcessor::prepareMidiAudition(double sampleRate)
     if (sampleRate > 0.0)
         midiAuditionSynth.setCurrentPlaybackSampleRate(sampleRate);
 
-    // Room for the note-ons and note-offs of one block many times over; the
-    // point is only that renderMidiAudition never has to grow it.
+    // Initial capacity; auditionMidi reserves for the actual take before
+    // publishing it, since a block's event count has no fixed upper bound.
     midiAuditionEvents.ensureSize(4096);
 }
 
 void StemLabAudioProcessor::getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill)
 {
+    juce::ScopedNoDenormals noDenormals;
     /*  The transport is pulled first and simply not heard, rather than left
         unpulled for the length of the audition: AudioTransportSource::stop()
         spin-waits for its render callback to acknowledge, so a transport
@@ -2126,7 +2268,16 @@ void StemLabAudioProcessor::getNextAudioBlock(const juce::AudioSourceChannelInfo
         timeout on the next stop - which is exactly what pressing Stop after
         an audition used to do.
     */
-    activeTransport().getNextAudioBlock(bufferToFill);
+    // AudioSource's expected size is only a hint too. Bound each transport
+    // pull just as processBlock does, so its resampler and the stem mixer
+    // keep their prepared storage even when a device delivers a larger block.
+    auto& transport = activeTransport();
+    for (int offset = 0; offset < bufferToFill.numSamples;)
+    {
+        const auto count = juce::jmin(previewSourceBlockSize, bufferToFill.numSamples - offset);
+        transport.getNextAudioBlock({bufferToFill.buffer, bufferToFill.startSample + offset, count});
+        offset += count;
+    }
 
     // Same rule as the VST path: an audition replaces the monitor mix while
     // it plays rather than sounding on top of it.
@@ -2235,33 +2386,28 @@ void StemLabAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
 
     const bool monitorAudible = monitorSource.isPlaying() && !auditioning;
 
-    if (!isStandaloneApp() && previewScratch.getNumChannels() > 0)
+    if (!isStandaloneApp() && previewScratch.getNumSamples() > 0)
     {
         const auto requiredSamples = buffer.getNumSamples();
-
-        if (previewScratch.getNumSamples() < requiredSamples)
-        {
-            previewScratch.setSize(juce::jmax(1, buffer.getNumChannels()), requiredSamples, false,
-                                   false, true);
-        }
-
-        previewScratch.clear();
-
-        juce::AudioSourceChannelInfo info(&previewScratch, 0, requiredSamples);
-
-        monitorSource.getNextAudioBlock(info);
-
         if (monitorAudible)
-        {
             buffer.clear();
 
-            const auto channels =
-                juce::jmin(buffer.getNumChannels(), previewScratch.getNumChannels());
+        for (int offset = 0; offset < requiredSamples;)
+        {
+            const auto count = juce::jmin(previewScratch.getNumSamples(), requiredSamples - offset);
+            juce::AudioSourceChannelInfo info(&previewScratch, 0, count);
+            monitorSource.getNextAudioBlock(info);
 
-            for (int channel = 0; channel < channels; ++channel)
+            if (monitorAudible)
             {
-                buffer.addFrom(channel, 0, previewScratch, channel, 0, requiredSamples);
+                const auto channels =
+                    juce::jmin(buffer.getNumChannels(), previewScratch.getNumChannels());
+
+                for (int channel = 0; channel < channels; ++channel)
+                    buffer.copyFrom(channel, offset, previewScratch, channel, 0, count);
             }
+
+            offset += count;
         }
     }
 
@@ -2323,6 +2469,14 @@ bool StemLabAudioProcessor::loadPreviewFile(const juce::File& file, int previewS
     if (reader == nullptr)
         return false;
 
+    // The transport's length comes from the reader, so it has to be told the
+    // same truth as the strip: without this the clock counts up to a header's
+    // 00:30 while the strip says 00:02, and the last 28 seconds play silence.
+    stemlab::source::clampReaderToFileContents(*reader, file);
+
+    if (reader->lengthInSamples <= 0)
+        return false;
+
     const auto sourceRate = reader->sampleRate;
 
     previewTransport.stop();
@@ -2378,6 +2532,7 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
 
     double duration = 0.0;
     bool previewAvailable = false;
+    bool sourceIsTruncated = false;
 
     std::unique_ptr<juce::AudioFormatReader> infoReader(previewFormats.createReaderFor(file));
 
@@ -2396,6 +2551,21 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
             setActionStatus("Selected audio file contains no audio");
             return false;
         }
+
+        /*  What the header says is not always what is in the file. An
+            uncompressed container declares the size of its audio, and JUCE
+            hands that number straight back as lengthInSamples, so a download
+            or a render that stopped early reports the length it was going to
+            be rather than the length it is: a 30-second file cut off after
+            two seconds still measures 00:30, in the strip, in the transport
+            clock, on the grid and in every duration the engine is given.
+
+            The bytes on disk are the check, and they only mean this for a
+            format whose frames are a fixed size - see SourceLength.h, which
+            leaves every compressed format alone rather than shortening a
+            file that was never damaged.
+        */
+        sourceIsTruncated = stemlab::source::clampReaderToFileContents(*infoReader, file);
 
         if (infoReader->sampleRate > 0.0)
         {
@@ -2443,6 +2613,7 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
     }
 
     inputDurationSeconds.store(juce::jmax(0.0, duration));
+    resetManualGridForNewSource();
 
     {
         const juce::ScopedLock lock(stateLock);
@@ -2508,9 +2679,14 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
     // Loading a source is a user change, so it reports in the header; the
     // work line drops back to idle instead of keeping the last job's text.
     setStatus("Ready");
-    setActionStatus(previewAvailable
-                        ? "Source ready"
-                        : "Source ready - preview unavailable until stems are made");
+
+    // Truncation outranks the preview note: one says a control is missing
+    // for now, the other says the file the user just chose is damaged.
+    setActionStatus(sourceIsTruncated
+                        ? "Source ready - file is cut short of the length its header claims"
+                        : (previewAvailable
+                               ? "Source ready"
+                               : "Source ready - preview unavailable until stems are made"));
 
     /*
         A new source is not analysed until it is asked for. beatThisEnabled
@@ -2615,26 +2791,37 @@ juce::File StemLabAudioProcessor::getCompletedStemFile(int index) const
     const auto job = getLastJobDirectory();
     const bool jobDone = engineCompletedSuccessfully.load();
 
+    const auto nowMs = juce::Time::getMillisecondCounter();
+
     {
-        // The UI asks for all six of these several times per redraw, at
-        // 20 Hz, for as long as the editor is open. Enumerating the job
-        // tree each time pegged a core once a job had finished - and worse
-        // on a network share - so one scan serves every lookup until the
-        // job state itself changes.
-        //
-        // Answered before job.isDirectory(), which is itself a stat and was
-        // paying for the directory on every hit. What the cache is keyed on
-        // - the job and its completion state - is exactly what invalidates
-        // it, so a job tree deleted underneath a loaded one surfaces the
-        // same way it always did: through that key changing.
         const juce::ScopedLock lock(stemFileCacheLock);
 
-        if (stemFileCacheJob == job && stemFileCacheJobDone == jobDone)
-            return stemFileCache[static_cast<size_t>(index)];
+        if (stemFileCache.isFresh(job, jobDone, nowMs,
+                                  [&job] { return stemFolderStamp(job); }))
+            return stemFileCache.get(static_cast<size_t>(index));
     }
 
+    /*  Past here every exit publishes, the empty ones included.
+
+        A missing folder is a valid empty snapshot, so publish its key and
+        stamp just like a successful scan. Otherwise a lookup that returns
+        early can leave the old paths behind or force repeated rescans. Deleting
+        the output folder used to answer "gone" for the first lane asked and
+        then hand out five paths to files that were not
+        there - and asking that first lane again brought its path back.
+    */
+    const auto publish = [&](std::array<juce::File, stemCount> resolved) -> juce::File
+    {
+        const juce::ScopedLock lock(stemFileCacheLock);
+
+        stemFileCache.publish(job, jobDone, juce::Time::getMillisecondCounter(),
+                              stemFolderStamp(job), resolved);
+
+        return resolved[static_cast<size_t>(index)];
+    };
+
     if (!job.isDirectory())
-        return {};
+        return publish({});
 
     auto sourceFolder = job.getChildFile("refined");
 
@@ -2642,7 +2829,7 @@ juce::File StemLabAudioProcessor::getCompletedStemFile(int index) const
         sourceFolder = job.getChildFile("baseline");
 
     if (!sourceFolder.isDirectory())
-        return {};
+        return publish({});
 
     juce::Array<juce::File> candidates;
     sourceFolder.findChildFiles(candidates, juce::File::findFiles, true, "*.wav");
@@ -2658,24 +2845,40 @@ juce::File StemLabAudioProcessor::getCompletedStemFile(int index) const
         resolved[static_cast<size_t>(stemIndex)] =
             matchStemFile(candidates, getStemName(stemIndex));
 
-    {
-        const juce::ScopedLock lock(stemFileCacheLock);
-        stemFileCacheJob = job;
-        stemFileCacheJobDone = jobDone;
-        stemFileCache = resolved;
-    }
-
-    return resolved[static_cast<size_t>(index)];
+    return publish(resolved);
 }
+
+/*
+ * When the stems were last added to, removed or replaced.
+ *
+ * The two folders a job writes into, not the job root: a progress file
+ * rewritten every second would otherwise invalidate the scan continuously.
+ * A null time means neither folder is there, which is itself a change worth
+ * noticing.
+ */
+juce::Time StemLabAudioProcessor::stemFolderStamp(const juce::File& job)
+{
+    const auto refined = job.getChildFile("refined");
+
+    if (refined.isDirectory())
+        return refined.getLastModificationTime();
+
+    const auto baseline = job.getChildFile("baseline");
+
+    if (baseline.isDirectory())
+        return baseline.getLastModificationTime();
+
+    return {};
+}
+
 
 bool StemLabAudioProcessor::hasCompletedStemFile(int index) const
 {
     // Answered from the scan cache above: a file that scan resolved was
     // seen on disk during the scan, so a non-empty answer stands in for
     // existsAsFile() without a stat per stem per tick. A stem deleted
-    // externally is picked up when that cache invalidates - a change of
-    // job directory or completion state - which is the invalidation the
-    // cache already has.
+    // externally is picked up by the throttled folder-stamp check, or
+    // immediately when the job directory or completion state changes.
     return getCompletedStemFile(index) != juce::File();
 }
 
@@ -3288,7 +3491,7 @@ bool StemLabAudioProcessor::startThreadedInputCapture(const juce::String& prefix
         return false;
     }
 
-    currentSampleRate = sampleRate;
+    currentSampleRate.store(sampleRate);
 
     // Local rather than a member: nothing outside this writer ever asked how
     // many channels the capture has, and the member that used to carry it
@@ -3308,7 +3511,7 @@ bool StemLabAudioProcessor::startThreadedInputCapture(const juce::String& prefix
     juce::WavAudioFormat wav;
     std::unique_ptr<juce::OutputStream> stream = std::move(fileStream);
     const auto options = juce::AudioFormatWriter::Options{}
-                             .withSampleRate(currentSampleRate)
+                             .withSampleRate(sampleRate)
                              .withNumChannels(captureChannels)
                              .withBitsPerSample(24);
     auto formatWriter = wav.createWriterFor(stream, options);
@@ -3324,10 +3527,13 @@ bool StemLabAudioProcessor::startThreadedInputCapture(const juce::String& prefix
     // at 48 kHz, inside the range of an ordinary flush stall, so budget two
     // seconds at whatever rate the device is actually running.
     const int captureFifoSamples =
-        juce::jmax(32768, static_cast<int>(currentSampleRate * 2.0));
+        juce::jmax(32768, static_cast<int>(sampleRate * 2.0));
 
     threadedWriter = std::make_unique<juce::AudioFormatWriter::ThreadedWriter>(
         formatWriter.release(), diskWriterThread, captureFifoSamples);
+
+    resetManualGridForNewSource();
+    invalidateMidiResults();
 
     {
         const juce::ScopedLock lock(stateLock);
@@ -3346,6 +3552,7 @@ bool StemLabAudioProcessor::startThreadedInputCapture(const juce::String& prefix
 
     standaloneRecordingMode.store(recordingMode);
 
+    threadedCaptureInputChannels.store(getTotalNumInputChannels());
     activeWriter.store(threadedWriter.get(), std::memory_order_release);
 
     capturing.store(true);
@@ -3421,7 +3628,7 @@ bool StemLabAudioProcessor::startHostAudioCapture()
 
     stopStandalonePlayback();
 
-    const auto sampleRate = currentSampleRate;
+    const auto sampleRate = currentSampleRate.load();
     const auto channels = juce::jlimit(1, 2, getTotalNumInputChannels());
 
     if (sampleRate <= 0.0 || channels <= 0)
@@ -3464,6 +3671,8 @@ void StemLabAudioProcessor::stopHostAudioCapture()
 
 void StemLabAudioProcessor::beginSystemCaptureSource(const juce::File& recordingFile)
 {
+    resetManualGridForNewSource();
+    invalidateMidiResults();
     {
         const juce::ScopedLock lock(stateLock);
         captureFile = recordingFile;
@@ -3723,6 +3932,8 @@ void StemLabAudioProcessor::setJobRootDirectory(const juce::File& directory)
         jobRootDirectory = directory;
     }
 
+    schedulePreferenceSave();
+
     // The footer's path readout carries the full path; the feedback line
     // only needs to confirm the change.
     setActionStatus("File location set: " + directory.getFileName());
@@ -3767,10 +3978,11 @@ double StemLabAudioProcessor::getCapturedSeconds() const noexcept
             return static_cast<double>(capturedSamples.load()) / captureRate;
     }
 
-    if (currentSampleRate <= 0.0)
+    const auto sampleRate = currentSampleRate.load();
+    if (sampleRate <= 0.0)
         return 0.0;
 
-    return static_cast<double>(capturedSamples.load()) / currentSampleRate;
+    return static_cast<double>(capturedSamples.load()) / sampleRate;
 }
 
 juce::File StemLabAudioProcessor::getCaptureFile() const
@@ -3979,6 +4191,26 @@ bool StemLabAudioProcessor::launchSeparationAndExport()
         return false;
     }
 
+    /*
+     * Say which of the two install faults this is, before launching into it.
+     *
+     * JUCE's POSIX ChildProcess forks and the child _exit(255)s after a
+     * failed execvp, so start() succeeds whatever is at the path and the
+     * only thing that ever reached the user was "Engine exit code: 255" -
+     * for a StemLab with no Engine installed at all, for one pointed at the
+     * wrong place, and for one whose interpreter lost its execute bit. The
+     * "Could not start StemLab engine" branch below cannot run on this
+     * platform, so the check has to happen before the fork rather than after
+     * it. An empty job folder for a job that never started is not left
+     * behind either, because we return before creating one.
+     */
+    if (const auto trouble = engineLaunchProblem(commandName); trouble.isNotEmpty())
+    {
+        appendEngineLog(trouble + "\n");
+        setStatus(trouble, statusFailure);
+        return false;
+    }
+
     // Portable releases ship a relocatable embedded Python runtime under
     // Engine/ rather than requiring a system Python/venv. When auto-discovery
     // resolves that interpreter, launch StemLab's worker as a module. The old
@@ -4152,6 +4384,7 @@ StemLabAudioProcessor::makePythonModuleCommand(const juce::String& moduleName) c
  */
 void StemLabAudioProcessor::forgetRecursiveChildren(const juce::String& parentId)
 {
+    invalidateMidiResults(parentId + "/");
     bool forgotten = false;
 
     {
@@ -4179,18 +4412,32 @@ void StemLabAudioProcessor::forgetRecursiveChildren(const juce::String& parentId
 
 void StemLabAudioProcessor::clearRecursiveResults()
 {
+    invalidateMidiResults();
+
+    bool hadChildren = false;
+
     {
         const juce::ScopedLock lock(recursiveLock);
+        hadChildren = !recursiveItems.empty();
         recursiveItems.clear();
         recursiveMonitorFlags.clear();
         ++recursiveTreeGeneration;
     }
 
-    // Recursive children replace their parent in the default selection for a
-    // completed job. Clearing the recursive tree restores the normal six
-    // top-level stems for the next source/separation.
-    for (auto& value : stemEnabled)
-        value.store(true);
+    /*  Recursive children replace their parent in the default selection, so
+        losing them has to give the parent back - otherwise a split lane's
+        stem would be excluded by a choice the user can no longer see.
+
+        Only then, though. This runs at the top of every separation as well,
+        and unconditionally it threw away the lane selection the user had
+        just made: uncheck two stems, press Separate to redo the job with
+        Refine on, and a second later all six were ticked again with nothing
+        said. Which stems to keep is a preference the app remembers across
+        launches; pressing Separate is not a request to forget it.
+    */
+    if (hadChildren)
+        for (auto& value : stemEnabled)
+            value.store(true);
 
     sendChangeMessage();
 }
@@ -5154,6 +5401,14 @@ void StemLabAudioProcessor::handleStemReadyLine(const juce::String& payload)
     // STEMLAB_PROGRESS stage reports, and the footer would flip between the
     // two at engine line rate; the 20 Hz refresh shows the new lane anyway.
     sendChangeMessage();
+}
+
+int StemLabAudioProcessor::countReadyStemFiles() const
+{
+    const juce::ScopedLock lock(stemFileCacheLock);
+
+    return static_cast<int>(std::count_if(readyStemFile.begin(), readyStemFile.end(),
+                                          [](const juce::File& f) { return f != juce::File(); }));
 }
 
 void StemLabAudioProcessor::resetReadyStemFiles()
@@ -6180,6 +6435,36 @@ void StemLabAudioProcessor::runReaperSelfTestAction(const juce::String& action,
     report.replaceWithText(text);
 }
 
+/*
+ * What is wrong with the engine at this path, in one sentence, or nothing at
+ * all when it looks runnable.
+ *
+ * Named rather than guessed at: a fresh install with no Engine, a
+ * STEMLAB_ENGINE pointing somewhere stale, and a file that lost its execute
+ * bit are three different repairs, and all three used to arrive as the same
+ * "Engine exit code: 255" with an empty log behind it.
+ */
+juce::String StemLabAudioProcessor::engineLaunchProblem(const juce::String& commandName)
+{
+    const juce::File engine(commandName);
+
+    if (engine.isDirectory())
+        return "The StemLab engine at " + commandName + " is a folder, not a program.";
+
+    if (!engine.existsAsFile())
+    {
+        return "No StemLab engine at " + commandName +
+               " - install the Engine, or point STEMLAB_ENGINE at one.";
+    }
+
+   #if ! JUCE_WINDOWS
+    if (access(commandName.toRawUTF8(), X_OK) != 0)
+        return "The StemLab engine at " + commandName + " is not executable.";
+   #endif
+
+    return {};
+}
+
 juce::String StemLabAudioProcessor::getEngineCommand() const
 {
     /*
@@ -6201,8 +6486,11 @@ juce::String StemLabAudioProcessor::getEngineCommand() const
 
 void StemLabAudioProcessor::setStemEnabled(int index, bool enabled)
 {
-    if (juce::isPositiveAndBelow(index, stemCount))
-        stemEnabled[static_cast<size_t>(index)].store(enabled);
+    if (!juce::isPositiveAndBelow(index, stemCount))
+        return;
+
+    if (stemEnabled[static_cast<size_t>(index)].exchange(enabled) != enabled)
+        schedulePreferenceSave();
 }
 
 bool StemLabAudioProcessor::isStemEnabled(int index) const
@@ -6275,6 +6563,7 @@ void StemLabAudioProcessor::setWaveformZoom(double zoom)
 
     waveformZoom.store(clamped);
 
+    schedulePreferenceSave();
     sendChangeMessage();
 }
 
@@ -6303,7 +6592,10 @@ void StemLabAudioProcessor::setEditorScalePercent(int percent)
 {
     // Deliberately no change broadcast: this is written from the editor's
     // own resized(), and telling it to refresh from there would be a loop.
-    editorScalePercent.store(juce::jlimit(25, 400, percent));
+    const auto wanted = juce::jlimit(25, 400, percent);
+
+    if (editorScalePercent.exchange(wanted) != wanted)
+        schedulePreferenceSave();
 }
 
 juce::String StemLabAudioProcessor::getSeparatorEngineId() const
@@ -6370,21 +6662,225 @@ juce::String StemLabAudioProcessor::getStemName(int index)
     return names[index];
 }
 
+/*  The plugin writes nothing into the host's project.
+
+    It used to write a JSON blob carrying every setting: which stems to
+    separate, the separation model, the grid, the zoom, the editor scale,
+    where jobs are written. All of that describes how somebody works rather
+    than what is in the song, and keeping it in the project meant answering
+    the same questions again in the next project, and again on the next
+    machine that opened this one. They live in settingsPreferenceFile() now.
+
+    Nothing is left in its place - not a version marker, not an empty object.
+    A host asked for a chunk and gets a chunk of length zero, which is what
+    "this plugin has nothing to store here" is spelled as.
+
+    There are no AudioProcessorParameters either, so this really is all of
+    it: opening a project cannot change a setting, and changing a setting
+    cannot dirty a project.
+*/
 void StemLabAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
+    destData.reset();
+}
+
+/*  Read once, and only to carry an existing install forward.
+
+    Every project saved by an older build still holds that blob, and every
+    one of those users would otherwise open their next session to defaults.
+    So the first project opened on a machine with no preference file yet
+    donates its settings to that file, and from then on this does nothing at
+    all. One project decides, rather than whichever project was opened last
+    quietly redeciding for all the others - the same rule the waveform
+    palette already used when it became a preference.
+*/
+void StemLabAudioProcessor::setStateInformation(const void* data, int sizeInBytes)
+{
+    // The environment has to be reasserted whatever happens here: this runs
+    // after the constructor, and the first job of a reloaded session must not
+    // inherit whatever the previous one left behind.
+    exportTorchCompilePreference();
+
+    // Hosts may construct several instances before restoring any of them.
+    // Serialize adoption across those instances and recheck the file here;
+    // the constructor's absence check alone lets every instance donate.
+    static juce::CriticalSection migrationLock;
+    const juce::ScopedLock migration(migrationLock);
+
+    if (!preferencesMayBeAdopted || data == nullptr || sizeInBytes <= 0)
+        return;
+
+    preferencesMayBeAdopted = false;
+
+    if (settingsPreferenceFile().existsAsFile())
+    {
+        loadPreferences();
+        return;
+    }
+
+    const juce::String json(juce::String::fromUTF8(static_cast<const char*>(data), sizeInBytes));
+
+    /*  Held in a named local. A var owns its DynamicObject, so parsing into a
+        temporary and keeping only the pointer getDynamicObject hands back
+        leaves that pointer dangling at the end of the statement - which is a
+        crash on the one path that matters here, an upgrade.
+    */
+    const auto parsed = juce::JSON::parse(json);
+
+    if (parsed.getDynamicObject() == nullptr)
+        return;
+
+    /*  engineCommand and torchCompile were already ignored before this, and
+        stay ignored: where the Engine lives and whether this machine can
+        compile are facts about the install, not about a saved session.
+    */
+    applyPreferences(parsed);
+
+    // So that the next project opened finds a file and leaves it alone.
+    savePreferences();
+}
+
+juce::File StemLabAudioProcessor::settingsPreferenceFile()
+{
+    return stemlab::paths::configDirectory().getChildFile("settings.json");
+}
+
+void StemLabAudioProcessor::loadPreferences()
+{
+    const auto file = settingsPreferenceFile();
+
+    if (!file.existsAsFile())
+    {
+        // Nothing remembered yet, so a project may still speak for this user
+        // once. See setStateInformation.
+        preferencesMayBeAdopted = true;
+        return;
+    }
+
+    applyPreferences(juce::JSON::parse(file));
+}
+
+void StemLabAudioProcessor::applyPreferences(const juce::var& parsed)
+{
+    auto* object = parsed.getDynamicObject();
+
+    if (object == nullptr)
+        return;
+
+    /*  Through the setters, every one of them, so that a file edited by hand
+        or written by a build that allowed a wider range cannot put the
+        plugin somewhere its own UI could not. The flag stops each of those
+        setters scheduling a write of what was just read.
+    */
+    const juce::ScopedValueSetter<bool> applying(applyingPreferences, true);
+
+    const auto has = [object](const char* key) { return object->hasProperty(key); };
+    const auto get = [object](const char* key) { return object->getProperty(key); };
+
+    if (has("refinement"))
+        setRefinementEnabled(static_cast<bool>(get("refinement")));
+
+    if (has("fusedStemNormalisation"))
+        setFusedStemNormalisation(static_cast<bool>(get("fusedStemNormalisation")));
+
+    if (has("separatorEngine"))
+        setSeparatorEngineIndex(static_cast<int>(get("separatorEngine")));
+
+    if (has("gridMode"))
+    {
+        const auto mode = static_cast<int>(get("gridMode"));
+
+        /*  Manual does not come back. The tempo it draws with is not
+            remembered - see below - so restoring the mode alone would open
+            every later session in manual at the default 120, which is a
+            confident grid over audio nothing has measured. Source is what
+            manual was chosen instead of, and it draws nothing until there is
+            an analysis to draw.
+        */
+        setWaveformGridMode(mode == gridManual ? static_cast<int>(gridSource) : mode);
+    }
+
+    if (has("loopQuantize"))
+        setLoopQuantizeMode(static_cast<int>(get("loopQuantize")));
+
+    /*  The manual grid is deliberately not among these.
+
+        Every other value here says how somebody works. A tempo, a meter and
+        where bar one falls say what is in one piece of audio, and nothing
+        about the audio survives an instance either - the file is not
+        reopened, the analysis is not restored. A remembered 174 would be a
+        grid drawn confidently over whatever is loaded next, which is the one
+        thing getWaveformGridScalars already refuses to do when it declines
+        to substitute a plausible 120.
+
+        So it lasts as long as the audio it describes does, and no longer.
+    */
+
+    if (has("waveformZoom"))
+        setWaveformZoom(static_cast<double>(get("waveformZoom")));
+
+    if (has("editorScale"))
+        setEditorScalePercent(static_cast<int>(get("editorScale")));
+
+    if (has("jobRootDirectory"))
+    {
+        const juce::File saved(get("jobRootDirectory").toString());
+
+        // Only if it is still there. A folder on a drive that is not
+        // mounted today must not become the place this session writes to.
+        if (saved.isDirectory())
+            setJobRootDirectory(saved);
+    }
+
+    if (auto* array = get("stems").getArray())
+        for (int i = 0; i < juce::jmin(stemCount, array->size()); ++i)
+            setStemEnabled(i, static_cast<bool>(array->getUnchecked(i)));
+}
+
+void StemLabAudioProcessor::schedulePreferenceSave()
+{
+    if (applyingPreferences)
+        return;
+
+    /*  Only the message thread gets the timer. Every rapid change is a UI
+        one and arrives here from that thread, so that is where coalescing is
+        worth anything; a setting moved from a worker - the adaptive split
+        turning off the lane it just replaced - happens once, and Timer's
+        period is a plain member that two threads calling startTimer would
+        race on. Writing it there directly is both safer and cheaper.
+    */
+    if (!juce::MessageManager::existsAndIsCurrentThread())
+    {
+        savePreferences();
+        return;
+    }
+
+    // Restarted rather than left running, so a drag writes once when it
+    // stops rather than once a second while it moves.
+    preferenceSaveTimer.startTimer(1000);
+}
+
+void StemLabAudioProcessor::savePreferences() const
+{
+    auto directory = stemlab::paths::configDirectory();
+
+    // Best effort, for the reason the accent and the palette give: failing to
+    // remember a setting must never be the reason anything else fails.
+    if (!directory.exists() && !directory.createDirectory())
+        return;
+
     auto rootObject = std::make_unique<juce::DynamicObject>();
     rootObject->setProperty("refinement", refinementEnabled.load());
     rootObject->setProperty("fusedStemNormalisation", fusedStemNormalisation.load());
     rootObject->setProperty("separatorEngine", separatorEngineIndex.load());
     rootObject->setProperty("waveformZoom", waveformZoom.load());
-    rootObject->setProperty("gridMode", waveformGridMode.load());
+    // Manual is written as source for the reason applyPreferences gives: the
+    // mode outliving the tempo it needs is worse than not remembering it.
+    const auto gridMode = waveformGridMode.load();
+    rootObject->setProperty("gridMode",
+                            gridMode == gridManual ? static_cast<int>(gridSource) : gridMode);
     rootObject->setProperty("loopQuantize", loopQuantizeMode.load());
-    rootObject->setProperty("manualGridBpm", manualGridBpm.load());
-    rootObject->setProperty("manualGridNumerator", manualGridNumerator.load());
-    rootObject->setProperty("manualGridDenominator", manualGridDenominator.load());
-    rootObject->setProperty("manualGridBarOne", manualGridBarOne.load());
     rootObject->setProperty("editorScale", editorScalePercent.load());
-
     rootObject->setProperty("jobRootDirectory", getJobRootDirectory().getFullPathName());
 
     juce::Array<juce::var> stems;
@@ -6394,136 +6890,10 @@ void StemLabAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 
     rootObject->setProperty("stems", stems);
 
-    const auto json = juce::JSON::toString(juce::var(rootObject.release()), false);
-
-    destData.replaceAll(json.toRawUTF8(), static_cast<size_t>(json.getNumBytesAsUTF8()));
-}
-
-void StemLabAudioProcessor::setStateInformation(const void* data, int sizeInBytes)
-{
-    const juce::String json(juce::String::fromUTF8(static_cast<const char*>(data), sizeInBytes));
-
-    const auto parsed = juce::JSON::parse(json);
-    auto* object = parsed.getDynamicObject();
-
-    if (object == nullptr)
-        return;
-
-    /*
-     * engineCommand is deliberately not restored. Where the Engine lives is
-     * a fact about this machine's install, not about the project someone
-     * saved - a session carrying a path from another computer, or from a
-     * venv that has since been deleted, used to decide which interpreter ran
-     * here. Old states may still carry the property; it is ignored.
-     */
-
-    if (object->hasProperty("refinement"))
-    {
-        refinementEnabled.store(static_cast<bool>(object->getProperty("refinement")));
-
-        // A state written before this option existed carries no such
-        // property; getProperty returns void, which converts to false. That
-        // is deliberate rather than merely convenient: those sessions were
-        // getting the per-stem normalisation, and turning it off for them is
-        // the point of the change. Anyone who wants it back has the setting.
-        fusedStemNormalisation.store(
-            static_cast<bool>(object->getProperty("fusedStemNormalisation")));
-    }
-
-    /*
-     * torchCompile is deliberately NOT restored from saved state, and older
-     * projects that carry the property are ignored rather than honoured.
-     *
-     * Whether to compile is a property of the machine - it needs a toolchain,
-     * it costs a slow first run, and it pays back over every run after that.
-     * A project carrying its own answer means opening a session made on
-     * another computer silently overrides what this one was told, in both
-     * directions. The switch reads from torch_compile.txt and the environment
-     * only, both of which describe where the plugin is running.
-     */
-
-    // The environment still has to be reasserted here: this runs after the
-    // constructor, and the first job of a reloaded session must not inherit
-    // whatever the previous one left behind.
-    exportTorchCompilePreference();
-
-    if (object->hasProperty("separatorEngine"))
-    {
-        setSeparatorEngineIndex(static_cast<int>(object->getProperty("separatorEngine")));
-    }
-
-    if (object->hasProperty("gridMode"))
-        setWaveformGridMode(static_cast<int>(object->getProperty("gridMode")));
-
-    if (object->hasProperty("loopQuantize"))
-        setLoopQuantizeMode(static_cast<int>(object->getProperty("loopQuantize")));
-
-    if (object->hasProperty("manualGridBpm"))
-    {
-        // Restored through the setter so a hand-edited or older state cannot
-        // put a tempo outside the range the prompt enforces.
-        setManualGrid(static_cast<double>(object->getProperty("manualGridBpm")),
-                      object->hasProperty("manualGridNumerator")
-                          ? static_cast<int>(object->getProperty("manualGridNumerator"))
-                          : manualGridNumerator.load(),
-                      object->hasProperty("manualGridDenominator")
-                          ? static_cast<int>(object->getProperty("manualGridDenominator"))
-                          : manualGridDenominator.load(),
-                      object->hasProperty("manualGridBarOne")
-                          ? static_cast<double>(object->getProperty("manualGridBarOne"))
-                          : manualGridBarOne.load());
-    }
-
-    /*  The palette is a preference now, not project state, so this no longer
-        writes it and reads it only to carry an old choice forward once.
-
-        Both spellings, because both are on disk: projects from before the
-        rename carry "waveformColour". And only when nothing is remembered
-        yet, or the first project opened after an upgrade would decide the
-        preference for every project after it. Once the file exists, saved
-        state is ignored entirely - which is the point of it being a
-        preference.
-    */
-    if (!waveformColorPreferenceFile().existsAsFile())
-    {
-        for (const auto* key : { "waveformColor", "waveformColour" })
-        {
-            if (object->hasProperty(key))
-            {
-                setWaveformColorIndex(static_cast<int>(object->getProperty(key)));
-                break;
-            }
-        }
-    }
-
-    // Restored unconditionally. The brace this sat inside made the zoom
-    // depend on a waveform palette having been saved as well, so any state
-    // without that property came back at the default zoom.
-    if (object->hasProperty("waveformZoom"))
-        setWaveformZoom(static_cast<double>(object->getProperty("waveformZoom")));
-
-    if (object->hasProperty("editorScale"))
-    {
-        setEditorScalePercent(static_cast<int>(object->getProperty("editorScale")));
-    }
-
-    if (object->hasProperty("jobRootDirectory"))
-    {
-        const juce::File savedJobRoot(object->getProperty("jobRootDirectory").toString());
-
-        if (savedJobRoot.isDirectory())
-            setJobRootDirectory(savedJobRoot);
-    }
-
-    const auto stems = object->getProperty("stems");
-
-    if (auto* array = stems.getArray())
-    {
-        for (int i = 0; i < juce::jmin(stemCount, array->size()); ++i)
-        {
-            setStemEnabled(i, static_cast<bool>(array->getUnchecked(i)));
-        }
-    }
+    // Formatted rather than packed: this is a file a user may well open, and
+    // the whole of it is a few hundred bytes either way.
+    settingsPreferenceFile().replaceWithText(
+        juce::JSON::toString(juce::var(rootObject.release()), false));
 }
 
 juce::AudioProcessorEditor* StemLabAudioProcessor::createEditor()
@@ -7382,10 +7752,14 @@ bool StemLabAudioProcessor::refreshModelInventory(bool probeCompile)
 
     if (command.isEmpty())
     {
-        // No engine configured yet. That is not a failed read - there is
-        // nothing to read from - so the Model Manager can say "point me at an
-        // engine" rather than "your models are missing".
-        modelInventoryBroken.store(false);
+        /*  No worker to ask. Not a failed read - there is nothing to read
+            from - but the page has to say so all the same: left as "not
+            broken, not running, no inventory" it sat on "Asking the engine
+            what is installed..." for ever, and a partial install where
+            separation itself works is exactly when somebody opens it.
+        */
+        modelInventoryBroken.store(true);
+        sendChangeMessage();
         return false;
     }
 
@@ -7449,7 +7823,7 @@ void StemLabAudioProcessor::finishModelInventory(const juce::File& output, int e
             appears, and the app looks like it simply has no opinion.
         */
         modelInventoryBroken.store(true);
-        setStatus("The engine could not report its models - check it in Settings");
+        setStatus("The engine could not report its models - see Settings > Models");
         sendChangeMessage();
         return;
     }
@@ -7747,20 +8121,37 @@ void StemLabAudioProcessor::finishAnalysisMaintenance(const juce::File& source,
     juce::ignoreUnused(source);
 }
 
-void StemLabAudioProcessor::setWaveformGridMode(int mode) noexcept
+void StemLabAudioProcessor::setWaveformGridMode(int mode)
 {
     waveformGridMode.store(
         juce::jlimit(static_cast<int>(gridHost), static_cast<int>(gridOff), mode));
+
+    schedulePreferenceSave();
     sendChangeMessage();
 }
 
+void StemLabAudioProcessor::resetManualGridForNewSource()
+{
+    // Manual timing describes the previous audio, unlike the user's choice
+    // of Host/Source/Off. Do not carry it onto an unmeasured replacement.
+    auto expected = static_cast<int>(gridManual);
+    waveformGridMode.compare_exchange_strong(expected, gridSource);
+    manualGridBpm.store(120.0);
+    manualGridNumerator.store(4);
+    manualGridDenominator.store(4);
+    manualGridBarOne.store(0.0);
+}
+
 void StemLabAudioProcessor::setManualGrid(double bpm, int numerator, int denominator,
-                                          double barOne) noexcept
+                                          double barOne)
 {
     manualGridBpm.store(juce::jlimit(20.0, 400.0, bpm));
     manualGridNumerator.store(juce::jlimit(1, 32, numerator));
     manualGridDenominator.store(juce::jlimit(1, 32, denominator));
     manualGridBarOne.store(juce::jmax(0.0, barOne));
+
+    // No schedulePreferenceSave: this one is not remembered. See
+    // applyPreferences for why a tempo is not a preference.
     sendChangeMessage();
 }
 
@@ -7872,7 +8263,7 @@ StemLabSelectionRange StemLabAudioProcessor::getStemSelectionRange(const juce::S
     return found != stemSelections.end() ? found->second : StemLabSelectionRange{};
 }
 
-void StemLabAudioProcessor::setLoopQuantizeMode(int mode) noexcept
+void StemLabAudioProcessor::setLoopQuantizeMode(int mode)
 {
     loopQuantizeMode.store(
         juce::jlimit(static_cast<int>(quantizeOff), static_cast<int>(quantizeBar), mode));
@@ -7880,6 +8271,7 @@ void StemLabAudioProcessor::setLoopQuantizeMode(int mode) noexcept
     // Ranges already swept stay where they are. Snapping them under the user
     // would move loops they placed deliberately, and the setting is about
     // the next sweep, not a re-cut of the last one.
+    schedulePreferenceSave();
     sendChangeMessage();
 }
 
@@ -8048,6 +8440,14 @@ bool StemLabAudioProcessor::launchMidiConversion(const juce::File& source,
                                                  const juce::String& outputName,
                                                  const juce::String& resultId)
 {
+    midiThread.reset();
+    juce::uint64 generation;
+    {
+        const juce::ScopedLock lock(midiInfoLock);
+        midiConversionId = resultId;
+        generation = ++midiResultGeneration;
+    }
+
     if (!source.existsAsFile())
     {
         setStatus("MIDI source stem was not found");
@@ -8077,21 +8477,16 @@ bool StemLabAudioProcessor::launchMidiConversion(const juce::File& source,
     command.add("--stem-type");
     command.add(stemType);
 
-    const auto grid = getWaveformGridInfo();
-    command.add("--grid-mode");
-    command.add(grid.mode == gridHost ? "host" : (grid.mode == gridManual ? "manual" : "source"));
-    command.add("--bar-one");
-    command.add(juce::String(grid.barOne, 6));
+    appendMidiGridArguments(command);
 
-    if (getSourceBpm() > 0.0)
-    {
-        command.add("--bpm");
-        command.add(juce::String(getSourceBpm(), 3));
-    }
-
-    midiThread.reset();
+    // A capture may replace the source while command/file setup runs.
+    // Retire that request before it starts, using the same publication lock.
+    const juce::ScopedLock lock(midiInfoLock);
+    if (generation != midiResultGeneration)
+        return false;
     midiThread = std::make_unique<StemLabUtilityThread>(*this, StemLabUtilityThread::midiConversion,
-                                                        command, source, output, label, resultId);
+                                                        command, source, output, label, resultId,
+                                                        juce::File{}, generation);
     setStatus("Converting " + label + " to MIDI...");
 
     if (!midiThread->startThread())
@@ -8103,33 +8498,85 @@ bool StemLabAudioProcessor::launchMidiConversion(const juce::File& source,
     return true;
 }
 
+void StemLabAudioProcessor::appendMidiGridArguments(juce::StringArray& command) const
+{
+    const auto grid = getWaveformGridScalars();
+    command.add("--grid-mode");
+    command.add(grid.mode == gridHost ? "host" : (grid.mode == gridManual ? "manual" : "source"));
+    command.add("--bar-one");
+    command.add(juce::String(grid.barOne, 6));
+    if (std::isfinite(grid.bpm) && grid.bpm > 0.0)
+    {
+        command.add("--bpm");
+        command.add(juce::String(grid.bpm, 3));
+    }
+}
+
+void StemLabAudioProcessor::invalidateMidiResults(const juce::String& prefix)
+{
+    const juce::ScopedLock lock(midiInfoLock);
+    const auto affected = [&prefix](const juce::String& id)
+    { return prefix.isEmpty() || id.startsWith(prefix); };
+
+    // A worker may still be reading the retired source. It may finish its
+    // files, but must not republish them into a reused lane ID or change the
+    // new source's status. Keep unrelated conversions alive on a re-split.
+    if (affected(midiConversionId))
+        ++midiResultGeneration;
+
+    for (auto it = midiInfos.begin(); it != midiInfos.end();)
+        if (affected(juce::String(it->first)))
+            it = midiInfos.erase(it);
+        else
+            ++it;
+
+    const juce::ScopedLock auditionLock(midiAuditionLock);
+    if (affected(midiAuditionId))
+        stopMidiAudition();
+}
+
 void StemLabAudioProcessor::finishMidiConversion(const juce::String& label,
                                                  const juce::File& output, int exitCode,
-                                                 const juce::String& resultId)
+                                                 const juce::String& resultId,
+                                                 juce::uint64 generation)
 {
-    if (exitCode == 0 && output.existsAsFile() && loadMidiInfo(resultId, output))
+    // Parse off the lock; retirement and the final publish share the lock,
+    // so a source change during a slow metadata read still wins.
+    auto info = exitCode == 0 && output.existsAsFile() ? readMidiInfo(resultId, output)
+                                                      : std::nullopt;
+    const juce::ScopedLock lock(midiInfoLock);
+    if (generation != midiResultGeneration)
+        return;
+
+    if (info.has_value())
     {
+        midiInfos[resultId.toStdString()] = std::move(*info);
         setStatus("MIDI saved: " + output.getFullPathName());
+        sendChangeMessage();
     }
     else
     {
         if (output.existsAsFile())
             output.deleteFile();
-        setStatus("MIDI conversion failed for " + label + " - see diagnostics");
+        // statusFailure, like every other failure: without it this came up
+        // beside the green tick, in the same grey the success summary uses,
+        // and read as "done" at a glance.
+        setStatus("MIDI conversion failed for " + label + " - see diagnostics", statusFailure);
     }
 }
 
-bool StemLabAudioProcessor::loadMidiInfo(const juce::String& id, const juce::File& midiFile)
+std::optional<StemLabMidiInfo> StemLabAudioProcessor::readMidiInfo(const juce::String& id,
+                                                                const juce::File& midiFile)
 {
     const auto metadata = midiFile.getSiblingFile(midiFile.getFileNameWithoutExtension() +
                                                    ".stemlab-midi.json");
     if (!metadata.existsAsFile())
-        return false;
+        return std::nullopt;
 
     const auto parsed = juce::JSON::parse(metadata.loadFileAsString());
     auto* object = parsed.getDynamicObject();
     if (object == nullptr || static_cast<int>(object->getProperty("schema")) < 1)
-        return false;
+        return std::nullopt;
 
     StemLabMidiInfo info;
     info.id = id;
@@ -8160,12 +8607,9 @@ bool StemLabAudioProcessor::loadMidiInfo(const juce::String& id, const juce::Fil
     }
 
     if (info.notes.empty())
-        return false;
+        return std::nullopt;
 
-    const juce::ScopedLock lock(midiInfoLock);
-    midiInfos[id.toStdString()] = std::move(info);
-    sendChangeMessage();
-    return true;
+    return info;
 }
 
 StemLabMidiInfo StemLabAudioProcessor::getMidiInfo(const juce::String& id) const
@@ -8223,7 +8667,13 @@ bool StemLabAudioProcessor::auditionMidi(const juce::String& id)
         return true;
     }
 
-    const auto info = getMidiInfo(id);
+    StemLabMidiInfo info;
+    juce::uint64 generation;
+    {
+        const juce::ScopedLock lock(midiInfoLock);
+        info = getMidiInfo(id);
+        generation = midiResultGeneration;
+    }
     if (info.notes.empty())
     {
         setStatus("Convert this stem to MIDI first");
@@ -8263,13 +8713,26 @@ bool StemLabAudioProcessor::auditionMidi(const juce::String& id)
     for (const auto& note : notes)
         duration = juce::jmax(duration, note.end);
 
+    // JUCE 9 stores each three-byte note message with a six-byte header.
+    // Reserve both events for every note: even a whole-take offline block
+    // then fits. Allocate here and retire the previous storage outside the
+    // lock used by the audio callback.
+    juce::MidiBuffer events;
+    events.ensureSize(juce::jmax(size_t{4096}, notes.size() * size_t{18}));
+
     previewTransport.stop();
+    // A system-capture worker may retire this source while the note orders
+    // above are being built. Do not start an audition from that stale copy.
+    const juce::ScopedLock infoLock(midiInfoLock);
+    if (generation != midiResultGeneration || midiInfos.find(id.toStdString()) == midiInfos.end())
+        return false;
     {
         const juce::ScopedLock lock(midiAuditionLock);
         midiAuditionSynth.allNotesOff(0, false);
 
         midiAuditionNotes.swap(notes);
         midiAuditionNoteOffOrder.swap(noteOffOrder);
+        midiAuditionEvents.swapWith(events);
 
         midiAuditionId = id;
         midiAuditionPosition = 0.0;
@@ -8308,11 +8771,15 @@ bool StemLabAudioProcessor::renderMidiAudition(juce::AudioBuffer<float>& buffer,
                                                int numSamples)
 {
     const juce::ScopedLock lock(midiAuditionLock);
-    if (!midiAuditionActive.load() || currentSampleRate <= 0.0 || numSamples <= 0)
+    // The AudioSource and AudioProcessor entry points can prepare separately.
+    // Use the rate of the voices we are rendering, under the same lock as
+    // prepareMidiAudition, rather than the capture/host rate.
+    const auto sampleRate = midiAuditionSynth.getSampleRate();
+    if (!midiAuditionActive.load() || sampleRate <= 0.0 || numSamples <= 0)
         return false;
 
     const auto blockStart = midiAuditionPosition;
-    const auto blockEnd = blockStart + static_cast<double>(numSamples) / currentSampleRate;
+    const auto blockEnd = blockStart + static_cast<double>(numSamples) / sampleRate;
 
     midiAuditionEvents.clear();
 
@@ -8321,7 +8788,7 @@ bool StemLabAudioProcessor::renderMidiAudition(juce::AudioBuffer<float>& buffer,
         return startSample + juce::jlimit(
                                  0, numSamples - 1,
                                  static_cast<int>(std::round((seconds - blockStart) *
-                                                             currentSampleRate)));
+                                                             sampleRate)));
     };
 
     const auto noteCount = midiAuditionNotes.size();
@@ -8377,18 +8844,8 @@ bool StemLabAudioProcessor::renderMidiAudition(juce::AudioBuffer<float>& buffer,
         midiAuditionNoteOffOrder.clear();
         midiAuditionNoteOnCursor = 0;
         midiAuditionNoteOffCursor = 0;
-
-        /*
-         * The id is deliberately left standing. Clearing a juce::String drops
-         * the last reference to its holder and deletes it, which is a heap
-         * free in the audio callback; the two vectors above hold plain structs
-         * and keep their storage, so only the String was an allocator call.
-         *
-         * Nothing reads the id on its own - isMidiAuditioning wants
-         * midiAuditionActive as well, and that is false from here on - so the
-         * stale id is inert until the message thread replaces it in
-         * auditionMidi or clears it in stopMidiAudition.
-         */
+        // Retire the ID on stop/restart; releasing its last String reference
+        // here could free heap storage on the audio thread.
     }
     return true;
 }

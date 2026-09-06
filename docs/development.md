@@ -71,12 +71,16 @@ ctest --test-dir src/plugin/build --output-on-failure
 | `StemLabLoopRegionsTests` | Which loop ranges merge, and where playback jumps |
 | `StemLabSourceLabelTests` | Joining a track and take name without saying it twice |
 | `StemLabLoopQuantizeTests` | Where a swept loop lands on the grid, beats or constant tempo |
+| `StemLabSourceLengthTests` | PCM truncation without shortening valid compressed WAVs, using real JUCE decoders |
 | `StemLabAccentPaletteTests` | The accent ramp, and that a saved accent survives a reload |
 | `StemLabLaneWheelDispatchTests` | That a lane's deep mouse listener leaves the wheel alone |
 | `StemLabHostCaptureTests` | The self-drag guard and a real processor capturing audio |
+| `StemLabEditorLifecycleTests` | That opening and closing the editor leaves nothing for static destruction |
+| `StemLabScanCacheTests` | When the stem-file scan may still be trusted, and that a vanished output folder is published rather than left behind |
 
-The first six cover header-only components deliberately kept free of the
-plugin, so a test can reach them without standing one up.
+The waveform, loop and source-label suites cover header-only components
+without standing up a plugin. `StemLabSourceLengthTests` generates audio
+fixtures and checks the shared length cap through JUCE's actual readers.
 `StemLabLaneWheelDispatchTests` is the odd one: it pins JUCE's own dispatch
 behaviour rather than code of ours, because a JUCE upgrade that changed it
 would silently undo the fix that depends on it. The lane listens deeply for
@@ -85,11 +89,16 @@ one row are that `MouseListener::mouseWheelMove` has an empty default body -
 so the lane's relay, which does not override it, adds no second delivery -
 and that `Component::mouseWheelMove` walks the wheel up to the nearest
 enabled ancestor, which is the one delivery the lane list scrolls on.
-`StemLabHostCaptureTests` links the plugin itself.
+`StemLabHostCaptureTests` links the plugin itself, and so does
+`StemLabEditorLifecycleTests`, whose real assertion is its own exit status:
+the bundled faces are published through statics, and a build that leaves them
+there crashes in JUCE's font cache after main returns rather than failing any
+check inside it.
 
-Two of them link JUCE, but none needs a display - the wheel suite counts the
-wheels that reach a stand-in viewport component rather than opening a
-window - so the whole suite runs on a bare CI runner with `DISPLAY` unset.
+None of the suites needs a display - the wheel suite counts the
+wheels that reach a stand-in viewport component rather than opening a window,
+and the lifecycle suite builds the editor without putting it on screen - so the
+whole suite runs on a bare CI runner with `DISPLAY` unset.
 
 ## Command Line
 
@@ -192,10 +201,51 @@ is chosen in the same **Appearance** section - it used to be a palette icon in
 the header opening a popup menu, which is one more thing in the header and one
 more menu than the settings window was meant to leave. Its first entry is named
 **Accent** rather than Nocturne, because it draws with whichever accent is set -
-naming it after the design system would name it after a color it may not be. `setStateInformation` still reads the old
-`waveformColour`/`waveformColor` keys, but only when no preference file
-exists yet, so an existing project's choice carries forward once instead of
-the first project opened deciding the palette for every project after it.
+naming it after the design system would name it after a color it may not be.
+
+### Settings live in the config directory, not in the project
+
+`getStateInformation` writes nothing at all - a chunk of length zero - and
+there are no `AudioProcessorParameter`s either, so a StemLab instance stores
+nothing whatsoever in a host's project. Opening a session cannot change a
+setting, and changing a setting cannot dirty a project.
+
+Everything the plugin remembers is in the config directory instead: the
+accent in `accent.txt`, the lane palette in `waveform_palette.txt`, whether
+this machine can compile in `torch_compile.txt`, and the rest -
+refinement, fused-stem normalisation, the separation model, the grid mode,
+loop quantisation, waveform zoom, editor scale, the job folder and which
+stems are enabled - in `settings.json`.
+
+The manual grid is the one thing deliberately left out. A tempo, a meter and
+where bar one falls describe one piece of audio rather than how somebody
+works, and no instance restores the audio either, so a remembered 174 would
+be a grid drawn confidently over whatever is loaded next - the same thing
+`getWaveformGridScalars` refuses to do when it declines to substitute a
+plausible 120. The mode goes with it: `gridManual` is written and read as
+`gridSource`, because restoring the mode without its tempo opens every later
+session in manual at the default 120.
+
+They were project state because that is where a plugin's state usually goes,
+and it was wrong for all of them: which stems you separate and how big you
+like the window describe how somebody works, so carrying them in the project
+meant answering the same questions once per project and again on the next
+machine that opened it.
+
+The trade, stated plainly: two projects can no longer hold different
+settings, and the last window to change one wins across every instance.
+
+Writes are coalesced on a one-second timer, because the zoom slider and a
+window drag both move a setting many times a second and each one is a whole
+file rewritten; the destructor flushes a pending write so a window closed
+straight after a change still keeps it.
+
+`setStateInformation` is not quite a no-op: every project saved by an older
+build still carries the blob, so the first project opened on a machine with
+no `settings.json` donates its settings to that file, once, and after that
+project state is ignored entirely. One project decides, rather than
+whichever was opened last quietly redeciding for all the others - the same
+rule the waveform palette used when it became a preference.
 
 ### `src/plugin/Source/PluginProcessor.h/.cpp`
 

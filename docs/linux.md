@@ -189,6 +189,21 @@ The bundle carries both scripts next to the app:
 ~/.local/share/StemLab/uninstall.sh --dry-run      # print what would go
 ```
 
+"All of it" means everything outside your music folder: the app, the Engine,
+the VST3, the model weights, the analysis cache, the applications-menu entry
+and its icons, and every setting — `settings.json`, the accent, the lane
+palette and the torch-compile preference, all in the config directory since
+none of it goes into a DAW project.
+
+`Captures`, `Recordings` and `Jobs` inside the install directory go with it.
+They are the old layout's: audio is written to `<music>/StemLab` now. The
+exception is a desktop that names no `XDG_MUSIC_DIR`, where StemLabPaths has
+nowhere else to write and puts audio in the install directory — there those
+three are the only copy and are kept unless you pass `--everything`.
+
+`--dry-run` prints the list before anything happens, and every run without
+`--yes` asks first.
+
 **Settings > Check for Updates...** runs `update.sh --check` and reports what
 it says. It deliberately stops there: installing an update replaces
 `StemLab.vst3`, and replacing a plug-in binary underneath a host that has it

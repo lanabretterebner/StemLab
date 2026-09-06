@@ -317,6 +317,26 @@ namespace stemlab::theme
             return typeface;
         }
 
+        /*  Let the faces go.
+
+            These two are function-local statics, so left alone they outlive
+            main - and a Typeface made from memory holds a cache entry that
+            JUCE removes from its own singleton when the last reference goes.
+            That singleton is built after these are, so it dies before them,
+            and releasing the last reference during static destruction unhooks
+            a node from a list that no longer exists. StemLab segfaulted on
+            every clean exit for exactly that reason.
+
+            Called from ~StemLabLookAndFeel, which the SharedResourcePointer
+            destroys when the last editor closes - inside the application's
+            lifetime, where JUCE's font machinery is still standing.
+        */
+        inline void releaseTypefaces()
+        {
+            regularTypeface() = nullptr;
+            mediumTypeface() = nullptr;
+        }
+
         inline juce::FontOptions make(float size, bool medium)
         {
             auto& typeface = medium ? mediumTypeface() : regularTypeface();

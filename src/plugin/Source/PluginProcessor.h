@@ -1,12 +1,14 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "StemScanCache.h"
 #include <array>
 #include <atomic>
 #include <deque>
 #include <map>
 #include <unordered_map>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "HostIntegrationPolicy.h"
@@ -650,9 +652,9 @@ public:
     /** Cooperative stop for whichever model job is running. */
     void cancelModelJob();
 
-    void setWaveformGridMode(int mode) noexcept;
+    void setWaveformGridMode(int mode);
     int getWaveformGridMode() const noexcept { return waveformGridMode.load(); }
-    void setManualGrid(double bpm, int numerator, int denominator, double barOne) noexcept;
+    void setManualGrid(double bpm, int numerator, int denominator, double barOne);
 
     /** The tempo the manual grid is set to, for the editor to seed its prompt. */
     double getManualGridBpm() const noexcept { return manualGridBpm.load(); }
@@ -684,7 +686,7 @@ public:
     StemLabWaveformCache& getWaveformCache() noexcept { return waveformProfiles; }
 
     /** One highlighted time range per stem. Dragging a waveform sets it. */
-    void setLoopQuantizeMode(int mode) noexcept;
+    void setLoopQuantizeMode(int mode);
     int getLoopQuantizeMode() const noexcept { return loopQuantizeMode.load(); }
 
     /** The rule a swept loop snaps to: the same one the lanes paint.
@@ -769,7 +771,17 @@ public:
     /** Override or query the executable used for the main Python worker. */
     juce::String getEngineCommand() const;
 
-    void setRefinementEnabled(bool enabled) noexcept { refinementEnabled.store(enabled); }
+    /** Why the engine at this path cannot be launched, or an empty string. */
+    static juce::String engineLaunchProblem(const juce::String& commandName);
+
+    /** When a job's stem folder last changed, for the scan cache's freshness. */
+    static juce::Time stemFolderStamp(const juce::File& job);
+
+    void setRefinementEnabled(bool enabled)
+    {
+        if (refinementEnabled.exchange(enabled) != enabled)
+            schedulePreferenceSave();
+    }
 
     bool isRefinementEnabled() const noexcept { return refinementEnabled.load(); }
 
@@ -781,9 +793,10 @@ public:
         shifts. Stems are written as 32-bit float, where a sample above 1.0
         is exactly representable, so nothing clips in the file either way.
     */
-    void setFusedStemNormalisation(bool enabled) noexcept
+    void setFusedStemNormalisation(bool enabled)
     {
-        fusedStemNormalisation.store(enabled);
+        if (fusedStemNormalisation.exchange(enabled) != enabled)
+            schedulePreferenceSave();
     }
 
     bool isFusedStemNormalisation() const noexcept { return fusedStemNormalisation.load(); }
@@ -795,9 +808,12 @@ public:
         separatorHybrid = 2
     };
 
-    void setSeparatorEngineIndex(int index) noexcept
+    void setSeparatorEngineIndex(int index)
     {
-        separatorEngineIndex.store(juce::jlimit(0, separatorEngineCount - 1, index));
+        const auto wanted = juce::jlimit(0, separatorEngineCount - 1, index);
+
+        if (separatorEngineIndex.exchange(wanted) != wanted)
+            schedulePreferenceSave();
     }
 
     int getSeparatorEngineIndex() const noexcept { return separatorEngineIndex.load(); }
@@ -835,6 +851,27 @@ public:
     static juce::File waveformColorPreferenceFile();
     static int readRememberedWaveformColor();
     static void rememberWaveformColor(int index);
+
+    /*  Everything else the plugin remembers, in one file beside those.
+
+        Nothing is written into the host's project at all - see
+        getStateInformation. A DAW project describes a piece of music; which
+        stems you separate, how you like the lanes drawn, how big the window
+        is and where the output goes describe you, and carrying them in the
+        project meant every setting was answered once per project and again
+        on the next machine that opened it. They are answered once here.
+
+        The trade this makes, stated plainly: two projects can no longer hold
+        different settings, and the last window to change one wins across
+        every instance.
+    */
+    static juce::File settingsPreferenceFile();
+
+    /** Re-reads the file. Public for the tests; the constructor calls it. */
+    void loadPreferences();
+
+    /** Writes now rather than on the coalescing timer. */
+    void savePreferences() const;
 
     /**
      * Which palette a fresh instance starts on: Spectrum, index 2.
@@ -878,6 +915,7 @@ public:
     static constexpr int stemCount = 6;
 
 private:
+    friend struct StemLabAudioProcessingTestAccess;
     friend class StemLabEngineThread;
     friend class StemLabRecursiveThread;
     friend class StemLabUtilityThread;
@@ -900,6 +938,7 @@ private:
         showing an unfinished job's stems: a new launch, a cancel, a
         failure. Lazy job-mismatch dropping is not enough on its own - a job
         that fails before announcing anything never reaches the writer. */
+    int countReadyStemFiles() const;
     void resetReadyStemFiles();
 
     juce::StringArray makePythonModuleCommand(const juce::String& moduleName) const;
@@ -950,8 +989,12 @@ private:
                               const juce::String& label, const juce::String& outputName,
                               const juce::String& resultId);
     void finishMidiConversion(const juce::String& label, const juce::File& output, int exitCode,
-                              const juce::String& resultId);
-    bool loadMidiInfo(const juce::String& id, const juce::File& midiFile);
+                              const juce::String& resultId, juce::uint64 generation);
+    static std::optional<StemLabMidiInfo> readMidiInfo(const juce::String& id,
+                                                     const juce::File& midiFile);
+    void invalidateMidiResults(const juce::String& prefix = {});
+    void appendMidiGridArguments(juce::StringArray& command) const;
+    void resetManualGridForNewSource();
     bool renderMidiAudition(juce::AudioBuffer<float>& buffer, int startSample, int numSamples);
 
     /** Give the audition synthesiser the playback rate and make sure its
@@ -1045,6 +1088,7 @@ private:
     juce::TimeSliceThread previewReadThread{"StemLab preview reader"};
     std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> threadedWriter;
     std::atomic<juce::AudioFormatWriter::ThreadedWriter*> activeWriter{nullptr};
+    std::atomic<int> threadedCaptureInputChannels{0}; // bus layout when the take started
 
     std::atomic<bool> capturing{false};
     std::atomic<int> standaloneRecordingMode{recordingNone};
@@ -1069,7 +1113,8 @@ private:
     std::atomic<double> abletonMidiAckStartMs{0.0};
     std::atomic<double> inputDurationSeconds{0.0};
 
-    double currentSampleRate = 44100.0;
+    // Host preparation may run concurrently with the editor's capture readout.
+    std::atomic<double> currentSampleRate{44100.0};
 
     // Rate of the WAV a system-capture thread is writing. Atomic because the
     // capture thread stores it while the editor timer reads it through
@@ -1147,6 +1192,9 @@ private:
 
     mutable juce::CriticalSection midiInfoLock;
     std::unordered_map<std::string, StemLabMidiInfo> midiInfos;
+    // Guarded by midiInfoLock, including the worker's final publication.
+    juce::uint64 midiResultGeneration = 0;
+    juce::String midiConversionId;
 
     juce::Synthesiser midiAuditionSynth;
     mutable juce::CriticalSection midiAuditionLock;
@@ -1160,9 +1208,9 @@ private:
     size_t midiAuditionNoteOnCursor = 0;
     size_t midiAuditionNoteOffCursor = 0;
 
-    /*  Sized in prepareToPlay and cleared per block: MidiBuffer allocates on
-        its first event, which a fresh buffer per render put on the audio
-        thread. clear() keeps the allocation.
+    /*  Reserved for the whole take by auditionMidi and cleared per block,
+        so even a large offline block cannot grow it on the audio thread.
+        clear() keeps the allocation.
     */
     juce::MidiBuffer midiAuditionEvents;
 
@@ -1209,6 +1257,46 @@ private:
     };
 
     CaptureStopTimer captureStopTimer{*this};
+
+    /*  Coalesces preference writes. The zoom slider and a window drag both
+        move a setting many times a second, and each one is a whole file
+        rewritten; a second's delay turns a drag into one write and is far
+        below the time between a change and anything that could read it.
+    */
+    struct PreferenceSaveTimer final : juce::Timer
+    {
+        explicit PreferenceSaveTimer(StemLabAudioProcessor& ownerIn) : owner(ownerIn) {}
+
+        void timerCallback() override
+        {
+            stopTimer();
+            owner.savePreferences();
+        }
+
+        StemLabAudioProcessor& owner;
+    };
+
+    PreferenceSaveTimer preferenceSaveTimer{*this};
+
+    void schedulePreferenceSave();
+
+    /** Applies a parsed settings object through the public setters. */
+    void applyPreferences(const juce::var& parsed);
+
+    /*  True while loadPreferences is applying what it read, so that going
+        through the setters - which is how a stored value gets clamped and
+        validated exactly once - does not schedule a write of what was just
+        read.
+    */
+    bool applyingPreferences = false;
+
+    /*  Set when the constructor found no preference file. The first project
+        the host then hands us donates its settings, once, so that upgrading
+        does not silently reset everyone to defaults. Cleared as soon as a
+        file exists, after which saved project state is ignored entirely -
+        which is the point of it being a preference.
+    */
+    bool preferencesMayBeAdopted = false;
 
     juce::String status{"Ready"};
     StatusSeverity statusSeverity = statusInfo;
@@ -1353,9 +1441,7 @@ private:
      * or of completion state.
      */
     mutable juce::CriticalSection stemFileCacheLock;
-    mutable juce::File stemFileCacheJob;
-    mutable bool stemFileCacheJobDone = false;
-    mutable std::array<juce::File, stemCount> stemFileCache;
+    mutable stemlab::scan::StemFileCache<stemCount> stemFileCache;
 
     /**
      * Per-stem STEMLAB_STEM_READY announcements from the separation that is
@@ -1472,6 +1558,7 @@ private:
     juce::AudioTransportSource previewTransport;
     juce::AudioSourcePlayer previewPlayer;
     juce::AudioBuffer<float> previewScratch;
+    int previewSourceBlockSize = 1; // prepared/rendered by the AudioSource device callback
 
     // The stem-mix monitor. stemMixSource owns one reader per completed
     // stem and sums them with per-stem solo/mute gains; stemMixTransport

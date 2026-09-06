@@ -210,6 +210,28 @@ StemLabLookAndFeel::StemLabLookAndFeel()
     setColour(juce::TextButton::textColourOnId, theme::colors::text());
 }
 
+StemLabLookAndFeel::~StemLabLookAndFeel()
+{
+    /*
+     * The faces published to the theme are function-local statics, and a
+     * static holding a JUCE object outlives JUCE itself: the typeface's cache
+     * entry is removed from a singleton that static destruction has already
+     * torn down, which crashed the app on every clean exit. This is the last
+     * moment inside the application's own lifetime - a SharedResourcePointer
+     * destroys this when the final editor closes - so the references go here.
+     *
+     * The cost is that an editor opened after every other one has closed
+     * registers the faces again, which is one FreeType scan on the message
+     * thread. That is a rare path, and paying it beats exiting with SIGSEGV.
+     */
+    setDefaultSansSerifTypeface(nullptr);
+
+    interRegular = nullptr;
+    interMedium = nullptr;
+
+    theme::fonts::releaseTypefaces();
+}
+
 juce::Typeface::Ptr StemLabLookAndFeel::getTypefaceForFont(const juce::Font& font)
 {
     // Nocturne renders nothing bolder than 500: "bold" means Inter Medium.

@@ -516,7 +516,7 @@ def write_midi(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    tempo_bpm = float(bpm) if bpm is not None and 20.0 <= float(bpm) <= 300.0 else 120.0
+    tempo_bpm = float(bpm) if bpm is not None and 20.0 <= float(bpm) <= 400.0 else 120.0
     tempo = mido.bpm2tempo(tempo_bpm)
     midi_file = mido.MidiFile(type=1, ticks_per_beat=480)
     track = mido.MidiTrack()

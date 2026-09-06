@@ -208,6 +208,18 @@ if (BUILD_TESTING)
     stemlab_enable_test_assertions(StemLabSourceLabelTests)
     add_test(NAME StemLabSourceLabelTests COMMAND StemLabSourceLabelTests)
 
+    # Whether a source file holds the audio its own header promises, and what
+    # to believe when it does not.
+    add_executable(StemLabSourceLengthTests
+        Tests/SourceLengthTests.cpp Source/SourceLength.h Source/SourceLengthReader.h)
+    target_include_directories(StemLabSourceLengthTests PRIVATE Source)
+    target_compile_features(StemLabSourceLengthTests PRIVATE cxx_std_20)
+    target_link_libraries(StemLabSourceLengthTests PRIVATE juce::juce_audio_formats)
+    target_compile_definitions(StemLabSourceLengthTests PRIVATE
+        JUCE_STANDALONE_APPLICATION=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    stemlab_enable_test_assertions(StemLabSourceLengthTests)
+    add_test(NAME StemLabSourceLengthTests COMMAND StemLabSourceLengthTests)
+
     # The generated accent ramps: that the default is untouched, that a hue
     # turn keeps lightness, and that the theme's contrast pairs survive on
     # every preset. Links JUCE for juce::Colour; needs no display.
@@ -245,6 +257,33 @@ if (BUILD_TESTING)
                                                           juce::juce_gui_extra)
     stemlab_enable_test_assertions(StemLabHostCaptureTests)
     add_test(NAME StemLabHostCaptureTests COMMAND StemLabHostCaptureTests)
+
+    # The stem-scan cache's freshness rules, with the clock and the folder's
+    # stamp handed in - arithmetic rather than a filesystem race.
+    add_executable(StemLabScanCacheTests Tests/StemScanCacheTests.cpp
+                   Source/StemScanCache.h)
+    target_include_directories(StemLabScanCacheTests PRIVATE Source)
+    target_compile_features(StemLabScanCacheTests PRIVATE cxx_std_20)
+    target_link_libraries(StemLabScanCacheTests PRIVATE juce::juce_core)
+    target_compile_definitions(StemLabScanCacheTests PRIVATE
+        JUCE_STANDALONE_APPLICATION=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    stemlab_enable_test_assertions(StemLabScanCacheTests)
+    add_test(NAME StemLabScanCacheTests COMMAND StemLabScanCacheTests)
+
+    # Opens and closes the editor twice, and its assertion is that the process
+    # then exits: a build that leaves the bundled faces in a static crashes
+    # after main, in JUCE's own font cache. Links the plugin, needs no display.
+    add_executable(StemLabEditorLifecycleTests Tests/EditorLifecycleTests.cpp)
+    target_include_directories(StemLabEditorLifecycleTests PRIVATE Source
+                               "${CMAKE_CURRENT_BINARY_DIR}/StemLabPlugin_artefacts/JuceLibraryCode"
+                               "${CMAKE_CURRENT_BINARY_DIR}/juce_binarydata_StemLabAssets/JuceLibraryCode")
+    target_compile_features(StemLabEditorLifecycleTests PRIVATE cxx_std_20)
+    target_link_libraries(StemLabEditorLifecycleTests PRIVATE StemLabPlugin
+                                                             juce::juce_audio_utils
+                                                             juce::juce_audio_formats
+                                                             juce::juce_gui_extra)
+    stemlab_enable_test_assertions(StemLabEditorLifecycleTests)
+    add_test(NAME StemLabEditorLifecycleTests COMMAND StemLabEditorLifecycleTests)
 endif()
 
 target_compile_definitions(StemLabPlugin

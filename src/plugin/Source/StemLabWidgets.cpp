@@ -674,13 +674,20 @@ namespace stemlab::widgets
             while leaving the pixel before it a position of its own rather
             than a second helping of the end.
 
-            The start needs no such help: the clamp above already pulls the
-            bar's leftmost pixel, whose local x is fractionally negative, up
-            to 0.0.
+            The start needs the same help, which it was assumed not to: the
+            leftmost pixel's local x is not always negative, so the clamp
+            does not reach it. Measured on the bar at its default size, the
+            first x a click can deliver is a small positive number, and the
+            leftmost pixel of a six-minute source therefore seeked to 00:00.2
+            rather than to the start. One screen pixel at each end, the same
+            rule on both.
         */
         const auto scale =
             static_cast<double>(juce::Component::getApproximateScaleFactorForComponent(this));
         const auto screenPixel = scale > 0.0 ? 1.0 / scale : 1.0;
+
+        if (x < -0.5 + screenPixel)
+            normalised = 0.0;
 
         if (x >= width - 0.5 - screenPixel)
             normalised = 1.0;

@@ -720,7 +720,31 @@ namespace stemlab::widgets
             wire(manualTempo, owner.onSetManualTempo);
             wire(clearCache, owner.onClearAnalysisCache);
             wire(checkUpdates, owner.onCheckUpdates);
-            wire(copyDiagnostics, owner.onCopyDiagnostics);
+            /*
+             * Copy answers on the button, not in the header readout.
+             *
+             * postUiStatus writes into the header at the top of the main
+             * panel, which this modal dims - the confirmation rendered at
+             * about 1.4:1 against its own background, so the one control
+             * whose whole effect is invisible said so invisibly too. The
+             * button is the only surface the reader is looking at.
+             */
+            copyDiagnostics.action().onClick = [this]
+            {
+                if (owner.onCopyDiagnostics)
+                    owner.onCopyDiagnostics();
+
+                copyDiagnostics.action().setButtonText("Copied");
+
+                juce::Component::SafePointer<ActionRow> row{&copyDiagnostics};
+
+                juce::Timer::callAfterDelay(1600,
+                                            [row]
+                                            {
+                                                if (row != nullptr)
+                                                    row->action().setButtonText("Copy");
+                                            });
+            };
             wire(abletonIntegration, owner.onAbletonIntegration);
 
             versionLabel.setFont(juce::Font(theme::fonts::make(11.0f, false)));
