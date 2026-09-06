@@ -3,6 +3,7 @@
 #include "PluginEditor.h"
 #include "ReaperBridge.h"
 #include "SourceLabel.h"
+#include "SourceLengthReader.h"
 #include "StemLabPaths.h"
 #include "StemLabTheme.h"
 #include "WaveformGrid.h"
@@ -994,12 +995,29 @@ public:
 
             // Same reason as the cancel arm, and one case more: a job that
             // fails before announcing anything would otherwise leave the
-            // previous job's slots standing.
+            // previous job's slots standing. Counted first: the reset is
+            // what makes the announcements unreachable from here.
+            const auto announcedStems = owner.countReadyStemFiles();
+
             owner.resetReadyStemFiles();
 
             if (!owner.getStatus().startsWithIgnoreCase("Failed - "))
                 owner.setStatus("StemLab engine failed - see Settings > Copy diagnostics",
                                 StemLabAudioProcessor::statusFailure);
+
+            /*  A job can fail having already announced stems, and those files
+                are still on disk: an engine that wrote all six and then died
+                before its manifest leaves them there. The lanes are cleared
+                either way - without the manifest nothing here can vouch for
+                the set - but silently is the wrong way to leave them. Say
+                how many there are and where, so the diagnostics the failure
+                message points at can answer "was any of that work kept".
+            */
+            if (announcedStems > 0)
+                owner.appendEngineLog("The engine announced " + juce::String(announcedStems)
+                                      + (announcedStems == 1 ? " stem before it failed; that file is in "
+                                                             : " stems before it failed; those files are in ")
+                                      + successMarker.getParentDirectory().getFullPathName() + "\n");
 
             if (exitCode == 0)
             {
@@ -2425,6 +2443,14 @@ bool StemLabAudioProcessor::loadPreviewFile(const juce::File& file, int previewS
     if (reader == nullptr)
         return false;
 
+    // The transport's length comes from the reader, so it has to be told the
+    // same truth as the strip: without this the clock counts up to a header's
+    // 00:30 while the strip says 00:02, and the last 28 seconds play silence.
+    stemlab::source::clampReaderToFileContents(*reader, file);
+
+    if (reader->lengthInSamples <= 0)
+        return false;
+
     const auto sourceRate = reader->sampleRate;
 
     previewTransport.stop();
@@ -2480,6 +2506,7 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
 
     double duration = 0.0;
     bool previewAvailable = false;
+    bool sourceIsTruncated = false;
 
     std::unique_ptr<juce::AudioFormatReader> infoReader(previewFormats.createReaderFor(file));
 
@@ -2498,6 +2525,21 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
             setActionStatus("Selected audio file contains no audio");
             return false;
         }
+
+        /*  What the header says is not always what is in the file. An
+            uncompressed container declares the size of its audio, and JUCE
+            hands that number straight back as lengthInSamples, so a download
+            or a render that stopped early reports the length it was going to
+            be rather than the length it is: a 30-second file cut off after
+            two seconds still measures 00:30, in the strip, in the transport
+            clock, on the grid and in every duration the engine is given.
+
+            The bytes on disk are the check, and they only mean this for a
+            format whose frames are a fixed size - see SourceLength.h, which
+            leaves every compressed format alone rather than shortening a
+            file that was never damaged.
+        */
+        sourceIsTruncated = stemlab::source::clampReaderToFileContents(*infoReader, file);
 
         if (infoReader->sampleRate > 0.0)
         {
@@ -2611,9 +2653,14 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
     // Loading a source is a user change, so it reports in the header; the
     // work line drops back to idle instead of keeping the last job's text.
     setStatus("Ready");
-    setActionStatus(previewAvailable
-                        ? "Source ready"
-                        : "Source ready - preview unavailable until stems are made");
+
+    // Truncation outranks the preview note: one says a control is missing
+    // for now, the other says the file the user just chose is damaged.
+    setActionStatus(sourceIsTruncated
+                        ? "Source ready - file is cut short of the length its header claims"
+                        : (previewAvailable
+                               ? "Source ready"
+                               : "Source ready - preview unavailable until stems are made"));
 
     /*
         A new source is not analysed until it is asked for. beatThisEnabled
@@ -5328,6 +5375,14 @@ void StemLabAudioProcessor::handleStemReadyLine(const juce::String& payload)
     // STEMLAB_PROGRESS stage reports, and the footer would flip between the
     // two at engine line rate; the 20 Hz refresh shows the new lane anyway.
     sendChangeMessage();
+}
+
+int StemLabAudioProcessor::countReadyStemFiles() const
+{
+    const juce::ScopedLock lock(stemFileCacheLock);
+
+    return static_cast<int>(std::count_if(readyStemFile.begin(), readyStemFile.end(),
+                                          [](const juce::File& f) { return f != juce::File(); }));
 }
 
 void StemLabAudioProcessor::resetReadyStemFiles()

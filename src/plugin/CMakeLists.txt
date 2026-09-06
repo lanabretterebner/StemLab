@@ -208,6 +208,18 @@ if (BUILD_TESTING)
     stemlab_enable_test_assertions(StemLabSourceLabelTests)
     add_test(NAME StemLabSourceLabelTests COMMAND StemLabSourceLabelTests)
 
+    # Whether a source file holds the audio its own header promises, and what
+    # to believe when it does not.
+    add_executable(StemLabSourceLengthTests
+        Tests/SourceLengthTests.cpp Source/SourceLength.h Source/SourceLengthReader.h)
+    target_include_directories(StemLabSourceLengthTests PRIVATE Source)
+    target_compile_features(StemLabSourceLengthTests PRIVATE cxx_std_20)
+    target_link_libraries(StemLabSourceLengthTests PRIVATE juce::juce_audio_formats)
+    target_compile_definitions(StemLabSourceLengthTests PRIVATE
+        JUCE_STANDALONE_APPLICATION=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    stemlab_enable_test_assertions(StemLabSourceLengthTests)
+    add_test(NAME StemLabSourceLengthTests COMMAND StemLabSourceLengthTests)
+
     # The generated accent ramps: that the default is untouched, that a hue
     # turn keeps lightness, and that the theme's contrast pairs survive on
     # every preset. Links JUCE for juce::Colour; needs no display.

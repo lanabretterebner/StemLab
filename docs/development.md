@@ -71,14 +71,16 @@ ctest --test-dir src/plugin/build --output-on-failure
 | `StemLabLoopRegionsTests` | Which loop ranges merge, and where playback jumps |
 | `StemLabSourceLabelTests` | Joining a track and take name without saying it twice |
 | `StemLabLoopQuantizeTests` | Where a swept loop lands on the grid, beats or constant tempo |
+| `StemLabSourceLengthTests` | PCM truncation without shortening valid compressed WAVs, using real JUCE decoders |
 | `StemLabAccentPaletteTests` | The accent ramp, and that a saved accent survives a reload |
 | `StemLabLaneWheelDispatchTests` | That a lane's deep mouse listener leaves the wheel alone |
 | `StemLabHostCaptureTests` | The self-drag guard and a real processor capturing audio |
 | `StemLabEditorLifecycleTests` | That opening and closing the editor leaves nothing for static destruction |
 | `StemLabScanCacheTests` | When the stem-file scan may still be trusted, and that a vanished output folder is published rather than left behind |
 
-The first six cover header-only components deliberately kept free of the
-plugin, so a test can reach them without standing one up.
+The waveform, loop and source-label suites cover header-only components
+without standing up a plugin. `StemLabSourceLengthTests` generates audio
+fixtures and checks the shared length cap through JUCE's actual readers.
 `StemLabLaneWheelDispatchTests` is the odd one: it pins JUCE's own dispatch
 behaviour rather than code of ours, because a JUCE upgrade that changed it
 would silently undo the fix that depends on it. The lane listens deeply for
@@ -93,7 +95,7 @@ the bundled faces are published through statics, and a build that leaves them
 there crashes in JUCE's font cache after main returns rather than failing any
 check inside it.
 
-Three of them link JUCE, but none needs a display - the wheel suite counts the
+None of the suites needs a display - the wheel suite counts the
 wheels that reach a stand-in viewport component rather than opening a window,
 and the lifecycle suite builds the editor without putting it on screen - so the
 whole suite runs on a bare CI runner with `DISPLAY` unset.
