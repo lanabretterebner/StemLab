@@ -938,6 +938,7 @@ private:
         showing an unfinished job's stems: a new launch, a cancel, a
         failure. Lazy job-mismatch dropping is not enough on its own - a job
         that fails before announcing anything never reaches the writer. */
+    int countReadyStemFiles() const;
     void resetReadyStemFiles();
 
     juce::StringArray makePythonModuleCommand(const juce::String& moduleName) const;

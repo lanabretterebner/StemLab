@@ -1023,12 +1023,29 @@ public:
 
             // Same reason as the cancel arm, and one case more: a job that
             // fails before announcing anything would otherwise leave the
-            // previous job's slots standing.
+            // previous job's slots standing. Counted first: the reset is
+            // what makes the announcements unreachable from here.
+            const auto announcedStems = owner.countReadyStemFiles();
+
             owner.resetReadyStemFiles();
 
             if (!owner.getStatus().startsWithIgnoreCase("Failed - "))
                 owner.setStatus("StemLab engine failed - see Settings > Copy diagnostics",
                                 StemLabAudioProcessor::statusFailure);
+
+            /*  A job can fail having already announced stems, and those files
+                are still on disk: an engine that wrote all six and then died
+                before its manifest leaves them there. The lanes are cleared
+                either way - without the manifest nothing here can vouch for
+                the set - but silently is the wrong way to leave them. Say
+                how many there are and where, so the diagnostics the failure
+                message points at can answer "was any of that work kept".
+            */
+            if (announcedStems > 0)
+                owner.appendEngineLog("The engine announced " + juce::String(announcedStems)
+                                      + (announcedStems == 1 ? " stem before it failed; that file is in "
+                                                             : " stems before it failed; those files are in ")
+                                      + successMarker.getParentDirectory().getFullPathName() + "\n");
 
             if (exitCode == 0)
             {
@@ -5386,6 +5403,14 @@ void StemLabAudioProcessor::handleStemReadyLine(const juce::String& payload)
     // STEMLAB_PROGRESS stage reports, and the footer would flip between the
     // two at engine line rate; the 20 Hz refresh shows the new lane anyway.
     sendChangeMessage();
+}
+
+int StemLabAudioProcessor::countReadyStemFiles() const
+{
+    const juce::ScopedLock lock(stemFileCacheLock);
+
+    return static_cast<int>(std::count_if(readyStemFile.begin(), readyStemFile.end(),
+                                          [](const juce::File& f) { return f != juce::File(); }));
 }
 
 void StemLabAudioProcessor::resetReadyStemFiles()
