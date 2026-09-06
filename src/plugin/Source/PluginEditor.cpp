@@ -2370,6 +2370,7 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     laneViewport.setViewedComponent(&laneContent, false);
     laneViewport.setScrollBarsShown(true, false);
     laneViewport.setScrollBarThickness(theme::metrics::lanes::scrollbarThickness);
+
     panelContent.addAndMakeVisible(laneViewport);
 
     for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)

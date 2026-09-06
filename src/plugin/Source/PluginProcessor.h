@@ -773,6 +773,12 @@ public:
     /** Why the engine at this path cannot be launched, or an empty string. */
     static juce::String engineLaunchProblem(const juce::String& commandName);
 
+    /** When a job's stem folder last changed, for the scan cache's freshness. */
+    static juce::Time stemFolderStamp(const juce::File& job);
+
+    /** Throttled: have the stems moved since the scan cache was filled? */
+    bool stemFilesChangedOnDisk(const juce::File& job) const;
+
     void setRefinementEnabled(bool enabled)
     {
         if (refinementEnabled.exchange(enabled) != enabled)
@@ -1428,6 +1434,14 @@ private:
     mutable juce::File stemFileCacheJob;
     mutable bool stemFileCacheJobDone = false;
     mutable std::array<juce::File, stemCount> stemFileCache;
+
+    /*  What makes the scan above go stale for a reason other than the job
+        changing: the stems being deleted or replaced underneath it. The
+        folder's own modification time answers that in one stat, and
+        stemFileCacheCheckedMs keeps it to a couple a second rather than
+        one per lane per redraw - the cost the cache exists to avoid. */
+    mutable juce::Time stemFileCacheStamp;
+    mutable juce::uint32 stemFileCacheCheckedMs = 0;
 
     /**
      * Per-stem STEMLAB_STEM_READY announcements from the separation that is

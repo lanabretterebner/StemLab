@@ -2732,8 +2732,11 @@ juce::File StemLabAudioProcessor::getCompletedStemFile(int index) const
         // same way it always did: through that key changing.
         const juce::ScopedLock lock(stemFileCacheLock);
 
-        if (stemFileCacheJob == job && stemFileCacheJobDone == jobDone)
+        if (stemFileCacheJob == job && stemFileCacheJobDone == jobDone
+            && !stemFilesChangedOnDisk(job))
+        {
             return stemFileCache[static_cast<size_t>(index)];
+        }
     }
 
     if (!job.isDirectory())
@@ -2766,9 +2769,61 @@ juce::File StemLabAudioProcessor::getCompletedStemFile(int index) const
         stemFileCacheJob = job;
         stemFileCacheJobDone = jobDone;
         stemFileCache = resolved;
+        stemFileCacheStamp = stemFolderStamp(job);
+        stemFileCacheCheckedMs = juce::Time::getMillisecondCounter();
     }
 
     return resolved[static_cast<size_t>(index)];
+}
+
+/*
+ * When the stems were last added to, removed or replaced.
+ *
+ * The two folders a job writes into, not the job root: a progress file
+ * rewritten every second would otherwise invalidate the scan continuously.
+ * A null time means neither folder is there, which is itself a change worth
+ * noticing.
+ */
+juce::Time StemLabAudioProcessor::stemFolderStamp(const juce::File& job)
+{
+    const auto refined = job.getChildFile("refined");
+
+    if (refined.isDirectory())
+        return refined.getLastModificationTime();
+
+    const auto baseline = job.getChildFile("baseline");
+
+    if (baseline.isDirectory())
+        return baseline.getLastModificationTime();
+
+    return {};
+}
+
+/*
+ * Whether the stems have moved since the scan, asked at most a few times a
+ * second. Called under stemFileCacheLock.
+ *
+ * The scan used to be keyed on the job and its completion alone, and its own
+ * comment conceded that a job tree deleted underneath a loaded one would
+ * "surface through that key changing" - which it never does, because neither
+ * changes. The lanes went on drawing six waveforms, the header went on
+ * offering six stems to save, and Save Stems then wrote nothing and said
+ * "Saved 0 stems". One throttled stat of a directory is what that costs to
+ * notice; the alternative the cache was written to avoid is a stat per lane
+ * per redraw.
+ */
+bool StemLabAudioProcessor::stemFilesChangedOnDisk(const juce::File& job) const
+{
+    constexpr juce::uint32 recheckIntervalMs = 500;
+
+    const auto now = juce::Time::getMillisecondCounter();
+
+    if (now - stemFileCacheCheckedMs < recheckIntervalMs)
+        return false;
+
+    stemFileCacheCheckedMs = now;
+
+    return stemFolderStamp(job) != stemFileCacheStamp;
 }
 
 bool StemLabAudioProcessor::hasCompletedStemFile(int index) const
@@ -8393,7 +8448,10 @@ void StemLabAudioProcessor::finishMidiConversion(const juce::String& label,
     {
         if (output.existsAsFile())
             output.deleteFile();
-        setStatus("MIDI conversion failed for " + label + " - see diagnostics");
+        // statusFailure, like every other failure: without it this came up
+        // beside the green tick, in the same grey the success summary uses,
+        // and read as "done" at a glance.
+        setStatus("MIDI conversion failed for " + label + " - see diagnostics", statusFailure);
     }
 }
 
