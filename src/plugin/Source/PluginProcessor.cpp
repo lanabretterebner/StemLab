@@ -3444,9 +3444,18 @@ bool StemLabAudioProcessor::startStandaloneRecording()
 
     stopStandalonePlayback();
 
+    /*  Reported the way the other record button reports: a press that never
+        started a recording is a failure, and setActionStatus is a line that
+        clears itself after a few seconds. Record PC publishes the same class
+        of event through setStatus(..., statusFailure) - red, with the cross,
+        and it stays - so a user who looked away still learns the button did
+        nothing. Record In said it in grey and took it back, over a footer
+        still showing whatever came before, which was sometimes a green tick
+        from a finished separation.
+    */
     if (standaloneDeviceManager == nullptr)
     {
-        setActionStatus("Audio device is not ready");
+        setStatus("Input recording failed - the audio device is not ready", statusFailure);
         return false;
     }
 
@@ -3454,7 +3463,8 @@ bool StemLabAudioProcessor::startStandaloneRecording()
 
     if (device == nullptr || device->getActiveInputChannels().countNumberOfSetBits() == 0)
     {
-        setActionStatus("Choose a microphone/interface input in Settings");
+        setStatus("Input recording failed - choose a microphone or interface input in Settings",
+                  statusFailure);
         return false;
     }
 
@@ -3462,7 +3472,7 @@ bool StemLabAudioProcessor::startStandaloneRecording()
 
     if (sampleRate <= 0.0)
     {
-        setActionStatus("Audio input sample rate is not ready");
+        setStatus("Input recording failed - the input sample rate is not ready", statusFailure);
         return false;
     }
 
@@ -3926,6 +3936,31 @@ void StemLabAudioProcessor::setJobRootDirectory(const juce::File& directory)
 {
     if (!directory.isDirectory())
         return;
+
+    /*  Existing is not the same as usable. /proc is a directory, and Change
+        accepted it happily - "File location set: proc", written to
+        settings.json - and the next Separate then failed with "StemLab
+        engine failed", pointing at the engine over a folder the engine
+        could not create a job in. The same holds for a read-only mount or
+        an external drive plugged in read-only.
+
+        Asked by writing, because that is the only answer that counts:
+        permissions, quota, a full disk and a read-only filesystem all end
+        the same way and none of them can be read off the directory itself.
+    */
+    // Named per process: two StemLabs starting together must not delete
+    // each other's probe and leave one behind in the user's folder.
+    const auto probe =
+        directory.getChildFile(".stemlab-write-probe-" + juce::Uuid().toDashedString());
+
+    if (!probe.replaceWithText("probe"))
+    {
+        setStatus("Cannot write to " + directory.getFullPathName() + " - file location unchanged",
+                  statusFailure);
+        return;
+    }
+
+    probe.deleteFile();
 
     {
         const juce::ScopedLock lock(stateLock);

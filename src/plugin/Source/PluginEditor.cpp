@@ -4881,9 +4881,16 @@ void StemLabAudioProcessorEditor::chooseSaveFolder()
         return;
     }
 
+    /*  StemLab's own media directory, not JUCE's guess at one.
+        StemLabPaths documents at length why userMusicDirectory cannot be
+        used for this: it never consults XDG_MUSIC_DIR and falls back to a
+        literal ~/Music, so on a desktop whose music folder is ~/Musik the
+        chooser opened somewhere the app itself never writes. Every other
+        path in the app goes through paths::, and so should the place these
+        choosers start.
+    */
     outputFolderChooser = std::make_unique<juce::FileChooser>(
-        "Choose where to save selected stems",
-        juce::File::getSpecialLocation(juce::File::userMusicDirectory));
+        "Choose where to save selected stems", stemlab::paths::userMediaDirectory());
 
     outputFolderChooser->launchAsync(juce::FileBrowserComponent::openMode |
                                          juce::FileBrowserComponent::canSelectDirectories,
@@ -4957,7 +4964,7 @@ void StemLabAudioProcessorEditor::chooseJobRootFolder()
     auto start = processor.getJobRootDirectory();
 
     if (!start.isDirectory())
-        start = juce::File::getSpecialLocation(juce::File::userMusicDirectory);
+        start = stemlab::paths::userMediaDirectory();
 
     jobFolderChooser = std::make_unique<juce::FileChooser>("Choose StemLab file location", start);
 
@@ -5042,7 +5049,7 @@ void StemLabAudioProcessorEditor::handleMidiMenuResult(int result, const juce::S
     }
 
     fileChooser = std::make_unique<juce::FileChooser>(
-        "Save MIDI as", juce::File::getSpecialLocation(juce::File::userMusicDirectory)
+        "Save MIDI as", stemlab::paths::userMediaDirectory()
                             .getChildFile(info.midiFile.getFileName()),
         "*.mid");
 
