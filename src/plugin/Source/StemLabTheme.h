@@ -408,6 +408,47 @@ namespace stemlab::theme
             */
             constexpr double minScale = 0.70;
             constexpr double maxScale = 2.50;
+
+            /*
+                The scale to open at, given what was saved and what the screen
+                can show.
+
+                A scale is remembered from the window the user dragged, and
+                nothing used to ask whether the next screen could hold it. A
+                250% window saved on a large monitor opened 2208x1474 on a
+                1024x768 one - Separate, the S/M column, the transport and the
+                whole footer off the display, and the resizer grip off it too,
+                so on a desktop with no window manager there was nothing left
+                to drag. Measured at 150% as well: still 296 px wider and 108
+                px taller than the screen.
+
+                Shrinking is the safe direction. It never grows a window the
+                user chose, and it stops at minScale rather than below it: a
+                screen too small for the app's own minimum is a screen the
+                layout cannot serve anyway, and a window at the documented
+                minimum is a better answer than one twice the height of the
+                display. availableWidth/Height are the usable display area
+                less whatever the window's own chrome adds around the editor.
+            */
+            constexpr double openingScale(double savedScale, int availableWidth,
+                                          int availableHeight)
+            {
+                const auto requested = savedScale < minScale   ? minScale
+                                       : savedScale > maxScale ? maxScale
+                                                               : savedScale;
+
+                if (availableWidth <= 0 || availableHeight <= 0)
+                    return requested;
+
+                const auto widthLimit = static_cast<double>(availableWidth) / width;
+                const auto heightLimit = static_cast<double>(availableHeight) / height;
+                const auto fits = widthLimit < heightLimit ? widthLimit : heightLimit;
+
+                if (fits >= requested)
+                    return requested;
+
+                return fits > minScale ? fits : minScale;
+            }
         }
 
         namespace panel

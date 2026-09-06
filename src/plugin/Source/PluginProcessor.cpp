@@ -6761,6 +6761,12 @@ void StemLabAudioProcessor::applyPreferences(const juce::var& parsed)
     if (has("loopQuantize"))
         setLoopQuantizeMode(static_cast<int>(get("loopQuantize")));
 
+    if (has("analysisQuality"))
+        setSourceAnalysisMode(static_cast<int>(get("analysisQuality")));
+
+    if (has("tempoAnalysis"))
+        setTempoAnalysisMode(static_cast<int>(get("tempoAnalysis")));
+
     /*  The manual grid is deliberately not among these.
 
         Every other value here says how somebody works. A tempo, a meter and
@@ -6838,6 +6844,15 @@ void StemLabAudioProcessor::savePreferences() const
     rootObject->setProperty("gridMode",
                             gridMode == gridManual ? static_cast<int>(gridSource) : gridMode);
     rootObject->setProperty("loopQuantize", loopQuantizeMode.load());
+
+    /*  Both of these say how somebody works, like everything above them, and
+        neither was written down. Choosing Accurate is a deliberate trade of
+        time for a better reading, and Dynamic is a statement about the music
+        the user makes; both silently fell back to Fast and Static on the next
+        launch, so the next analysis quietly ran at a quality nobody chose.
+    */
+    rootObject->setProperty("analysisQuality", sourceAnalysisMode.load());
+    rootObject->setProperty("tempoAnalysis", tempoAnalysisMode.load());
     rootObject->setProperty("editorScale", editorScalePercent.load());
     rootObject->setProperty("jobRootDirectory", getJobRootDirectory().getFullPathName());
 
@@ -7495,6 +7510,15 @@ void StemLabAudioProcessor::setTempoAnalysisMode(int mode)
 {
     tempoAnalysisMode.store(juce::jlimit(static_cast<int>(tempoStatic),
                                          static_cast<int>(tempoDynamic), mode));
+
+    // Remembered, like the neighbouring rows: this is a preference about the
+    // music somebody works on, not a fact about one file.
+    schedulePreferenceSave();
+
+    // And the panel is told, which this one never did - the pill filled in
+    // because the button drew itself, not because anything asked the
+    // processor what the mode now was.
+    sendChangeMessage();
 }
 
 std::vector<StemLabTempoSegment> StemLabAudioProcessor::getSourceTempoSegments() const
@@ -7523,6 +7547,7 @@ void StemLabAudioProcessor::setSourceAnalysisMode(int mode)
     // when Analyse is pressed, never as a side effect of changing a setting.
     sourceAnalysisMode.store(juce::jlimit(static_cast<int>(analysisAccurate),
                                           static_cast<int>(analysisFast), mode));
+    schedulePreferenceSave();
     sendChangeMessage();
 }
 

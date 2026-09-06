@@ -335,6 +335,96 @@ class TestRemoval:
         with pytest.raises(KeyError):
             model_manager.delete_cache("not-a-cache")
 
+    def test_no_cache_row_is_a_managed_model_store(self, tmp_path, monkeypatch):
+        """A Clear must never be the only warning before a model is deleted.
+
+        The BS-RoFormer row's path was byte for byte the directory
+        locate("roformer") reads, holding the weights and nothing else, so one
+        click under a heading called Caches destroyed 667 MB with no
+        confirmation - and counted those bytes twice in "on disk" while it was
+        there. Removing a model is what the Models section is for.
+        """
+        roformer = tmp_path / "roformer"
+        checkpoint = roformer / model_manager.ROFORMER_MODEL_ID / "model.ckpt"
+        checkpoint.parent.mkdir(parents=True)
+        checkpoint.write_bytes(b"x" * 4096)
+
+        monkeypatch.setenv("BS_ROFORMER_MODELS_PATH", str(roformer))
+
+        located = model_manager.locate("roformer")
+        assert located == checkpoint
+
+        for cache in model_manager.caches():
+            assert cache.id != "bs-roformer"
+            # Not merely a different id: no row may name a path that holds a
+            # model and nothing else.
+            assert cache.path != located
+            assert cache.path != located.parent
+
+    def test_a_shared_store_says_which_model_a_clear_takes_with_it(
+        self, tmp_path, monkeypatch
+    ):
+        """The torch hub cache really is shared, so the row stays and warns.
+
+        Unlike the BS-RoFormer directory it holds whatever else torch has
+        pulled, so clearing it is a real thing to offer - but it also holds
+        the Demucs checkpoint, and the row used to say nothing about that.
+        """
+        checkpoints = tmp_path / "hub" / "checkpoints"
+        checkpoints.mkdir(parents=True)
+        (checkpoints / model_manager.DEMUCS_CHECKPOINT).write_bytes(b"y" * 2048)
+
+        monkeypatch.setenv("TORCH_HOME", str(tmp_path))
+        monkeypatch.delenv("STEMLAB_DEMUCS_MODEL_REPO", raising=False)
+
+        demucs = next(model for model in model_manager.MODELS if model.id == "demucs")
+        assert model_manager.locate("demucs") is not None
+
+        torch_hub = next(
+            cache for cache in model_manager.caches() if cache.id == "torch-hub"
+        )
+
+        assert demucs.label in torch_hub.warning
+
+        # And with the checkpoint gone the row has nothing to warn about.
+        (checkpoints / model_manager.DEMUCS_CHECKPOINT).unlink()
+
+        torch_hub = next(
+            cache for cache in model_manager.caches() if cache.id == "torch-hub"
+        )
+
+        assert torch_hub.warning == ""
+
+    def test_a_cache_does_not_count_a_model_the_summary_already_counted(
+        self, tmp_path, monkeypatch
+    ):
+        """The summary adds model bytes to cache bytes.
+
+        Left overlapping, the Demucs checkpoint arrived in both halves and the
+        total came out larger than the disk holds.
+        """
+        checkpoints = tmp_path / "hub" / "checkpoints"
+        checkpoints.mkdir(parents=True)
+        (checkpoints / model_manager.DEMUCS_CHECKPOINT).write_bytes(b"y" * 2048)
+        (checkpoints / "something-else.pt").write_bytes(b"z" * 512)
+
+        monkeypatch.setenv("TORCH_HOME", str(tmp_path))
+        monkeypatch.delenv("STEMLAB_DEMUCS_MODEL_REPO", raising=False)
+
+        payload = model_manager.status()
+
+        torch_hub = next(
+            entry for entry in payload["caches"] if entry["id"] == "torch-hub"
+        )
+        demucs = next(entry for entry in payload["models"] if entry["id"] == "demucs")
+
+        assert demucs["present"] is True
+        assert demucs["bytes"] == 2048
+
+        # The unmanaged file is still the row's to clear; the checkpoint is
+        # the model row's to report.
+        assert torch_hub["bytes"] == 512
+
     def test_the_analysis_cache_no_longer_warns(self):
         analysis = next(
             cache for cache in model_manager.caches() if cache.id == "analysis"

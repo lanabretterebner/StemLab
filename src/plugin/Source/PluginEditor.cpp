@@ -2062,8 +2062,45 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
                      * openScalePercent is the value from before the swap;
                      * reading it here would read the inflated one back.
                      */
-                    const auto openScale = juce::jlimit(window::minScale, window::maxScale,
-                                                        openScalePercent / 100.0);
+                    /*
+                     * And the screen has a say in it. The scale is remembered
+                     * from whatever window the user last dragged, which may
+                     * have been on a much larger monitor; restoring it
+                     * unchecked opened 2208x1474 on a 1024x768 screen, with
+                     * Separate, the transport and the whole footer outside
+                     * the display - the resizer grip with them, so on a
+                     * desktop without a window manager there was nothing left
+                     * to grab. openingScale only ever shrinks, and only as
+                     * far as the app's own minimum.
+                     *
+                     * The chrome is measured rather than assumed: the peer's
+                     * bounds are the window, this component's are the editor
+                     * inside it, and the difference is the title bar and
+                     * border the scale must leave room for. It does not
+                     * depend on the content size, so reading it before the
+                     * resize is right.
+                     */
+                    auto available = juce::Rectangle<int>{};
+
+                    if (auto* display = juce::Desktop::getInstance().getDisplays()
+                                            .getDisplayForRect(safeThis->getScreenBounds()))
+                        available = display->userArea;
+
+                    if (auto* peer = windowComponent->getPeer())
+                    {
+                        const auto editorBounds = safeThis->getScreenBounds();
+                        const auto windowBounds = peer->getBounds();
+
+                        available.setSize(
+                            available.getWidth()
+                                - juce::jmax(0, windowBounds.getWidth() - editorBounds.getWidth()),
+                            available.getHeight()
+                                - juce::jmax(0, windowBounds.getHeight()
+                                                    - editorBounds.getHeight()));
+                    }
+
+                    const auto openScale = window::openingScale(
+                        openScalePercent / 100.0, available.getWidth(), available.getHeight());
 
                     safeThis->setSize(juce::roundToInt(window::width * openScale),
                                       juce::roundToInt(window::height * openScale));

@@ -44,6 +44,54 @@ float lightness(juce::Colour color)
 }
 }
 
+namespace
+{
+namespace window = stemlab::theme::metrics::window;
+
+/*  The scale a restored window opens at, against the screen it opens on.
+
+    A saved 250% opened 2208x1474 on a 1024x768 display - Separate, the
+    transport and the whole footer outside it, the resizer grip with them.
+    Shrinking is the only direction this may move, and minScale is the floor.
+*/
+constexpr int chromeW = 8;
+constexpr int chromeH = 60;
+
+// A screen big enough is not allowed to change anything.
+static_assert(window::openingScale(1.0, 2400, 1600) == 1.0);
+static_assert(window::openingScale(2.5, 2400, 1600) == 2.5);
+static_assert(window::openingScale(0.7, 2400, 1600) == 0.7);
+
+// The saved value is still held to the app's own range first.
+static_assert(window::openingScale(4.0, 4000, 4000) == window::maxScale);
+static_assert(window::openingScale(0.1, 4000, 4000) == window::minScale);
+
+// The measured case: 250% wanted, 1024x768 available, so it comes down to
+// whatever fits rather than opening 2.15x the screen.
+static_assert(window::openingScale(2.5, 1024, 768) < 2.5);
+static_assert(window::openingScale(2.5, 1024, 768) * window::width <= 1024.0);
+static_assert(window::openingScale(2.5, 1024, 768) * window::height <= 768.0);
+
+// The same at the far more ordinary 150%, which was 296 px too wide.
+static_assert(window::openingScale(1.5, 1024 - chromeW, 768 - chromeH) * window::width
+              <= 1024.0 - chromeW);
+static_assert(window::openingScale(1.5, 1024 - chromeW, 768 - chromeH) * window::height
+              <= 768.0 - chromeH);
+
+// Height can be the binding limit as easily as width.
+static_assert(window::openingScale(2.0, 4000, 600) * window::height <= 600.0);
+
+// A screen too small for the app's own minimum gets the minimum, not
+// something below it: the layout cannot serve that screen either way, and a
+// window at the documented floor is the better of two bad answers.
+static_assert(window::openingScale(2.0, 320, 240) == window::minScale);
+
+// No display to ask means no reduction - an unknown answer must not shrink
+// a window the user chose.
+static_assert(window::openingScale(2.0, 0, 0) == 2.0);
+static_assert(window::openingScale(2.0, -1, -1) == 2.0);
+}
+
 int main()
 {
     // The shipped look is the literal token sheet, not a round trip through
