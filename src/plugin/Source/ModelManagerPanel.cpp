@@ -414,7 +414,18 @@ namespace stemlab::widgets
         };
 
         addAndMakeVisible(downloadAllButton);
-        addChildComponent(cancelButton);
+
+        /*  Shown always, enabled only while a job runs - for the reason the
+            activity strip above is reserved. Appearing on demand, Cancel took
+            the rightmost footer slot and pushed Download all 110 px left, so
+            the second click of a double-click on Download all landed on
+            Cancel and aborted the download the first click had started. The
+            two spans overlapped by about 70 px, and it went wrong in both
+            directions: a click aimed at Cancel just after a job ended landed
+            on Download all and started a fresh 719.5 MB fetch.
+        */
+        cancelButton.setEnabled(false);
+        addAndMakeVisible(cancelButton);
     }
 
     ModelManagerPanel::~ModelManagerPanel() = default;
@@ -533,7 +544,7 @@ namespace stemlab::widgets
             // job at a time, and a second click would only be rejected deeper
             // down where the user cannot see why.
             downloadAllButton.setEnabled(!busy);
-            cancelButton.setVisible(busy);
+            cancelButton.setEnabled(busy);
             activityBar.setVisible(busy);
             activityPercent.setVisible(busy);
 
