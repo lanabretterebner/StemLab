@@ -132,6 +132,11 @@ namespace
         std::atomic<bool> finished { false };
         std::atomic<bool> failed { false };
 
+        // Frames shed by the backlog cap in run(). It lives here because
+        // this block outlives the plugin; the JUCE thread folds it into the
+        // processor's dropped-sample count while both are still alive.
+        std::atomic<juce::int64> droppedFrames { 0 };
+
         std::mutex queueMutex;
         std::deque<std::vector<float>> chunks;
 
@@ -210,9 +215,18 @@ namespace
                 chunks.emplace_back (interleaved);
 
                 // If the consumer vanished or stalled, cap the backlog at
-                // ~30 s instead of growing without bound.
+                // ~30 s instead of growing without bound. The discarded
+                // chunk is counted rather than dropped quietly: it
+                // time-compresses the take exactly like a discarded write
+                // would, and the stop path has no other way to learn that
+                // audio went missing.
                 if (chunks.size() > 300)
+                {
                     chunks.pop_front();
+
+                    droppedFrames.fetch_add (
+                        static_cast<juce::int64> (chunkFrames));
+                }
             }
 
             client.paSimpleFree (stream);
@@ -259,8 +273,6 @@ StemLabSystemLoopbackThread::~StemLabSystemLoopbackThread()
         stopThread (2000);
 }
 
-namespace
-{
 /*
     Keep this module mapped for the rest of the process.
 
@@ -292,7 +304,6 @@ void pinModuleForDetachedThreads()
 
     juce::ignoreUnused (pinned);
 }
-} // namespace
 
 void StemLabSystemLoopbackThread::run()
 {
@@ -403,6 +414,16 @@ void StemLabSystemLoopbackThread::run()
     // Collect whatever arrived up to the stop click.
     if (! captureFailed)
         drainQueue();
+
+    /*  Here is where the reader's discards become the plugin's: after
+        openWriter zeroed the counter, and before the shared stop path reads
+        it to choose between the lost-audio warning and announcing the take
+        as clean. Nothing else writes that counter during a system capture -
+        processBlock skips its own accounting in recordingSystem mode - so
+        the reader's running total is the whole truth for this take.
+    */
+    if (sawFirstChunk)
+        owner.droppedCaptureSamples.store (reader->droppedFrames.load());
 
     if (reader->failed.load() && ! captureFailed)
     {

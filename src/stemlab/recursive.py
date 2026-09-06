@@ -715,6 +715,17 @@ def split_lead_group(
             break
 
         peeled.append(split.foreground)
+        if pass_index > 0:
+            # This pass's own bed supersedes the one it consumed, and the
+            # manifest below names only the foregrounds plus the final bed.
+            # Left alone the superseded bed is one more full-length float32
+            # WAV sitting in the job folder for the life of the job. The
+            # first pass is the exception: it consumes the caller's input.
+            try:
+                current.unlink(missing_ok=True)
+            except OSError:
+                pass
+
         current = split.backing
 
         if bed_assessment.estimated_source_count <= 1:

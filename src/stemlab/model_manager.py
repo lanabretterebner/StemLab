@@ -341,6 +341,34 @@ def _largest_checkpoint(directory: Path | None) -> Path | None:
     return max(candidates, key=lambda path: path.stat().st_size)
 
 
+def _roformer_checkpoint_path() -> Path | None:
+    """The BS-RoFormer checkpoint on disk, whole or half-fetched."""
+    directory = _roformer_directory()
+
+    return _largest_checkpoint(directory / ROFORMER_MODEL_ID if directory is not None else None)
+
+
+def _roformer_checkpoint_complete(path: Path | None) -> bool:
+    """Whether a fetched BS-RoFormer checkpoint is the whole file.
+
+    Upstream streams the checkpoint straight to its final path and only
+    checks the length once the stream has ended, from an ``except`` block a
+    child killed mid-transfer never reaches - so a cancelled download leaves
+    a short file exactly where a finished one belongs, and nothing further
+    upstream ever looks at it again. The registry already carries the
+    finished length, which is upstream's own recorded size for this
+    checkpoint, and comparing it costs one stat - what a status probe on
+    every editor open can afford, where hashing 700 MB is not.
+    """
+    if path is None:
+        return False
+
+    try:
+        return path.stat().st_size == MODELS_BY_ID["roformer"].approx_bytes
+    except OSError:
+        return False
+
+
 def locate(model_id: str) -> Path | None:
     """Where this model's weights are, or None when they are not fetched.
 
@@ -357,11 +385,13 @@ def locate(model_id: str) -> Path | None:
         return None
 
     if model_id == "roformer":
-        directory = _roformer_directory()
+        checkpoint = _roformer_checkpoint_path()
 
-        return _largest_checkpoint(
-            directory / ROFORMER_MODEL_ID if directory is not None else None
-        )
+        # A half-fetched checkpoint is not a model that is here. Counting one
+        # made the Model Manager report an essential model as present, stop
+        # flagging it as missing, and leave every RoFormer separation to die
+        # inside torch.load instead.
+        return checkpoint if _roformer_checkpoint_complete(checkpoint) else None
 
     if model_id == "demucs":
         packaged = os.environ.get("STEMLAB_DEMUCS_MODEL_REPO")
@@ -847,6 +877,17 @@ def download(
         )
 
     if model_id == "roformer":
+        stale = _roformer_checkpoint_path()
+
+        if stale is not None and not _roformer_checkpoint_complete(stale):
+            # Upstream skips a checkpoint that is already there and never
+            # hashes the one it skips, so a file left short by a cancelled
+            # transfer would be laundered into a reported success by this
+            # very run. Discarding it is what makes the fetch below a real
+            # one - the move recursive._discard_unusable_downloads already
+            # makes for the adaptive-split models.
+            stale.unlink(missing_ok=True)
+
         _run_child(
             # --model, not a bare slug: upstream's parser takes the model as a
             # repeatable option and rejects a positional with exit code 2.
@@ -1008,6 +1049,20 @@ def compile_model(
 
     if marker is None:
         raise RuntimeError("There is nowhere to record the warm-up on this machine")
+
+    # Returning is not the same as having compiled. compile_support falls back
+    # to eager on every compile failure - notably the missing toolchain
+    # inductor only reports during the first traced call, which no pre-check
+    # can catch - so the warm-up separation still produces stems and the child
+    # still exits 0. The record the child writes from inside a compiled
+    # forward that returned is the only evidence there are kernels to describe;
+    # writing the marker on "the warm-up ran" instead reports such a machine as
+    # Compiled forever, while every separation goes on paying a failed compile
+    # and running eagerly.
+    if not _compile_state(model_id).get("compiled"):
+        raise CompileUnavailable(
+            f"{model.label} ran eagerly: the warm-up compiled nothing on this machine"
+        )
 
     marker.write_text(
         json.dumps(

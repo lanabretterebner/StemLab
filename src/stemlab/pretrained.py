@@ -5,7 +5,6 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Callable
 
@@ -15,7 +14,7 @@ from .resample import (
     resample_file as _resample_file,
     restore_folder_sample_rate as _restore_stem_sample_rate,
 )
-from .runtime import CancellationToken, run_progress_process
+from .runtime import CancellationToken, ScratchDirectory, run_progress_process
 
 DEFAULT_MODEL = "roformer-model-bs-roformer-sw-by-jarredou"
 
@@ -260,7 +259,7 @@ class RoFormerBackend:
         # Stem lookup would then be free to pick a previous song's audio.
         _clear_audio_files(output_dir)
 
-        with tempfile.TemporaryDirectory(prefix="stemlab_input_") as td:
+        with ScratchDirectory(prefix="stemlab_input_") as td:
             staging = Path(td)
             staged = _normalise_input_for_backend(
                 input_path=input_path,

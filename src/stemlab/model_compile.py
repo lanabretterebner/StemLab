@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import math
 import os
-import tempfile
 import time
 import wave
 from array import array
@@ -30,7 +29,7 @@ from typing import Callable
 from .compile_support import compile_requested, compile_support_status, inductor_cache_dir
 from .device import pick_best_device, resolve_torch_device
 from .pretrained import DEFAULT_MODEL, build_roformer_command
-from .runtime import CancellationToken, run_progress_process
+from .runtime import CancellationToken, ScratchDirectory, run_progress_process
 
 ProgressCallback = Callable[[float, str], None]
 
@@ -157,7 +156,7 @@ def warm_up(
     began = time.monotonic()
     report(0.0, "Preparing warm-up audio")
 
-    with tempfile.TemporaryDirectory(prefix="stemlab_warmup_") as directory:
+    with ScratchDirectory(prefix="stemlab_warmup_") as directory:
         root = Path(directory)
         staging = root / "input"
         output = root / "output"
