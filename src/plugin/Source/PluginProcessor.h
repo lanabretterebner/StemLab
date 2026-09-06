@@ -1065,7 +1065,12 @@ private:
 #endif
 
     /** The stem file itself, or the playback loop's regions rendered to WAV. */
-    juce::File exportLoopedRegions(const juce::File& source, const juce::File& destination);
+    /*  replacedExisting, when given, says whether a file was already there
+        and has been overwritten - the one thing a save into a folder the
+        user picked can destroy, and the one thing it never used to mention.
+    */
+    juce::File exportLoopedRegions(const juce::File& source, const juce::File& destination,
+                                   bool* replacedExisting = nullptr);
 
     /** The merged loop regions, copied under the selection lock. */
     std::vector<stemlab::loops::Region> loopRegionsSnapshot() const;

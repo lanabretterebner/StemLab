@@ -4575,6 +4575,34 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     statusLabel.setText(statusText, juce::dontSendNotification);
 
     /*
+     * And the same measure-then-offer rule the two source-strip labels use.
+     * This is the longest line the app writes and the only one of the four
+     * clippable labels with no tooltip at all, so its tail was simply gone:
+     * a failed system recording reads "...Connection refused (is a PipeWire
+     * or PulseAud" and stops, losing the half that says what to do about it.
+     * Resizing does not help - the panel is one fixed design scaled whole,
+     * so the font grows with the space and it clips at the same character.
+     */
+    {
+        const auto available =
+            statusLabel.getWidth() - statusLabel.getBorderSize().getLeftAndRight();
+
+        if (statusText != lastStatusMeasured || available != lastStatusLabelWidth)
+        {
+            lastStatusMeasured = statusText;
+            lastStatusLabelWidth = available;
+
+            const juce::Font statusFont{theme::fonts::status()};
+
+            lastStatusClipped =
+                available > 0 && juce::GlyphArrangement::getStringWidth(statusFont, statusText) >
+                                     static_cast<float>(available);
+        }
+
+        statusLabel.setTooltip(lastStatusClipped ? statusText : juce::String());
+    }
+
+    /*
      * The severity describes rawStatus, and showSummary has just replaced
      * it with a sentence about the finished job. Every failure that leaves
      * hasSuccessfulJob() standing - an adaptive split that will not start,
@@ -4886,11 +4914,31 @@ void StemLabAudioProcessorEditor::revealJobFolder()
 
         command.add(folder.getFullPathName());
 
-        if (process.start(command))
-        {
-            processor.postUiStatus("Opened the output folder");
-            return;
-        }
+        if (!process.start(command))
+            continue;
+
+        /*
+         * start() is not the answer to "did it work". JUCE's POSIX
+         * implementation forks and the child _exit(255)s after a failed
+         * execvp, so start() returns true for a command that is not on the
+         * machine at all - and it returned true here for `gio`, which is
+         * installed on a box with no desktop and answers "Failed to find
+         * default application for content type inode/directory". The app
+         * then reported "Opened the output folder" over a click that did
+         * nothing, and the clipboard fallback below - written for exactly
+         * this - was unreachable.
+         *
+         * A real file manager stays running, so still being alive after the
+         * grace is the success case; xdg-open and gio open delegate and exit
+         * at once, which is what makes their status worth reading.
+         */
+        constexpr int graceMs = 600;
+
+        if (process.waitForProcessToFinish(graceMs) && process.getExitCode() != 0)
+            continue;
+
+        processor.postUiStatus("Opened the output folder");
+        return;
     }
 
     juce::SystemClipboard::copyTextToClipboard(folder.getFullPathName());
@@ -5313,6 +5361,22 @@ void StemLabAudioProcessorEditor::wireSettingsPage()
             // rather than leave an empty lane looking broken.
             processor.postUiStatus(
                 "Beat grid follows the analysed source - none yet, so no grid is drawn");
+        }
+        else if (mode == StemLabAudioProcessor::gridHost
+                 && processor.getWaveformGridScalars().bpm <= 0.0)
+        {
+            /*  And the same honesty for Host, which had none. In the
+                standalone there is no host at all - lastHostBpm is only ever
+                written inside an `if (!isStandaloneApp())`, so it keeps its
+                -1.0 forever and the grid vanishes from every lane - while
+                the readout said "Beat grid follows host tempo" without a
+                caveat and the choice persisted, so the lanes stayed blank
+                across restarts with nothing to say why.
+            */
+            processor.postUiStatus(
+                processor.isStandaloneApp()
+                    ? "Beat grid follows the host - a standalone has none, so no grid is drawn"
+                    : "Beat grid follows the host - none reported yet, so no grid is drawn");
         }
         else
         {

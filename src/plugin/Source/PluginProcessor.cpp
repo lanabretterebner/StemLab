@@ -5445,6 +5445,7 @@ int StemLabAudioProcessor::saveSelectedStemsTo(const juce::File& destination)
     const auto baseName = getCaptureFile().getFileNameWithoutExtension();
 
     int saved = 0;
+    int replacedFiles = 0;
 
     // Saving goes through the same loop-aware render as dragging: with the
     // loop on, what lands in the folder is the looped section, not the whole
@@ -5462,8 +5463,13 @@ int StemLabAudioProcessor::saveSelectedStemsTo(const juce::File& destination)
 
         const auto target = destination.getChildFile(baseName + "_" + getStemName(i));
 
-        if (exportLoopedRegions(source, target).existsAsFile())
+        bool replaced = false;
+
+        if (exportLoopedRegions(source, target, &replaced).existsAsFile())
+        {
             ++saved;
+            replacedFiles += replaced ? 1 : 0;
+        }
     }
 
     for (const auto& item : getRecursiveStemItems())
@@ -5474,11 +5480,41 @@ int StemLabAudioProcessor::saveSelectedStemsTo(const juce::File& destination)
         auto safeName = item.id.replace("/", "_").replace("\\", "_");
         const auto target = destination.getChildFile(baseName + "_" + safeName);
 
-        if (exportLoopedRegions(item.file, target).existsAsFile())
+        bool replaced = false;
+
+        if (exportLoopedRegions(item.file, target, &replaced).existsAsFile())
+        {
             ++saved;
+            replacedFiles += replaced ? 1 : 0;
+        }
     }
 
-    setActionStatus("Saved " + juce::String(saved) + (saved == 1 ? " stem" : " stems"));
+    /*  Saving nothing is not news, it is a failure. A destination that
+        cannot be written - a read-only mount, a full disk, /proc - produced
+        "Saved 0 stems" in the same neutral grey as a success, on a line that
+        clears itself after a few seconds, while the footer kept the green
+        tick from the separation. Say it in the place failures are said, and
+        name the folder, because the folder is the thing that was wrong.
+    */
+    if (saved == 0)
+    {
+        setStatus("Could not write to " + destination.getFullPathName(), statusFailure);
+        return 0;
+    }
+
+    /*  And say what was destroyed. A save into a folder the user picked
+        deletes anything already carrying a stem's name - verified on files
+        StemLab never wrote - with no prompt, no warning and no mention
+        afterwards. It still overwrites, which is what a save is for; it no
+        longer does it silently.
+    */
+    auto summary = "Saved " + juce::String(saved) + (saved == 1 ? " stem" : " stems");
+
+    if (replacedFiles > 0)
+        summary << ", replacing " << replacedFiles
+                << (replacedFiles == 1 ? " file that was there" : " files that were there");
+
+    setActionStatus(summary);
 
     return saved;
 }
@@ -5497,8 +5533,12 @@ std::vector<stemlab::loops::Region> StemLabAudioProcessor::loopRegionsSnapshot()
  * hand the returned file away without touching the job's output.
  */
 juce::File StemLabAudioProcessor::exportLoopedRegions(const juce::File& source,
-                                                      const juce::File& destination)
+                                                      const juce::File& destination,
+                                                      bool* replacedExisting)
 {
+    if (replacedExisting != nullptr)
+        *replacedExisting = false;
+
     if (!source.existsAsFile())
         return {};
 
@@ -5512,7 +5552,12 @@ juce::File StemLabAudioProcessor::exportLoopedRegions(const juce::File& source,
             target = target.withFileExtension(source.getFileExtension());
 
         if (target.existsAsFile())
+        {
+            if (replacedExisting != nullptr)
+                *replacedExisting = true;
+
             target.deleteFile();
+        }
 
         return source.copyFileTo(target) ? target : juce::File{};
     }
@@ -5525,7 +5570,12 @@ juce::File StemLabAudioProcessor::exportLoopedRegions(const juce::File& source,
     auto target = destination.withFileExtension("wav");
 
     if (target.existsAsFile())
+    {
+        if (replacedExisting != nullptr)
+            *replacedExisting = true;
+
         target.deleteFile();
+    }
 
     auto fileStream = std::make_unique<juce::FileOutputStream>(target);
 
