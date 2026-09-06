@@ -2718,29 +2718,37 @@ juce::File StemLabAudioProcessor::getCompletedStemFile(int index) const
     const auto job = getLastJobDirectory();
     const bool jobDone = engineCompletedSuccessfully.load();
 
+    const auto nowMs = juce::Time::getMillisecondCounter();
+    const auto stamp = stemFolderStamp(job);
+
     {
-        // The UI asks for all six of these several times per redraw, at
-        // 20 Hz, for as long as the editor is open. Enumerating the job
-        // tree each time pegged a core once a job had finished - and worse
-        // on a network share - so one scan serves every lookup until the
-        // job state itself changes.
-        //
-        // Answered before job.isDirectory(), which is itself a stat and was
-        // paying for the directory on every hit. What the cache is keyed on
-        // - the job and its completion state - is exactly what invalidates
-        // it, so a job tree deleted underneath a loaded one surfaces the
-        // same way it always did: through that key changing.
         const juce::ScopedLock lock(stemFileCacheLock);
 
-        if (stemFileCacheJob == job && stemFileCacheJobDone == jobDone
-            && !stemFilesChangedOnDisk(job))
-        {
-            return stemFileCache[static_cast<size_t>(index)];
-        }
+        if (stemFileCache.isFresh(job, jobDone, nowMs, stamp))
+            return stemFileCache.get(static_cast<size_t>(index));
     }
 
+    /*  Past here every exit publishes, the empty ones included.
+
+        isFresh advances its own recheck clock when it looks at the stamp, so
+        a lookup that decides the snapshot is stale and then returns without
+        replacing it leaves the old paths standing for the rest of the
+        interval. Deleting the output folder used to answer "gone" for the
+        first lane asked and then hand out five paths to files that were not
+        there - and asking that first lane again brought its path back.
+    */
+    const auto publish = [&](std::array<juce::File, stemCount> resolved) -> juce::File
+    {
+        const juce::ScopedLock lock(stemFileCacheLock);
+
+        stemFileCache.publish(job, jobDone, juce::Time::getMillisecondCounter(),
+                              stemFolderStamp(job), resolved);
+
+        return resolved[static_cast<size_t>(index)];
+    };
+
     if (!job.isDirectory())
-        return {};
+        return publish({});
 
     auto sourceFolder = job.getChildFile("refined");
 
@@ -2748,7 +2756,7 @@ juce::File StemLabAudioProcessor::getCompletedStemFile(int index) const
         sourceFolder = job.getChildFile("baseline");
 
     if (!sourceFolder.isDirectory())
-        return {};
+        return publish({});
 
     juce::Array<juce::File> candidates;
     sourceFolder.findChildFiles(candidates, juce::File::findFiles, true, "*.wav");
@@ -2764,16 +2772,7 @@ juce::File StemLabAudioProcessor::getCompletedStemFile(int index) const
         resolved[static_cast<size_t>(stemIndex)] =
             matchStemFile(candidates, getStemName(stemIndex));
 
-    {
-        const juce::ScopedLock lock(stemFileCacheLock);
-        stemFileCacheJob = job;
-        stemFileCacheJobDone = jobDone;
-        stemFileCache = resolved;
-        stemFileCacheStamp = stemFolderStamp(job);
-        stemFileCacheCheckedMs = juce::Time::getMillisecondCounter();
-    }
-
-    return resolved[static_cast<size_t>(index)];
+    return publish(resolved);
 }
 
 /*
@@ -2799,32 +2798,6 @@ juce::Time StemLabAudioProcessor::stemFolderStamp(const juce::File& job)
     return {};
 }
 
-/*
- * Whether the stems have moved since the scan, asked at most a few times a
- * second. Called under stemFileCacheLock.
- *
- * The scan used to be keyed on the job and its completion alone, and its own
- * comment conceded that a job tree deleted underneath a loaded one would
- * "surface through that key changing" - which it never does, because neither
- * changes. The lanes went on drawing six waveforms, the header went on
- * offering six stems to save, and Save Stems then wrote nothing and said
- * "Saved 0 stems". One throttled stat of a directory is what that costs to
- * notice; the alternative the cache was written to avoid is a stat per lane
- * per redraw.
- */
-bool StemLabAudioProcessor::stemFilesChangedOnDisk(const juce::File& job) const
-{
-    constexpr juce::uint32 recheckIntervalMs = 500;
-
-    const auto now = juce::Time::getMillisecondCounter();
-
-    if (now - stemFileCacheCheckedMs < recheckIntervalMs)
-        return false;
-
-    stemFileCacheCheckedMs = now;
-
-    return stemFolderStamp(job) != stemFileCacheStamp;
-}
 
 bool StemLabAudioProcessor::hasCompletedStemFile(int index) const
 {

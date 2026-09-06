@@ -246,6 +246,18 @@ if (BUILD_TESTING)
     stemlab_enable_test_assertions(StemLabHostCaptureTests)
     add_test(NAME StemLabHostCaptureTests COMMAND StemLabHostCaptureTests)
 
+    # The stem-scan cache's freshness rules, with the clock and the folder's
+    # stamp handed in - arithmetic rather than a filesystem race.
+    add_executable(StemLabScanCacheTests Tests/StemScanCacheTests.cpp
+                   Source/StemScanCache.h)
+    target_include_directories(StemLabScanCacheTests PRIVATE Source)
+    target_compile_features(StemLabScanCacheTests PRIVATE cxx_std_20)
+    target_link_libraries(StemLabScanCacheTests PRIVATE juce::juce_core)
+    target_compile_definitions(StemLabScanCacheTests PRIVATE
+        JUCE_STANDALONE_APPLICATION=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    stemlab_enable_test_assertions(StemLabScanCacheTests)
+    add_test(NAME StemLabScanCacheTests COMMAND StemLabScanCacheTests)
+
     # Opens and closes the editor twice, and its assertion is that the process
     # then exits: a build that leaves the bundled faces in a static crashes
     # after main, in JUCE's own font cache. Links the plugin, needs no display.
