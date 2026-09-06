@@ -7078,7 +7078,9 @@ void StemLabAudioProcessor::finishSourceAnalysis(const juce::File& source, const
 
         // The flag that got us here may be a separation's Cancel and not this
         // analysis's, and so may the bar and the status line underneath it.
-        if (!isEngineRunning())
+        // As in the stale-source path, never inspect thread ownership from
+        // this worker: the message thread may be replacing or destroying it.
+        if (!mainEngineRunning.load() && !recursiveEngineRunning.load())
         {
             engineCancelRequested.store(false);
             engineProgress.store(0.0);
@@ -7203,7 +7205,7 @@ void StemLabAudioProcessor::finishSourceAnalysis(const juce::File& source, const
         ever raises, so the bar stayed at 100% and the ETA read as finished
         for the rest of a job that still had minutes to run.
     */
-    if (!isEngineRunning())
+    if (!mainEngineRunning.load() && !recursiveEngineRunning.load())
     {
         engineCancelRequested.store(false);
         engineProgress.store(exitCode == 0 ? 1.0 : 0.0);
