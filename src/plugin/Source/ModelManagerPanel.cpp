@@ -198,7 +198,8 @@ namespace stemlab::widgets
             };
         }
 
-        void configureModel(const StemLabAudioProcessor::ManagedModel& model)
+        void configureModel(const StemLabAudioProcessor::ManagedModel& model,
+                            bool compileEnabled, bool compileSupported)
         {
             title = model.label;
             detail = model.purpose;
@@ -215,11 +216,33 @@ namespace stemlab::widgets
             action.setButtonText(model.present ? "Remove" : "Get");
             action.setEnabled(true);
 
+            /*  Offered only where it could work.
+
+                The button used to be shown and enabled on nothing but the
+                model, so pressing it while "Compile separations" was off
+                started a job whose only possible answer was a refusal - and
+                that refusal arrived on the activity line far below the
+                unticked checkbox, telling a GUI user to set an environment
+                variable for the checkbox on the same page. On a machine that
+                cannot compile at all it was worse: the row went on offering
+                it directly under a switch that had already said so.
+
+                A machine that cannot compile gets no button; merely switched
+                off leaves it visible and disabled, so the row still says the
+                model is compilable, and the tooltip names the switch instead
+                of a shell.
+            */
             const auto canCompile = model.compilable && model.present;
 
             secondary.setButtonText(model.compiled ? "Compiled" : "Compile");
-            secondary.setVisible(canCompile);
-            secondary.setEnabled(canCompile && !model.compiled);
+            secondary.setVisible(canCompile && compileSupported);
+            secondary.setEnabled(canCompile && compileSupported && compileEnabled
+                                 && !model.compiled);
+
+            if (canCompile && compileSupported && !compileEnabled)
+                secondary.setTooltip("Turn on Compile separations above to compile this model");
+            else
+                secondary.setTooltip({});
 
             // Why a model is not compilable is engine trivia - "Beat This! is
             // not among the patched models" told a user nothing they wanted,
@@ -499,7 +522,19 @@ namespace stemlab::widgets
     void ModelManagerPanel::setCompileState(bool enabled, bool supported,
                                             const juce::String& reason)
     {
+        // The rows read these too, so a change here has to reach them.
+        const auto changed = enabled != compileEnabled || supported != compileSupported;
+
+        compileEnabled = enabled;
+        compileSupported = supported;
+
         compileSwitch->setState(enabled, supported);
+
+        if (changed)
+        {
+            rebuildRows();
+            resized();
+        }
 
         // The reason lives here rather than on a line of its own. It is worth
         // having - an unset opt-in and a missing compiler need opposite
@@ -574,7 +609,7 @@ namespace stemlab::widgets
         for (const auto& model : models)
         {
             auto entry = std::make_unique<Row>(Row::Kind::model, model.id);
-            entry->configureModel(model);
+            entry->configureModel(model, compileEnabled, compileSupported);
 
             entry->onAction = [this](const juce::String& id)
             {
