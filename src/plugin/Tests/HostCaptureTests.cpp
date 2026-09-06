@@ -431,6 +431,7 @@ int main()
         check(next.getWaveformGridMode() != StemLabAudioProcessor::gridManual);
     }
 
+    StemLabAudioProcessingTestAccess::checkStemScanFolderDeletion(configSandbox);
     StemLabAudioProcessingTestAccess::run();
     StemLabAudioProcessingTestAccess::checkSourceLifecycle(capturedFile);
     StemLabAudioProcessingTestAccess::checkMidiResultRetirement(capturedFile);

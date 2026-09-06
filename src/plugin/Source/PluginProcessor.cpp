@@ -2718,26 +2718,37 @@ juce::File StemLabAudioProcessor::getCompletedStemFile(int index) const
     const auto job = getLastJobDirectory();
     const bool jobDone = engineCompletedSuccessfully.load();
 
+    const auto nowMs = juce::Time::getMillisecondCounter();
+
     {
-        // The UI asks for all six of these several times per redraw, at
-        // 20 Hz, for as long as the editor is open. Enumerating the job
-        // tree each time pegged a core once a job had finished - and worse
-        // on a network share - so one scan serves every lookup until the
-        // job state itself changes.
-        //
-        // Answered before job.isDirectory(), which is itself a stat and was
-        // paying for the directory on every hit. What the cache is keyed on
-        // - the job and its completion state - is exactly what invalidates
-        // it, so a job tree deleted underneath a loaded one surfaces the
-        // same way it always did: through that key changing.
         const juce::ScopedLock lock(stemFileCacheLock);
 
-        if (stemFileCacheJob == job && stemFileCacheJobDone == jobDone)
-            return stemFileCache[static_cast<size_t>(index)];
+        if (stemFileCache.isFresh(job, jobDone, nowMs,
+                                  [&job] { return stemFolderStamp(job); }))
+            return stemFileCache.get(static_cast<size_t>(index));
     }
 
+    /*  Past here every exit publishes, the empty ones included.
+
+        A missing folder is a valid empty snapshot, so publish its key and
+        stamp just like a successful scan. Otherwise a lookup that returns
+        early can leave the old paths behind or force repeated rescans. Deleting
+        the output folder used to answer "gone" for the first lane asked and
+        then hand out five paths to files that were not
+        there - and asking that first lane again brought its path back.
+    */
+    const auto publish = [&](std::array<juce::File, stemCount> resolved) -> juce::File
+    {
+        const juce::ScopedLock lock(stemFileCacheLock);
+
+        stemFileCache.publish(job, jobDone, juce::Time::getMillisecondCounter(),
+                              stemFolderStamp(job), resolved);
+
+        return resolved[static_cast<size_t>(index)];
+    };
+
     if (!job.isDirectory())
-        return {};
+        return publish({});
 
     auto sourceFolder = job.getChildFile("refined");
 
@@ -2745,7 +2756,7 @@ juce::File StemLabAudioProcessor::getCompletedStemFile(int index) const
         sourceFolder = job.getChildFile("baseline");
 
     if (!sourceFolder.isDirectory())
-        return {};
+        return publish({});
 
     juce::Array<juce::File> candidates;
     sourceFolder.findChildFiles(candidates, juce::File::findFiles, true, "*.wav");
@@ -2761,24 +2772,40 @@ juce::File StemLabAudioProcessor::getCompletedStemFile(int index) const
         resolved[static_cast<size_t>(stemIndex)] =
             matchStemFile(candidates, getStemName(stemIndex));
 
-    {
-        const juce::ScopedLock lock(stemFileCacheLock);
-        stemFileCacheJob = job;
-        stemFileCacheJobDone = jobDone;
-        stemFileCache = resolved;
-    }
-
-    return resolved[static_cast<size_t>(index)];
+    return publish(resolved);
 }
+
+/*
+ * When the stems were last added to, removed or replaced.
+ *
+ * The two folders a job writes into, not the job root: a progress file
+ * rewritten every second would otherwise invalidate the scan continuously.
+ * A null time means neither folder is there, which is itself a change worth
+ * noticing.
+ */
+juce::Time StemLabAudioProcessor::stemFolderStamp(const juce::File& job)
+{
+    const auto refined = job.getChildFile("refined");
+
+    if (refined.isDirectory())
+        return refined.getLastModificationTime();
+
+    const auto baseline = job.getChildFile("baseline");
+
+    if (baseline.isDirectory())
+        return baseline.getLastModificationTime();
+
+    return {};
+}
+
 
 bool StemLabAudioProcessor::hasCompletedStemFile(int index) const
 {
     // Answered from the scan cache above: a file that scan resolved was
     // seen on disk during the scan, so a non-empty answer stands in for
     // existsAsFile() without a stat per stem per tick. A stem deleted
-    // externally is picked up when that cache invalidates - a change of
-    // job directory or completion state - which is the invalidation the
-    // cache already has.
+    // externally is picked up by the throttled folder-stamp check, or
+    // immediately when the job directory or completion state changes.
     return getCompletedStemFile(index) != juce::File();
 }
 
@@ -8393,7 +8420,10 @@ void StemLabAudioProcessor::finishMidiConversion(const juce::String& label,
     {
         if (output.existsAsFile())
             output.deleteFile();
-        setStatus("MIDI conversion failed for " + label + " - see diagnostics");
+        // statusFailure, like every other failure: without it this came up
+        // beside the green tick, in the same grey the success summary uses,
+        // and read as "done" at a glance.
+        setStatus("MIDI conversion failed for " + label + " - see diagnostics", statusFailure);
     }
 }
 

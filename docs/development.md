@@ -75,6 +75,7 @@ ctest --test-dir src/plugin/build --output-on-failure
 | `StemLabLaneWheelDispatchTests` | That a lane's deep mouse listener leaves the wheel alone |
 | `StemLabHostCaptureTests` | The self-drag guard and a real processor capturing audio |
 | `StemLabEditorLifecycleTests` | That opening and closing the editor leaves nothing for static destruction |
+| `StemLabScanCacheTests` | When the stem-file scan may still be trusted, and that a vanished output folder is published rather than left behind |
 
 The first six cover header-only components deliberately kept free of the
 plugin, so a test can reach them without standing one up.

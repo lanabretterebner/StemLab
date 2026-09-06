@@ -39,6 +39,46 @@ struct StemLabAudioProcessingTestAccess
         }
     }
 
+    static void checkStemScanFolderDeletion(const juce::File& sandbox)
+    {
+        using Cache = stemlab::scan::StemFileCache<StemLabAudioProcessor::stemCount>;
+
+        // Exercise the actual processor lookup, including both missing-folder
+        // exits. A cache-only stand-in would miss a forgotten publish there.
+        for (int scenario = 0; scenario < 3; ++scenario)
+        {
+            const auto job = sandbox.getChildFile("scan-job-" + juce::String(scenario));
+            const auto output = job.getChildFile(scenario == 0 ? "baseline" : "refined");
+            const auto writeStems = [&]
+            {
+                require(output.createDirectory().wasOk(), "create stem output folder");
+                for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
+                    require(output.getChildFile(StemLabAudioProcessor::getStemName(i) + ".wav")
+                                .replaceWithText("scan fixture"), "create stem scan fixture");
+            };
+            writeStems();
+
+            StemLabAudioProcessor processor;
+            processor.lastJobDirectory = job;
+            processor.engineCompletedSuccessfully.store(true);
+            for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
+                require(processor.getCompletedStemFile(i).existsAsFile(), "prime every stem");
+
+            require((scenario == 2 ? job : output).deleteRecursively(), "delete stem folder");
+            juce::Thread::sleep(static_cast<int>(Cache::recheckIntervalMs) + 10);
+            for (int repeat = 0; repeat < 3; ++repeat)
+                for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
+                    require(processor.getCompletedStemFile(i) == juce::File(),
+                            "deleted stems must stay absent on repeated lookups");
+
+            writeStems();
+            juce::Thread::sleep(static_cast<int>(Cache::recheckIntervalMs) + 10);
+            for (int i = 0; i < StemLabAudioProcessor::stemCount; ++i)
+                require(processor.getCompletedStemFile(i).existsAsFile(), "rediscover restored stems");
+            require(job.deleteRecursively(), "remove stem scan fixtures");
+        }
+    }
+
     static void run()
     {
         checkSourceBlockSizes();

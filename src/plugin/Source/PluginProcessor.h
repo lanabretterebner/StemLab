@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "StemScanCache.h"
 #include <array>
 #include <atomic>
 #include <deque>
@@ -773,6 +774,9 @@ public:
     /** Why the engine at this path cannot be launched, or an empty string. */
     static juce::String engineLaunchProblem(const juce::String& commandName);
 
+    /** When a job's stem folder last changed, for the scan cache's freshness. */
+    static juce::Time stemFolderStamp(const juce::File& job);
+
     void setRefinementEnabled(bool enabled)
     {
         if (refinementEnabled.exchange(enabled) != enabled)
@@ -1425,9 +1429,7 @@ private:
      * or of completion state.
      */
     mutable juce::CriticalSection stemFileCacheLock;
-    mutable juce::File stemFileCacheJob;
-    mutable bool stemFileCacheJobDone = false;
-    mutable std::array<juce::File, stemCount> stemFileCache;
+    mutable stemlab::scan::StemFileCache<stemCount> stemFileCache;
 
     /**
      * Per-stem STEMLAB_STEM_READY announcements from the separation that is
