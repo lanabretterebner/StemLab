@@ -126,7 +126,12 @@ def analyse_audio(path: Path) -> AudioProfile:
     peak = float(np.max(np.abs(np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0))))
 
     frames = _frame_rms(mono)
-    active_threshold = max(1.0e-5, rms * 0.18)
+    # _frame_rms adds _EPS inside its sqrt, so even an all-zero frame reports
+    # sqrt(_EPS) ~ 3.2e-5.  An absolute floor beneath that never rejects
+    # anything, which is how digital silence used to score as fully active and
+    # come back looking like three sources; the floor has to sit above the
+    # epsilon's own noise level to do the job it exists for.
+    active_threshold = max(2.0 * math.sqrt(_EPS), rms * 0.18)
     active_fraction = float(np.mean(frames > active_threshold)) if frames.size else 0.0
 
     if audio.shape[1] >= 2:

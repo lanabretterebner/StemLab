@@ -1336,6 +1336,17 @@ private:
     std::atomic<bool> mainEngineRunning{false};
 
     /**
+     * True for as long as the adaptive split thread's run() is executing.
+     *
+     * Kept for the same reason as mainEngineRunning above: the source
+     * analysis worker has to know whether an engine is still running before
+     * it clears the shared cancel flag, and asking recursiveThread from a
+     * worker races the message thread's reassignment of that unique_ptr and
+     * its destruction of it at teardown.
+     */
+    std::atomic<bool> recursiveEngineRunning{false};
+
+    /**
      * Resolved stem files for the current job. The editor asks for these
      * many times per redraw; without a cache each answer costs a recursive
      * enumeration of the job tree. Invalidated by a change of job directory
@@ -1418,6 +1429,12 @@ private:
     std::atomic<bool> modelInventoryValid{false};
     std::atomic<bool> modelInventoryBroken{false};
     std::atomic<bool> modelJobRunning{false};
+
+    /** The model job's own stop flag. It cannot share the separation's
+        engineCancelRequested: the engine threads read that one only when
+        their child exits, so a download cancelled while a separation was
+        finishing would be read as the separation having been cancelled. */
+    std::atomic<bool> modelJobCancelRequested{false};
     std::atomic<bool> essentialModelMissing{false};
     std::atomic<bool> compileRequested{false};
     std::atomic<bool> torchCompileEnabled{false};

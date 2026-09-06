@@ -1000,6 +1000,11 @@ public:
         // duration of the split, restored on every exit from this run.
         owner.waveformProfiles.setSeparationActive(true);
 
+        // The companion to mainEngineRunning, and there for its reason: it
+        // lets another thread ask whether this split is still going without
+        // reading recursiveThread. Cleared on every exit below.
+        owner.recursiveEngineRunning.store(true);
+
         juce::ChildProcess* childProcess = nullptr;
 
         {
@@ -1015,6 +1020,7 @@ public:
                             StemLabAudioProcessor::statusFailure);
             owner.appendEngineLog("Failed to launch recursive engine process.\n");
             owner.waveformProfiles.setSeparationActive(false);
+            owner.recursiveEngineRunning.store(false);
 
             const juce::ScopedLock lock(processLock);
             process.reset();
@@ -1077,6 +1083,8 @@ public:
             exitCode = process->getExitCode();
             process.reset();
         }
+
+        owner.recursiveEngineRunning.store(false);
 
         if (threadShouldExit())
             return;
@@ -1391,7 +1399,25 @@ public:
     ~StemLabSystemLoopbackThread() override
     {
         signalThreadShouldExit();
-        stopThread(4000);
+        notify();
+
+        /*  The capture loop only ever waits in 5 ms slices, but the last
+            thing run() does is destroy the ThreadedWriter, which
+            synchronously flushes its FIFO and finalises the WAV header -
+            disk I/O of no fixed duration on a spun-down external drive or
+            a stalled network mount.
+
+            stopThread()'s timeout escalates that to TerminateThread, which
+            stops the thread wherever it stands and releases nothing: the
+            header keeps the zero length the constructor wrote, so the take
+            reads as empty, and a kill inside the writer's own teardown can
+            strand the lock that diskWriterThread.stopThread() waits on a
+            moment later. So wait generously first, and keep the timed stop
+            only as a last-resort backstop for a genuinely wedged
+            filesystem.
+        */
+        if (!waitForThreadToExit(30000))
+            stopThread(2000);
     }
 
     bool wasSuccessful() const noexcept { return successful.load(); }
@@ -5253,8 +5279,11 @@ juce::File StemLabAudioProcessor::exportLoopedRegions(const juce::File& source,
     {
         auto target = destination;
 
-        if (target.getFileExtension().isEmpty())
-            target = target.withFileExtension(source.getFileExtension());
+        // A dot inside the name is not an extension: for "01. Intro_vocals"
+        // getFileExtension() answers ".Intro_vocals", which would leave the
+        // copy with nothing naming its format, so the source's is appended.
+        if (!target.hasFileExtension(source.getFileExtension()))
+            target = target.getSiblingFile(target.getFileName() + source.getFileExtension());
 
         if (target.existsAsFile())
             target.deleteFile();
@@ -5267,7 +5296,14 @@ juce::File StemLabAudioProcessor::exportLoopedRegions(const juce::File& source,
     if (reader == nullptr || reader->sampleRate <= 0.0 || reader->lengthInSamples <= 0)
         return {};
 
-    auto target = destination.withFileExtension("wav");
+    auto target = destination;
+
+    // The destination is a name to extend, not a path whose extension can be
+    // swapped: withFileExtension cuts at the last dot, so a source called
+    // "01. Intro" would collapse every stem onto the same "01.wav", each
+    // render deleting the one before it.
+    if (!target.hasFileExtension("wav"))
+        target = target.getSiblingFile(target.getFileName() + ".wav");
 
     if (target.existsAsFile())
         target.deleteFile();
@@ -6216,10 +6252,16 @@ void StemLabAudioProcessor::setWaveformColorIndex(int index)
 {
     const auto wanted = juce::jlimit(0, waveformColorCount - 1, index);
 
+    // Remembered before the equality check, not after it: what tells the next
+    // project opened that the preference is already decided is the file
+    // existing at all, so choosing the palette that happens to be in effect -
+    // which on a fresh install is every project saved with the default - still
+    // has to write it, or the first project carrying a different palette gets
+    // to decide for all of them.
+    rememberWaveformColor(wanted);
+
     if (waveformColorIndex.exchange(wanted) == wanted)
         return;
-
-    rememberWaveformColor(wanted);
 
     sendChangeMessage();
 }
@@ -6643,8 +6685,12 @@ void StemLabAudioProcessor::finishSourceAnalysis(const juce::File& source, const
 
         // Only ours to clear. A separation launched against the new source
         // may already be running, and the user's Cancel lives in this same
-        // flag.
-        if (!isEngineRunning())
+        // flag. The two atomics rather than isEngineRunning(): this runs on
+        // the analysis worker, and that call reads the engineThread and
+        // recursiveThread unique_ptrs, which the message thread republishes
+        // on the next launch and destroys during teardown while this thread
+        // is still finishing.
+        if (!mainEngineRunning.load() && !recursiveEngineRunning.load())
             engineCancelRequested.store(false);
 
         sendChangeMessage();
@@ -6659,9 +6705,15 @@ void StemLabAudioProcessor::finishSourceAnalysis(const juce::File& source, const
         if (result.existsAsFile())
             result.deleteFile();
         sourceAnalysisRunning.store(false);
-        engineCancelRequested.store(false);
-        engineProgress.store(0.0);
-        setStatus("Source analysis cancelled - source ready");
+
+        // The flag that got us here may be a separation's Cancel and not this
+        // analysis's, and so may the bar and the status line underneath it.
+        if (!isEngineRunning())
+        {
+            engineCancelRequested.store(false);
+            engineProgress.store(0.0);
+            setStatus("Source analysis cancelled - source ready");
+        }
         return;
     }
 
@@ -6771,14 +6823,28 @@ void StemLabAudioProcessor::finishSourceAnalysis(const juce::File& source, const
     setTempoInterpretation(tempoInterpretation.load());
 
     sourceAnalysisRunning.store(false);
-    engineCancelRequested.store(false);
-    engineProgress.store(exitCode == 0 ? 1.0 : 0.0);
-    if (exitCode == 0 && !hasSuccessfulJob())
-        setStatus("Source ready");
-    else if (exitCode == 0)
-        setStatus("Source analysis updated - stems ready");
-    else if (exitCode != 0)
-        setStatus("Source analysis unavailable - separation is still available");
+
+    /*  Same ownership rule as the discarded-result path above. A separation
+        may have been started against this very source while the analysis was
+        still working - nothing refuses that - and from then until it ends it
+        owns the cancel flag, the progress bar and the status line. Clearing
+        them from here threw away a Cancel the user had already clicked, and
+        the 1.0 could never be walked back afterwards: setEngineProgress only
+        ever raises, so the bar stayed at 100% and the ETA read as finished
+        for the rest of a job that still had minutes to run.
+    */
+    if (!isEngineRunning())
+    {
+        engineCancelRequested.store(false);
+        engineProgress.store(exitCode == 0 ? 1.0 : 0.0);
+        if (exitCode == 0 && !hasSuccessfulJob())
+            setStatus("Source ready");
+        else if (exitCode == 0)
+            setStatus("Source analysis updated - stems ready");
+        else if (exitCode != 0)
+            setStatus("Source analysis unavailable - separation is still available");
+    }
+
     sendChangeMessage();
 }
 
@@ -7461,6 +7527,19 @@ bool StemLabAudioProcessor::launchModelJob(const juce::StringArray& arguments,
     if (modelJobRunning.load())
         return false;
 
+    // A model job reports through the separation's own channels: it stores
+    // engineProgress, and its stdout is parsed by handleEngineOutputLine,
+    // which takes the worker's STEMLAB_PROGRESS and STEMLAB_ERROR lines for
+    // the separation's. Started over a running job it would snap the bar back
+    // and retitle the stage from a download. The cancel flags are separate
+    // now, but the bar and the status line are still one each, so the model
+    // job waits until the engine is done.
+    if (isEngineRunning())
+    {
+        setActionStatus("Finish the running job before changing models");
+        return false;
+    }
+
     if (arguments.isEmpty())
         return false;
 
@@ -7489,7 +7568,7 @@ bool StemLabAudioProcessor::launchModelJob(const juce::StringArray& arguments,
     modelJobRunning.store(true);
 
     engineProgress.store(0.01);
-    engineCancelRequested.store(false);
+    modelJobCancelRequested.store(false);
 
     setStatus(label + "...");
 
@@ -7522,7 +7601,7 @@ void StemLabAudioProcessor::finishModelJob(const juce::String& label, int exitCo
     // "complete" over the top of that would read as though it had worked.
     constexpr int notApplicableExitCode = 3;
 
-    if (exitCode == 130 || engineCancelRequested.load())
+    if (exitCode == 130 || modelJobCancelRequested.load())
         setStatus(label + " cancelled");
     else if (exitCode == notApplicableExitCode)
         ;
@@ -7531,7 +7610,7 @@ void StemLabAudioProcessor::finishModelJob(const juce::String& label, int exitCo
     else
         setStatus(label + " complete");
 
-    engineCancelRequested.store(false);
+    modelJobCancelRequested.store(false);
 
     // Whatever the job did, what is on disk has changed. Re-reading is the
     // only thing that makes the Model Manager agree with reality, and it has
@@ -7612,7 +7691,11 @@ void StemLabAudioProcessor::cancelModelJob()
     if (!modelJobRunning.load())
         return;
 
-    engineCancelRequested.store(true);
+    // Its own flag, never the separation's: engineCancelRequested is read
+    // when the engine's child exits, so a download stopped here while a
+    // separation was on its last stage declared that separation cancelled -
+    // its stems were written, and then thrown away unread.
+    modelJobCancelRequested.store(true);
     setStatus("Cancelling...");
 
     if (modelJobThread != nullptr)
@@ -8294,7 +8377,18 @@ bool StemLabAudioProcessor::renderMidiAudition(juce::AudioBuffer<float>& buffer,
         midiAuditionNoteOffOrder.clear();
         midiAuditionNoteOnCursor = 0;
         midiAuditionNoteOffCursor = 0;
-        midiAuditionId.clear();
+
+        /*
+         * The id is deliberately left standing. Clearing a juce::String drops
+         * the last reference to its holder and deletes it, which is a heap
+         * free in the audio callback; the two vectors above hold plain structs
+         * and keep their storage, so only the String was an allocator call.
+         *
+         * Nothing reads the id on its own - isMidiAuditioning wants
+         * midiAuditionActive as well, and that is false from here on - so the
+         * stale id is inert until the message thread replaces it in
+         * auditionMidi or clears it in stopMidiAudition.
+         */
     }
     return true;
 }

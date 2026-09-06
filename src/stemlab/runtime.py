@@ -6,8 +6,10 @@ import contextlib
 import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -64,6 +66,14 @@ _active_processes_lock = threading.Lock()
 # model child die at that moment and must not race ahead reporting a model
 # failure - the watchdog's exit is the authoritative outcome.
 _shutdown_in_progress = threading.Event()
+
+# Scratch directories the backends have open under this job. Each one holds a
+# full-length staged copy of the track, and the Demucs one is placed beside
+# the stems - inside the user's own job folder - so anything left behind is
+# the user's to find and delete. Tracked because the watchdog's os._exit
+# skips the __exit__ that would otherwise remove them.
+_scratch_directories: list[str] = []
+_scratch_directories_lock = threading.Lock()
 
 
 def _configure_packaged_models() -> None:
@@ -187,6 +197,35 @@ def _terminate_registered_processes() -> None:
                 pass
 
 
+class ScratchDirectory(tempfile.TemporaryDirectory):
+    """A ``TemporaryDirectory`` a watchdog shutdown also takes down.
+
+    ``__exit__`` alone is not enough for a job that can end with os._exit.
+    A user's cancel usually reaches the unwind first, but an orphaned job -
+    host closed or crashed - never unwinds at all, and the watchdog is then
+    the only thing left that could remove the directory.
+    """
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        with _scratch_directories_lock:
+            _scratch_directories.append(self.name)
+
+    def cleanup(self) -> None:
+        with _scratch_directories_lock:
+            if self.name in _scratch_directories:
+                _scratch_directories.remove(self.name)
+        super().cleanup()
+
+
+def _remove_registered_scratch() -> None:
+    with _scratch_directories_lock:
+        directories = list(_scratch_directories)
+        _scratch_directories.clear()
+    for directory in directories:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
 def _make_parent_death_check() -> Callable[[], bool]:
     """Return a poll function that is True once the launching process died.
 
@@ -266,6 +305,11 @@ def start_cancel_watchdog(job_dir: str | Path) -> None:
         except OSError:
             pass
         _terminate_registered_processes()
+        # The children first, then the scratch they were writing into: the
+        # os._exit below runs no __exit__, so a backend's staged copy of the
+        # track would be left behind - and the Demucs one sits in the user's
+        # own job folder, which nothing ever sweeps.
+        _remove_registered_scratch()
         try:
             cancel_file.unlink(missing_ok=True)
         except OSError:

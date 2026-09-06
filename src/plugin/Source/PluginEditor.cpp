@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "LinuxSystemCapture.h"
 #include "StemLabPaths.h"
 #include "StemLabTheme.h"
 #include "BinaryData.h"
@@ -2766,6 +2767,17 @@ void StemLabAudioProcessorEditor::drawCachedGlow(juce::Graphics& g,
     constexpr int radius = 11;
     constexpr int margin = radius * 2;
 
+    // The accent is process-wide but this cache is per editor, so every
+    // editor other than the one the swatch was clicked in still holds glows
+    // blurred from the old colour. This is where they find out.
+    const auto accent = theme::accents::index();
+
+    if (accent != glowCacheAccent)
+    {
+        glowCacheAccent = accent;
+        glowCache.clear();
+    }
+
     auto& image = glowCache[{area.getWidth(), area.getHeight()}];
 
     if (!image.isValid())
@@ -4648,8 +4660,19 @@ void StemLabAudioProcessorEditor::revealJobFolder()
 
         if (process.start(command))
         {
-            processor.postUiStatus("Opened the output folder");
-            return;
+            /*
+                start() only reports that the fork worked - the execvp for an
+                opener that is missing, or that has no handler for a directory,
+                fails inside the child, so its exit status is the only evidence
+                that the opener really did something. An opener still running
+                when the wait expires has plainly launched, so a timeout counts
+                as success; the wait is short because this is the message thread.
+            */
+            if (!process.waitForProcessToFinish(1000) || process.getExitCode() == 0)
+            {
+                processor.postUiStatus("Opened the output folder");
+                return;
+            }
         }
     }
 
@@ -5259,6 +5282,14 @@ void StemLabAudioProcessorEditor::checkForUpdates()
 
     auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
     const auto path = script.getFullPathName();
+
+   #if JUCE_LINUX
+    // Nothing joins the thread below, and a curl left waiting out its connect
+    // timeout can still be inside it long after the editor is gone. Pin the
+    // module so a host that unloads the plugin in that window does not take
+    // the code that thread is running with it.
+    pinModuleForDetachedThreads();
+   #endif
 
     /*
      * Off the message thread, without exception. --check asks github.com which
