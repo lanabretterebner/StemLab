@@ -43,7 +43,7 @@ Paths sixStems(const juce::File& folder)
 juce::File lookup(Cache& cache, std::size_t index, const juce::File& job, bool jobDone,
                   juce::uint32 nowMs, const juce::Time& stamp, bool outputExists)
 {
-    if (cache.isFresh(job, jobDone, nowMs, stamp))
+    if (cache.isFresh(job, jobDone, nowMs, [&] { return stamp; }))
         return cache.get(index);
 
     const auto publish = [&](Paths resolved)
@@ -82,7 +82,7 @@ int main()
     {
         Cache cache;
 
-        check(!cache.isFresh(job, true, 0, full));
+        check(!cache.isFresh(job, true, 0, [&] { return full; }));
 
         const auto first = lookup(cache, 0, job, true, 0, full, true);
 
@@ -91,7 +91,7 @@ int main()
         for (std::size_t i = 0; i < stemCount; ++i)
             check(cache.get(i) != juce::File());
 
-        check(cache.isFresh(job, true, 0, full));
+        check(cache.isFresh(job, true, 0, [&] { return full; }));
     }
 
     // Inside the recheck interval the stamp is not even consulted: that is
@@ -100,7 +100,30 @@ int main()
         Cache cache;
         lookup(cache, 0, job, true, 0, full, true);
 
-        check(cache.isFresh(job, true, Cache::recheckIntervalMs - 1, changed));
+        check(cache.isFresh(job, true, Cache::recheckIntervalMs - 1, [&] { return changed; }));
+    }
+
+    // Throttling must avoid the filesystem read, not just its comparison.
+    {
+        Cache cache;
+        const auto paths = sixStems(job.getChildFile("refined"));
+        cache.publish(job, true, 0, full, paths);
+        int reads = 0;
+        const auto readStamp = [&] { ++reads; return changed; };
+
+        for (std::size_t i = 0; i < stemCount; ++i)
+            check(cache.isFresh(job, true, Cache::recheckIntervalMs - 1, readStamp));
+        check(reads == 0);
+        check(!cache.isFresh(job, true, Cache::recheckIntervalMs, readStamp));
+        check(reads == 1);
+
+        // A second reader must not trust old paths while a rescan is pending.
+        check(!cache.isFresh(job, true, Cache::recheckIntervalMs + 1, readStamp));
+        check(reads == 1);
+        cache.publish(job, true, Cache::recheckIntervalMs + 1, changed, {});
+        check(cache.isFresh(job, true, Cache::recheckIntervalMs + 2, readStamp));
+        check(reads == 1);
+        check(cache.get(0) == juce::File());
     }
 
     // A different job, or the same job now finished, is never fresh.
@@ -108,8 +131,8 @@ int main()
         Cache cache;
         lookup(cache, 0, job, true, 0, full, true);
 
-        check(!cache.isFresh(otherJob, true, 0, full));
-        check(!cache.isFresh(job, false, 0, full));
+        check(!cache.isFresh(otherJob, true, 0, [&] { return full; }));
+        check(!cache.isFresh(job, false, 0, [&] { return full; }));
     }
 
     /*  The regression. Prime all six, delete the output folder, let the
@@ -166,7 +189,7 @@ int main()
         lookup(cache, 0, job, true, 0, full, true);
         cache.reset();
 
-        check(!cache.isFresh(job, true, 0, full));
+        check(!cache.isFresh(job, true, 0, [&] { return full; }));
         check(cache.get(0) == juce::File());
     }
 

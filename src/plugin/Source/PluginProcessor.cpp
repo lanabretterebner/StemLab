@@ -2719,22 +2719,22 @@ juce::File StemLabAudioProcessor::getCompletedStemFile(int index) const
     const bool jobDone = engineCompletedSuccessfully.load();
 
     const auto nowMs = juce::Time::getMillisecondCounter();
-    const auto stamp = stemFolderStamp(job);
 
     {
         const juce::ScopedLock lock(stemFileCacheLock);
 
-        if (stemFileCache.isFresh(job, jobDone, nowMs, stamp))
+        if (stemFileCache.isFresh(job, jobDone, nowMs,
+                                  [&job] { return stemFolderStamp(job); }))
             return stemFileCache.get(static_cast<size_t>(index));
     }
 
     /*  Past here every exit publishes, the empty ones included.
 
-        isFresh advances its own recheck clock when it looks at the stamp, so
-        a lookup that decides the snapshot is stale and then returns without
-        replacing it leaves the old paths standing for the rest of the
-        interval. Deleting the output folder used to answer "gone" for the
-        first lane asked and then hand out five paths to files that were not
+        A missing folder is a valid empty snapshot, so publish its key and
+        stamp just like a successful scan. Otherwise a lookup that returns
+        early can leave the old paths behind or force repeated rescans. Deleting
+        the output folder used to answer "gone" for the first lane asked and
+        then hand out five paths to files that were not
         there - and asking that first lane again brought its path back.
     */
     const auto publish = [&](std::array<juce::File, stemCount> resolved) -> juce::File
@@ -2804,9 +2804,8 @@ bool StemLabAudioProcessor::hasCompletedStemFile(int index) const
     // Answered from the scan cache above: a file that scan resolved was
     // seen on disk during the scan, so a non-empty answer stands in for
     // existsAsFile() without a stat per stem per tick. A stem deleted
-    // externally is picked up when that cache invalidates - a change of
-    // job directory or completion state - which is the invalidation the
-    // cache already has.
+    // externally is picked up by the throttled folder-stamp check, or
+    // immediately when the job directory or completion state changes.
     return getCompletedStemFile(index) != juce::File();
 }
 

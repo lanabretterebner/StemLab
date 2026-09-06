@@ -41,12 +41,13 @@ public:
     /**
      * Whether the snapshot still answers for this job.
      *
-     * `stampNow` is what the caller reads off the output folder; it is only
-     * consulted once the recheck interval has passed, and asking advances that
-     * interval, so a caller that gets `false` must publish before returning.
+     * `readStamp` reads the output folder only after the interval expires.
+     * Passing a precomputed stamp would still stat the folder on every hit.
+     * A stale snapshot stays invalid until a replacement is published.
      */
+    template <typename ReadStamp>
     bool isFresh(const juce::File& job, bool jobDone, juce::uint32 nowMs,
-                 const juce::Time& stampNow)
+                 ReadStamp&& readStamp)
     {
         if (!published || job != cachedJob || jobDone != cachedJobDone)
             return false;
@@ -56,7 +57,11 @@ public:
 
         checkedMs = nowMs;
 
-        return stampNow == cachedStamp;
+        if (readStamp() == cachedStamp)
+            return true;
+
+        published = false;
+        return false;
     }
 
     /** Adopt a snapshot - including an empty one, which is what a job whose
