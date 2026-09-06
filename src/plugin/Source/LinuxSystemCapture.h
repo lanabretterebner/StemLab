@@ -5,6 +5,15 @@
 #if JUCE_LINUX
 
 /*
+    Take an extra RTLD_NODELETE reference to this module, so a host that
+    unloads the plugin cannot pull the code out from under a thread that is
+    still running in it. Anything that starts a thread nobody joins - the
+    capture reader here, the updater check in the editor - calls this before
+    launching it. Idempotent, and safe from any thread.
+*/
+void pinModuleForDetachedThreads();
+
+/*
     Linux system-audio capture: records whatever the desktop is playing by
     reading the default output's monitor source through PulseAudio's simple
     API. PipeWire ships a complete PulseAudio server implementation, so the

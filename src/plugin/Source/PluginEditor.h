@@ -584,6 +584,17 @@ private:
     int glowCacheWidth = -1;
     int glowCacheHeight = -1;
 
+    /*  The accent those glows were blurred from.
+
+        Tracked for the same reason columnsAccent is: the colour is baked
+        into the pixels and nothing else in the key moves when the accent
+        does. It matters more here than there, because the accent is set
+        process-wide while this cache belongs to one editor - the instance
+        that was clicked in empties its own map, and every other open editor
+        would otherwise keep the old glow.
+    */
+    int glowCacheAccent = -1;
+
     /** Lays out the footer status line and progress row; the rows rearrange
         when a job starts or ends, so it runs on every status refresh. */
     void layoutStatusArea();

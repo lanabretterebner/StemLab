@@ -6,7 +6,6 @@ import importlib.util
 import os
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 from typing import Callable
 
@@ -14,7 +13,7 @@ from .audio import STEM_NAMES
 from .device import resolve_torch_device
 from .pretrained import _clear_audio_files, _normalise_input_for_backend
 from .resample import rate_and_frames, restore_folder_sample_rate
-from .runtime import CancellationToken, run_progress_process
+from .runtime import CancellationToken, ScratchDirectory, run_progress_process
 
 DEFAULT_DEMUCS_MODEL = "htdemucs_6s"
 PACKAGED_DEMUCS_SIGNATURE = "5c90dfd2"
@@ -36,7 +35,7 @@ DEMUCS_OVERLAP = 0.25
 DEMUCS_MODEL_SAMPLE_RATE = 44100
 
 
-def _work_directory(output_dir: Path) -> tempfile.TemporaryDirectory:
+def _work_directory(output_dir: Path) -> ScratchDirectory:
     """Open the scratch directory on the filesystem the stems land on.
 
     Demucs writes six full-length stems into it and they are then put where
@@ -47,9 +46,9 @@ def _work_directory(output_dir: Path) -> tempfile.TemporaryDirectory:
     remains the fallback.
     """
     try:
-        return tempfile.TemporaryDirectory(prefix="stemlab_demucs_input_", dir=output_dir.parent)
+        return ScratchDirectory(prefix="stemlab_demucs_input_", dir=output_dir.parent)
     except OSError:
-        return tempfile.TemporaryDirectory(prefix="stemlab_demucs_input_")
+        return ScratchDirectory(prefix="stemlab_demucs_input_")
 
 
 def _warn_if_not_float(stems: list[Path], log: Callable[[str], None]) -> None:

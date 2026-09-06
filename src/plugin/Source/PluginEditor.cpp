@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "LinuxSystemCapture.h"
 #include "StemLabPaths.h"
 #include "StemLabTheme.h"
 #include "BinaryData.h"
@@ -2894,6 +2895,17 @@ void StemLabAudioProcessorEditor::drawCachedGlow(juce::Graphics& g,
     constexpr int radius = 11;
     constexpr int margin = radius * 2;
 
+    // The accent is process-wide but this cache is per editor, so every
+    // editor other than the one the swatch was clicked in still holds glows
+    // blurred from the old colour. This is where they find out.
+    const auto accent = theme::accents::index();
+
+    if (accent != glowCacheAccent)
+    {
+        glowCacheAccent = accent;
+        glowCache.clear();
+    }
+
     auto& image = glowCache[{area.getWidth(), area.getHeight()}];
 
     if (!image.isValid())
@@ -4914,31 +4926,22 @@ void StemLabAudioProcessorEditor::revealJobFolder()
 
         command.add(folder.getFullPathName());
 
-        if (!process.start(command))
-            continue;
-
-        /*
-         * start() is not the answer to "did it work". JUCE's POSIX
-         * implementation forks and the child _exit(255)s after a failed
-         * execvp, so start() returns true for a command that is not on the
-         * machine at all - and it returned true here for `gio`, which is
-         * installed on a box with no desktop and answers "Failed to find
-         * default application for content type inode/directory". The app
-         * then reported "Opened the output folder" over a click that did
-         * nothing, and the clipboard fallback below - written for exactly
-         * this - was unreachable.
-         *
-         * A real file manager stays running, so still being alive after the
-         * grace is the success case; xdg-open and gio open delegate and exit
-         * at once, which is what makes their status worth reading.
-         */
-        constexpr int graceMs = 600;
-
-        if (process.waitForProcessToFinish(graceMs) && process.getExitCode() != 0)
-            continue;
-
-        processor.postUiStatus("Opened the output folder");
-        return;
+        if (process.start(command))
+        {
+            /*
+                start() only reports that the fork worked - the execvp for an
+                opener that is missing, or that has no handler for a directory,
+                fails inside the child, so its exit status is the only evidence
+                that the opener really did something. An opener still running
+                when the wait expires has plainly launched, so a timeout counts
+                as success; the wait is short because this is the message thread.
+            */
+            if (!process.waitForProcessToFinish(1000) || process.getExitCode() == 0)
+            {
+                processor.postUiStatus("Opened the output folder");
+                return;
+            }
+        }
     }
 
     juce::SystemClipboard::copyTextToClipboard(folder.getFullPathName());
@@ -5578,6 +5581,14 @@ void StemLabAudioProcessorEditor::checkForUpdates()
 
     auto safeThis = juce::Component::SafePointer<StemLabAudioProcessorEditor>(this);
     const auto path = script.getFullPathName();
+
+   #if JUCE_LINUX
+    // Nothing joins the thread below, and a curl left waiting out its connect
+    // timeout can still be inside it long after the editor is gone. Pin the
+    // module so a host that unloads the plugin in that window does not take
+    // the code that thread is running with it.
+    pinModuleForDetachedThreads();
+   #endif
 
     /*
      * Off the message thread, without exception. --check asks github.com which

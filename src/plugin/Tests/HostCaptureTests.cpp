@@ -432,6 +432,7 @@ int main()
     }
 
     StemLabAudioProcessingTestAccess::checkStemScanFolderDeletion(configSandbox);
+    StemLabAudioProcessingTestAccess::checkSourceAnalysisCompletion(configSandbox);
     StemLabAudioProcessingTestAccess::run();
     StemLabAudioProcessingTestAccess::checkSourceLifecycle(capturedFile);
     StemLabAudioProcessingTestAccess::checkMidiResultRetirement(capturedFile);

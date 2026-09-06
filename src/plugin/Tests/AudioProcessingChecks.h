@@ -79,6 +79,70 @@ struct StemLabAudioProcessingTestAccess
         }
     }
 
+    static void checkSourceAnalysisCompletion(const juce::File& sandbox)
+    {
+        // Exercise real completion on a worker, with ownership pointers left
+        // empty. Worker activity must come from the published atomics, never
+        // from pointers that the message thread can replace during completion.
+        enum Outcome { stale, cancelled, succeeded, failed };
+        for (const auto outcome : {stale, cancelled, succeeded, failed})
+        {
+            for (int engine = 0; engine < 3; ++engine)
+            {
+                StemLabAudioProcessor processor;
+                const auto source = sandbox.getChildFile("analysis-source.wav");
+                const auto result = sandbox.getChildFile("analysis-result.json");
+                require(result.replaceWithText(R"({"bpm":120,"key":"C major"})"),
+                        "write source analysis result");
+                processor.captureFile = outcome == stale
+                                            ? sandbox.getChildFile("replacement-source.wav")
+                                            : source;
+                processor.sourceAnalysisRunning.store(true);
+                processor.mainEngineRunning.store(engine == 1);
+                processor.recursiveEngineRunning.store(engine == 2);
+                const bool cancelRequested = outcome == stale || outcome == cancelled;
+                processor.engineCancelRequested.store(cancelRequested);
+                processor.engineProgress.store(0.4);
+                processor.setStatus("Separation owns this status");
+
+                // The old completion guard sees false here even though a
+                // worker may still own the shared progress and cancel state.
+                require(!processor.isEngineRunning(), "no thread ownership in fixture");
+                std::thread analysis([&]
+                {
+                    processor.finishSourceAnalysis(source, result, outcome == failed ? 1 : 0);
+                });
+                analysis.join();
+
+                require(!processor.sourceAnalysisRunning.load(), "analysis completion retires run");
+                require(!result.existsAsFile(), "analysis completion removes result");
+                require(processor.engineCancelRequested.load() == (engine != 0 && cancelRequested),
+                        "analysis preserves only a running engine's cancellation");
+                if (engine != 0 || outcome == stale)
+                {
+                    require(juce::exactlyEqual(processor.engineProgress.load(), 0.4),
+                            "analysis preserves engine progress");
+                    require(processor.getStatus() == "Separation owns this status",
+                            "analysis preserves engine status");
+                }
+                else
+                {
+                    require(juce::exactlyEqual(processor.engineProgress.load(),
+                                               outcome == succeeded ? 1.0 : 0.0),
+                            "idle completion publishes analysis progress");
+                    const juce::String expected = outcome == cancelled
+                        ? "Source analysis cancelled - source ready"
+                        : outcome == succeeded ? "Source ready"
+                        : "Source analysis unavailable - separation is still available";
+                    require(processor.getStatus() == expected,
+                            "idle completion publishes analysis status");
+                }
+                processor.mainEngineRunning.store(false);
+                processor.recursiveEngineRunning.store(false);
+            }
+        }
+    }
+
     static void run()
     {
         checkSourceBlockSizes();
