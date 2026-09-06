@@ -6842,7 +6842,42 @@ void StemLabAudioProcessor::loadPreferences()
         return;
     }
 
-    applyPreferences(juce::JSON::parse(file));
+    const auto parsed = juce::JSON::parse(file);
+
+    if (parsed.getDynamicObject() != nullptr)
+    {
+        applyPreferences(parsed);
+        return;
+    }
+
+    /*  Unreadable, and about to be replaced.
+
+        Coming up on defaults is right - a settings file is not worth
+        refusing to start over - but the app used to do it in silence and
+        then overwrite the evidence within seconds: truncated, empty, byte
+        garbage, "null", a bare array, all five landed on a normal-looking
+        window with every preference reset and nothing left to recover from.
+        The readable prefix of a truncated file went with it.
+
+        So the file is moved aside before anything writes over it, keeping
+        one generation, and the reset is said out loud once. Nothing here
+        can fail loudly: a settings file that cannot be renamed must still
+        not stop the app opening.
+    */
+    const auto kept = file.getSiblingFile(file.getFileName() + ".unreadable");
+
+    kept.deleteFile();
+
+    const auto moved = file.moveFileTo(kept);
+
+    setStatus(moved ? "Settings could not be read - reset to defaults, the old file is kept "
+                      "beside it as settings.json.unreadable"
+                    : "Settings could not be read - reset to defaults",
+              statusFailure);
+
+    // As if there had been no file at all: a project may still speak for
+    // this user once, exactly as on a first run.
+    preferencesMayBeAdopted = true;
 }
 
 void StemLabAudioProcessor::applyPreferences(const juce::var& parsed)
