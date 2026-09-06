@@ -71,6 +71,7 @@ ctest --test-dir src/plugin/build --output-on-failure
 | `StemLabLoopRegionsTests` | Which loop ranges merge, and where playback jumps |
 | `StemLabSourceLabelTests` | Joining a track and take name without saying it twice |
 | `StemLabLoopQuantizeTests` | Where a swept loop lands on the grid, beats or constant tempo |
+| `StemLabSourceLengthTests` | Believing the audio in a file over the length its header declares |
 | `StemLabAccentPaletteTests` | The accent ramp, and that a saved accent survives a reload |
 | `StemLabLaneWheelDispatchTests` | That a lane's deep mouse listener leaves the wheel alone |
 | `StemLabHostCaptureTests` | The self-drag guard and a real processor capturing audio |

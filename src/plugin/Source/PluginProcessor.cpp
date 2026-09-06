@@ -3,6 +3,7 @@
 #include "PluginEditor.h"
 #include "ReaperBridge.h"
 #include "SourceLabel.h"
+#include "SourceLength.h"
 #include "StemLabPaths.h"
 #include "StemLabTheme.h"
 #include "WaveformGrid.h"
@@ -385,6 +386,34 @@ constexpr double endGuardMinSeconds = 0.25;
 constexpr double endGuardMaxSeconds = 2.0;
 constexpr double endGuardFraction = 0.005;
 constexpr double endGuardShare = 0.1;
+
+/*  Cuts a reader's declared length down to the audio the file on disk can
+    actually hold, and reports whether it had to.
+
+    JUCE reads lengthInSamples out of the container's own header and does not
+    look at the file again, so a truncated WAV keeps announcing the length it
+    was going to be. Every reader opened on a source goes through here, so
+    the strip, the transport clock, the grid and the preview all measure the
+    same file rather than the same header. SourceLength.h holds the rule and
+    the reason it is only ever applied to fixed-frame formats.
+*/
+bool clampReaderToFileContents(juce::AudioFormatReader& reader, const juce::File& file)
+{
+    const auto ceiling =
+        stemlab::source::storesFixedSizeFrames(file.getFileExtension().toStdString())
+            ? stemlab::source::frameCeilingForBytes(file.getSize(),
+                                                    static_cast<int>(reader.numChannels),
+                                                    static_cast<int>(reader.bitsPerSample))
+            : 0;
+
+    const auto present = static_cast<juce::int64>(
+        stemlab::source::framesActuallyPresent(reader.lengthInSamples, ceiling));
+
+    const bool wasCutShort = present < reader.lengthInSamples;
+    reader.lengthInSamples = present;
+
+    return wasCutShort;
+}
 
 bool transportIsAtEnd(const juce::AudioTransportSource& transport)
 {
@@ -2425,6 +2454,14 @@ bool StemLabAudioProcessor::loadPreviewFile(const juce::File& file, int previewS
     if (reader == nullptr)
         return false;
 
+    // The transport's length comes from the reader, so it has to be told the
+    // same truth as the strip: without this the clock counts up to a header's
+    // 00:30 while the strip says 00:02, and the last 28 seconds play silence.
+    clampReaderToFileContents(*reader, file);
+
+    if (reader->lengthInSamples <= 0)
+        return false;
+
     const auto sourceRate = reader->sampleRate;
 
     previewTransport.stop();
@@ -2480,6 +2517,7 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
 
     double duration = 0.0;
     bool previewAvailable = false;
+    bool sourceIsTruncated = false;
 
     std::unique_ptr<juce::AudioFormatReader> infoReader(previewFormats.createReaderFor(file));
 
@@ -2498,6 +2536,21 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
             setActionStatus("Selected audio file contains no audio");
             return false;
         }
+
+        /*  What the header says is not always what is in the file. An
+            uncompressed container declares the size of its audio, and JUCE
+            hands that number straight back as lengthInSamples, so a download
+            or a render that stopped early reports the length it was going to
+            be rather than the length it is: a 30-second file cut off after
+            two seconds still measures 00:30, in the strip, in the transport
+            clock, on the grid and in every duration the engine is given.
+
+            The bytes on disk are the check, and they only mean this for a
+            format whose frames are a fixed size - see SourceLength.h, which
+            leaves every compressed format alone rather than shortening a
+            file that was never damaged.
+        */
+        sourceIsTruncated = clampReaderToFileContents(*infoReader, file);
 
         if (infoReader->sampleRate > 0.0)
         {
@@ -2611,9 +2664,14 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
     // Loading a source is a user change, so it reports in the header; the
     // work line drops back to idle instead of keeping the last job's text.
     setStatus("Ready");
-    setActionStatus(previewAvailable
-                        ? "Source ready"
-                        : "Source ready - preview unavailable until stems are made");
+
+    // Truncation outranks the preview note: one says a control is missing
+    // for now, the other says the file the user just chose is damaged.
+    setActionStatus(sourceIsTruncated
+                        ? "Source ready - file is cut short of the length its header claims"
+                        : (previewAvailable
+                               ? "Source ready"
+                               : "Source ready - preview unavailable until stems are made"));
 
     /*
         A new source is not analysed until it is asked for. beatThisEnabled

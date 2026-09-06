@@ -1317,6 +1317,15 @@ StemLaneComponent::StemLaneComponent(StemLabAudioProcessor& processorIn, int ste
             refreshEditor();
     };
 
+    /*
+     * The checkbox has no label of its own, and what it governs is not what
+     * a lane's other two buttons govern: it decides what Save Stems writes
+     * and what a drag carries, while S and M decide what comes out of the
+     * speakers. Unlabelled, the two read as the same kind of switch - an
+     * excluded lane keeps playing, and nothing on the row says why.
+     */
+    include.setTooltip("Include this stem when saving or dragging - S and M decide what you hear");
+
     addAndMakeVisible(include);
 
     nameLabel.setFont(theme::fonts::laneName());
