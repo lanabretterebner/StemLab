@@ -94,6 +94,14 @@ namespace stemlab::widgets
 
         bool jobRunning = false;
 
+        /*  What the compile switch above the list currently says. The rows
+            need it: a Compile button offered while compiling is off, or on a
+            machine that cannot compile, starts a job whose only possible
+            answer is a refusal.
+        */
+        bool compileEnabled = false;
+        bool compileSupported = true;
+
         /*
          * Laid out once in resized() and read by paint(). The two used to
          * derive the same geometry independently from the same constants,

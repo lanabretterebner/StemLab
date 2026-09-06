@@ -3444,9 +3444,18 @@ bool StemLabAudioProcessor::startStandaloneRecording()
 
     stopStandalonePlayback();
 
+    /*  Reported the way the other record button reports: a press that never
+        started a recording is a failure, and setActionStatus is a line that
+        clears itself after a few seconds. Record PC publishes the same class
+        of event through setStatus(..., statusFailure) - red, with the cross,
+        and it stays - so a user who looked away still learns the button did
+        nothing. Record In said it in grey and took it back, over a footer
+        still showing whatever came before, which was sometimes a green tick
+        from a finished separation.
+    */
     if (standaloneDeviceManager == nullptr)
     {
-        setActionStatus("Audio device is not ready");
+        setStatus("Input recording failed - the audio device is not ready", statusFailure);
         return false;
     }
 
@@ -3454,7 +3463,8 @@ bool StemLabAudioProcessor::startStandaloneRecording()
 
     if (device == nullptr || device->getActiveInputChannels().countNumberOfSetBits() == 0)
     {
-        setActionStatus("Choose a microphone/interface input in Settings");
+        setStatus("Input recording failed - choose a microphone or interface input in Settings",
+                  statusFailure);
         return false;
     }
 
@@ -3462,7 +3472,7 @@ bool StemLabAudioProcessor::startStandaloneRecording()
 
     if (sampleRate <= 0.0)
     {
-        setActionStatus("Audio input sample rate is not ready");
+        setStatus("Input recording failed - the input sample rate is not ready", statusFailure);
         return false;
     }
 
@@ -3926,6 +3936,31 @@ void StemLabAudioProcessor::setJobRootDirectory(const juce::File& directory)
 {
     if (!directory.isDirectory())
         return;
+
+    /*  Existing is not the same as usable. /proc is a directory, and Change
+        accepted it happily - "File location set: proc", written to
+        settings.json - and the next Separate then failed with "StemLab
+        engine failed", pointing at the engine over a folder the engine
+        could not create a job in. The same holds for a read-only mount or
+        an external drive plugged in read-only.
+
+        Asked by writing, because that is the only answer that counts:
+        permissions, quota, a full disk and a read-only filesystem all end
+        the same way and none of them can be read off the directory itself.
+    */
+    // Named per process: two StemLabs starting together must not delete
+    // each other's probe and leave one behind in the user's folder.
+    const auto probe =
+        directory.getChildFile(".stemlab-write-probe-" + juce::Uuid().toDashedString());
+
+    if (!probe.replaceWithText("probe"))
+    {
+        setStatus("Cannot write to " + directory.getFullPathName() + " - file location unchanged",
+                  statusFailure);
+        return;
+    }
+
+    probe.deleteFile();
 
     {
         const juce::ScopedLock lock(stateLock);
@@ -5264,6 +5299,17 @@ void StemLabAudioProcessor::handleEngineOutputLine(const juce::String& line)
         if (stage.isNotEmpty() && !engineCancelRequested.load())
             setStatus(stage);
 
+        /*  A stage reported at 100% is the engine's own last word on the
+            job, and for a model job it is the only place a number like
+            "Reclaimed 667.0 MB" is ever said. finishModelJob used to write
+            "<label> complete" straight over it.
+        */
+        if (stage.isNotEmpty() && percent >= 100.0)
+        {
+            const juce::ScopedLock lock(stateLock);
+            finalEngineStage = stage;
+        }
+
         return;
     }
 
@@ -5471,6 +5517,7 @@ int StemLabAudioProcessor::saveSelectedStemsTo(const juce::File& destination)
     const auto baseName = getCaptureFile().getFileNameWithoutExtension();
 
     int saved = 0;
+    int replacedFiles = 0;
 
     // Saving goes through the same loop-aware render as dragging: with the
     // loop on, what lands in the folder is the looped section, not the whole
@@ -5488,8 +5535,13 @@ int StemLabAudioProcessor::saveSelectedStemsTo(const juce::File& destination)
 
         const auto target = destination.getChildFile(baseName + "_" + getStemName(i));
 
-        if (exportLoopedRegions(source, target).existsAsFile())
+        bool replaced = false;
+
+        if (exportLoopedRegions(source, target, &replaced).existsAsFile())
+        {
             ++saved;
+            replacedFiles += replaced ? 1 : 0;
+        }
     }
 
     for (const auto& item : getRecursiveStemItems())
@@ -5500,11 +5552,41 @@ int StemLabAudioProcessor::saveSelectedStemsTo(const juce::File& destination)
         auto safeName = item.id.replace("/", "_").replace("\\", "_");
         const auto target = destination.getChildFile(baseName + "_" + safeName);
 
-        if (exportLoopedRegions(item.file, target).existsAsFile())
+        bool replaced = false;
+
+        if (exportLoopedRegions(item.file, target, &replaced).existsAsFile())
+        {
             ++saved;
+            replacedFiles += replaced ? 1 : 0;
+        }
     }
 
-    setActionStatus("Saved " + juce::String(saved) + (saved == 1 ? " stem" : " stems"));
+    /*  Saving nothing is not news, it is a failure. A destination that
+        cannot be written - a read-only mount, a full disk, /proc - produced
+        "Saved 0 stems" in the same neutral grey as a success, on a line that
+        clears itself after a few seconds, while the footer kept the green
+        tick from the separation. Say it in the place failures are said, and
+        name the folder, because the folder is the thing that was wrong.
+    */
+    if (saved == 0)
+    {
+        setStatus("Could not write to " + destination.getFullPathName(), statusFailure);
+        return 0;
+    }
+
+    /*  And say what was destroyed. A save into a folder the user picked
+        deletes anything already carrying a stem's name - verified on files
+        StemLab never wrote - with no prompt, no warning and no mention
+        afterwards. It still overwrites, which is what a save is for; it no
+        longer does it silently.
+    */
+    auto summary = "Saved " + juce::String(saved) + (saved == 1 ? " stem" : " stems");
+
+    if (replacedFiles > 0)
+        summary << ", replacing " << replacedFiles
+                << (replacedFiles == 1 ? " file that was there" : " files that were there");
+
+    setActionStatus(summary);
 
     return saved;
 }
@@ -5523,8 +5605,12 @@ std::vector<stemlab::loops::Region> StemLabAudioProcessor::loopRegionsSnapshot()
  * hand the returned file away without touching the job's output.
  */
 juce::File StemLabAudioProcessor::exportLoopedRegions(const juce::File& source,
-                                                      const juce::File& destination)
+                                                      const juce::File& destination,
+                                                      bool* replacedExisting)
 {
+    if (replacedExisting != nullptr)
+        *replacedExisting = false;
+
     if (!source.existsAsFile())
         return {};
 
@@ -5541,7 +5627,12 @@ juce::File StemLabAudioProcessor::exportLoopedRegions(const juce::File& source,
             target = target.getSiblingFile(target.getFileName() + source.getFileExtension());
 
         if (target.existsAsFile())
+        {
+            if (replacedExisting != nullptr)
+                *replacedExisting = true;
+
             target.deleteFile();
+        }
 
         return source.copyFileTo(target) ? target : juce::File{};
     }
@@ -5561,7 +5652,12 @@ juce::File StemLabAudioProcessor::exportLoopedRegions(const juce::File& source,
         target = target.getSiblingFile(target.getFileName() + ".wav");
 
     if (target.existsAsFile())
+    {
+        if (replacedExisting != nullptr)
+            *replacedExisting = true;
+
         target.deleteFile();
+    }
 
     auto fileStream = std::make_unique<juce::FileOutputStream>(target);
 
@@ -6757,7 +6853,42 @@ void StemLabAudioProcessor::loadPreferences()
         return;
     }
 
-    applyPreferences(juce::JSON::parse(file));
+    const auto parsed = juce::JSON::parse(file);
+
+    if (parsed.getDynamicObject() != nullptr)
+    {
+        applyPreferences(parsed);
+        return;
+    }
+
+    /*  Unreadable, and about to be replaced.
+
+        Coming up on defaults is right - a settings file is not worth
+        refusing to start over - but the app used to do it in silence and
+        then overwrite the evidence within seconds: truncated, empty, byte
+        garbage, "null", a bare array, all five landed on a normal-looking
+        window with every preference reset and nothing left to recover from.
+        The readable prefix of a truncated file went with it.
+
+        So the file is moved aside before anything writes over it, keeping
+        one generation, and the reset is said out loud once. Nothing here
+        can fail loudly: a settings file that cannot be renamed must still
+        not stop the app opening.
+    */
+    const auto kept = file.getSiblingFile(file.getFileName() + ".unreadable");
+
+    kept.deleteFile();
+
+    const auto moved = file.moveFileTo(kept);
+
+    setStatus(moved ? "Settings could not be read - reset to defaults, the old file is kept "
+                      "beside it as settings.json.unreadable"
+                    : "Settings could not be read - reset to defaults",
+              statusFailure);
+
+    // As if there had been no file at all: a project may still speak for
+    // this user once, exactly as on a first run.
+    preferencesMayBeAdopted = true;
 }
 
 void StemLabAudioProcessor::applyPreferences(const juce::var& parsed)
@@ -6802,6 +6933,12 @@ void StemLabAudioProcessor::applyPreferences(const juce::var& parsed)
 
     if (has("loopQuantize"))
         setLoopQuantizeMode(static_cast<int>(get("loopQuantize")));
+
+    if (has("analysisQuality"))
+        setSourceAnalysisMode(static_cast<int>(get("analysisQuality")));
+
+    if (has("tempoAnalysis"))
+        setTempoAnalysisMode(static_cast<int>(get("tempoAnalysis")));
 
     /*  The manual grid is deliberately not among these.
 
@@ -6880,6 +7017,15 @@ void StemLabAudioProcessor::savePreferences() const
     rootObject->setProperty("gridMode",
                             gridMode == gridManual ? static_cast<int>(gridSource) : gridMode);
     rootObject->setProperty("loopQuantize", loopQuantizeMode.load());
+
+    /*  Both of these say how somebody works, like everything above them, and
+        neither was written down. Choosing Accurate is a deliberate trade of
+        time for a better reading, and Dynamic is a statement about the music
+        the user makes; both silently fell back to Fast and Static on the next
+        launch, so the next analysis quietly ran at a quality nobody chose.
+    */
+    rootObject->setProperty("analysisQuality", sourceAnalysisMode.load());
+    rootObject->setProperty("tempoAnalysis", tempoAnalysisMode.load());
     rootObject->setProperty("editorScale", editorScalePercent.load());
     rootObject->setProperty("jobRootDirectory", getJobRootDirectory().getFullPathName());
 
@@ -7563,6 +7709,15 @@ void StemLabAudioProcessor::setTempoAnalysisMode(int mode)
 {
     tempoAnalysisMode.store(juce::jlimit(static_cast<int>(tempoStatic),
                                          static_cast<int>(tempoDynamic), mode));
+
+    // Remembered, like the neighbouring rows: this is a preference about the
+    // music somebody works on, not a fact about one file.
+    schedulePreferenceSave();
+
+    // And the panel is told, which this one never did - the pill filled in
+    // because the button drew itself, not because anything asked the
+    // processor what the mode now was.
+    sendChangeMessage();
 }
 
 std::vector<StemLabTempoSegment> StemLabAudioProcessor::getSourceTempoSegments() const
@@ -7591,6 +7746,7 @@ void StemLabAudioProcessor::setSourceAnalysisMode(int mode)
     // when Analyse is pressed, never as a side effect of changing a setting.
     sourceAnalysisMode.store(juce::jlimit(static_cast<int>(analysisAccurate),
                                           static_cast<int>(analysisFast), mode));
+    schedulePreferenceSave();
     sendChangeMessage();
 }
 
@@ -7759,8 +7915,18 @@ bool StemLabAudioProcessor::refreshModelInventory(bool probeCompile)
             broken, not running, no inventory" it sat on "Asking the engine
             what is installed..." for ever, and a partial install where
             separation itself works is exactly when somebody opens it.
+
+            And said in the status area too, for the reason the failed-read
+            branch below gives at length: nothing opens the Models page by
+            itself when the inventory never arrives, so the page that would
+            explain it is the page nobody sees. This branch stayed silent,
+            which made the two ways of having no engine report differently -
+            STEMLAB_ENGINE unset announced itself in the footer, while
+            STEMLAB_ENGINE pointing at a path that does not resolve left the
+            window on "Ready" with RoFormer still offered in the header.
         */
         modelInventoryBroken.store(true);
+        setStatus("The engine could not report its models - see Settings > Models");
         sendChangeMessage();
         return false;
     }
@@ -7916,6 +8082,12 @@ bool StemLabAudioProcessor::launchModelJob(const juce::StringArray& arguments,
         return false;
     }
 
+    {
+        // One job's last word must never be read as the next job's.
+        const juce::ScopedLock lock(stateLock);
+        finalEngineStage.clear();
+    }
+
     if (arguments.isEmpty())
         return false;
 
@@ -7977,12 +8149,33 @@ void StemLabAudioProcessor::finishModelJob(const juce::String& label, int exitCo
     // "complete" over the top of that would read as though it had worked.
     constexpr int notApplicableExitCode = 3;
 
+    const auto finalStage = [this]
+    {
+        const juce::ScopedLock lock(stateLock);
+        return finalEngineStage;
+    }();
+
     if (exitCode == 130 || modelJobCancelRequested.load())
         setStatus(label + " cancelled");
     else if (exitCode == notApplicableExitCode)
         ;
     else if (exitCode != 0)
-        setStatus(label + " failed - see diagnostics", statusFailure);
+    {
+        /*  The engine's reason outranks the generic sentence, exactly as it
+            does on the separation path. It had already said "Failed -
+            bs-roformer-download is not installed in the StemLab runtime" and
+            "Failed - BS-RoFormer is not downloaded yet"; both were replaced
+            by "see diagnostics", which is where the reason then was.
+        */
+        if (!getStatus().startsWithIgnoreCase("Failed - "))
+            setStatus(label + " failed - see diagnostics", statusFailure);
+    }
+    else if (finalStage.isNotEmpty())
+    {
+        // What the engine measured, kept: "Removing complete - Reclaimed
+        // 667.0 MB" rather than "Removing complete" over the top of it.
+        setStatus(label + " complete - " + finalStage);
+    }
     else
         setStatus(label + " complete");
 
@@ -8307,11 +8500,29 @@ stemlab::quantize::Grid StemLabAudioProcessor::getLoopQuantizeGrid(
 
 bool StemLabAudioProcessor::canQuantizeLoops() const
 {
+    if (!sourceIsLongEnoughToRule())
+        return false;
+
     const auto snapshot = getBeatSnapshot();
 
     return stemlab::quantize::canQuantize(
         getLoopQuantizeGrid(snapshot),
         static_cast<stemlab::quantize::Resolution>(loopQuantizeMode.load()));
+}
+
+bool StemLabAudioProcessor::sourceIsLongEnoughToRule() const
+{
+    /*  The same question the lane asks before it draws anything. It used to
+        ask it alone, so on a track shorter than three bars the lane drew no
+        grid while the snap went on using the tempo anyway: a 2.2-second
+        sweep on a 24-second file at 20 BPM came back as a loop over half the
+        track, and the Loop quantise row stayed lit as though it were
+        working. See rulesAGrid in WaveformGrid.h.
+    */
+    const auto grid = getWaveformGridScalars();
+
+    return stemlab::waveform::rulesAGrid(grid.bpm > 0.0 ? 60.0 / grid.bpm : 0.0,
+                                         grid.numerator, getTransportLengthSeconds());
 }
 
 stemlab::quantize::Range
@@ -8324,6 +8535,11 @@ StemLabAudioProcessor::quantizeLoopRange(stemlab::quantize::Range range) const
         read by the loop tick), so the transport is the clock the snapped
         edges have to be true in.
     */
+    // A sweep lands where it was swept when there is no grid to land on -
+    // see sourceIsLongEnoughToRule.
+    if (!sourceIsLongEnoughToRule())
+        return range;
+
     // Held for the whole call: the Grid's spans point into it.
     const auto snapshot = getBeatSnapshot();
 

@@ -325,6 +325,29 @@ void StemLabLookAndFeel::drawButtonText(juce::Graphics& g, juce::TextButton& but
 {
     const auto variant = variantOf(button);
 
+    /*  A colour set on the button itself wins.
+
+        This look-and-feel is published as the process default so that JUCE's
+        own standalone chrome is themed, which means it also paints buttons
+        that are not StemLab's and do not sit on StemLab's surfaces. The
+        "Audio input is muted" strip is lightgoldenrodyellow and its
+        Settings... button came out at 1.13:1 against it - present, working,
+        and invisible. Nothing in StemLab specifies these colours, so
+        honouring them costs the theme nothing and gives the one caller that
+        needs to escape it a way to.
+    */
+    if (button.isColourSpecified(juce::TextButton::textColourOffId))
+    {
+        g.setColour(theme::colors::dimIfDisabled(
+            button.findColour(button.getToggleState() ? juce::TextButton::textColourOnId
+                                                      : juce::TextButton::textColourOffId),
+            button.isEnabled()));
+
+        g.drawFittedText(button.getButtonText(), button.getLocalBounds(),
+                         juce::Justification::centred, 1);
+        return;
+    }
+
     juce::Colour color = theme::colors::text();
 
     if (variant == "primary")

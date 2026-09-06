@@ -772,6 +772,12 @@ private:
     int lastFileMetaLabelWidth = -1;
     bool lastFileMetaClipped = false;
 
+    // The footer's work line, which is the longest text the app writes and
+    // the one label of the four that never had a tooltip.
+    juce::String lastStatusMeasured;
+    int lastStatusLabelWidth = -1;
+    bool lastStatusClipped = false;
+
     juce::String lastJobPathRaw;
     juce::String lastJobPathElided;
     int lastJobPathRawWidth = -1;

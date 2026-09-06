@@ -94,6 +94,29 @@ struct GridLine
     int beatInBar = 0;
 };
 
+/*  Whether a file is long enough to be worth ruling at all.
+
+    A lane draws nothing on a track shorter than three bars: one or two
+    lines is not a ruler, it is a decoration over most of the audio. The
+    rule is right, but it lived only in the painter - so loop quantise went
+    on snapping to lines nobody had drawn. On a 24-second file at 20 BPM a
+    2.2-second sweep became a loop over half the track, with nothing on
+    screen to explain where the edges came from, and the quantise row stayed
+    lit as though it were working.
+
+    LoopQuantize.h states the invariant the two halves have to keep: "a loop
+    snapped to a line the lane did not draw would sit visibly off its own
+    gridlines". It did not sit off them - there were none. Both sides ask
+    here now.
+*/
+constexpr bool rulesAGrid(double secondsPerBeat, int beatsPerBar, double lengthSeconds)
+{
+    if (!(secondsPerBeat > 0.0) || beatsPerBar <= 0 || !(lengthSeconds > 0.0))
+        return false;
+
+    return secondsPerBeat * static_cast<double>(beatsPerBar) * 3.0 < lengthSeconds;
+}
+
 struct GridRequest
 {
     double visibleStart = 0.0;
@@ -142,8 +165,45 @@ inline std::vector<GridLine> makeGridLines(const GridRequest& request)
     const auto numerator = std::max(1, request.numerator);
     const auto denominator = std::max(1, request.denominator);
     const auto beatDuration = 60.0 / request.bpm * 4.0 / denominator;
+    /*  How close two grid lines may be drawn. Beats have answered to this
+        since they were written; bars did not, which is the whole of the
+        defect above.
+    */
+    constexpr double minLineSpacing = 9.0;
+
     const auto pixelsPerBeat = beatDuration / span * request.pixelWidth;
     const int subdivisions = pixelsPerBeat >= 120.0 ? 4 : (pixelsPerBeat >= 60.0 ? 2 : 1);
+
+    /*  Bars thin out the same way beats do.
+
+        Beats are dropped below minLineSpacing and subdivisions below 60, so
+        the question of how close is too close was already answered - but bar
+        lines were emitted at any spacing at all. On a six-minute track at 1x
+        that put a line every 3.09 px, 179 of them across a 560 px lane, with
+        77% of the lane's columns carrying grid ink and the audio unreadable
+        behind it. A two-minute track at 3x reaches the same 9 px the code
+        refuses to draw beats at.
+
+        Halving keeps bar one and every 2nd, 4th, 8th bar after it, which is
+        how the numbering already thins its labels, so the lines that survive
+        still fall on musically meaningful bars rather than an arbitrary
+        stride.
+    */
+    const auto barStep = [pixelsPerBeat, numerator]
+    {
+        const auto pixelsPerBar = pixelsPerBeat * static_cast<double>(numerator);
+
+        int step = 1;
+
+        while (pixelsPerBar * step < minLineSpacing && step < 4096)
+            step *= 2;
+
+        return step;
+    }();
+
+    // 1-based bar numbers: bar one is always drawn, whatever the step.
+    const auto barIsDrawn = [barStep](int barNumber)
+    { return barStep <= 1 || ((barNumber - 1) % barStep) == 0; };
 
     if (request.useDetectedBeats && !request.beats.empty())
     {
@@ -223,8 +283,11 @@ inline std::vector<GridLine> makeGridLines(const GridRequest& request)
             if (current >= request.visibleStart && current <= request.visibleEnd)
             {
                 if (isBar)
-                    lines.push_back({current, GridLineKind::bar, barNumber, 0});
-                else if (pixelsPerBeat >= 9.0)
+                {
+                    if (barIsDrawn(barNumber))
+                        lines.push_back({current, GridLineKind::bar, barNumber, 0});
+                }
+                else if (pixelsPerBeat >= minLineSpacing)
                     lines.push_back({current, GridLineKind::beat, barNumber, beatInBar});
             }
 
@@ -265,8 +328,12 @@ inline std::vector<GridLine> makeGridLines(const GridRequest& request)
                 static_cast<double>(beatIndex) / static_cast<double>(numerator)));
 
             if (withinBar == 0)
-                lines.push_back({seconds, GridLineKind::bar, barIndex + 1, 0});
-            else if (pixelsPerBeat >= 9.0)
+            {
+                if (barIsDrawn(static_cast<int>(barIndex) + 1))
+                    lines.push_back({seconds, GridLineKind::bar,
+                                     static_cast<int>(barIndex) + 1, 0});
+            }
+            else if (pixelsPerBeat >= minLineSpacing)
                 lines.push_back({seconds, GridLineKind::beat, barIndex + 1, withinBar});
 
             if (subdivisions > 1)

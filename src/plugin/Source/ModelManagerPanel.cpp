@@ -198,7 +198,8 @@ namespace stemlab::widgets
             };
         }
 
-        void configureModel(const StemLabAudioProcessor::ManagedModel& model)
+        void configureModel(const StemLabAudioProcessor::ManagedModel& model,
+                            bool compileEnabled, bool compileSupported)
         {
             title = model.label;
             detail = model.purpose;
@@ -215,11 +216,33 @@ namespace stemlab::widgets
             action.setButtonText(model.present ? "Remove" : "Get");
             action.setEnabled(true);
 
+            /*  Offered only where it could work.
+
+                The button used to be shown and enabled on nothing but the
+                model, so pressing it while "Compile separations" was off
+                started a job whose only possible answer was a refusal - and
+                that refusal arrived on the activity line far below the
+                unticked checkbox, telling a GUI user to set an environment
+                variable for the checkbox on the same page. On a machine that
+                cannot compile at all it was worse: the row went on offering
+                it directly under a switch that had already said so.
+
+                A machine that cannot compile gets no button; merely switched
+                off leaves it visible and disabled, so the row still says the
+                model is compilable, and the tooltip names the switch instead
+                of a shell.
+            */
             const auto canCompile = model.compilable && model.present;
 
             secondary.setButtonText(model.compiled ? "Compiled" : "Compile");
-            secondary.setVisible(canCompile);
-            secondary.setEnabled(canCompile && !model.compiled);
+            secondary.setVisible(canCompile && compileSupported);
+            secondary.setEnabled(canCompile && compileSupported && compileEnabled
+                                 && !model.compiled);
+
+            if (canCompile && compileSupported && !compileEnabled)
+                secondary.setTooltip("Turn on Compile separations above to compile this model");
+            else
+                secondary.setTooltip({});
 
             // Why a model is not compilable is engine trivia - "Beat This! is
             // not among the patched models" told a user nothing they wanted,
@@ -414,7 +437,18 @@ namespace stemlab::widgets
         };
 
         addAndMakeVisible(downloadAllButton);
-        addChildComponent(cancelButton);
+
+        /*  Shown always, enabled only while a job runs - for the reason the
+            activity strip above is reserved. Appearing on demand, Cancel took
+            the rightmost footer slot and pushed Download all 110 px left, so
+            the second click of a double-click on Download all landed on
+            Cancel and aborted the download the first click had started. The
+            two spans overlapped by about 70 px, and it went wrong in both
+            directions: a click aimed at Cancel just after a job ended landed
+            on Download all and started a fresh 719.5 MB fetch.
+        */
+        cancelButton.setEnabled(false);
+        addAndMakeVisible(cancelButton);
     }
 
     ModelManagerPanel::~ModelManagerPanel() = default;
@@ -488,7 +522,19 @@ namespace stemlab::widgets
     void ModelManagerPanel::setCompileState(bool enabled, bool supported,
                                             const juce::String& reason)
     {
+        // The rows read these too, so a change here has to reach them.
+        const auto changed = enabled != compileEnabled || supported != compileSupported;
+
+        compileEnabled = enabled;
+        compileSupported = supported;
+
         compileSwitch->setState(enabled, supported);
+
+        if (changed)
+        {
+            rebuildRows();
+            resized();
+        }
 
         // The reason lives here rather than on a line of its own. It is worth
         // having - an unset opt-in and a missing compiler need opposite
@@ -533,7 +579,7 @@ namespace stemlab::widgets
             // job at a time, and a second click would only be rejected deeper
             // down where the user cannot see why.
             downloadAllButton.setEnabled(!busy);
-            cancelButton.setVisible(busy);
+            cancelButton.setEnabled(busy);
             activityBar.setVisible(busy);
             activityPercent.setVisible(busy);
 
@@ -563,7 +609,7 @@ namespace stemlab::widgets
         for (const auto& model : models)
         {
             auto entry = std::make_unique<Row>(Row::Kind::model, model.id);
-            entry->configureModel(model);
+            entry->configureModel(model, compileEnabled, compileSupported);
 
             entry->onAction = [this](const juce::String& id)
             {

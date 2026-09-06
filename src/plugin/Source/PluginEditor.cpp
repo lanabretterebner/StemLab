@@ -48,6 +48,48 @@ juce::File abletonSetupScript()
     return {};
 }
 
+/*  JUCE's own "Audio input is muted to avoid feedback loop" strip carries a
+    Settings... button, and that button is the one piece of the standalone's
+    chrome StemLab's theme makes unreadable.
+
+    The strip paints itself lightgoldenrodyellow and JUCE blackens the label
+    on it explicitly (juce_StandaloneFilterWindow.h: notification.setColour
+    (Label::textColourId, Colours::black)) - but not the button beside it.
+    StemLab publishes its dark look-and-feel as the process default so the
+    rest of that chrome is themed, which leaves the button drawing pale text
+    on pale yellow: measured at 1.13:1, the darkest pixel anywhere in it
+    #EBEBE9 against #FAFAD2, legible only at 500% magnification. It still
+    works, which is worse than not being there.
+
+    Found by walking rather than by reaching into JUCE: the button is private
+    to an inner class. The editor's own subtree is skipped so this can never
+    reach a StemLab control.
+*/
+void blackenStandaloneNotificationButtons(juce::Component& root, const juce::Component* skip)
+{
+    for (auto* child : root.getChildren())
+    {
+        if (child == nullptr || child == skip)
+            continue;
+
+        if (auto* button = dynamic_cast<juce::TextButton*>(child))
+        {
+            const auto text = button->getButtonText();
+
+            if (text == "Settings..." || text == "Unmute Input")
+            {
+                button->setColour(juce::TextButton::textColourOffId, juce::Colours::black);
+                button->setColour(juce::TextButton::textColourOnId, juce::Colours::black);
+                button->setColour(juce::TextButton::buttonColourId,
+                                  juce::Colours::black.withAlpha(0.10f));
+                continue;
+            }
+        }
+
+        blackenStandaloneNotificationButtons(*child, skip);
+    }
+}
+
 juce::String formatSeconds(double seconds)
 {
     // Written as !(>= 0) so a NaN - an unfinished duration, a division by a
@@ -657,7 +699,7 @@ void StemLaneWaveform::paint(juce::Graphics& g)
             const auto secondsPerBeat = 60.0 / gridBpm;
             const auto beatsPerBar = juce::jmax(1, lastDisplay.gridNumerator);
 
-            if (secondsPerBeat > 0.0 && secondsPerBeat * beatsPerBar * 3.0 < length)
+            if (stemlab::waveform::rulesAGrid(secondsPerBeat, beatsPerBar, length))
             {
                 /*
                  * The lines themselves come from makeGridLines, which is
@@ -2011,6 +2053,8 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
                      */
                     windowComponent->setBackgroundColour(theme::colors::ground());
 
+                    blackenStandaloneNotificationButtons(*windowComponent, safeThis);
+
                     windowComponent->setUsingNativeTitleBar(true);
                     windowComponent->setName("StemLab");
 
@@ -2063,8 +2107,45 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
                      * openScalePercent is the value from before the swap;
                      * reading it here would read the inflated one back.
                      */
-                    const auto openScale = juce::jlimit(window::minScale, window::maxScale,
-                                                        openScalePercent / 100.0);
+                    /*
+                     * And the screen has a say in it. The scale is remembered
+                     * from whatever window the user last dragged, which may
+                     * have been on a much larger monitor; restoring it
+                     * unchecked opened 2208x1474 on a 1024x768 screen, with
+                     * Separate, the transport and the whole footer outside
+                     * the display - the resizer grip with them, so on a
+                     * desktop without a window manager there was nothing left
+                     * to grab. openingScale only ever shrinks, and only as
+                     * far as the app's own minimum.
+                     *
+                     * The chrome is measured rather than assumed: the peer's
+                     * bounds are the window, this component's are the editor
+                     * inside it, and the difference is the title bar and
+                     * border the scale must leave room for. It does not
+                     * depend on the content size, so reading it before the
+                     * resize is right.
+                     */
+                    auto available = juce::Rectangle<int>{};
+
+                    if (auto* display = juce::Desktop::getInstance().getDisplays()
+                                            .getDisplayForRect(safeThis->getScreenBounds()))
+                        available = display->userArea;
+
+                    if (auto* peer = windowComponent->getPeer())
+                    {
+                        const auto editorBounds = safeThis->getScreenBounds();
+                        const auto windowBounds = peer->getBounds();
+
+                        available.setSize(
+                            available.getWidth()
+                                - juce::jmax(0, windowBounds.getWidth() - editorBounds.getWidth()),
+                            available.getHeight()
+                                - juce::jmax(0, windowBounds.getHeight()
+                                                    - editorBounds.getHeight()));
+                    }
+
+                    const auto openScale = window::openingScale(
+                        openScalePercent / 100.0, available.getWidth(), available.getHeight());
 
                     safeThis->setSize(juce::roundToInt(window::width * openScale),
                                       juce::roundToInt(window::height * openScale));
@@ -4550,6 +4631,34 @@ void StemLabAudioProcessorEditor::refreshFromProcessor()
     statusLabel.setText(statusText, juce::dontSendNotification);
 
     /*
+     * And the same measure-then-offer rule the two source-strip labels use.
+     * This is the longest line the app writes and the only one of the four
+     * clippable labels with no tooltip at all, so its tail was simply gone:
+     * a failed system recording reads "...Connection refused (is a PipeWire
+     * or PulseAud" and stops, losing the half that says what to do about it.
+     * Resizing does not help - the panel is one fixed design scaled whole,
+     * so the font grows with the space and it clips at the same character.
+     */
+    {
+        const auto available =
+            statusLabel.getWidth() - statusLabel.getBorderSize().getLeftAndRight();
+
+        if (statusText != lastStatusMeasured || available != lastStatusLabelWidth)
+        {
+            lastStatusMeasured = statusText;
+            lastStatusLabelWidth = available;
+
+            const juce::Font statusFont{theme::fonts::status()};
+
+            lastStatusClipped =
+                available > 0 && juce::GlyphArrangement::getStringWidth(statusFont, statusText) >
+                                     static_cast<float>(available);
+        }
+
+        statusLabel.setTooltip(lastStatusClipped ? statusText : juce::String());
+    }
+
+    /*
      * The severity describes rawStatus, and showSummary has just replaced
      * it with a sentence about the finished job. Every failure that leaves
      * hasSuccessfulJob() standing - an adaptive split that will not start,
@@ -4816,9 +4925,16 @@ void StemLabAudioProcessorEditor::chooseSaveFolder()
         return;
     }
 
+    /*  StemLab's own media directory, not JUCE's guess at one.
+        StemLabPaths documents at length why userMusicDirectory cannot be
+        used for this: it never consults XDG_MUSIC_DIR and falls back to a
+        literal ~/Music, so on a desktop whose music folder is ~/Musik the
+        chooser opened somewhere the app itself never writes. Every other
+        path in the app goes through paths::, and so should the place these
+        choosers start.
+    */
     outputFolderChooser = std::make_unique<juce::FileChooser>(
-        "Choose where to save selected stems",
-        juce::File::getSpecialLocation(juce::File::userMusicDirectory));
+        "Choose where to save selected stems", stemlab::paths::userMediaDirectory());
 
     outputFolderChooser->launchAsync(juce::FileBrowserComponent::openMode |
                                          juce::FileBrowserComponent::canSelectDirectories,
@@ -4892,7 +5008,7 @@ void StemLabAudioProcessorEditor::chooseJobRootFolder()
     auto start = processor.getJobRootDirectory();
 
     if (!start.isDirectory())
-        start = juce::File::getSpecialLocation(juce::File::userMusicDirectory);
+        start = stemlab::paths::userMediaDirectory();
 
     jobFolderChooser = std::make_unique<juce::FileChooser>("Choose StemLab file location", start);
 
@@ -4977,7 +5093,7 @@ void StemLabAudioProcessorEditor::handleMidiMenuResult(int result, const juce::S
     }
 
     fileChooser = std::make_unique<juce::FileChooser>(
-        "Save MIDI as", juce::File::getSpecialLocation(juce::File::userMusicDirectory)
+        "Save MIDI as", stemlab::paths::userMediaDirectory()
                             .getChildFile(info.midiFile.getFileName()),
         "*.mid");
 
@@ -5300,6 +5416,22 @@ void StemLabAudioProcessorEditor::wireSettingsPage()
             processor.postUiStatus(
                 "Beat grid follows the analysed source - none yet, so no grid is drawn");
         }
+        else if (mode == StemLabAudioProcessor::gridHost
+                 && processor.getWaveformGridScalars().bpm <= 0.0)
+        {
+            /*  And the same honesty for Host, which had none. In the
+                standalone there is no host at all - lastHostBpm is only ever
+                written inside an `if (!isStandaloneApp())`, so it keeps its
+                -1.0 forever and the grid vanishes from every lane - while
+                the readout said "Beat grid follows host tempo" without a
+                caveat and the choice persisted, so the lanes stayed blank
+                across restarts with nothing to say why.
+            */
+            processor.postUiStatus(
+                processor.isStandaloneApp()
+                    ? "Beat grid follows the host - a standalone has none, so no grid is drawn"
+                    : "Beat grid follows the host - none reported yet, so no grid is drawn");
+        }
         else
         {
             const juce::StringArray names{"host tempo", "analysed source", "manual tempo"};
@@ -5410,7 +5542,10 @@ void StemLabAudioProcessorEditor::refreshSettingsPage()
         const auto snapshot = processor.getBeatSnapshot();
         const auto grid = processor.getLoopQuantizeGrid(snapshot);
 
-        settings.loopQuantizeAvailable = grid.secondsPerBeat > 0.0 || grid.rulingFromBeats();
+        // And greyed out when the lane declines to rule a grid at all, so the
+        // row stops offering a snap to lines that are not drawn.
+        settings.loopQuantizeAvailable = (grid.secondsPerBeat > 0.0 || grid.rulingFromBeats())
+                                         && processor.sourceIsLongEnoughToRule();
     }
 
     settings.manualBpm = processor.getManualGridBpm();

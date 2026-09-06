@@ -700,6 +700,14 @@ public:
         the grid switched off, or a source with no tempo behind it. */
     bool canQuantizeLoops() const;
 
+    /** Whether the source is long enough for a grid to be ruled over it at
+        all - the lane's own rule, asked where the snap can see it too. */
+    bool sourceIsLongEnoughToRule() const;
+
+    // The engine's own last word on a job - a stage it reported at 100%,
+    // which for a model job carries the only number worth keeping.
+    juce::String finalEngineStage;
+
     /** A normalised range put onto the grid, or returned as given when the
         setting is off or no grid exists. The lane runs its live drag preview
         through this so the highlight shows where the loop will land. */
@@ -1065,7 +1073,12 @@ private:
 #endif
 
     /** The stem file itself, or the playback loop's regions rendered to WAV. */
-    juce::File exportLoopedRegions(const juce::File& source, const juce::File& destination);
+    /*  replacedExisting, when given, says whether a file was already there
+        and has been overwritten - the one thing a save into a folder the
+        user picked can destroy, and the one thing it never used to mention.
+    */
+    juce::File exportLoopedRegions(const juce::File& source, const juce::File& destination,
+                                   bool* replacedExisting = nullptr);
 
     /** The merged loop regions, copied under the selection lock. */
     std::vector<stemlab::loops::Region> loopRegionsSnapshot() const;

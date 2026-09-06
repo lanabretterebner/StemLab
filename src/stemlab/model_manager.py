@@ -519,26 +519,102 @@ def _analysis_dir() -> Path | None:
         return None
 
 
+def _models_stored_under(directory: Path | None) -> tuple[str, ...]:
+    """Labels of installed models whose files sit inside this directory.
+
+    A Clear deletes the whole directory, so anything of ours living in it goes
+    too. The rows that need this are the shared stores - the torch hub cache
+    and the HuggingFace hub - which hold the Demucs checkpoint alongside
+    whatever else the user has pulled with those tools.
+    """
+    if directory is None:
+        return ()
+
+    labels = []
+
+    for model in MODELS:
+        located = locate(model.id)
+
+        if located is None:
+            continue
+
+        try:
+            located.relative_to(directory)
+        except ValueError:
+            continue
+
+        labels.append(model.label)
+
+    return tuple(labels)
+
+
+def _clearing_cost(directory: Path | None) -> str:
+    stored = _models_stored_under(directory)
+
+    if not stored:
+        return ""
+
+    return "Clearing this also uninstalls " + ", ".join(stored)
+
+
+def _cache_bytes(path: Path) -> int:
+    """What a cache row may claim: its own bytes, minus our models inside it.
+
+    A shared store holds the Demucs checkpoint next to whatever else torch or
+    huggingface has pulled. Those bytes are already reported by the model row
+    that owns them, so counting them here too made "on disk" larger than the
+    disk. Clearing the row still frees them - it deletes the directory - and
+    the row's warning is what says so.
+    """
+    total = _directory_bytes(path)
+
+    for model in MODELS:
+        located = locate(model.id)
+
+        if located is None:
+            continue
+
+        try:
+            located.relative_to(path)
+        except ValueError:
+            continue
+
+        total -= _directory_bytes(located)
+
+    return max(0, total)
+
+
 def caches() -> tuple[ManagedCache, ...]:
     analysis = _analysis_dir()
-    roformer = _roformer_directory()
+
+    # No BS-RoFormer row. Its path was _roformer_directory()/ROFORMER_MODEL_ID
+    # - byte for byte the directory locate("roformer") reads, holding the
+    # model and nothing else - so a "Clear" under a heading called Caches
+    # destroyed 667 MB of weights in one click, with no confirmation and
+    # nothing on the row to say so. It also counted those bytes a second time
+    # in the "on disk" total, which then read 1.3 GB over a single 667 MB file.
+    #
+    # The Models section above already offers Remove for exactly this, named
+    # for what it does. A second control for it, dressed as scratch space, was
+    # a trap rather than a feature.
 
     # Anything whose path cannot be resolved is omitted: the interface offers
     # a size and a Clear for every row, and it can honestly offer neither.
+    huggingface = _huggingface_hub_cache()
+    torch_hub = _torch_hub_checkpoints()
+
     candidates = (
         (COMPILE_CACHE_ID, "Compiled kernels", _locatable_inductor_cache_dir(), ""),
         # The hub directory, not HF_HOME above it. HF_HOME also holds the
         # login token and any datasets, and this row offers a Clear: pointing
         # it at the parent made "clear the model cache" sign the user out and
         # ignored HF_HUB_CACHE where it was set.
-        ("huggingface", "HuggingFace hub", _huggingface_hub_cache(), ""),
-        ("torch-hub", "Torch hub", _torch_hub_checkpoints(), ""),
-        (
-            "bs-roformer",
-            "BS-RoFormer",
-            roformer / ROFORMER_MODEL_ID if roformer is not None else None,
-            "",
-        ),
+        #
+        # These two are genuinely mixed: whatever else torch and huggingface
+        # have downloaded lives here as well, so the row stays and says what
+        # of ours goes with it instead of pretending the cost is nothing.
+        ("huggingface", "HuggingFace hub", huggingface, _clearing_cost(huggingface)),
+        ("torch-hub", "Torch hub", torch_hub, _clearing_cost(torch_hub)),
         (
             "analysis",
             "Key & BPM results",
@@ -662,7 +738,11 @@ def status(*, probe_compile: bool = False) -> dict[str, object]:
             "id": cache.id,
             "label": cache.label,
             "path": str(cache.path),
-            "bytes": _directory_bytes(cache.path),
+            # Less anything of ours living in it: the Demucs checkpoint sits
+            # in the torch hub cache, and counting it both as an installed
+            # model and again as cache bytes is what made the summary claim
+            # more on disk than the disk holds.
+            "bytes": _cache_bytes(cache.path),
             "warning": cache.warning,
         }
         for cache in caches()
