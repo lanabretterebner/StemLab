@@ -1,6 +1,6 @@
 #include "WaveformCache.h"
 
-#include "SourceLength.h"
+#include "SourceLengthReader.h"
 
 #include <algorithm>
 #include <vector>
@@ -151,17 +151,10 @@ StemLabWaveformCache::Profile StemLabWaveformCache::analyse(const juce::File& fi
         out across thirty seconds of empty lane, disagreeing with the
         duration the strip beside it prints.
     */
-    if (stemlab::source::storesFixedSizeFrames(file.getFileExtension().toStdString()))
-    {
-        reader->lengthInSamples = static_cast<juce::int64>(stemlab::source::framesActuallyPresent(
-            reader->lengthInSamples,
-            stemlab::source::frameCeilingForBytes(file.getSize(),
-                                                  static_cast<int>(reader->numChannels),
-                                                  static_cast<int>(reader->bitsPerSample))));
+    stemlab::source::clampReaderToFileContents(*reader, file);
 
-        if (reader->lengthInSamples <= 0)
-            return profile;
-    }
+    if (reader->lengthInSamples <= 0)
+        return profile;
 
     const auto total = static_cast<juce::int64>(reader->lengthInSamples);
     const auto rate = reader->sampleRate;

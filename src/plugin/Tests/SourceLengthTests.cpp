@@ -1,10 +1,121 @@
-#include "SourceLength.h"
+#include "SourceLengthReader.h"
 
 #include <cassert>
+#include <cmath>
 
 using stemlab::source::frameCeilingForBytes;
 using stemlab::source::framesActuallyPresent;
 using stemlab::source::storesFixedSizeFrames;
+
+namespace
+{
+constexpr int sampleRate = 44100;
+constexpr int sampleCount = 10 * sampleRate;
+
+juce::MemoryBlock encode(juce::AudioFormat& format)
+{
+    juce::MemoryBlock bytes;
+    {
+        std::unique_ptr<juce::OutputStream> stream =
+            std::make_unique<juce::MemoryOutputStream>(bytes, false);
+        const auto options = juce::AudioFormatWriter::Options{}
+                                 .withSampleRate(sampleRate)
+                                 .withNumChannels(2)
+                                 .withBitsPerSample(16);
+        auto writer = format.createWriterFor(stream, options);
+        assert(writer != nullptr);
+        juce::AudioBuffer<float> audio(2, sampleCount);
+        for (int i = 0; i < sampleCount; ++i)
+            for (int channel = 0; channel < 2; ++channel)
+                audio.setSample(channel, i, 0.25f * std::sin(
+                    static_cast<float>(i) * 440.0f * juce::MathConstants<float>::twoPi / sampleRate));
+        assert(writer->writeFromAudioSampleBuffer(audio, 0, sampleCount));
+    }
+    return bytes;
+}
+
+void checkDecodedSources()
+{
+    const auto directory = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                               .getChildFile("stemlab-source-length-" + juce::Uuid().toString());
+    assert(directory.createDirectory().wasOk());
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+    const auto write = [&](const char* name, const juce::MemoryBlock& bytes)
+    {
+        const auto file = directory.getChildFile(name);
+        assert(file.replaceWithData(bytes.getData(), bytes.getSize()));
+        return file;
+    };
+    const auto read = [&](const juce::File& file)
+    {
+        std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
+        assert(reader != nullptr);
+        assert(reader->lengthInSamples == sampleCount);
+        return reader;
+    };
+
+    juce::WavAudioFormat wav;
+    const auto pcm = encode(wav);
+    const auto intactFile = write("intact.wav", pcm);
+    auto intact = read(intactFile);
+    assert(!stemlab::source::clampReaderToFileContents(*intact, intactFile));
+    assert(intact->lengthInSamples == sampleCount);
+    intact.reset();
+
+    const auto truncatedFile = write("truncated.wav", juce::MemoryBlock(pcm.getData(), 400000));
+    auto truncated = read(truncatedFile);
+    assert(stemlab::source::clampReaderToFileContents(*truncated, truncatedFile));
+    assert(truncated->lengthInSamples == 100000);
+    truncated.reset();
+
+    juce::AiffAudioFormat aiff;
+    const auto aiffFile = write("intact.aiff", encode(aiff));
+    auto aiffReader = read(aiffFile);
+    assert(!stemlab::source::clampReaderToFileContents(*aiffReader, aiffFile));
+    aiffReader.reset();
+
+    juce::OggVorbisAudioFormat vorbis;
+    const auto ogg = encode(vorbis);
+    const auto oggFile = write("source.ogg", ogg);
+    auto oggReader = read(oggFile);
+    assert(!stemlab::source::clampReaderToFileContents(*oggReader, oggFile));
+    oggReader.reset();
+
+    // A supported Vorbis-in-WAV subformat: JUCE's WAV reader delegates to
+    // OggVorbisAudioFormat. The compressed bytes do not bound decoded frames.
+    juce::MemoryOutputStream wrapped;
+    wrapped.write("RIFF", 4);
+    wrapped.writeInt(static_cast<int>(36 + ogg.getSize() + (ogg.getSize() & 1)));
+    wrapped.write("WAVEfmt ", 8);
+    wrapped.writeInt(16);
+    wrapped.writeShort(0x674f);
+    wrapped.writeShort(2);
+    wrapped.writeInt(sampleRate);
+    wrapped.writeInt(16000);
+    wrapped.writeShort(1);
+    wrapped.writeShort(16);
+    wrapped.write("data", 4);
+    wrapped.writeInt(static_cast<int>(ogg.getSize()));
+    wrapped.write(ogg.getData(), ogg.getSize());
+    if ((ogg.getSize() & 1) != 0)
+        wrapped.writeByte(0);
+    const auto compressedFile = write("compressed.wav", wrapped.getMemoryBlock());
+    auto compressed = read(compressedFile);
+    assert(compressed->getFormatName() == vorbis.getFormatName());
+    assert(frameCeilingForBytes(compressedFile.getSize(), 2, 16) < sampleCount / 10);
+    assert(!stemlab::source::clampReaderToFileContents(*compressed, compressedFile));
+    assert(compressed->lengthInSamples == sampleCount);
+
+    // Read late audio through the clamped reader, rather than checking only
+    // a duration field: the original bug removed almost the whole preview.
+    juce::AudioBuffer<float> tail(2, 512);
+    assert(compressed->read(&tail, 0, 512, 8 * sampleRate, true, true));
+    assert(tail.getMagnitude(0, 512) > 0.1f);
+    compressed.reset();
+    assert(directory.deleteRecursively());
+}
+} // namespace
 
 int main()
 {
@@ -47,25 +158,14 @@ int main()
     static_assert(frameCeilingForBytes(400000, 2, 24) == 66666);
     static_assert(frameCeilingForBytes(400000, 6, 32) == 16666);
 
-    // Only the formats whose frames really are a fixed size on disk. FLAC and
-    // the rest decode to more audio than they occupy, so the same arithmetic
-    // would call every one of them truncated - the reason this gate exists.
-    assert(storesFixedSizeFrames(".wav"));
-    assert(storesFixedSizeFrames(".bwf"));
-    assert(storesFixedSizeFrames(".aiff"));
-    assert(storesFixedSizeFrames(".aif"));
-    assert(storesFixedSizeFrames(".WAV"));
-    assert(storesFixedSizeFrames(".Aiff"));
+    // The gate names the actual decoder, never a filename extension.
+    static_assert(storesFixedSizeFrames("WAV file"));
+    static_assert(storesFixedSizeFrames("AIFF file"));
+    static_assert(!storesFixedSizeFrames("Ogg-Vorbis file"));
+    static_assert(!storesFixedSizeFrames("FLAC file"));
+    static_assert(!storesFixedSizeFrames(".wav"));
+    static_assert(!storesFixedSizeFrames(""));
 
-    assert(!storesFixedSizeFrames(".flac"));
-    assert(!storesFixedSizeFrames(".mp3"));
-    assert(!storesFixedSizeFrames(".ogg"));
-    assert(!storesFixedSizeFrames(".m4a"));
-    assert(!storesFixedSizeFrames(".opus"));
-    assert(!storesFixedSizeFrames(".aac"));
-    assert(!storesFixedSizeFrames(".wv"));
-    assert(!storesFixedSizeFrames("wav"));
-    assert(!storesFixedSizeFrames(""));
-
+    checkDecodedSources();
     return 0;
 }

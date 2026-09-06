@@ -3,7 +3,7 @@
 #include "PluginEditor.h"
 #include "ReaperBridge.h"
 #include "SourceLabel.h"
-#include "SourceLength.h"
+#include "SourceLengthReader.h"
 #include "StemLabPaths.h"
 #include "StemLabTheme.h"
 #include "WaveformGrid.h"
@@ -386,34 +386,6 @@ constexpr double endGuardMinSeconds = 0.25;
 constexpr double endGuardMaxSeconds = 2.0;
 constexpr double endGuardFraction = 0.005;
 constexpr double endGuardShare = 0.1;
-
-/*  Cuts a reader's declared length down to the audio the file on disk can
-    actually hold, and reports whether it had to.
-
-    JUCE reads lengthInSamples out of the container's own header and does not
-    look at the file again, so a truncated WAV keeps announcing the length it
-    was going to be. Every reader opened on a source goes through here, so
-    the strip, the transport clock, the grid and the preview all measure the
-    same file rather than the same header. SourceLength.h holds the rule and
-    the reason it is only ever applied to fixed-frame formats.
-*/
-bool clampReaderToFileContents(juce::AudioFormatReader& reader, const juce::File& file)
-{
-    const auto ceiling =
-        stemlab::source::storesFixedSizeFrames(file.getFileExtension().toStdString())
-            ? stemlab::source::frameCeilingForBytes(file.getSize(),
-                                                    static_cast<int>(reader.numChannels),
-                                                    static_cast<int>(reader.bitsPerSample))
-            : 0;
-
-    const auto present = static_cast<juce::int64>(
-        stemlab::source::framesActuallyPresent(reader.lengthInSamples, ceiling));
-
-    const bool wasCutShort = present < reader.lengthInSamples;
-    reader.lengthInSamples = present;
-
-    return wasCutShort;
-}
 
 bool transportIsAtEnd(const juce::AudioTransportSource& transport)
 {
@@ -2474,7 +2446,7 @@ bool StemLabAudioProcessor::loadPreviewFile(const juce::File& file, int previewS
     // The transport's length comes from the reader, so it has to be told the
     // same truth as the strip: without this the clock counts up to a header's
     // 00:30 while the strip says 00:02, and the last 28 seconds play silence.
-    clampReaderToFileContents(*reader, file);
+    stemlab::source::clampReaderToFileContents(*reader, file);
 
     if (reader->lengthInSamples <= 0)
         return false;
@@ -2567,7 +2539,7 @@ bool StemLabAudioProcessor::setInputAudioFile(const juce::File& file, double sta
             leaves every compressed format alone rather than shortening a
             file that was never damaged.
         */
-        sourceIsTruncated = clampReaderToFileContents(*infoReader, file);
+        sourceIsTruncated = stemlab::source::clampReaderToFileContents(*infoReader, file);
 
         if (infoReader->sampleRate > 0.0)
         {

@@ -16,7 +16,7 @@
  *
  * The file itself settles it. Frames of a fixed size cannot outnumber the
  * bytes holding them, headers included - so the size on disk is a ceiling
- * that no well-formed file can exceed and a truncated one always does.
+ * that uncompressed audio cannot exceed, even when its header claims more.
  *
  * That arithmetic only holds where a frame really is a fixed number of bytes.
  * FLAC, MP3, Ogg and the rest decode to far more audio than they occupy, so
@@ -24,31 +24,22 @@
  * is what keeps them out of it.
  */
 
-#include <string>
 #include <string_view>
 
 namespace stemlab::source
 {
 
 /**
- * Whether a file with this extension stores audio as fixed-size frames, so
- * that its size on disk bounds how much audio it can hold.
+ * Whether the selected JUCE reader stores fixed-size frames on disk.
  *
- * Deliberately the extensions JUCE's own uncompressed readers claim - WAV
- * takes ".wav .bwf", AIFF takes ".aiff .aif" - and nothing else. A format
- * this does not name is left alone rather than guessed at, which costs only
- * the check: the alternative, guessing wrong about a compressed format,
- * would shorten a file that was never damaged.
+ * These are the names of JUCE 9's PCM/float WAV and AIFF readers. The filename
+ * is insufficient: WAV can delegate compressed Vorbis data to an Ogg reader,
+ * whose bitsPerSample describes decoded samples, not stored bytes. Unknown
+ * and compressed readers must retain their declared length.
  */
-inline bool storesFixedSizeFrames(std::string_view extension)
+constexpr bool storesFixedSizeFrames(std::string_view readerFormatName)
 {
-    std::string lower;
-    lower.reserve(extension.size());
-
-    for (const char c : extension)
-        lower.push_back(static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c));
-
-    return lower == ".wav" || lower == ".bwf" || lower == ".aiff" || lower == ".aif";
+    return readerFormatName == "WAV file" || readerFormatName == "AIFF file";
 }
 
 /**
