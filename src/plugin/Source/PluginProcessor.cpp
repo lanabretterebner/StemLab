@@ -5299,6 +5299,17 @@ void StemLabAudioProcessor::handleEngineOutputLine(const juce::String& line)
         if (stage.isNotEmpty() && !engineCancelRequested.load())
             setStatus(stage);
 
+        /*  A stage reported at 100% is the engine's own last word on the
+            job, and for a model job it is the only place a number like
+            "Reclaimed 667.0 MB" is ever said. finishModelJob used to write
+            "<label> complete" straight over it.
+        */
+        if (stage.isNotEmpty() && percent >= 100.0)
+        {
+            const juce::ScopedLock lock(stateLock);
+            finalEngineStage = stage;
+        }
+
         return;
     }
 
@@ -8061,6 +8072,12 @@ bool StemLabAudioProcessor::launchModelJob(const juce::StringArray& arguments,
         return false;
     }
 
+    {
+        // One job's last word must never be read as the next job's.
+        const juce::ScopedLock lock(stateLock);
+        finalEngineStage.clear();
+    }
+
     if (arguments.isEmpty())
         return false;
 
@@ -8122,12 +8139,33 @@ void StemLabAudioProcessor::finishModelJob(const juce::String& label, int exitCo
     // "complete" over the top of that would read as though it had worked.
     constexpr int notApplicableExitCode = 3;
 
+    const auto finalStage = [this]
+    {
+        const juce::ScopedLock lock(stateLock);
+        return finalEngineStage;
+    }();
+
     if (exitCode == 130 || modelJobCancelRequested.load())
         setStatus(label + " cancelled");
     else if (exitCode == notApplicableExitCode)
         ;
     else if (exitCode != 0)
-        setStatus(label + " failed - see diagnostics", statusFailure);
+    {
+        /*  The engine's reason outranks the generic sentence, exactly as it
+            does on the separation path. It had already said "Failed -
+            bs-roformer-download is not installed in the StemLab runtime" and
+            "Failed - BS-RoFormer is not downloaded yet"; both were replaced
+            by "see diagnostics", which is where the reason then was.
+        */
+        if (!getStatus().startsWithIgnoreCase("Failed - "))
+            setStatus(label + " failed - see diagnostics", statusFailure);
+    }
+    else if (finalStage.isNotEmpty())
+    {
+        // What the engine measured, kept: "Removing complete - Reclaimed
+        // 667.0 MB" rather than "Removing complete" over the top of it.
+        setStatus(label + " complete - " + finalStage);
+    }
     else
         setStatus(label + " complete");
 

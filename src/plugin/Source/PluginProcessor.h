@@ -704,6 +704,10 @@ public:
         all - the lane's own rule, asked where the snap can see it too. */
     bool sourceIsLongEnoughToRule() const;
 
+    // The engine's own last word on a job - a stage it reported at 100%,
+    // which for a model job carries the only number worth keeping.
+    juce::String finalEngineStage;
+
     /** A normalised range put onto the grid, or returned as given when the
         setting is off or no grid exists. The lane runs its live drag preview
         through this so the highlight shows where the loop will land. */
