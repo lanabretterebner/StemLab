@@ -174,6 +174,7 @@ def run_plugin_job(
     device: str = "cuda",
     engine: str = DEFAULT_ENGINE,
     refine: bool = True,
+    normalize_fused: bool = False,
     notify: bool = True,
     cancel_file: Path | None = None,
 ) -> Path:
@@ -209,6 +210,7 @@ def run_plugin_job(
         device=device,
         engine=engine,
         refine=refine,
+        normalize_fused=normalize_fused,
         progress_callback=on_progress,
         cancellation=cancellation,
     )
@@ -304,6 +306,11 @@ def _main() -> None:
     )
     parser.add_argument("--device", default="auto")
     parser.add_argument("--no-refine", action="store_true")
+    # The plugin has always sent this when its Normalise-fused-stems setting
+    # is on; nothing here accepted it, so argparse exited 2 and the whole
+    # separation failed before any audio was read. Same spelling and meaning
+    # as stemlab-separate's flag.
+    parser.add_argument("--normalize-fused-stems", action="store_true")
     parser.add_argument("--no-notify", action="store_true")
     parser.add_argument("--cancel-file")
     args = parser.parse_args()
@@ -317,6 +324,7 @@ def _main() -> None:
         device=args.device,
         engine=args.engine,
         refine=not args.no_refine,
+        normalize_fused=args.normalize_fused_stems,
         notify=not args.no_notify,
         cancel_file=Path(args.cancel_file) if args.cancel_file else None,
     )
