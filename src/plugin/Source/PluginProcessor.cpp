@@ -7915,8 +7915,18 @@ bool StemLabAudioProcessor::refreshModelInventory(bool probeCompile)
             broken, not running, no inventory" it sat on "Asking the engine
             what is installed..." for ever, and a partial install where
             separation itself works is exactly when somebody opens it.
+
+            And said in the status area too, for the reason the failed-read
+            branch below gives at length: nothing opens the Models page by
+            itself when the inventory never arrives, so the page that would
+            explain it is the page nobody sees. This branch stayed silent,
+            which made the two ways of having no engine report differently -
+            STEMLAB_ENGINE unset announced itself in the footer, while
+            STEMLAB_ENGINE pointing at a path that does not resolve left the
+            window on "Ready" with RoFormer still offered in the header.
         */
         modelInventoryBroken.store(true);
+        setStatus("The engine could not report its models - see Settings > Models");
         sendChangeMessage();
         return false;
     }
