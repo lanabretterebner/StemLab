@@ -351,15 +351,22 @@ class TestRemoval:
 
         monkeypatch.setenv("BS_ROFORMER_MODELS_PATH", str(roformer))
 
-        located = model_manager.locate("roformer")
-        assert located == checkpoint
+        # Asked of the resolver the cache list itself used, not of locate():
+        # what must never appear as a row is that directory, whether or not
+        # this machine can currently find weights inside it. An earlier
+        # version asserted through locate() and was green here and red on CI,
+        # which made the test a statement about the runner rather than about
+        # the rule.
+        model_store = model_manager._roformer_directory() / model_manager.ROFORMER_MODEL_ID
+
+        assert model_store == checkpoint.parent
 
         for cache in model_manager.caches():
             assert cache.id != "bs-roformer"
             # Not merely a different id: no row may name a path that holds a
             # model and nothing else.
-            assert cache.path != located
-            assert cache.path != located.parent
+            assert cache.path != model_store
+            assert cache.path != checkpoint
 
     def test_a_shared_store_says_which_model_a_clear_takes_with_it(
         self, tmp_path, monkeypatch
