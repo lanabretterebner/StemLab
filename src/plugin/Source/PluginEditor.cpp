@@ -699,7 +699,7 @@ void StemLaneWaveform::paint(juce::Graphics& g)
             const auto secondsPerBeat = 60.0 / gridBpm;
             const auto beatsPerBar = juce::jmax(1, lastDisplay.gridNumerator);
 
-            if (secondsPerBeat > 0.0 && secondsPerBeat * beatsPerBar * 3.0 < length)
+            if (stemlab::waveform::rulesAGrid(secondsPerBeat, beatsPerBar, length))
             {
                 /*
                  * The lines themselves come from makeGridLines, which is
@@ -5542,7 +5542,10 @@ void StemLabAudioProcessorEditor::refreshSettingsPage()
         const auto snapshot = processor.getBeatSnapshot();
         const auto grid = processor.getLoopQuantizeGrid(snapshot);
 
-        settings.loopQuantizeAvailable = grid.secondsPerBeat > 0.0 || grid.rulingFromBeats();
+        // And greyed out when the lane declines to rule a grid at all, so the
+        // row stops offering a snap to lines that are not drawn.
+        settings.loopQuantizeAvailable = (grid.secondsPerBeat > 0.0 || grid.rulingFromBeats())
+                                         && processor.sourceIsLongEnoughToRule();
     }
 
     settings.manualBpm = processor.getManualGridBpm();

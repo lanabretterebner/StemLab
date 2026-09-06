@@ -94,6 +94,29 @@ struct GridLine
     int beatInBar = 0;
 };
 
+/*  Whether a file is long enough to be worth ruling at all.
+
+    A lane draws nothing on a track shorter than three bars: one or two
+    lines is not a ruler, it is a decoration over most of the audio. The
+    rule is right, but it lived only in the painter - so loop quantise went
+    on snapping to lines nobody had drawn. On a 24-second file at 20 BPM a
+    2.2-second sweep became a loop over half the track, with nothing on
+    screen to explain where the edges came from, and the quantise row stayed
+    lit as though it were working.
+
+    LoopQuantize.h states the invariant the two halves have to keep: "a loop
+    snapped to a line the lane did not draw would sit visibly off its own
+    gridlines". It did not sit off them - there were none. Both sides ask
+    here now.
+*/
+constexpr bool rulesAGrid(double secondsPerBeat, int beatsPerBar, double lengthSeconds)
+{
+    if (!(secondsPerBeat > 0.0) || beatsPerBar <= 0 || !(lengthSeconds > 0.0))
+        return false;
+
+    return secondsPerBeat * static_cast<double>(beatsPerBar) * 3.0 < lengthSeconds;
+}
+
 struct GridRequest
 {
     double visibleStart = 0.0;

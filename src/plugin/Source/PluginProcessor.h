@@ -700,6 +700,10 @@ public:
         the grid switched off, or a source with no tempo behind it. */
     bool canQuantizeLoops() const;
 
+    /** Whether the source is long enough for a grid to be ruled over it at
+        all - the lane's own rule, asked where the snap can see it too. */
+    bool sourceIsLongEnoughToRule() const;
+
     /** A normalised range put onto the grid, or returned as given when the
         setting is off or no grid exists. The lane runs its live drag preview
         through this so the highlight shows where the loop will land. */

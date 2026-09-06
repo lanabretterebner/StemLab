@@ -8417,11 +8417,29 @@ stemlab::quantize::Grid StemLabAudioProcessor::getLoopQuantizeGrid(
 
 bool StemLabAudioProcessor::canQuantizeLoops() const
 {
+    if (!sourceIsLongEnoughToRule())
+        return false;
+
     const auto snapshot = getBeatSnapshot();
 
     return stemlab::quantize::canQuantize(
         getLoopQuantizeGrid(snapshot),
         static_cast<stemlab::quantize::Resolution>(loopQuantizeMode.load()));
+}
+
+bool StemLabAudioProcessor::sourceIsLongEnoughToRule() const
+{
+    /*  The same question the lane asks before it draws anything. It used to
+        ask it alone, so on a track shorter than three bars the lane drew no
+        grid while the snap went on using the tempo anyway: a 2.2-second
+        sweep on a 24-second file at 20 BPM came back as a loop over half the
+        track, and the Loop quantise row stayed lit as though it were
+        working. See rulesAGrid in WaveformGrid.h.
+    */
+    const auto grid = getWaveformGridScalars();
+
+    return stemlab::waveform::rulesAGrid(grid.bpm > 0.0 ? 60.0 / grid.bpm : 0.0,
+                                         grid.numerator, getTransportLengthSeconds());
 }
 
 stemlab::quantize::Range
@@ -8434,6 +8452,11 @@ StemLabAudioProcessor::quantizeLoopRange(stemlab::quantize::Range range) const
         read by the loop tick), so the transport is the clock the snapped
         edges have to be true in.
     */
+    // A sweep lands where it was swept when there is no grid to land on -
+    // see sourceIsLongEnoughToRule.
+    if (!sourceIsLongEnoughToRule())
+        return range;
+
     // Held for the whole call: the Grid's spans point into it.
     const auto snapshot = getBeatSnapshot();
 

@@ -111,6 +111,34 @@ int main()
         assert(roomyBars >= 10);
     }
 
+    /*  The three-bar rule, which the painter used to own alone.
+
+        A lane draws nothing over a track shorter than three bars, and loop
+        quantise went on snapping to those lines anyway - a 2.2-second sweep
+        on a 24-second file at 20 BPM came back as a loop over half of it.
+        Both sides ask this now, so it is asserted here rather than in one
+        caller's head.
+    */
+    {
+        using stemlab::waveform::rulesAGrid;
+
+        // 120 BPM, 4/4: a bar is 2 s, so three bars is 6.
+        static_assert(!rulesAGrid(0.5, 4, 6.0));
+        static_assert(!rulesAGrid(0.5, 4, 5.9));
+        static_assert(rulesAGrid(0.5, 4, 6.1));
+
+        // 20 BPM, 4/4: a bar is 12 s, so a 24-second file is two bars and
+        // gets no grid - the case that produced the half-track loop.
+        static_assert(!rulesAGrid(3.0, 4, 24.0));
+        static_assert(rulesAGrid(3.0, 4, 36.1));
+
+        // Nothing to measure with is not a grid either.
+        static_assert(!rulesAGrid(0.0, 4, 60.0));
+        static_assert(!rulesAGrid(-1.0, 4, 60.0));
+        static_assert(!rulesAGrid(0.5, 0, 60.0));
+        static_assert(!rulesAGrid(0.5, 4, 0.0));
+    }
+
     GridRequest source;
     source.visibleEnd = 3.0;
     source.pixelWidth = 600;
