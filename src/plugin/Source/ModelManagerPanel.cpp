@@ -248,11 +248,19 @@ namespace stemlab::widgets
             else
                 secondary.setTooltip({});
 
-            // Why a model is not compilable is engine trivia - "Beat This! is
-            // not among the patched models" told a user nothing they wanted,
-            // in the same breath as what the model is for. The absent Compile
-            // button already says everything the row needs to.
-            setTooltip(model.present ? model.path : model.compileReason);
+            /*  Why a model is not compilable is engine trivia - "Beat This!
+                is not among the patched models" told a user nothing they
+                wanted, in the same breath as what the model is for. On a row
+                for a model that is not even here it was stranger still: an
+                explanation of a Compile button the row does not show, for a
+                file the machine does not have.
+
+                So an installed row says where the file is, and a missing one
+                says nothing - its name, its purpose and its cost are already
+                on the row, and repeating them in a tooltip is not a reason to
+                have one.
+            */
+            setTooltip(model.present ? model.path : juce::String());
         }
 
         void configureCache(const StemLabAudioProcessor::ManagedCache& cache)
