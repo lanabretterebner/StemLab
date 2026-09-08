@@ -431,6 +431,47 @@ int main()
         check(next.getWaveformGridMode() != StemLabAudioProcessor::gridManual);
     }
 
+    /*  The window's size survives, and its absence is survivable.
+
+        Only the scale used to be written down, and a scale is the smaller of
+        a window's two ratios - it says how big the window was and nothing
+        about its shape, so a 2200x500 window reopened at 730x498. The size
+        goes down beside it. Preferences written before it exists have no size
+        in them at all, which has to leave the scale answering on its own
+        rather than opening a zero-sized window.
+    */
+    {
+        StemLabAudioProcessor::settingsPreferenceFile().deleteFile();
+
+        {
+            StemLabAudioProcessor sized;
+            sized.setEditorScalePercent(83);
+            sized.setEditorWindowSize(2200, 500);
+        }
+
+        const auto stored =
+            StemLabAudioProcessor::settingsPreferenceFile().loadFileAsString();
+
+        check(stored.contains("editorWidth"));
+        check(stored.contains("editorHeight"));
+
+        StemLabAudioProcessor reopened;
+
+        check(reopened.getEditorWindowWidth() == 2200);
+        check(reopened.getEditorWindowHeight() == 500);
+
+        // A file from before the size was recorded: nothing to restore, and
+        // nothing invented either.
+        StemLabAudioProcessor::settingsPreferenceFile().replaceWithText(
+            R"({"editorScale": 175})");
+
+        StemLabAudioProcessor upgraded;
+
+        check(upgraded.getEditorScalePercent() == 175);
+        check(upgraded.getEditorWindowWidth() == 0);
+        check(upgraded.getEditorWindowHeight() == 0);
+    }
+
     StemLabAudioProcessingTestAccess::checkStemScanFolderDeletion(configSandbox);
     StemLabAudioProcessingTestAccess::checkSourceAnalysisCompletion(configSandbox);
     StemLabAudioProcessingTestAccess::run();

@@ -919,6 +919,15 @@ public:
     void setEditorScalePercent(int percent);
     int getEditorScalePercent() const noexcept { return editorScalePercent.load(); }
 
+    /**
+     * And its two actual numbers, because the percentage above is the smaller
+     * of the window's two ratios and so cannot describe a shape. Zero means
+     * nothing has been recorded yet, and the scale answers instead.
+     */
+    void setEditorWindowSize(int width, int height);
+    int getEditorWindowWidth() const noexcept { return editorWindowWidth.load(); }
+    int getEditorWindowHeight() const noexcept { return editorWindowHeight.load(); }
+
     static juce::String getStemName(int index);
     static constexpr int stemCount = 6;
 
@@ -1381,6 +1390,8 @@ private:
     std::atomic<double> waveformZoom{1.0};
     std::atomic<int> waveformColorIndex{defaultWaveformColorIndex};
     std::atomic<int> editorScalePercent{100};
+    std::atomic<int> editorWindowWidth{0};
+    std::atomic<int> editorWindowHeight{0};
 
     std::atomic<double> engineProgress{0.0};
     std::atomic<double> engineStartMs{0.0};

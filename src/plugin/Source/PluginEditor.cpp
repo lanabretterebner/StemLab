@@ -1988,9 +1988,11 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
         // makes resized() overwrite it - which is the very thing the resize
         // at the end of that callback undoes.
         const auto openScalePercent = processor.getEditorScalePercent();
+        const auto openWidth = processor.getEditorWindowWidth();
+        const auto openHeight = processor.getEditorWindowHeight();
 
         juce::MessageManager::callAsync(
-            [safeThis, openScalePercent]
+            [safeThis, openScalePercent, openWidth, openHeight]
             {
                 if (safeThis == nullptr)
                     return;
@@ -2104,8 +2106,9 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
                      * Setting the size the editor actually wants refits the
                      * window around it, because the standalone's content
                      * component sizes itself to whatever the editor does.
-                     * openScalePercent is the value from before the swap;
-                     * reading it here would read the inflated one back.
+                     * openScalePercent, and the size captured beside it, are
+                     * the values from before the swap; reading them here would
+                     * read the inflated ones back.
                      */
                     /*
                      * And the screen has a say in it. The scale is remembered
@@ -2115,8 +2118,8 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
                      * Separate, the transport and the whole footer outside
                      * the display - the resizer grip with them, so on a
                      * desktop without a window manager there was nothing left
-                     * to grab. openingScale only ever shrinks, and only as
-                     * far as the app's own minimum.
+                     * to grab. openingSize only ever shrinks what it was
+                     * given, and only as far as the app's own minimum.
                      *
                      * The chrome is measured rather than assumed: the peer's
                      * bounds are the window, this component's are the editor
@@ -2144,11 +2147,11 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
                                                     - editorBounds.getHeight()));
                     }
 
-                    const auto openScale = window::openingScale(
-                        openScalePercent / 100.0, available.getWidth(), available.getHeight());
+                    const auto opening = window::openingSize(
+                        openWidth, openHeight, openScalePercent / 100.0, available.getWidth(),
+                        available.getHeight());
 
-                    safeThis->setSize(juce::roundToInt(window::width * openScale),
-                                      juce::roundToInt(window::height * openScale));
+                    safeThis->setSize(opening.width, opening.height);
                 }
             });
     }
@@ -3018,10 +3021,17 @@ void StemLabAudioProcessorEditor::resized()
                                               static_cast<float>(offsetY)));
     panelContent.setBounds(0, 0, window::width, window::height);
 
-    // Reopening the editor comes back at the scale the user left it. One
-    // number cannot carry a shape, so a window left off the design aspect
-    // reopens without its band rather than with it.
+    /*  Reopening the editor comes back at the size the user left it.
+
+        The scale alone could not do that. It is the smaller of the two ratios
+        above, so it says how big the window was and nothing about its shape,
+        and reopening from it handed back the largest design-shaped rectangle
+        that fit inside the window the user left - 2200x500 came back 730x498.
+        The size goes down beside it, and the scale stays for anything reading
+        this that predates it.
+    */
     processor.setEditorScalePercent(juce::roundToInt(scale * 100.0));
+    processor.setEditorWindowSize(getWidth(), getHeight());
 
     layoutPanel();
 

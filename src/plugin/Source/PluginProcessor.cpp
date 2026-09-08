@@ -6694,6 +6694,28 @@ void StemLabAudioProcessor::setEditorScalePercent(int percent)
         schedulePreferenceSave();
 }
 
+void StemLabAudioProcessor::setEditorWindowSize(int width, int height)
+{
+    // Same silence as the scale above, and for the same reason: this comes
+    // from the editor's own resized().
+    const auto limits = [](int value)
+    {
+        return value > 0 ? juce::jlimit(1, 32000, value) : 0;
+    };
+
+    const auto wantedWidth = limits(width);
+    const auto wantedHeight = limits(height);
+
+    // Both exchanges before the test, never inside it: || would short-circuit
+    // past the second one on any resize that changed the width, and the
+    // height would never be stored at all.
+    const auto widthChanged = editorWindowWidth.exchange(wantedWidth) != wantedWidth;
+    const auto heightChanged = editorWindowHeight.exchange(wantedHeight) != wantedHeight;
+
+    if (widthChanged || heightChanged)
+        schedulePreferenceSave();
+}
+
 juce::String StemLabAudioProcessor::getSeparatorEngineId() const
 {
     switch (getSeparatorEngineIndex())
@@ -6959,6 +6981,12 @@ void StemLabAudioProcessor::applyPreferences(const juce::var& parsed)
     if (has("editorScale"))
         setEditorScalePercent(static_cast<int>(get("editorScale")));
 
+    // Both or neither: half a size is not a window, and the scale above is
+    // still there to answer for preferences written before these were.
+    if (has("editorWidth") && has("editorHeight"))
+        setEditorWindowSize(static_cast<int>(get("editorWidth")),
+                            static_cast<int>(get("editorHeight")));
+
     if (has("jobRootDirectory"))
     {
         const juce::File saved(get("jobRootDirectory").toString());
@@ -7027,6 +7055,20 @@ void StemLabAudioProcessor::savePreferences() const
     rootObject->setProperty("analysisQuality", sourceAnalysisMode.load());
     rootObject->setProperty("tempoAnalysis", tempoAnalysisMode.load());
     rootObject->setProperty("editorScale", editorScalePercent.load());
+
+    /*  The scale is the smaller of the window's two ratios, so it says how
+        big the window was and nothing about its shape. Reopening from it
+        alone handed back the largest design-shaped rectangle that fit inside
+        the window the user left, which cost a maximised 16:9 window a visible
+        slice on every launch. These two carry the shape; the scale stays for
+        anything that reads this file expecting it, and for the launch after
+        an upgrade, when these are not in it yet.
+    */
+    if (editorWindowWidth.load() > 0 && editorWindowHeight.load() > 0)
+    {
+        rootObject->setProperty("editorWidth", editorWindowWidth.load());
+        rootObject->setProperty("editorHeight", editorWindowHeight.load());
+    }
     rootObject->setProperty("jobRootDirectory", getJobRootDirectory().getFullPathName());
 
     juce::Array<juce::var> stems;
