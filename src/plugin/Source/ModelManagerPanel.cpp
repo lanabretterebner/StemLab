@@ -207,11 +207,15 @@ namespace stemlab::widgets
 
             size = model.present ? describeBytes(model.bytes) : describeBytes(model.approxBytes);
 
-            // A missing model shows what it will cost, which reads very
-            // differently from what an installed one occupies, so the size is
-            // prefixed rather than left to look like it is already there.
-            if (!model.present && size.isNotEmpty())
-                size = "needs " + size;
+            /*  A missing model shows what it will cost, which reads very
+                differently from what an installed one occupies, so the size is
+                prefixed rather than left to look like it is already there.
+
+                Three models have no recorded size, and a blank where every
+                other row quotes a cost reads as free rather than as unknown.
+            */
+            if (!model.present)
+                size = size.isNotEmpty() ? "needs " + size : juce::String("size unknown");
 
             action.setButtonText(model.present ? "Remove" : "Get");
             action.setEnabled(true);
@@ -483,6 +487,7 @@ namespace stemlab::widgets
         }
 
         int installed = 0;
+        int unpriced = 0;
         juce::int64 onDisk = 0;
         juce::int64 toFetch = 0;
 
@@ -496,6 +501,9 @@ namespace stemlab::widgets
             else
             {
                 toFetch += model.approxBytes;
+
+                if (model.approxBytes <= 0)
+                    ++unpriced;
             }
         }
 
@@ -508,8 +516,24 @@ namespace stemlab::widgets
         if (onDisk > 0)
             summary << dot() << describeBytes(onDisk) << " on disk";
 
+        /*  The three adaptive-split models record no size, so they added
+            nothing to this total and it quietly understated what "Download
+            all" would fetch - 137.8 MB in front of a button that went and got
+            half a gigabyte more. A total that cannot include them says how
+            many it left out instead.
+        */
         if (toFetch > 0)
+        {
             summary << dot() << describeBytes(toFetch) << " to fetch";
+
+            if (unpriced > 0)
+                summary << ", plus " << unpriced << " of unknown size";
+        }
+        else if (unpriced > 0)
+        {
+            summary << dot() << unpriced << (unpriced == 1 ? " model" : " models")
+                    << " of unknown size to fetch";
+        }
 
         summaryLabel.setText(summary, juce::dontSendNotification);
 
