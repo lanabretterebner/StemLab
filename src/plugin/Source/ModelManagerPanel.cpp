@@ -568,15 +568,33 @@ namespace stemlab::widgets
             resized();
         }
 
-        // The reason lives here rather than on a line of its own. It is worth
-        // having - an unset opt-in and a missing compiler need opposite
-        // advice - but not worth a paragraph under a checkbox that moved the
-        // whole list down whenever the answer changed.
+        /*  The reason lives here rather than on a line of its own. It is
+            worth having - an unset opt-in and a missing compiler need opposite
+            advice - but not worth a paragraph under a checkbox that moved the
+            whole list down whenever the answer changed.
+
+            Dimming the switch instead of disabling it was chosen so there
+            would be somewhere to hang that reason, which makes a dimmed switch
+            with no reason on it the one state the choice cannot survive. It is
+            reachable: until the engine has answered, nothing has set a reason
+            yet, so the page ends up saying the engine could not report its
+            models above a greyed switch that says nothing at all. What the
+            page is already saying is the reason.
+        */
+        auto why = reason;
+
+        // Its first line only: the rest of that message - where the engine was
+        // looked for, and what to do about it - is on the page underneath, and
+        // a tooltip that repeats an absolute path back at the reader is a
+        // paragraph hanging off a checkbox.
+        if (why.isEmpty())
+            why = unavailableReason.upToFirstOccurrenceOf("\n", false, false);
+
         compileSwitch->setTooltip(supported
                                       ? juce::String("Compile the separation models on this "
                                                      "machine. The first run is slower; every "
                                                      "run after it is faster.")
-                                      : reason);
+                                      : why);
     }
 
     void ModelManagerPanel::setUnavailable(const juce::String& reason)
