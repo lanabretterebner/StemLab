@@ -3,6 +3,7 @@
 #include "StemLabTheme.h"
 
 #include <array>
+#include <utility>
 
 namespace stemlab::widgets
 {
@@ -185,14 +186,45 @@ namespace stemlab::widgets
                 repaint();
             }
 
+            /*  The pill has to be pressed as well as released on.
+
+                These rows are custom components spanning the full row width,
+                so the caption at the far left is part of the same component as
+                the pills at the right, and acting on the release position
+                alone meant a press that began on the words "Grid follows" and
+                drifted onto a pill selected it. It also meant a mis-click
+                could not be taken back by sliding off the pill before letting
+                go, which is the one escape every juce::Button in this window
+                offers.
+            */
+            void mouseDown(const juce::MouseEvent& event) override
+            {
+                pressed = isEnabled() ? indexAt(event.getPosition()) : -1;
+            }
+
+            void mouseDrag(const juce::MouseEvent& event) override
+            {
+                // Lit only while the pointer is still on the pill it pressed,
+                // so the row shows what letting go here would do.
+                const auto over = pressed >= 0 && indexAt(event.getPosition()) == pressed
+                                      ? pressed
+                                      : -1;
+
+                if (over != hovered)
+                {
+                    hovered = over;
+                    repaint();
+                }
+            }
+
             void mouseUp(const juce::MouseEvent& event) override
             {
-                if (!isEnabled())
+                const auto index = std::exchange(pressed, -1);
+
+                if (!isEnabled() || index < 0)
                     return;
 
-                const auto index = indexAt(event.getPosition());
-
-                if (index >= 0 && onSelected)
+                if (indexAt(event.getPosition()) == index && onSelected)
                     onSelected(index);
             }
 
@@ -229,6 +261,7 @@ namespace stemlab::widgets
             juce::StringArray options;
             int selected = -1;
             int hovered = -1;
+            int pressed = -1;
 
             JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ChoiceRow)
         };
@@ -316,11 +349,33 @@ namespace stemlab::widgets
                 repaint();
             }
 
+            /** Press and release on the same swatch, as on the pill rows. */
+            void mouseDown(const juce::MouseEvent& event) override
+            {
+                pressed = isEnabled() ? indexAt(event.getPosition()) : -1;
+            }
+
+            void mouseDrag(const juce::MouseEvent& event) override
+            {
+                const auto over = pressed >= 0 && indexAt(event.getPosition()) == pressed
+                                      ? pressed
+                                      : -1;
+
+                if (over != hovered)
+                {
+                    hovered = over;
+                    repaint();
+                }
+            }
+
             void mouseUp(const juce::MouseEvent& event) override
             {
-                const auto index = indexAt(event.getPosition());
+                const auto index = std::exchange(pressed, -1);
 
-                if (index >= 0 && onSelected)
+                if (!isEnabled() || index < 0)
+                    return;
+
+                if (indexAt(event.getPosition()) == index && onSelected)
                     onSelected(index);
             }
 
@@ -353,6 +408,7 @@ namespace stemlab::widgets
             juce::String caption;
             int selected = 0;
             int hovered = -1;
+            int pressed = -1;
 
             JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SwatchRow)
         };
