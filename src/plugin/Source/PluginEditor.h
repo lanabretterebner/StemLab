@@ -474,7 +474,8 @@ private:
 class StemLabAudioProcessorEditor final : public juce::AudioProcessorEditor,
                                           public juce::FileDragAndDropTarget,
                                           private juce::Timer,
-                                          private juce::ChangeListener
+                                          private juce::ChangeListener,
+                                          private juce::FocusChangeListener
 {
 public:
     explicit StemLabAudioProcessorEditor(StemLabAudioProcessor&);
@@ -502,6 +503,16 @@ private:
 
     void timerCallback() override;
     void changeListenerCallback(juce::ChangeBroadcaster*) override;
+
+    /**
+     * Keeps the keyboard inside the settings card while it is open.
+     *
+     * Registered only while the card is up: a dialog opened from one of its
+     * rows is a separate desktop window, and when it closes the peer hands
+     * focus to the standalone's own window rather than back to the card, from
+     * where a key press cannot reach any of this editor's components at all.
+     */
+    void globalFocusChanged(juce::Component* focused) override;
 
 
     /** Open the Model Manager, or bring what it shows up to date. */

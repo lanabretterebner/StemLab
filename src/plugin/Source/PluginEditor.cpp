@@ -2656,6 +2656,7 @@ StemLabAudioProcessorEditor::~StemLabAudioProcessorEditor()
         juce::LookAndFeel::setDefaultLookAndFeel(nullptr);
 
     processor.removeChangeListener(this);
+    juce::Desktop::getInstance().removeFocusChangeListener(this);
     stopTimer();
 }
 
@@ -5825,6 +5826,33 @@ void StemLabAudioProcessorEditor::showSettingsPanel(
     settingsPanel.setVisible(true);
     settingsPanel.toFront(true);
 
+    /*  And keep it, until the card is closed.
+
+        toFront(true) hands the card the keyboard once, on the way in, and
+        nothing gives it back afterwards. Opening a dialog from one of the
+        card's rows takes it away for good: the dialog is a separate desktop
+        window, so the app's window loses focus with it, and when it closes
+        the peer's handleFocusGain finds no remembered component of ours to
+        restore and calls grabKeyboardFocus() on the standalone's own window.
+
+        That window is not an ancestor of anything in this editor, and
+        ComponentPeer::handleKeyPress only ever walks upwards from whatever
+        holds focus - so from there a key press reaches nothing we own.
+        Escape stopped closing the card, and stopped reaching the editor's own
+        handler too: measured with a focus probe, neither keyPressed ran at
+        all. Clicking any control inside the card put focus back on something
+        of ours and Escape worked again, which is what made it look like a
+        dead key rather than a misdirected one.
+
+        A listener rather than a grab in the dialog's dismissal callback,
+        because that callback runs before the window takes focus - an earlier
+        attempt at exactly that measured as doing nothing, and this is why.
+        The window's grab is driven by an X focus event whose timing is not
+        ours to predict, so the answer has to be event-driven rather than a
+        delay chosen to be long enough.
+    */
+    juce::Desktop::getInstance().addFocusChangeListener(this);
+
     refreshSettingsPanel();
 
     // Ask the engine again on every open. The inventory is cheap, and a user
@@ -5839,8 +5867,27 @@ void StemLabAudioProcessorEditor::closeSettingsPanel()
     modelJobReported = false;
     settingsPanel.setVisible(false);
 
+    juce::Desktop::getInstance().removeFocusChangeListener(this);
+
     // Give the keyboard back, or the panel behind stays deaf to shortcuts.
     grabKeyboardFocus();
+}
+
+void StemLabAudioProcessorEditor::globalFocusChanged(juce::Component* focused)
+{
+    if (focused == nullptr || !settingsPanel.isVisible() || !settingsPanel.isShowing())
+        return;
+
+    /*  A dialog opened from a row is meant to have the keyboard while it is
+        up; this is only about where focus lands once it has gone.
+    */
+    if (juce::Component::getCurrentlyModalComponent() != nullptr)
+        return;
+
+    if (focused == &settingsPanel || settingsPanel.isParentOf(focused))
+        return;
+
+    settingsPanel.grabKeyboardFocus();
 }
 
 void StemLabAudioProcessorEditor::refreshSettingsPanel()
