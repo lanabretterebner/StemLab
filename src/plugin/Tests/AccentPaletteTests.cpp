@@ -90,6 +90,58 @@ static_assert(window::openingScale(2.0, 320, 240) == window::minScale);
 // a window the user chose.
 static_assert(window::openingScale(2.0, 0, 0) == 2.0);
 static_assert(window::openingScale(2.0, -1, -1) == 2.0);
+
+/*
+    openingSize: the window comes back the shape it was left.
+
+    A scale is the smaller of the two ratios, so reopening from it alone gave
+    back the largest 880x564-shaped rectangle inside the window the user left.
+    Measured across two trials: 2200x500 came back 730x498, 880x1400 came back
+    880x594, 700x1200 came back 704x481. The first three assertions are those
+    three measurements, now answered with the size that went in.
+*/
+static_assert(window::openingSize(2200, 500, 0.83, 2560, 1440).width == 2200);
+static_assert(window::openingSize(2200, 500, 0.83, 2560, 1440).height == 500);
+static_assert(window::openingSize(880, 1400, 1.0, 2560, 1440).height == 1400);
+static_assert(window::openingSize(700, 1200, 0.80, 2560, 1440).width == 700);
+static_assert(window::openingSize(700, 1200, 0.80, 2560, 1440).height == 1200);
+
+// The app's own resize limits still bind, in both directions and per axis.
+static_assert(window::openingSize(9000, 9000, 1.0, 0, 0).width
+              == window::rounded(window::width * window::maxScale));
+static_assert(window::openingSize(9000, 9000, 1.0, 0, 0).height
+              == window::rounded(window::height * window::maxScale));
+static_assert(window::openingSize(10, 10, 1.0, 0, 0).width
+              == window::rounded(window::width * window::minScale));
+static_assert(window::openingSize(10, 10, 1.0, 0, 0).height
+              == window::rounded(window::height * window::minScale));
+
+/*
+    Then the screen, per axis rather than in proportion. A window too wide for
+    the display wants its width cut; cutting its height to match would be the
+    same shape loss the scale caused, arriving by another route.
+*/
+static_assert(window::openingSize(2200, 500, 1.0, 1024, 768).width == 1024);
+static_assert(window::openingSize(2200, 500, 1.0, 1024, 768).height == 500);
+static_assert(window::openingSize(800, 1400, 1.0, 1024, 768).height == 768);
+static_assert(window::openingSize(800, 1400, 1.0, 1024, 768).width == 800);
+
+// A screen below the app's own minimum gets the minimum, as the scale does.
+static_assert(window::openingSize(2000, 1200, 1.0, 320, 240).width
+              == window::rounded(window::width * window::minScale));
+static_assert(window::openingSize(2000, 1200, 1.0, 320, 240).height
+              == window::rounded(window::height * window::minScale));
+
+/*
+    Nothing recorded - a first launch, or preferences written before the size
+    was - falls back to the scale, and to exactly what the scale used to do.
+*/
+static_assert(window::openingSize(0, 0, 1.5, 2560, 1440).width
+              == window::rounded(window::width * window::openingScale(1.5, 2560, 1440)));
+static_assert(window::openingSize(0, 0, 1.5, 2560, 1440).height
+              == window::rounded(window::height * window::openingScale(1.5, 2560, 1440)));
+static_assert(window::openingSize(1200, 0, 2.5, 1024, 768).width
+              == window::rounded(window::width * window::openingScale(2.5, 1024, 768)));
 }
 
 int main()

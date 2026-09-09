@@ -449,6 +449,66 @@ namespace stemlab::theme
 
                 return fits > minScale ? fits : minScale;
             }
+
+            /** A window's two numbers, since one cannot carry a shape. */
+            struct Size
+            {
+                int width;
+                int height;
+            };
+
+            constexpr int rounded(double value) { return static_cast<int>(value + 0.5); }
+
+            /** One axis, held between the app's own limits and the screen's. */
+            constexpr int fitAxis(int saved, int design, int available)
+            {
+                const auto smallest = rounded(design * minScale);
+                const auto largest = rounded(design * maxScale);
+
+                const auto wanted = saved < smallest ? smallest : saved > largest ? largest : saved;
+
+                if (available <= 0 || wanted <= available)
+                    return wanted;
+
+                return available > smallest ? available : smallest;
+            }
+
+            /*
+                The size to open at, given the size the user left, the scale
+                they left, and what the screen can show.
+
+                Only a scale was ever written down, and a scale cannot describe
+                a shape: it is the smaller of the two ratios, so reopening
+                multiplied it back into both axes and handed back the largest
+                880x564-shaped rectangle that fit inside the window the user
+                left. The letterboxed band went with it, and the further from
+                the design aspect the window was the more of it went: measured
+                across two trials, 2200x500 came back 730x498 and 880x1400 came
+                back 880x594. Maximising on a 16:9 display - a shape most
+                displays are and the panel is not - lost a visible slice on
+                every single launch.
+
+                Two numbers carry it. Each is held to the app's own resize
+                limits and then to the display, per axis rather than together:
+                a window too wide for the screen wants its width cut, not its
+                height cut in proportion with it. Where nothing was written
+                down - a first launch, or preferences from before this was
+                recorded - the scale still answers, which is the old behaviour
+                exactly.
+            */
+            constexpr Size openingSize(int savedWidth, int savedHeight, double savedScale,
+                                       int availableWidth, int availableHeight)
+            {
+                if (savedWidth <= 0 || savedHeight <= 0)
+                {
+                    const auto scale = openingScale(savedScale, availableWidth, availableHeight);
+
+                    return {rounded(width * scale), rounded(height * scale)};
+                }
+
+                return {fitAxis(savedWidth, width, availableWidth),
+                        fitAxis(savedHeight, height, availableHeight)};
+            }
         }
 
         namespace panel

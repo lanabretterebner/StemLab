@@ -207,11 +207,15 @@ namespace stemlab::widgets
 
             size = model.present ? describeBytes(model.bytes) : describeBytes(model.approxBytes);
 
-            // A missing model shows what it will cost, which reads very
-            // differently from what an installed one occupies, so the size is
-            // prefixed rather than left to look like it is already there.
-            if (!model.present && size.isNotEmpty())
-                size = "needs " + size;
+            /*  A missing model shows what it will cost, which reads very
+                differently from what an installed one occupies, so the size is
+                prefixed rather than left to look like it is already there.
+
+                Three models have no recorded size, and a blank where every
+                other row quotes a cost reads as free rather than as unknown.
+            */
+            if (!model.present)
+                size = size.isNotEmpty() ? "needs " + size : juce::String("size unknown");
 
             action.setButtonText(model.present ? "Remove" : "Get");
             action.setEnabled(true);
@@ -244,11 +248,19 @@ namespace stemlab::widgets
             else
                 secondary.setTooltip({});
 
-            // Why a model is not compilable is engine trivia - "Beat This! is
-            // not among the patched models" told a user nothing they wanted,
-            // in the same breath as what the model is for. The absent Compile
-            // button already says everything the row needs to.
-            setTooltip(model.present ? model.path : model.compileReason);
+            /*  Why a model is not compilable is engine trivia - "Beat This!
+                is not among the patched models" told a user nothing they
+                wanted, in the same breath as what the model is for. On a row
+                for a model that is not even here it was stranger still: an
+                explanation of a Compile button the row does not show, for a
+                file the machine does not have.
+
+                So an installed row says where the file is, and a missing one
+                says nothing - its name, its purpose and its cost are already
+                on the row, and repeating them in a tooltip is not a reason to
+                have one.
+            */
+            setTooltip(model.present ? model.path : juce::String());
         }
 
         void configureCache(const StemLabAudioProcessor::ManagedCache& cache)
@@ -483,6 +495,7 @@ namespace stemlab::widgets
         }
 
         int installed = 0;
+        int unpriced = 0;
         juce::int64 onDisk = 0;
         juce::int64 toFetch = 0;
 
@@ -496,6 +509,9 @@ namespace stemlab::widgets
             else
             {
                 toFetch += model.approxBytes;
+
+                if (model.approxBytes <= 0)
+                    ++unpriced;
             }
         }
 
@@ -508,8 +524,24 @@ namespace stemlab::widgets
         if (onDisk > 0)
             summary << dot() << describeBytes(onDisk) << " on disk";
 
+        /*  The three adaptive-split models record no size, so they added
+            nothing to this total and it quietly understated what "Download
+            all" would fetch - 137.8 MB in front of a button that went and got
+            half a gigabyte more. A total that cannot include them says how
+            many it left out instead.
+        */
         if (toFetch > 0)
+        {
             summary << dot() << describeBytes(toFetch) << " to fetch";
+
+            if (unpriced > 0)
+                summary << ", plus " << unpriced << " of unknown size";
+        }
+        else if (unpriced > 0)
+        {
+            summary << dot() << unpriced << (unpriced == 1 ? " model" : " models")
+                    << " of unknown size to fetch";
+        }
 
         summaryLabel.setText(summary, juce::dontSendNotification);
 
@@ -536,15 +568,33 @@ namespace stemlab::widgets
             resized();
         }
 
-        // The reason lives here rather than on a line of its own. It is worth
-        // having - an unset opt-in and a missing compiler need opposite
-        // advice - but not worth a paragraph under a checkbox that moved the
-        // whole list down whenever the answer changed.
+        /*  The reason lives here rather than on a line of its own. It is
+            worth having - an unset opt-in and a missing compiler need opposite
+            advice - but not worth a paragraph under a checkbox that moved the
+            whole list down whenever the answer changed.
+
+            Dimming the switch instead of disabling it was chosen so there
+            would be somewhere to hang that reason, which makes a dimmed switch
+            with no reason on it the one state the choice cannot survive. It is
+            reachable: until the engine has answered, nothing has set a reason
+            yet, so the page ends up saying the engine could not report its
+            models above a greyed switch that says nothing at all. What the
+            page is already saying is the reason.
+        */
+        auto why = reason;
+
+        // Its first line only: the rest of that message - where the engine was
+        // looked for, and what to do about it - is on the page underneath, and
+        // a tooltip that repeats an absolute path back at the reader is a
+        // paragraph hanging off a checkbox.
+        if (why.isEmpty())
+            why = unavailableReason.upToFirstOccurrenceOf("\n", false, false);
+
         compileSwitch->setTooltip(supported
                                       ? juce::String("Compile the separation models on this "
                                                      "machine. The first run is slower; every "
                                                      "run after it is faster.")
-                                      : reason);
+                                      : why);
     }
 
     void ModelManagerPanel::setUnavailable(const juce::String& reason)

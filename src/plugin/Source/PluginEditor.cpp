@@ -2,6 +2,7 @@
 #include "LinuxSystemCapture.h"
 #include "StemLabPaths.h"
 #include "StemLabTheme.h"
+#include "SettingsFocusPolicy.h"
 #include "BinaryData.h"
 
 #include <utility>
@@ -1988,9 +1989,11 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
         // makes resized() overwrite it - which is the very thing the resize
         // at the end of that callback undoes.
         const auto openScalePercent = processor.getEditorScalePercent();
+        const auto openWidth = processor.getEditorWindowWidth();
+        const auto openHeight = processor.getEditorWindowHeight();
 
         juce::MessageManager::callAsync(
-            [safeThis, openScalePercent]
+            [safeThis, openScalePercent, openWidth, openHeight]
             {
                 if (safeThis == nullptr)
                     return;
@@ -2104,8 +2107,9 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
                      * Setting the size the editor actually wants refits the
                      * window around it, because the standalone's content
                      * component sizes itself to whatever the editor does.
-                     * openScalePercent is the value from before the swap;
-                     * reading it here would read the inflated one back.
+                     * openScalePercent, and the size captured beside it, are
+                     * the values from before the swap; reading them here would
+                     * read the inflated ones back.
                      */
                     /*
                      * And the screen has a say in it. The scale is remembered
@@ -2115,8 +2119,8 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
                      * Separate, the transport and the whole footer outside
                      * the display - the resizer grip with them, so on a
                      * desktop without a window manager there was nothing left
-                     * to grab. openingScale only ever shrinks, and only as
-                     * far as the app's own minimum.
+                     * to grab. openingSize only ever shrinks what it was
+                     * given, and only as far as the app's own minimum.
                      *
                      * The chrome is measured rather than assumed: the peer's
                      * bounds are the window, this component's are the editor
@@ -2144,11 +2148,11 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
                                                     - editorBounds.getHeight()));
                     }
 
-                    const auto openScale = window::openingScale(
-                        openScalePercent / 100.0, available.getWidth(), available.getHeight());
+                    const auto opening = window::openingSize(
+                        openWidth, openHeight, openScalePercent / 100.0, available.getWidth(),
+                        available.getHeight());
 
-                    safeThis->setSize(juce::roundToInt(window::width * openScale),
-                                      juce::roundToInt(window::height * openScale));
+                    safeThis->setSize(opening.width, opening.height);
                 }
             });
     }
@@ -2617,11 +2621,13 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     lastActionStatusRevision = processor.getActionStatusRevision();
 
     // Sized last: setSize() fires resized(), which needs every child above.
-    const auto scale = juce::jlimit(window::minScale, window::maxScale,
-                                    processor.getEditorScalePercent() / 100.0);
+    // Hosted editors need the saved shape too. The standalone callback
+    // additionally fits it to the display once the window chrome exists.
+    const auto opening = window::openingSize(
+        processor.getEditorWindowWidth(), processor.getEditorWindowHeight(),
+        processor.getEditorScalePercent() / 100.0, 0, 0);
 
-    setSize(juce::roundToInt(window::width * scale),
-            juce::roundToInt(window::height * scale));
+    setSize(opening.width, opening.height);
 
     /*
      * Armed at full rate and left for the first refresh to judge: opening
@@ -2653,6 +2659,7 @@ StemLabAudioProcessorEditor::~StemLabAudioProcessorEditor()
         juce::LookAndFeel::setDefaultLookAndFeel(nullptr);
 
     processor.removeChangeListener(this);
+    juce::Desktop::getInstance().removeFocusChangeListener(this);
     stopTimer();
 }
 
@@ -3018,10 +3025,17 @@ void StemLabAudioProcessorEditor::resized()
                                               static_cast<float>(offsetY)));
     panelContent.setBounds(0, 0, window::width, window::height);
 
-    // Reopening the editor comes back at the scale the user left it. One
-    // number cannot carry a shape, so a window left off the design aspect
-    // reopens without its band rather than with it.
+    /*  Reopening the editor comes back at the size the user left it.
+
+        The scale alone could not do that. It is the smaller of the two ratios
+        above, so it says how big the window was and nothing about its shape,
+        and reopening from it handed back the largest design-shaped rectangle
+        that fit inside the window the user left - 2200x500 came back 730x498.
+        The size goes down beside it, and the scale stays for anything reading
+        this that predates it.
+    */
     processor.setEditorScalePercent(juce::roundToInt(scale * 100.0));
+    processor.setEditorWindowSize(getWidth(), getHeight());
 
     layoutPanel();
 
@@ -5815,6 +5829,33 @@ void StemLabAudioProcessorEditor::showSettingsPanel(
     settingsPanel.setVisible(true);
     settingsPanel.toFront(true);
 
+    /*  And keep it, until the card is closed.
+
+        toFront(true) hands the card the keyboard once, on the way in, and
+        nothing gives it back afterwards. Opening a dialog from one of the
+        card's rows takes it away for good: the dialog is a separate desktop
+        window, so the app's window loses focus with it, and when it closes
+        the peer's handleFocusGain finds no remembered component of ours to
+        restore and calls grabKeyboardFocus() on the standalone's own window.
+
+        That window is not an ancestor of anything in this editor, and
+        ComponentPeer::handleKeyPress only ever walks upwards from whatever
+        holds focus - so from there a key press reaches nothing we own.
+        Escape stopped closing the card, and stopped reaching the editor's own
+        handler too: measured with a focus probe, neither keyPressed ran at
+        all. Clicking any control inside the card put focus back on something
+        of ours and Escape worked again, which is what made it look like a
+        dead key rather than a misdirected one.
+
+        A listener rather than a grab in the dialog's dismissal callback,
+        because that callback runs before the window takes focus - an earlier
+        attempt at exactly that measured as doing nothing, and this is why.
+        The window's grab is driven by an X focus event whose timing is not
+        ours to predict, so the answer has to be event-driven rather than a
+        delay chosen to be long enough.
+    */
+    juce::Desktop::getInstance().addFocusChangeListener(this);
+
     refreshSettingsPanel();
 
     // Ask the engine again on every open. The inventory is cheap, and a user
@@ -5829,8 +5870,35 @@ void StemLabAudioProcessorEditor::closeSettingsPanel()
     modelJobReported = false;
     settingsPanel.setVisible(false);
 
+    juce::Desktop::getInstance().removeFocusChangeListener(this);
+
     // Give the keyboard back, or the panel behind stays deaf to shortcuts.
     grabKeyboardFocus();
+}
+
+void StemLabAudioProcessorEditor::globalFocusChanged(juce::Component* focused)
+{
+    if (focused == nullptr || !settingsPanel.isVisible() || !settingsPanel.isShowing())
+        return;
+
+    /*  A dialog opened from a row is meant to have the keyboard while it is
+        up; this is only about where focus lands once it has gone.
+    */
+    if (juce::Component::getCurrentlyModalComponent() != nullptr)
+        return;
+
+    if (focused == &settingsPanel || settingsPanel.isParentOf(focused))
+        return;
+
+    auto* peer = getPeer();
+    const auto* standaloneWindow = processor.isStandaloneApp() && peer != nullptr
+                                       ? &peer->getComponent()
+                                       : nullptr;
+
+    if (!widgets::ownsSettingsFocusTarget(*this, focused, standaloneWindow))
+        return;
+
+    settingsPanel.grabKeyboardFocus();
 }
 
 void StemLabAudioProcessorEditor::refreshSettingsPanel()
@@ -5893,4 +5961,3 @@ void StemLabAudioProcessorEditor::considerAutoShowingModelManager()
     modelManagerAutoShown = true;
     showSettingsPanel(stemlab::widgets::SettingsPanel::Page::models);
 }
-
