@@ -5890,7 +5890,7 @@ void StemLabAudioProcessorEditor::globalFocusChanged(juce::Component* focused)
     if (focused == &settingsPanel || settingsPanel.isParentOf(focused))
         return;
 
-    const auto* peer = getPeer();
+    auto* peer = getPeer();
     const auto* standaloneWindow = processor.isStandaloneApp() && peer != nullptr
                                        ? &peer->getComponent()
                                        : nullptr;
