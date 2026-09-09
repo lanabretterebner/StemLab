@@ -18,6 +18,7 @@
 #include "PluginEditor.h"
 #include "PluginProcessor.h"
 #include "StemLabTheme.h"
+#include "SettingsFocusPolicy.h"
 
 using namespace stemlab;
 
@@ -54,13 +55,51 @@ int main()
     // No faces before an editor has ever existed.
     check(theme::fonts::regularTypeface() == nullptr);
 
+    // Even editors sharing a host window must not reclaim each other's
+    // keyboard. The standalone window itself remains a valid return target
+    // after a dialog closes, but its other controls and windows do not.
+    {
+        juce::Component window, firstEditor, secondEditor, firstControl,
+            secondControl, hostControl, otherWindow;
+        window.addChildComponent(firstEditor);
+        window.addChildComponent(secondEditor);
+        window.addChildComponent(hostControl);
+        firstEditor.addChildComponent(firstControl);
+        secondEditor.addChildComponent(secondControl);
+
+        const auto owns = [&](const juce::Component* focused,
+                              const juce::Component* standaloneWindow = nullptr)
+        {
+            return widgets::ownsSettingsFocusTarget(firstEditor, focused, standaloneWindow);
+        };
+
+        check(owns(&firstEditor));
+        check(owns(&firstControl));
+        check(!owns(&secondEditor));
+        check(!owns(&secondControl));
+        check(!owns(&hostControl));
+        check(!owns(&window));
+        check(!owns(nullptr));
+        check(owns(&window, &window));
+        check(!owns(&hostControl, &window));
+        check(!owns(&otherWindow, &window));
+    }
+
     for (int round = 0; round < 2; ++round)
     {
         StemLabAudioProcessor processor;
 
+        const auto savedWidth = round == 0 ? 2200 : 700;
+        const auto savedHeight = round == 0 ? 500 : 1200;
+        processor.setEditorWindowSize(savedWidth, savedHeight);
+
         std::unique_ptr<juce::AudioProcessorEditor> editor(processor.createEditor());
 
         check(editor != nullptr);
+        check(editor->getWidth() == savedWidth);
+        check(editor->getHeight() == savedHeight);
+        check(processor.getEditorWindowWidth() == savedWidth);
+        check(processor.getEditorWindowHeight() == savedHeight);
 
         // The look and feel registers the bundled faces on construction, and
         // every font token resolves through them.
@@ -80,6 +119,16 @@ int main()
         */
         check(theme::fonts::regularTypeface() == nullptr);
         check(theme::fonts::mediumTypeface() == nullptr);
+    }
+
+    // Legacy preferences still size a hosted editor from the saved scale.
+    {
+        StemLabAudioProcessor processor;
+        processor.setEditorWindowSize(0, 0);
+        processor.setEditorScalePercent(175);
+        std::unique_ptr<juce::AudioProcessorEditor> editor(processor.createEditor());
+        check(editor->getWidth() == juce::roundToInt(theme::metrics::window::width * 1.75));
+        check(editor->getHeight() == juce::roundToInt(theme::metrics::window::height * 1.75));
     }
 
     configSandbox.deleteRecursively();

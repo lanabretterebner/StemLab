@@ -2,6 +2,7 @@
 #include "LinuxSystemCapture.h"
 #include "StemLabPaths.h"
 #include "StemLabTheme.h"
+#include "SettingsFocusPolicy.h"
 #include "BinaryData.h"
 
 #include <utility>
@@ -2620,11 +2621,13 @@ StemLabAudioProcessorEditor::StemLabAudioProcessorEditor(StemLabAudioProcessor& 
     lastActionStatusRevision = processor.getActionStatusRevision();
 
     // Sized last: setSize() fires resized(), which needs every child above.
-    const auto scale = juce::jlimit(window::minScale, window::maxScale,
-                                    processor.getEditorScalePercent() / 100.0);
+    // Hosted editors need the saved shape too. The standalone callback
+    // additionally fits it to the display once the window chrome exists.
+    const auto opening = window::openingSize(
+        processor.getEditorWindowWidth(), processor.getEditorWindowHeight(),
+        processor.getEditorScalePercent() / 100.0, 0, 0);
 
-    setSize(juce::roundToInt(window::width * scale),
-            juce::roundToInt(window::height * scale));
+    setSize(opening.width, opening.height);
 
     /*
      * Armed at full rate and left for the first refresh to judge: opening
@@ -5887,6 +5890,14 @@ void StemLabAudioProcessorEditor::globalFocusChanged(juce::Component* focused)
     if (focused == &settingsPanel || settingsPanel.isParentOf(focused))
         return;
 
+    const auto* peer = getPeer();
+    const auto* standaloneWindow = processor.isStandaloneApp() && peer != nullptr
+                                       ? &peer->getComponent()
+                                       : nullptr;
+
+    if (!widgets::ownsSettingsFocusTarget(*this, focused, standaloneWindow))
+        return;
+
     settingsPanel.grabKeyboardFocus();
 }
 
@@ -5950,4 +5961,3 @@ void StemLabAudioProcessorEditor::considerAutoShowingModelManager()
     modelManagerAutoShown = true;
     showSettingsPanel(stemlab::widgets::SettingsPanel::Page::models);
 }
-
